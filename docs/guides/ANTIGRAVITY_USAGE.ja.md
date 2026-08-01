@@ -1,8 +1,8 @@
 > [README](../project/README.ja.md) に戻る
 
-# PicoClaw で Antigravity プロバイダーを使用する
+# OpenFox で Antigravity プロバイダーを使用する
 
-このガイドでは、PicoClaw で **Antigravity**（Google Cloud Code Assist）プロバイダーをセットアップして使用する方法を説明します。
+このガイドでは、OpenFox で **Antigravity**（Google Cloud Code Assist）プロバイダーをセットアップして使用する方法を説明します。
 
 ## 前提条件
 
@@ -14,7 +14,7 @@
 Antigravity で認証するには、以下のコマンドを実行します：
 
 ```bash
-picoclaw auth login --provider antigravity
+openfox auth login --provider antigravity
 ```
 
 ### 手動認証（ヘッドレス/VPS）
@@ -24,9 +24,9 @@ picoclaw auth login --provider antigravity
 3.  ログインを完了します。
 4.  ブラウザが `localhost:51121` URL にリダイレクトされます（ページは読み込めません）。
 5.  **ブラウザのアドレスバーからその最終 URL をコピーします**。
-6.  **PicoClaw が待機しているターミナルにそれを貼り付けます**。
+6.  **OpenFox が待機しているターミナルにそれを貼り付けます**。
 
-PicoClaw が自動的に認証コードを抽出し、プロセスを完了します。
+OpenFox が自動的に認証コードを抽出し、プロセスを完了します。
 
 ## 2. モデルの管理
 
@@ -34,15 +34,15 @@ PicoClaw が自動的に認証コードを抽出し、プロセスを完了し�
 プロジェクトがアクセスできるモデルとそのクォータを確認するには：
 
 ```bash
-picoclaw auth models
+openfox auth models
 ```
 
 ### モデルの切り替え
-`~/.picoclaw/config.json` でデフォルトモデルを変更するか、CLI でオーバーライドできます：
+`~/.openfox/config.json` でデフォルトモデルを変更するか、CLI でオーバーライドできます：
 
 ```bash
 # 単一コマンドでオーバーライド
-picoclaw agent -m "Hello" --model claude-opus-4-6-thinking
+openfox agent -m "Hello" --model claude-opus-4-6-thinking
 ```
 
 ## 3. 実際の使用方法（Coolify/Docker）
@@ -50,19 +50,19 @@ picoclaw agent -m "Hello" --model claude-opus-4-6-thinking
 Coolify または Docker でデプロイしている場合、以下の手順でテストしてください：
 
 1.  **環境変数**：
-    *   `PICOCLAW_AGENTS_DEFAULTS_MODEL=gemini-flash`
+    *   `OPENFOX_AGENTS_DEFAULTS_MODEL=gemini-flash`
 2.  **認証の永続化**：
     ローカルでログイン済みの場合、認証情報をサーバーにコピーできます：
     ```bash
-    scp ~/.picoclaw/auth.json user@your-server:~/.picoclaw/
+    scp ~/.openfox/auth.json user@your-server:~/.openfox/
     ```
     *または*、ターミナルアクセスがある場合、サーバー上で `auth login` コマンドを一度実行してください。
 
 ## 4. トラブルシューティング
 
 *   **空のレスポンス**：モデルが空の応答を返す場合、プロジェクトで制限されている可能性があります。`gemini-3-flash` または `claude-opus-4-6-thinking` を試してください。
-*   **429 レート制限**：Antigravity には厳格なクォータがあります。制限に達した場合、PicoClaw はエラーメッセージに「リセット時間」を表示します。
-*   **404 Not Found**：`picoclaw auth models` リストのモデル ID を使用していることを確認してください。フルパスではなく、短い ID（例：`gemini-3-flash`）を使用してください。
+*   **429 レート制限**：Antigravity には厳格なクォータがあります。制限に達した場合、OpenFox はエラーメッセージに「リセット時間」を表示します。
+*   **404 Not Found**：`openfox auth models` リストのモデル ID を使用していることを確認してください。フルパスではなく、短い ID（例：`gemini-3-flash`）を使用してください。
 
 ## 5. 動作確認済みモデルのまとめ
 

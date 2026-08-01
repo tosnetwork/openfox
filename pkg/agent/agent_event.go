@@ -1,11 +1,11 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// OpenFox - Ultra-lightweight personal AI agent
 
 package agent
 
 import (
 	"fmt"
 
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
 )
 
 func (al *AgentLoop) newTurnEventScope(agentID, sessionKey string, turnCtx *TurnContext) turnEventScope {

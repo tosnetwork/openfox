@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/routing"
+	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/routing"
 )
 
 // Allocation contains the concrete session keys selected for a routed turn.

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
 )
 
 func TestPublishConsume(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/providers/messageutil"
+	"github.com/tosnetwork/openfox/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/providers/messageutil"
 )
 
 type Session struct {

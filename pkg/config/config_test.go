@@ -11,19 +11,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sipeed/picoclaw/pkg/credential"
+	"github.com/tosnetwork/openfox/pkg/credential"
 )
 
 // mustSetupSSHKey generates a temporary Ed25519 SSH key in t.TempDir() and sets
-// PICOCLAW_SSH_KEY_PATH to its path for the duration of the test. This is required
+// OPENFOX_SSH_KEY_PATH to its path for the duration of the test. This is required
 // whenever a test exercises encryption/decryption via credential.Encrypt or SaveConfig.
 func mustSetupSSHKey(t *testing.T) {
 	t.Helper()
-	keyPath := filepath.Join(t.TempDir(), "picoclaw_ed25519.key")
+	keyPath := filepath.Join(t.TempDir(), "openfox_ed25519.key")
 	if err := credential.GenerateSSHKey(keyPath); err != nil {
 		t.Fatalf("mustSetupSSHKey: %v", err)
 	}
-	t.Setenv("PICOCLAW_SSH_KEY_PATH", keyPath)
+	t.Setenv("OPENFOX_SSH_KEY_PATH", keyPath)
 }
 
 func TestAgentModelConfig_UnmarshalString(t *testing.T) {
@@ -84,7 +84,7 @@ func TestAgentConfig_FullParse(t *testing.T) {
 	jsonData := `{
 		"agents": {
 			"defaults": {
-				"workspace": "~/.picoclaw/workspace",
+				"workspace": "~/.openfox/workspace",
 				"model": "glm-4.7",
 				"max_tokens": 8192,
 				"max_tool_iterations": 20
@@ -634,7 +634,7 @@ func TestConfig_BackwardCompat_NoAgentsList(t *testing.T) {
 	jsonData := `{
 		"agents": {
 			"defaults": {
-				"workspace": "~/.picoclaw/workspace",
+				"workspace": "~/.openfox/workspace",
 				"model": "glm-4.7",
 				"max_tokens": 8192,
 				"max_tool_iterations": 20
@@ -656,7 +656,7 @@ func TestAgentConfig_ParsesDispatchRules(t *testing.T) {
 	jsonData := `{
 		"agents": {
 			"defaults": {
-				"workspace": "~/.picoclaw/workspace",
+				"workspace": "~/.openfox/workspace",
 				"model": "glm-4.7"
 			},
 			"list": [
@@ -713,7 +713,7 @@ func TestLoadConfig_MigratesLegacyBindingsToDispatchRules(t *testing.T) {
 		"version": 2,
 		"agents": {
 			"defaults": {
-				"workspace": "~/.picoclaw/workspace",
+				"workspace": "~/.openfox/workspace",
 				"model": "glm-4.7"
 			},
 			"list": [
@@ -794,7 +794,7 @@ func TestLoadConfig_PrefersDispatchRulesOverLegacyBindings(t *testing.T) {
 		"version": 2,
 		"agents": {
 			"defaults": {
-				"workspace": "~/.picoclaw/workspace",
+				"workspace": "~/.openfox/workspace",
 				"model": "glm-4.7"
 			},
 			"list": [
@@ -850,7 +850,7 @@ func TestLoadConfig_MigratesLegacyDirectBindingsWithIdentityLinks(t *testing.T) 
 		"version": 2,
 		"agents": {
 			"defaults": {
-				"workspace": "~/.picoclaw/workspace",
+				"workspace": "~/.openfox/workspace",
 				"model": "glm-4.7"
 			},
 			"list": [
@@ -1699,7 +1699,7 @@ func TestLoadConfig_HooksProcessConfig(t *testing.T) {
       "review-gate": {
         "enabled": true,
         "transport": "stdio",
-        "command": ["uvx", "picoclaw-hook-reviewer"],
+        "command": ["uvx", "openfox-hook-reviewer"],
         "dir": "/tmp/hooks",
         "env": {
           "HOOK_MODE": "rewrite"
@@ -1957,7 +1957,7 @@ func TestSessionConfig_ApplyDmScope_ClearsStaleDimensions(t *testing.T) {
 }
 
 func TestDefaultConfig_WorkspacePath_Default(t *testing.T) {
-	t.Setenv("PICOCLAW_HOME", "")
+	t.Setenv("OPENFOX_HOME", "")
 
 	var fakeHome string
 	if runtime.GOOS == "windows" {
@@ -1969,22 +1969,22 @@ func TestDefaultConfig_WorkspacePath_Default(t *testing.T) {
 	}
 
 	cfg := DefaultConfig()
-	want := filepath.Join(fakeHome, ".picoclaw", "workspace")
+	want := filepath.Join(fakeHome, ".openfox", "workspace")
 
 	if cfg.Agents.Defaults.Workspace != want {
 		t.Errorf("Default workspace path = %q, want %q", cfg.Agents.Defaults.Workspace, want)
 	}
 }
 
-func TestDefaultConfig_WorkspacePath_WithPicoclawHome(t *testing.T) {
-	t.Setenv("PICOCLAW_HOME", "/custom/picoclaw/home")
+func TestDefaultConfig_WorkspacePath_WithOpenfoxHome(t *testing.T) {
+	t.Setenv("OPENFOX_HOME", "/custom/openfox/home")
 
 	cfg := DefaultConfig()
-	want := filepath.Join("/custom/picoclaw/home", "workspace")
+	want := filepath.Join("/custom/openfox/home", "workspace")
 
 	if cfg.Agents.Defaults.Workspace != want {
 		t.Errorf(
-			"Workspace path with PICOCLAW_HOME = %q, want %q",
+			"Workspace path with OPENFOX_HOME = %q, want %q",
 			cfg.Agents.Defaults.Workspace,
 			want,
 		)
@@ -2250,8 +2250,8 @@ func TestLoadConfig_WarnsForPlaintextAPIKey(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	t.Setenv("PICOCLAW_KEY_PASSPHRASE", "test-passphrase")
-	t.Setenv("PICOCLAW_SSH_KEY_PATH", "")
+	t.Setenv("OPENFOX_KEY_PASSPHRASE", "test-passphrase")
+	t.Setenv("OPENFOX_SSH_KEY_PATH", "")
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
@@ -2274,7 +2274,7 @@ func TestSaveConfig_EncryptsPlaintextAPIKey(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 
-	t.Setenv("PICOCLAW_KEY_PASSPHRASE", "test-passphrase")
+	t.Setenv("OPENFOX_KEY_PASSPHRASE", "test-passphrase")
 	mustSetupSSHKey(t)
 
 	cfg := DefaultConfig()
@@ -2308,7 +2308,7 @@ func TestSaveConfig_EncryptsPlaintextAPIKey(t *testing.T) {
 }
 
 // TestLoadConfig_NoSealWithoutPassphrase verifies that api_key values are left
-// unchanged when PICOCLAW_KEY_PASSPHRASE is not set.
+// unchanged when OPENFOX_KEY_PASSPHRASE is not set.
 func TestLoadConfig_NoSealWithoutPassphrase(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
@@ -2317,8 +2317,8 @@ func TestLoadConfig_NoSealWithoutPassphrase(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	t.Setenv("PICOCLAW_KEY_PASSPHRASE", "")
-	t.Setenv("PICOCLAW_SSH_KEY_PATH", "")
+	t.Setenv("OPENFOX_KEY_PASSPHRASE", "")
+	t.Setenv("OPENFOX_SSH_KEY_PATH", "")
 
 	if _, err := LoadConfig(cfgPath); err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -2352,8 +2352,8 @@ func TestLoadConfig_FileRefNotSealed(t *testing.T) {
 		t.Fatalf("saveSecurityConfig: %v", err)
 	}
 
-	t.Setenv("PICOCLAW_KEY_PASSPHRASE", "test-passphrase")
-	t.Setenv("PICOCLAW_SSH_KEY_PATH", "")
+	t.Setenv("OPENFOX_KEY_PASSPHRASE", "test-passphrase")
+	t.Setenv("OPENFOX_SSH_KEY_PATH", "")
 
 	if _, err := LoadConfig(cfgPath); err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -2374,7 +2374,7 @@ func TestSaveConfig_MixedKeys(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 
-	t.Setenv("PICOCLAW_KEY_PASSPHRASE", "test-passphrase")
+	t.Setenv("OPENFOX_KEY_PASSPHRASE", "test-passphrase")
 	mustSetupSSHKey(t)
 
 	// Pre-encrypt one key so we have a genuine enc:// value to put in the config.
@@ -2471,7 +2471,7 @@ func TestSaveConfig_MixedKeys(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_MixedKeys_NoPassphrase verifies that when PICOCLAW_KEY_PASSPHRASE
+// TestLoadConfig_MixedKeys_NoPassphrase verifies that when OPENFOX_KEY_PASSPHRASE
 // is not set, enc:// entries cause LoadConfig to return an error, while plaintext
 // and file:// entries in the same config are not affected.
 func TestLoadConfig_MixedKeys_NoPassphrase(t *testing.T) {
@@ -2479,7 +2479,7 @@ func TestLoadConfig_MixedKeys_NoPassphrase(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.json")
 
 	// First encrypt a key so we have a real enc:// value.
-	t.Setenv("PICOCLAW_KEY_PASSPHRASE", "test-passphrase")
+	t.Setenv("OPENFOX_KEY_PASSPHRASE", "test-passphrase")
 	mustSetupSSHKey(t)
 	if err := SaveConfig(cfgPath, &Config{
 		Version: CurrentVersion,
@@ -2522,7 +2522,7 @@ func TestLoadConfig_MixedKeys_NoPassphrase(t *testing.T) {
 	}
 
 	// Now clear the passphrase — LoadConfig must fail because enc:// cannot be decrypted.
-	t.Setenv("PICOCLAW_KEY_PASSPHRASE", "")
+	t.Setenv("OPENFOX_KEY_PASSPHRASE", "")
 
 	cfg2, err := LoadConfig(cfgPath)
 	if err == nil {
@@ -2543,7 +2543,7 @@ func TestSaveConfig_UsesPassphraseProvider(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.json")
 
 	// Ensure the env var is empty — passphrase must come from PassphraseProvider only.
-	t.Setenv("PICOCLAW_KEY_PASSPHRASE", "")
+	t.Setenv("OPENFOX_KEY_PASSPHRASE", "")
 	mustSetupSSHKey(t)
 
 	// Replace PassphraseProvider with an in-memory function (simulating SecureStore).
@@ -2576,7 +2576,7 @@ func TestLoadConfig_UsesPassphraseProvider(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.json")
 
 	// Ensure the env var is empty throughout.
-	t.Setenv("PICOCLAW_KEY_PASSPHRASE", "")
+	t.Setenv("OPENFOX_KEY_PASSPHRASE", "")
 	mustSetupSSHKey(t)
 
 	const testPassphrase = "provider-passphrase"
@@ -2669,12 +2669,12 @@ func TestResolveGatewayLogLevel_UsesEnvOverrideAndNormalizesInvalid(t *testing.T
 		t.Fatalf("setup: %v", err)
 	}
 
-	t.Setenv("PICOCLAW_LOG_LEVEL", "warning")
+	t.Setenv("OPENFOX_LOG_LEVEL", "warning")
 	if got := ResolveGatewayLogLevel(cfgPath); got != "warn" {
 		t.Fatalf("ResolveGatewayLogLevel() with env override = %q, want %q", got, "warn")
 	}
 
-	t.Setenv("PICOCLAW_LOG_LEVEL", "garbage")
+	t.Setenv("OPENFOX_LOG_LEVEL", "garbage")
 	if got := ResolveGatewayLogLevel(cfgPath); got != DefaultGatewayLogLevel {
 		t.Fatalf("ResolveGatewayLogLevel() with invalid env override = %q, want %q", got, DefaultGatewayLogLevel)
 	}

@@ -5,9 +5,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/providers"
 )
 
 type mockRegistryProvider struct{}
@@ -30,7 +30,7 @@ func testCfg(agents []config.AgentConfig) *config.Config {
 	return &config.Config{
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
-				Workspace:         "/tmp/picoclaw-test-registry",
+				Workspace:         "/tmp/openfox-test-registry",
 				ModelName:         "gpt-4",
 				MaxTokens:         8192,
 				MaxToolIterations: 10,

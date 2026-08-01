@@ -1,8 +1,8 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// OpenFox - Ultra-lightweight personal AI agent
 // Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
 // License: MIT
 //
-// Copyright (c) 2026 PicoClaw contributors
+// Copyright (c) 2026 OpenFox contributors
 
 package agent
 
@@ -16,9 +16,9 @@ import (
 
 	"github.com/h2non/filetype"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/media"
+	"github.com/tosnetwork/openfox/pkg/providers"
 )
 
 // genericPlaceholderRegex matches generic media placeholders emitted by various

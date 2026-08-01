@@ -1,7 +1,7 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// OpenFox - Ultra-lightweight personal AI agent
 // License: MIT
 //
-// Copyright (c) 2026 PicoClaw contributors
+// Copyright (c) 2026 OpenFox contributors
 
 // Package common provides shared utilities used by multiple LLM provider
 // implementations (openai_compat, azure, etc.).
@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
+	"github.com/tosnetwork/openfox/pkg/providers/protocoltypes"
 )
 
 // Re-export protocol types used across providers.

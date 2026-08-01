@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/config"
 )
 
 // ChannelFactory is a constructor function that creates a Channel from config and message bus.

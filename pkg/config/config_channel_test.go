@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sipeed/picoclaw/pkg/credential"
+	"github.com/tosnetwork/openfox/pkg/credential"
 )
 
 // ─── Test extend structs (simplified, settings + secure in one struct) ───
@@ -210,9 +210,9 @@ func TestPicoStreamingConfig_Defaults(t *testing.T) {
 }
 
 func TestInitChannelList_TelegramStreamingEnvCompatibility(t *testing.T) {
-	t.Setenv("PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED", "true")
-	t.Setenv("PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS", "3")
-	t.Setenv("PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS", "120")
+	t.Setenv("OPENFOX_CHANNELS_TELEGRAM_STREAMING_ENABLED", "true")
+	t.Setenv("OPENFOX_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS", "3")
+	t.Setenv("OPENFOX_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS", "120")
 
 	channels := ChannelsConfig{
 		"telegram": {

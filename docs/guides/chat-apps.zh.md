@@ -4,7 +4,7 @@
 
 ## 💬 聊天应用集成 (Chat Apps)
 
-PicoClaw 支持多种聊天平台，使您的 Agent 能够连接到任何地方，包括 Telegram、Discord、WhatsApp、微信、QQ、钉钉、LINE、企业微信、飞书、Slack、IRC、OneBot、MQTT、MaixCam 等。
+OpenFox 支持多种聊天平台，使您的 Agent 能够连接到任何地方，包括 Telegram、Discord、WhatsApp、微信、QQ、钉钉、LINE、企业微信、飞书、Slack、IRC、OneBot、MQTT、MaixCam 等。
 
 > **注意**: 依赖 HTTP 回调的渠道共用同一个 Gateway HTTP 服务器（`gateway.host`:`gateway.port`，默认 `127.0.0.1:18790`），无需为每个渠道单独配置端口。飞书、钉钉、企业微信这类 Socket/Stream 模式渠道不依赖共享 webhook 服务器来接收入站消息。
 
@@ -27,7 +27,7 @@ PicoClaw 支持多种聊天平台，使您的 Agent 能够连接到任何地方�
 | **OneBot**           | ⭐⭐ 中等   | 兼容 NapCat/Go-CQHTTP，社区生态丰富       | [查看文档](../channels/onebot/README.zh.md)                                                                   |
 | **MQTT**             | ⭐ 简单     | 任意 MQTT 客户端通过 Broker 收发消息      | [查看文档](../channels/mqtt/README.zh.md)                                                                     |
 | **MaixCam**          | ⭐ 简单     | 专为 AI 摄像头设计的硬件集成通道          | [查看文档](../channels/maixcam/README.zh.md)                                                                  |
-| **Pico**             | ⭐ 简单     | PicoClaw 原生协议通道                     |                                                                                                               |
+| **Pico**             | ⭐ 简单     | OpenFox 原生协议通道                     |                                                                                                               |
 
 ---
 
@@ -61,12 +61,12 @@ PicoClaw 支持多种聊天平台，使您的 Agent 能够连接到任何地方�
 **3. 运行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 **4. Telegram 命令菜单（启动时自动注册）**
 
-PicoClaw 使用统一的命令定义来源。启动时会自动将 Telegram 支持的命令（例如 `/start`、`/help`、`/show`、`/list`、`/use`、`/btw`）注册到 Bot 命令菜单，确保菜单展示与实际行为一致。
+OpenFox 使用统一的命令定义来源。启动时会自动将 Telegram 支持的命令（例如 `/start`、`/help`、`/show`、`/list`、`/use`、`/btw`）注册到 Bot 命令菜单，确保菜单展示与实际行为一致。
 Telegram 侧保留的是命令菜单注册能力；通用命令的实际执行统一走 Agent Loop 中的 commands executor。
 
 如果注册因网络或 API 短暂异常失败，不会阻塞 channel 启动；系统会在后台自动重试。
@@ -152,7 +152,7 @@ Telegram 侧保留的是命令菜单注册能力；通用命令的实际执行�
 **6. 运行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -161,7 +161,7 @@ picoclaw gateway
 <details>
 <summary><b>WhatsApp</b>（原生 whatsmeow）</summary>
 
-PicoClaw 支持两种 WhatsApp 连接方式：
+OpenFox 支持两种 WhatsApp 连接方式：
 
 - **原生（推荐）：** 进程内使用 [whatsmeow](https://github.com/tulir/whatsmeow)，无需独立 Bridge。设置 `"use_native": true` 并留空 `bridge_url`。首次运行时用 WhatsApp 扫描 QR 码（关联设备）。会话存储在工作区下（如 `workspace/whatsapp/`）。原生渠道为**可选**构建，使用 `-tags whatsapp_native` 编译（如 `make build-whatsapp-native` 或 `go build -tags whatsapp_native ./cmd/...`）。
 - **Bridge：** 连接外部 WebSocket Bridge。设置 `bridge_url`（如 `ws://localhost:3001`），保持 `use_native` 为 false。
@@ -182,7 +182,7 @@ PicoClaw 支持两种 WhatsApp 连接方式：
 }
 ```
 
-如果 `session_store_path` 为空，会话存储在 `<workspace>/whatsapp/`。运行 `picoclaw gateway`；首次运行时在终端扫描 QR 码（WhatsApp → 关联设备）。
+如果 `session_store_path` 为空，会话存储在 `<workspace>/whatsapp/`。运行 `openfox gateway`；首次运行时在终端扫描 QR 码（WhatsApp → 关联设备）。
 
 </details>
 
@@ -190,13 +190,13 @@ PicoClaw 支持两种 WhatsApp 连接方式：
 <details>
 <summary><b>微信 (Weixin)</b></summary>
 
-PicoClaw 通过腾讯 iLink 官方 API 支持连接微信个人号。
+OpenFox 通过腾讯 iLink 官方 API 支持连接微信个人号。
 
 **1. 登录**
 
 运行交互式扫码登录流程：
 ```bash
-picoclaw auth weixin
+openfox auth weixin
 ```
 用微信手机端扫描打印出的二维码。登录成功后，token 会自动保存到配置文件。
 
@@ -218,7 +218,7 @@ picoclaw auth weixin
 
 **3. 运行**
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -252,7 +252,7 @@ picoclaw gateway
 **3. 运行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 完整选项（`device_id`、`join_on_invite`、`group_trigger`、`placeholder`、`reasoning_channel_id`）请参考 [Matrix 渠道配置指南](../channels/matrix/README.md)。
@@ -269,7 +269,7 @@ QQ 开放平台提供了一键创建 OpenClaw 兼容机器人的页面：
 
 1. 打开 [QQ 机器人快速创建](https://q.qq.com/qqbot/openclaw/index.html)，扫码登录
 2. 机器人自动创建 — 复制 **App ID** 和 **App Secret**
-3. 配置 PicoClaw：
+3. 配置 OpenFox：
 
 ```json
 {
@@ -285,7 +285,7 @@ QQ 开放平台提供了一键创建 OpenClaw 兼容机器人的页面：
 }
 ```
 
-4. 运行 `picoclaw gateway`，打开 QQ 与机器人聊天
+4. 运行 `openfox gateway`，打开 QQ 与机器人聊天
 
 > App Secret 仅显示一次，请立即保存 — 再次查看将强制重置。
 >
@@ -298,7 +298,7 @@ QQ 开放平台提供了一键创建 OpenClaw 兼容机器人的页面：
 * 登录 [QQ 开放平台](https://q.qq.com/) 注册成为开发者
 * 创建 QQ 机器人 — 自定义头像和名称
 * 从机器人设置中复制 **App ID** 和 **App Secret**
-* 按上述方式配置并运行 `picoclaw gateway`
+* 按上述方式配置并运行 `openfox gateway`
 
 </details>
 
@@ -332,7 +332,7 @@ QQ 开放平台提供了一键创建 OpenClaw 兼容机器人的页面：
 **3. 运行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -351,7 +351,7 @@ picoclaw gateway
       "type": "irc",
       "server": "irc.libera.chat:6697",
       "tls": true,
-      "nick": "picoclaw-bot",
+      "nick": "openfox-bot",
       "channels": ["#your-channel"],
       "password": "",
       "allow_from": []
@@ -365,7 +365,7 @@ picoclaw gateway
 **2. 运行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 Bot 将连接到 IRC 服务器并加入指定的频道。
@@ -403,7 +403,7 @@ Bot 将连接到 IRC 服务器并加入指定的频道。
 **3. 运行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -451,7 +451,7 @@ ngrok http 18790
 **4. 运行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > 在群聊中，Bot 仅在被 @提及时回复。回复会引用原始消息。
@@ -462,7 +462,7 @@ picoclaw gateway
 <details>
 <summary><b>飞书 (Feishu)</b></summary>
 
-PicoClaw 通过 WebSocket/SDK 模式连接飞书 — 无需公网 Webhook URL 或回调服务器。
+OpenFox 通过 WebSocket/SDK 模式连接飞书 — 无需公网 Webhook URL 或回调服务器。
 
 **1. 创建应用**
 
@@ -492,7 +492,7 @@ PicoClaw 通过 WebSocket/SDK 模式连接飞书 — 无需公网 Webhook URL �
 **3. 运行并聊天**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 打开飞书，搜索你的机器人名称即可开始聊天。也可以将机器人添加到群组 — 使用 `group_trigger.mention_only: true` 设置为仅在 @提及时回复。
@@ -505,7 +505,7 @@ picoclaw gateway
 <details>
 <summary><b>企业微信 (WeCom)</b></summary>
 
-PicoClaw 现在将企业微信统一为一个基于 WebSocket 的 AI Bot 渠道。
+OpenFox 现在将企业微信统一为一个基于 WebSocket 的 AI Bot 渠道。
 它不再需要公网 webhook 回调地址。
 
 完整配置说明和迁移说明请参考 [企业微信配置指南](../channels/wecom/README.zh.md)。
@@ -515,7 +515,7 @@ PicoClaw 现在将企业微信统一为一个基于 WebSocket 的 AI Bot 渠道�
 **1. 认证**
 
 ```bash
-picoclaw auth wecom
+openfox auth wecom
 ```
 
 该命令会显示二维码，等待你在企业微信里确认，然后把 `bot_id` 和 `secret` 写入 `channels.wecom`。
@@ -542,7 +542,7 @@ picoclaw auth wecom
 **3. 运行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > 这个分支中旧的 `wecom_app` 和 `wecom_aibot` 配置已经被统一的 `channels.wecom` 替代。
@@ -553,7 +553,7 @@ picoclaw gateway
 <details>
 <summary><b>OneBot（通过 OneBot 协议连接 QQ）</b></summary>
 
-OneBot 是 QQ 机器人的开放协议。PicoClaw 通过 WebSocket 连接任何 OneBot v11 兼容实现（如 [Lagrange](https://github.com/LagrangeDev/Lagrange.Core)、[NapCat](https://github.com/NapNeko/NapCatQQ)）。
+OneBot 是 QQ 机器人的开放协议。OpenFox 通过 WebSocket 连接任何 OneBot v11 兼容实现（如 [Lagrange](https://github.com/LagrangeDev/Lagrange.Core)、[NapCat](https://github.com/NapNeko/NapCatQQ)）。
 
 **1. 设置 OneBot 实现**
 
@@ -584,7 +584,7 @@ OneBot 是 QQ 机器人的开放协议。PicoClaw 通过 WebSocket 连接任何 
 **3. 运行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -593,7 +593,7 @@ picoclaw gateway
 <details>
 <summary><b>MaixCam</b></summary>
 
-专为 Sipeed AI 摄像头硬件设计的集成通道。
+专为 AI 摄像头硬件设计的集成通道。
 
 ```json
 {
@@ -607,7 +607,7 @@ picoclaw gateway
 ```
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -616,7 +616,7 @@ picoclaw gateway
 <details>
 <summary><b>MQTT</b></summary>
 
-任意 MQTT 客户端均可通过 Broker 与 PicoClaw 通信。设备或服务向 Broker 发布请求，PicoClaw 订阅后处理并将响应发布回去。
+任意 MQTT 客户端均可通过 Broker 与 OpenFox 通信。设备或服务向 Broker 发布请求，OpenFox 订阅后处理并将响应发布回去。
 
 **1. 配置**
 
@@ -629,7 +629,7 @@ picoclaw gateway
       "settings": {
         "broker": "ssl://your-broker:8883",
         "agent_id": "assistant",
-        "topic_prefix": "/picoclaw",
+        "topic_prefix": "/openfox",
         "keep_alive": 60,
         "qos": 0
       }
@@ -638,7 +638,7 @@ picoclaw gateway
 }
 ```
 
-用户名和密码存储于 `~/.picoclaw/.security.yml`：
+用户名和密码存储于 `~/.openfox/.security.yml`：
 
 ```yaml
 channel_list:
@@ -651,8 +651,8 @@ channel_list:
 **Topic 格式**
 
 ```
-{prefix}/{agent_id}/{client_id}/request    # 客户端 → PicoClaw
-{prefix}/{agent_id}/{client_id}/response   # PicoClaw → 客户端
+{prefix}/{agent_id}/{client_id}/request    # 客户端 → OpenFox
+{prefix}/{agent_id}/{client_id}/response   # OpenFox → 客户端
 ```
 
 `client_id` 由客户端自行指定，用于区分不同设备或会话。
@@ -660,18 +660,18 @@ channel_list:
 **2. 运行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 **3. 测试**
 
 ```bash
 # 发送消息
-mosquitto_pub -t "/picoclaw/assistant/device1/request" \
+mosquitto_pub -t "/openfox/assistant/device1/request" \
   -m '{"text": "你好"}'
 
 # 订阅响应
-mosquitto_sub -t "/picoclaw/assistant/device1/response"
+mosquitto_sub -t "/openfox/assistant/device1/response"
 ```
 
 完整配置选项请参考 [MQTT 渠道文档](../channels/mqtt/README.zh.md)。

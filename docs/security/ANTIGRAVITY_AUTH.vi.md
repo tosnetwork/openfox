@@ -4,7 +4,7 @@
 
 ## Tổng quan
 
-**Antigravity** (Google Cloud Code Assist) là nhà cung cấp mô hình AI được Google hỗ trợ, cung cấp quyền truy cập vào các mô hình như Claude Opus 4.6 và Gemini thông qua hạ tầng đám mây của Google. Tài liệu này cung cấp hướng dẫn đầy đủ về cách xác thực hoạt động, cách lấy danh sách mô hình và cách triển khai nhà cung cấp mới trong PicoClaw.
+**Antigravity** (Google Cloud Code Assist) là nhà cung cấp mô hình AI được Google hỗ trợ, cung cấp quyền truy cập vào các mô hình như Claude Opus 4.6 và Gemini thông qua hạ tầng đám mây của Google. Tài liệu này cung cấp hướng dẫn đầy đủ về cách xác thực hoạt động, cách lấy danh sách mô hình và cách triển khai nhà cung cấp mới trong OpenFox.
 
 ---
 
@@ -19,7 +19,7 @@
 7. [Yêu cầu tích hợp](#yêu-cầu-tích-hợp)
 8. [Các endpoint API](#các-endpoint-api)
 9. [Cấu hình](#cấu-hình)
-10. [Tạo nhà cung cấp mới trong PicoClaw](#tạo-nhà-cung-cấp-mới-trong-picoclaw)
+10. [Tạo nhà cung cấp mới trong OpenFox](#tạo-nhà-cung-cấp-mới-trong-openfox)
 
 ---
 
@@ -380,7 +380,7 @@ const antigravityPlugin = {
   description: "OAuth flow for Google Antigravity (Cloud Code Assist)",
   configSchema: emptyPluginConfigSchema(),
   
-  register(api: PicoClawPluginApi) {
+  register(api: OpenFoxPluginApi) {
     api.registerProvider({
       id: "google-antigravity",
       label: "Google Antigravity",
@@ -407,7 +407,7 @@ const antigravityPlugin = {
 
 ```typescript
 type ProviderAuthContext = {
-  config: PicoClawConfig;
+  config: OpenFoxConfig;
   agentDir?: string;
   workspaceDir?: string;
   prompter: WizardPrompter;      // Lời nhắc/thông báo UI
@@ -428,7 +428,7 @@ type ProviderAuthResult = {
     profileId: string;
     credential: AuthProfileCredential;
   }>;
-  configPatch?: Partial<PicoClawConfig>;
+  configPatch?: Partial<OpenFoxConfig>;
   defaultModel?: string;
   notes?: string[];
 };
@@ -441,7 +441,7 @@ type ProviderAuthResult = {
 ### 1. Môi trường/Phụ thuộc cần thiết
 
 - Go ≥ 1.25
-- Mã nguồn PicoClaw (`pkg/providers/` và `pkg/auth/`)
+- Mã nguồn OpenFox (`pkg/providers/` và `pkg/auth/`)
 - Các gói thư viện chuẩn `crypto` và `net/http`
 
 ### 2. Các header bắt buộc cho lệnh gọi API
@@ -594,7 +594,7 @@ Mỗi thông điệp SSE (`data: {...}`) được bao bọc trong trường `res
 
 ### Lưu trữ hồ sơ xác thực
 
-Hồ sơ xác thực được lưu trữ trong `~/.picoclaw/auth.json`:
+Hồ sơ xác thực được lưu trữ trong `~/.openfox/auth.json`:
 
 ```json
 {
@@ -614,9 +614,9 @@ Hồ sơ xác thực được lưu trữ trong `~/.picoclaw/auth.json`:
 
 ---
 
-## Tạo nhà cung cấp mới trong PicoClaw
+## Tạo nhà cung cấp mới trong OpenFox
 
-Các nhà cung cấp PicoClaw được triển khai dưới dạng gói Go trong `pkg/providers/`. Để thêm nhà cung cấp mới:
+Các nhà cung cấp OpenFox được triển khai dưới dạng gói Go trong `pkg/providers/`. Để thêm nhà cung cấp mới:
 
 ### Triển khai từng bước
 
@@ -676,7 +676,7 @@ Thêm mục mặc định trong `pkg/config/defaults.go`:
 
 #### 5. Thêm hỗ trợ xác thực (Tùy chọn)
 
-Nếu nhà cung cấp của bạn yêu cầu OAuth hoặc xác thực đặc biệt, thêm case vào `cmd/picoclaw/internal/auth/helpers.go`:
+Nếu nhà cung cấp của bạn yêu cầu OAuth hoặc xác thực đặc biệt, thêm case vào `cmd/openfox/internal/auth/helpers.go`:
 
 ```go
 case "your-provider":
@@ -706,26 +706,26 @@ case "your-provider":
 
 ```bash
 # Xác thực với nhà cung cấp
-picoclaw auth login --provider your-provider
+openfox auth login --provider your-provider
 
 # Liệt kê mô hình (cho Antigravity)
-picoclaw auth models
+openfox auth models
 
 # Khởi động gateway
-picoclaw gateway
+openfox gateway
 
 # Chạy agent với mô hình cụ thể
-picoclaw agent -m "Hello" --model your-model
+openfox agent -m "Hello" --model your-model
 ```
 
 ### Biến môi trường cho kiểm thử
 
 ```bash
 # Ghi đè mô hình mặc định
-export PICOCLAW_AGENTS_DEFAULTS_MODEL=your-model
+export OPENFOX_AGENTS_DEFAULTS_MODEL=your-model
 
 # Ghi đè cài đặt nhà cung cấp
-export PICOCLAW_MODEL_LIST='[{"model_name":"your-model","model":"your-provider/model-name","api_keys":["..."]}]'
+export OPENFOX_MODEL_LIST='[{"model_name":"your-model","model":"your-provider/model-name","api_keys":["..."]}]'
 ```
 
 ---
@@ -735,10 +735,10 @@ export PICOCLAW_MODEL_LIST='[{"model_name":"your-model","model":"your-provider/m
 - **File nguồn:**
   - `pkg/providers/antigravity_provider.go` - Triển khai nhà cung cấp Antigravity
   - `pkg/auth/oauth.go` - Triển khai luồng OAuth
-  - `pkg/auth/store.go` - Lưu trữ thông tin xác thực (`~/.picoclaw/auth.json`)
+  - `pkg/auth/store.go` - Lưu trữ thông tin xác thực (`~/.openfox/auth.json`)
   - `pkg/providers/factory.go` - Factory nhà cung cấp và định tuyến giao thức
   - `pkg/providers/types.go` - Định nghĩa interface nhà cung cấp
-  - `cmd/picoclaw/internal/auth/helpers.go` - Lệnh CLI xác thực
+  - `cmd/openfox/internal/auth/helpers.go` - Lệnh CLI xác thực
 
 - **Tài liệu:**
   - `docs/ANTIGRAVITY_USAGE.md` - Hướng dẫn sử dụng Antigravity
@@ -792,7 +792,7 @@ Một số mô hình có thể xuất hiện trong danh sách mô hình khả d�
 ## Khắc phục sự cố
 
 ### "Token expired" (Token đã hết hạn)
-- Làm mới token OAuth: `picoclaw auth login --provider antigravity`
+- Làm mới token OAuth: `openfox auth login --provider antigravity`
 
 ### "Gemini for Google Cloud is not enabled" (Gemini for Google Cloud chưa được bật)
 - Bật API trong Google Cloud Console của bạn
@@ -803,5 +803,5 @@ Một số mô hình có thể xuất hiện trong danh sách mô hình khả d�
 
 ### Mô hình không xuất hiện trong danh sách
 - Xác minh xác thực OAuth đã hoàn tất thành công
-- Kiểm tra lưu trữ hồ sơ xác thực: `~/.picoclaw/auth.json`
-- Chạy lại `picoclaw auth login --provider antigravity`
+- Kiểm tra lưu trữ hồ sơ xác thực: `~/.openfox/auth.json`
+- Chạy lại `openfox auth login --provider antigravity`

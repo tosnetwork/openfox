@@ -116,7 +116,7 @@ HookManager 的排序规则是：
 
 1. 打开 `hooks.enabled`
 2. 把下面文档里的 Python 示例保存到本地文件，例如 `/tmp/review_gate.py`
-3. 给它配置 `PICOCLAW_HOOK_LOG_FILE`
+3. 给它配置 `OPENFOX_HOOK_LOG_FILE`
 4. 重启 gateway
 5. 用 `tail -f` 观察日志文件
 
@@ -145,7 +145,7 @@ HookManager 的排序规则是：
           "approve_tool"
         ],
         "env": {
-          "PICOCLAW_HOOK_LOG_FILE": "/tmp/picoclaw-hook-review-gate.log"
+          "OPENFOX_HOOK_LOG_FILE": "/tmp/openfox-hook-review-gate.log"
         }
       }
     }
@@ -156,10 +156,10 @@ HookManager 的排序规则是：
 观察方式：
 
 ```bash
-tail -f /tmp/picoclaw-hook-review-gate.log
+tail -f /tmp/openfox-hook-review-gate.log
 ```
 
-如果你是在开发 PicoClaw 本体，而不是只想验证协议，那么再看后面的 Go in-process 示例。
+如果你是在开发 OpenFox 本体，而不是只想验证协议，那么再看后面的 Go in-process 示例。
 
 ## 两个示例的定位
 
@@ -195,9 +195,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/agent"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/agent"
+	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
+	"github.com/tosnetwork/openfox/pkg/logger"
 )
 
 type ExampleLoggerHookOptions struct {
@@ -342,7 +342,7 @@ func (h *ExampleLoggerHook) record(stage string, refs any, payload any, decision
 
 ```go
 hook := myhooks.NewExampleLoggerHook(myhooks.ExampleLoggerHookOptions{
-    LogFile:   "/tmp/picoclaw-hook-example-logger.log",
+    LogFile:   "/tmp/openfox-hook-example-logger.log",
     LogEvents: true,
 })
 
@@ -363,8 +363,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/sipeed/picoclaw/pkg/agent"
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/agent"
+	"github.com/tosnetwork/openfox/pkg/config"
 )
 
 func init() {
@@ -398,7 +398,7 @@ func init() {
         "enabled": true,
         "priority": 10,
         "config": {
-          "log_file": "/tmp/picoclaw-hook-example-logger.log",
+          "log_file": "/tmp/openfox-hook-example-logger.log",
           "log_events": true
         }
       }
@@ -448,8 +448,8 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-LOG_EVENTS = os.getenv("PICOCLAW_HOOK_LOG_EVENTS", "1").lower() not in {"0", "false", "no"}
-LOG_FILE = os.getenv("PICOCLAW_HOOK_LOG_FILE", "").strip()
+LOG_EVENTS = os.getenv("OPENFOX_HOOK_LOG_EVENTS", "1").lower() not in {"0", "false", "no"}
+LOG_FILE = os.getenv("OPENFOX_HOOK_LOG_FILE", "").strip()
 
 
 def append_log(entry: dict[str, Any]) -> None:
@@ -616,7 +616,7 @@ if __name__ == "__main__":
           "approve_tool"
         ],
         "env": {
-          "PICOCLAW_HOOK_LOG_FILE": "/tmp/picoclaw-hook-review-gate.log"
+          "OPENFOX_HOOK_LOG_FILE": "/tmp/openfox-hook-review-gate.log"
         }
       }
     }
@@ -626,12 +626,12 @@ if __name__ == "__main__":
 
 ### 环境变量
 
-- `PICOCLAW_HOOK_LOG_EVENTS`
+- `OPENFOX_HOOK_LOG_EVENTS`
   是否把 `hook.runtime_event` 写到 `stderr`，默认开启
-- `PICOCLAW_HOOK_LOG_FILE`
+- `OPENFOX_HOOK_LOG_FILE`
   外部日志文件路径。设置后，脚本会把收到的 hook 请求、notification 和返回结果按 JSON Lines 追加到该文件
 
-注意：`PICOCLAW_HOOK_LOG_FILE` 没有默认值。不设置时，脚本不会自动落盘日志。
+注意：`OPENFOX_HOOK_LOG_FILE` 没有默认值。不设置时，脚本不会自动落盘日志。
 
 ### 如何确认它收到了 hook
 
@@ -639,7 +639,7 @@ if __name__ == "__main__":
 
 - gateway 日志
   用来观察宿主是否成功启动了外部进程，以及脚本写到 `stderr` 的事件摘要
-- `PICOCLAW_HOOK_LOG_FILE`
+- `OPENFOX_HOOK_LOG_FILE`
   用来观察脚本实际收到了什么请求、返回了什么响应
 
 典型判断方式：
@@ -680,12 +680,12 @@ if __name__ == "__main__":
 
 当前 process hook 使用 `JSON-RPC over stdio`：
 
-- PicoClaw 启动外部进程
+- OpenFox 启动外部进程
 - 请求和响应都按“一行一个 JSON 消息”传输
 - `hook.runtime_event` 是 notification，不需要响应
 - `hook.before_llm` / `hook.after_llm` / `hook.before_tool` / `hook.after_tool` / `hook.approve_tool` 是 request/response
 
-当前宿主不会接受 process hook 主动发起的新 RPC。也就是说，外部 hook 现在只能“响应 PicoClaw 的调用”，不能反向调用宿主去发送 channel 消息。
+当前宿主不会接受 process hook 主动发起的新 RPC。也就是说，外部 hook 现在只能“响应 OpenFox 的调用”，不能反向调用宿主去发送 channel 消息。
 
 ## 配置字段
 

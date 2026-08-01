@@ -11,7 +11,7 @@
 | -------------------- | ---------------------------- | -------------------------------------------------------------------- |
 | `gemini`             | LLM (Gemini 直接接続)       | [aistudio.google.com](https://aistudio.google.com)                   |
 | `zhipu`              | LLM (Zhipu 直接接続)        | [bigmodel.cn](https://bigmodel.cn)                                   |
-| `volcengine`         | LLM (Volcengine 直接接続)   | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| `volcengine`         | LLM (Volcengine 直接接続)   | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | `openrouter`         | LLM (推奨、全モデルアクセス可) | [openrouter.ai](https://openrouter.ai)                               |
 | `anthropic`          | LLM (Claude 直接接続)       | [console.anthropic.com](https://console.anthropic.com)               |
 | `openai`             | LLM (GPT 直接接続)          | [platform.openai.com](https://platform.openai.com)                   |
@@ -30,7 +30,7 @@
 <a id="モデル設定-model_list"></a>
 ### モデル設定 (model_list)
 
-> **新機能！** PicoClaw は**モデル中心**の設定方式を採用しました。`ベンダー/モデル` 形式（例: `zhipu/glm-4.7`）を指定するだけで新しい provider を追加できます——**コード変更は一切不要です！**
+> **新機能！** OpenFox は**モデル中心**の設定方式を採用しました。`ベンダー/モデル` 形式（例: `zhipu/glm-4.7`）を指定するだけで新しい provider を追加できます——**コード変更は一切不要です！**
 
 この設計は**マルチ Agent シナリオ**もサポートし、柔軟な Provider 選択を提供します：
 
@@ -57,7 +57,7 @@
 | **LiteLLM Proxy**   | `litellm/`            | `http://localhost:4000/v1`                          | OpenAI     | LiteLLM プロキシキー                                              |
 | **VLLM**            | `vllm/`               | `http://localhost:8000/v1`                          | OpenAI     | ローカル                                                          |
 | **Cerebras**        | `cerebras/`           | `https://api.cerebras.ai/v1`                        | OpenAI     | [キーを取得](https://cerebras.ai)                                 |
-| **VolcEngine (Doubao)** | `volcengine/`     | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI     | [キーを取得](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| **VolcEngine (Doubao)** | `volcengine/`     | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI     | [キーを取得](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | **神算云**          | `shengsuanyun/`       | `https://router.shengsuanyun.com/api/v1`            | OpenAI     | -                                                                 |
 | **BytePlus**        | `byteplus/`           | `https://ark.ap-southeast.bytepluses.com/api/v3`    | OpenAI     | [キーを取得](https://www.byteplus.com)                            |
 | **Vivgrid**         | `vivgrid/`            | `https://api.vivgrid.com/v1`                        | OpenAI     | [キーを取得](https://vivgrid.com)                                 |
@@ -184,7 +184,7 @@
 }
 ```
 
-> `picoclaw auth login --provider anthropic` を実行して API トークンを設定してください。
+> `openfox auth login --provider anthropic` を実行して API トークンを設定してください。
 
 **Anthropic Messages API（ネイティブ形式）**
 
@@ -239,11 +239,11 @@ Anthropic API への直接アクセスや、Anthropic のネイティブメッ�
 }
 ```
 
-PicoClaw はリクエスト送信前に外側の `litellm/` プレフィックスのみを除去するため、`litellm/lite-gpt4` は `lite-gpt4` を送信し、`litellm/openai/gpt-4o` は `openai/gpt-4o` を送信します。
+OpenFox はリクエスト送信前に外側の `litellm/` プレフィックスのみを除去するため、`litellm/lite-gpt4` は `lite-gpt4` を送信し、`litellm/openai/gpt-4o` は `openai/gpt-4o` を送信します。
 
 #### ロードバランシング
 
-同じモデル名に複数のエンドポイントを設定すると、PicoClaw が自動的にラウンドロビンで分散します：
+同じモデル名に複数のエンドポイントを設定すると、OpenFox が自動的にラウンドロビンで分散します：
 
 ```json
 {
@@ -311,7 +311,7 @@ PicoClaw はリクエスト送信前に外側の `litellm/` プレフィック�
 
 ### Provider アーキテクチャ
 
-PicoClaw はプロトコルファミリーごとに Provider をルーティングします：
+OpenFox はプロトコルファミリーごとに Provider をルーティングします：
 
 - OpenAI 互換プロトコル：OpenRouter、OpenAI 互換ゲートウェイ、Groq、Zhipu、vLLM スタイルのエンドポイント。
 - Gemini ネイティブプロトコル：Google Gemini のネイティブ `models/*:generateContent` / `models/*:streamGenerateContent` エンドポイント。
@@ -333,7 +333,7 @@ PicoClaw はプロトコルファミリーごとに Provider をルーティン�
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.openfox/workspace",
       "model_name": "glm-4.7",
       "max_tokens": 8192,
       "temperature": 0.7,
@@ -352,7 +352,7 @@ PicoClaw はプロトコルファミリーごとに Provider をルーティン�
 **3. 実行**
 
 ```bash
-picoclaw agent -m "こんにちは"
+openfox agent -m "こんにちは"
 ```
 
 </details>
@@ -470,5 +470,5 @@ picoclaw agent -m "こんにちは"
 ---
 
 <div align="center">
-  <img src="../../assets/logo.jpg" alt="PicoClaw Meme" width="512">
+  <img src="../../assets/logo.jpg" alt="OpenFox Meme" width="512">
 </div>

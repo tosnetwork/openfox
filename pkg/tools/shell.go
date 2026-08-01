@@ -19,10 +19,10 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/constants"
-	"github.com/sipeed/picoclaw/pkg/isolation"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/constants"
+	"github.com/tosnetwork/openfox/pkg/isolation"
+	"github.com/tosnetwork/openfox/pkg/logger"
 )
 
 var (
@@ -1177,6 +1177,14 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 		cwdPath, err := filepath.Abs(cwd)
 		if err != nil {
 			return ""
+		}
+		// Resolve symlinks in the workspace root so it lines up with the
+		// resolved candidate path below (e.g. macOS /var -> /private/var).
+		// Without this, filepath.Rel compares an unresolved cwd against a
+		// resolved path and produces a spurious ".." even when the target
+		// is inside the workspace.
+		if resolvedCwd, err := filepath.EvalSymlinks(cwdPath); err == nil {
+			cwdPath = resolvedCwd
 		}
 
 		// Web URL schemes whose path components (starting with //) should be exempt

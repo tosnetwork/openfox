@@ -1,6 +1,6 @@
 # 敏感数据过滤
 
-PicoClaw 可以从工具调用结果中过滤敏感值（API 密钥、令牌、密码等），然后再发送给 LLM。这可以防止 LLM 看到自己的凭据，避免通过工具输出泄露或产生混淆行为。
+OpenFox 可以从工具调用结果中过滤敏感值（API 密钥、令牌、密码等），然后再发送给 LLM。这可以防止 LLM 看到自己的凭据，避免通过工具输出泄露或产生混淆行为。
 
 ---
 
@@ -39,7 +39,7 @@ PicoClaw 可以从工具调用结果中过滤敏感值（API 密钥、令牌、�
 
 | 变量 | 说明 |
 |------|------|
-| `PICOCLAW_TOOLS_FILTER_SENSITIVE_DATA` | 设置为 `true` 或 `false` 以覆盖配置值 |
+| `OPENFOX_TOOLS_FILTER_SENSITIVE_DATA` | 设置为 `true` 或 `false` 以覆盖配置值 |
 
 ---
 

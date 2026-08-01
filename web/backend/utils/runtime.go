@@ -9,33 +9,33 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/logger"
 )
 
-// GetPicoclawHome returns the picoclaw home directory.
-// Priority: $PICOCLAW_HOME > ~/.picoclaw
-func GetPicoclawHome() string {
+// GetOpenfoxHome returns the openfox home directory.
+// Priority: $OPENFOX_HOME > ~/.openfox
+func GetOpenfoxHome() string {
 	return config.GetHome()
 }
 
-// GetDefaultConfigPath returns the default path to the picoclaw config file.
+// GetDefaultConfigPath returns the default path to the openfox config file.
 func GetDefaultConfigPath() string {
 	if configPath := os.Getenv(config.EnvConfig); configPath != "" {
 		return configPath
 	}
-	return filepath.Join(GetPicoclawHome(), "config.json")
+	return filepath.Join(GetOpenfoxHome(), "config.json")
 }
 
-// FindPicoclawBinary locates the picoclaw executable.
+// FindOpenfoxBinary locates the openfox executable.
 // Search order:
-//  1. PICOCLAW_BINARY environment variable (explicit override)
+//  1. OPENFOX_BINARY environment variable (explicit override)
 //  2. Same directory as the current executable
-//  3. Falls back to "picoclaw" and relies on $PATH
-func FindPicoclawBinary() string {
-	binaryName := "picoclaw"
+//  3. Falls back to "openfox" and relies on $PATH
+func FindOpenfoxBinary() string {
+	binaryName := "openfox"
 	if runtime.GOOS == "windows" {
-		binaryName = "picoclaw.exe"
+		binaryName = "openfox.exe"
 	}
 
 	if p := os.Getenv(config.EnvBinary); p != "" {
@@ -45,14 +45,14 @@ func FindPicoclawBinary() string {
 	}
 
 	if exe, err := os.Executable(); err == nil {
-		logger.Debugf("Trying to find picoclaw binary in %s", exe)
+		logger.Debugf("Trying to find openfox binary in %s", exe)
 		candidate := filepath.Join(filepath.Dir(exe), binaryName)
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate
 		}
 	}
 
-	return "picoclaw"
+	return "openfox"
 }
 
 func appendUniqueIP(addrs []string, seen map[string]struct{}, value string) []string {

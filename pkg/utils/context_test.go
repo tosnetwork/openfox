@@ -1,14 +1,14 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// OpenFox - Ultra-lightweight personal AI agent
 // License: MIT
 //
-// Copyright (c) 2026 PicoClaw contributors
+// Copyright (c) 2026 OpenFox contributors
 
 package utils
 
 import (
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/providers"
 )
 
 func TestCalculateDefaultMaxContextRunes(t *testing.T) {

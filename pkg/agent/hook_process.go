@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/isolation"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
+	"github.com/tosnetwork/openfox/pkg/isolation"
+	"github.com/tosnetwork/openfox/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/tools"
 )
 
 const (

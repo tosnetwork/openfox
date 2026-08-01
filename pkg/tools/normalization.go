@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/tosnetwork/openfox/pkg/media"
 )
 
 const (

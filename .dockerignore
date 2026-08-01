@@ -3,7 +3,7 @@
 .git
 .gitignore
 build/
-.picoclaw/
+.openfox/
 config/
 .env
 .env.example

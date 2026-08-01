@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/isolation"
+	"github.com/tosnetwork/openfox/pkg/isolation"
 )
 
 // CodexCliProvider implements LLMProvider by wrapping the codex CLI as a subprocess.

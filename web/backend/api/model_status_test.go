@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/config"
 )
 
 func TestProbeLocalModelAvailability_OpenAICompatibleIncludesAPIKey(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	ppid "github.com/sipeed/picoclaw/pkg/pid"
+	"github.com/tosnetwork/openfox/pkg/config"
+	ppid "github.com/tosnetwork/openfox/pkg/pid"
 )
 
 func newPicoProxyRequest(method, path string) *http.Request {
@@ -451,7 +451,7 @@ func TestHandleWebSocketProxyReloadsGatewayTargetFromConfig(t *testing.T) {
 	t.Cleanup(func() { gatewayProcessMatcher = origMatcher })
 
 	home := t.TempDir()
-	t.Setenv("PICOCLAW_HOME", home)
+	t.Setenv("OPENFOX_HOME", home)
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	h := NewHandler(configPath)
@@ -538,7 +538,7 @@ func TestHandleWebSocketProxyLoadsCachedPicoTokenWhenMissing(t *testing.T) {
 	t.Cleanup(func() { gatewayProcessMatcher = origMatcher })
 
 	home := t.TempDir()
-	t.Setenv("PICOCLAW_HOME", home)
+	t.Setenv("OPENFOX_HOME", home)
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	h := NewHandler(configPath)
@@ -615,7 +615,7 @@ func TestHandleWebSocketProxyLoadsPidDataOnDemand(t *testing.T) {
 	t.Cleanup(func() { gatewayProcessMatcher = origMatcher })
 
 	home := t.TempDir()
-	t.Setenv("PICOCLAW_HOME", home)
+	t.Setenv("OPENFOX_HOME", home)
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	h := NewHandler(configPath)
@@ -752,7 +752,7 @@ func TestCreatePicoHTTPProxyInjectsGatewayAuth(t *testing.T) {
 
 func TestHandlePicoMediaProxyUsesRawBearerToken(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("PICOCLAW_HOME", home)
+	t.Setenv("OPENFOX_HOME", home)
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	h := NewHandler(configPath)
@@ -824,7 +824,7 @@ func TestHandlePicoMediaProxyUsesRawBearerToken(t *testing.T) {
 func TestHandleWebSocketProxyRejectsStalePidDataAfterProcessExit(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	t.Setenv("PICOCLAW_HOME", filepath.Join(tmpDir, ".picoclaw"))
+	t.Setenv("OPENFOX_HOME", filepath.Join(tmpDir, ".openfox"))
 
 	configPath := filepath.Join(tmpDir, "config.json")
 	h := NewHandler(configPath)
@@ -888,7 +888,7 @@ func TestHandleWebSocketProxy_AllowsArbitraryOrigin(t *testing.T) {
 	t.Cleanup(func() { gatewayProcessMatcher = origMatcher })
 
 	home := t.TempDir()
-	t.Setenv("PICOCLAW_HOME", home)
+	t.Setenv("OPENFOX_HOME", home)
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	h := NewHandler(configPath)

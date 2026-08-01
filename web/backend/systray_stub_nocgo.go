@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/logger"
 )
 
 // runTray falls back to a headless mode on platforms where systray requires cgo.

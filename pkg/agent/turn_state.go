@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// OpenFox - Ultra-lightweight personal AI agent
 
 package agent
 
@@ -10,12 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/session"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/session"
+	"github.com/tosnetwork/openfox/pkg/tools"
 )
 
 // =============================================================================

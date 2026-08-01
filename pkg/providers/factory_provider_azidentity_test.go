@@ -1,16 +1,16 @@
 //go:build azidentity
 
-// PicoClaw - Ultra-lightweight personal AI agent
+// OpenFox - Ultra-lightweight personal AI agent
 // License: MIT
 //
-// Copyright (c) 2026 PicoClaw contributors
+// Copyright (c) 2026 OpenFox contributors
 
 package providers
 
 import (
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/config"
 )
 
 // With the azidentity build tag, an azure config with no api_key must succeed

@@ -2,7 +2,7 @@
 
 # Mã hóa Thông tin Xác thực
 
-PicoClaw hỗ trợ mã hóa các giá trị `api_key` trong các mục cấu hình `model_list`.
+OpenFox hỗ trợ mã hóa các giá trị `api_key` trong các mục cấu hình `model_list`.
 Các khóa đã mã hóa được lưu trữ dưới dạng chuỗi `enc://<base64>` và được giải mã tự động khi khởi động.
 
 ---
@@ -12,12 +12,12 @@ Các khóa đã mã hóa được lưu trữ dưới dạng chuỗi `enc://<base
 **1. Đặt cụm mật khẩu**
 
 ```bash
-export PICOCLAW_KEY_PASSPHRASE="your-passphrase"
+export OPENFOX_KEY_PASSPHRASE="your-passphrase"
 ```
 
 **2. Mã hóa khóa API**
 
-Chạy `picoclaw onboard` — nó yêu cầu nhập cụm mật khẩu và tạo khóa SSH,
+Chạy `openfox onboard` — nó yêu cầu nhập cụm mật khẩu và tạo khóa SSH,
 sau đó tự động mã hóa lại tất cả các mục `api_key` dạng văn bản thuần trong cấu hình
 ở lần gọi `SaveConfig` tiếp theo. Giá trị `enc://` kết quả sẽ có dạng:
 
@@ -48,7 +48,7 @@ enc://AAAA...base64...
 |-----------|-------|---------|
 | Văn bản thuần | `sk-abc123` | Sử dụng nguyên trạng |
 | Tham chiếu tệp | `file://openai.key` | Nội dung được đọc từ cùng thư mục với tệp cấu hình |
-| Đã mã hóa | `enc://<base64>` | Giải mã khi khởi động bằng `PICOCLAW_KEY_PASSPHRASE` |
+| Đã mã hóa | `enc://<base64>` | Giải mã khi khởi động bằng `OPENFOX_KEY_PASSPHRASE` |
 | Trống | `""` | Truyền qua không thay đổi (dùng với `auth_method: oauth`) |
 
 ---
@@ -62,7 +62,7 @@ Mã hóa sử dụng **HKDF-SHA256** với khóa riêng SSH làm yếu tố th�
 ```
 sshHash = SHA256(ssh_private_key_file_bytes)
 ikm     = HMAC-SHA256(key=sshHash, message=passphrase)
-aes_key = HKDF-SHA256(ikm, salt, info="picoclaw-credential-v1", 32 bytes)
+aes_key = HKDF-SHA256(ikm, salt, info="openfox-credential-v1", 32 bytes)
 ```
 
 ### Mã hóa
@@ -99,7 +99,7 @@ Thẻ xác thực GCM được tự động nối vào bản mã. Bất kỳ s�
 
 Khi khóa riêng SSH được cung cấp, việc phá vỡ mã hóa yêu cầu **cả hai**:
 
-1. **Cụm mật khẩu** (`PICOCLAW_KEY_PASSPHRASE`)
+1. **Cụm mật khẩu** (`OPENFOX_KEY_PASSPHRASE`)
 2. **Tệp khóa riêng SSH**
 
 Điều này có nghĩa là chỉ rò rỉ tệp cấu hình không đủ để khôi phục khóa API, ngay cả khi cụm mật khẩu yếu. Khóa SSH đóng góp 256 bit entropy (Ed25519) bất kể độ mạnh của cụm mật khẩu.
@@ -119,33 +119,33 @@ Khi khóa riêng SSH được cung cấp, việc phá vỡ mã hóa yêu cầu *
 
 | Biến | Bắt buộc | Mô tả |
 |------|----------|-------|
-| `PICOCLAW_KEY_PASSPHRASE` | Có (cho `enc://`) | Cụm mật khẩu dùng để dẫn xuất khóa |
-| `PICOCLAW_SSH_KEY_PATH` | Không | Đường dẫn đến khóa riêng SSH. Nếu không đặt, tự động phát hiện từ `~/.ssh/picoclaw_ed25519.key` |
+| `OPENFOX_KEY_PASSPHRASE` | Có (cho `enc://`) | Cụm mật khẩu dùng để dẫn xuất khóa |
+| `OPENFOX_SSH_KEY_PATH` | Không | Đường dẫn đến khóa riêng SSH. Nếu không đặt, tự động phát hiện từ `~/.ssh/openfox_ed25519.key` |
 
 ### Tự động Phát hiện Khóa SSH
 
-Nếu `PICOCLAW_SSH_KEY_PATH` không được đặt, PicoClaw tìm khóa chuyên dụng:
+Nếu `OPENFOX_SSH_KEY_PATH` không được đặt, OpenFox tìm khóa chuyên dụng:
 
 ```
-~/.ssh/picoclaw_ed25519.key
+~/.ssh/openfox_ed25519.key
 ```
 
 Tệp chuyên dụng này tránh xung đột với các khóa SSH hiện có của người dùng.
-Chạy `picoclaw onboard` để tạo tự động.
+Chạy `openfox onboard` để tạo tự động.
 
 `os.UserHomeDir()` được sử dụng để phân giải thư mục home đa nền tảng (đọc `USERPROFILE` trên Windows, `HOME` trên Unix/macOS).
 
-> **Lưu ý:** Tệp khóa SSH là bắt buộc cho mã hóa thông tin xác thực. Nếu không tìm thấy khóa và `PICOCLAW_SSH_KEY_PATH` không được đặt, mã hóa/giải mã sẽ thất bại. Chạy `picoclaw onboard` để tạo khóa tự động.
+> **Lưu ý:** Tệp khóa SSH là bắt buộc cho mã hóa thông tin xác thực. Nếu không tìm thấy khóa và `OPENFOX_SSH_KEY_PATH` không được đặt, mã hóa/giải mã sẽ thất bại. Chạy `openfox onboard` để tạo khóa tự động.
 
 ---
 
 ## Di chuyển
 
-Vì tài liệu bí mật duy nhất là `PICOCLAW_KEY_PASSPHRASE` và tệp khóa riêng SSH, việc di chuyển rất đơn giản:
+Vì tài liệu bí mật duy nhất là `OPENFOX_KEY_PASSPHRASE` và tệp khóa riêng SSH, việc di chuyển rất đơn giản:
 
 1. Sao chép tệp cấu hình sang máy mới.
-2. Đặt `PICOCLAW_KEY_PASSPHRASE` với cùng giá trị.
-3. Sao chép tệp khóa riêng SSH đến cùng đường dẫn (hoặc đặt `PICOCLAW_SSH_KEY_PATH` đến vị trí mới).
+2. Đặt `OPENFOX_KEY_PASSPHRASE` với cùng giá trị.
+3. Sao chép tệp khóa riêng SSH đến cùng đường dẫn (hoặc đặt `OPENFOX_SSH_KEY_PATH` đến vị trí mới).
 
 Không cần mã hóa lại.
 
@@ -153,7 +153,7 @@ Không cần mã hóa lại.
 
 ## Lưu ý về Bảo mật
 
-- **Cả cụm mật khẩu và khóa SSH đều bắt buộc.** Khóa SSH đóng vai trò yếu tố thứ hai — không có nó, mã hóa/giải mã sẽ thất bại. Chạy `picoclaw onboard` để tạo khóa nếu chưa tồn tại.
-- **Khóa SSH chỉ đọc khi chạy.** PicoClaw không bao giờ ghi hoặc sửa đổi tệp khóa SSH.
+- **Cả cụm mật khẩu và khóa SSH đều bắt buộc.** Khóa SSH đóng vai trò yếu tố thứ hai — không có nó, mã hóa/giải mã sẽ thất bại. Chạy `openfox onboard` để tạo khóa nếu chưa tồn tại.
+- **Khóa SSH chỉ đọc khi chạy.** OpenFox không bao giờ ghi hoặc sửa đổi tệp khóa SSH.
 - **Khóa văn bản thuần vẫn được hỗ trợ.** Các cấu hình hiện có không dùng `enc://` không bị ảnh hưởng.
-- **Định dạng `enc://` được quản lý phiên bản** thông qua trường `info` của HKDF (`picoclaw-credential-v1`), cho phép nâng cấp thuật toán trong tương lai mà không làm hỏng các giá trị đã mã hóa hiện có.
+- **Định dạng `enc://` được quản lý phiên bản** thông qua trường `info` của HKDF (`openfox-credential-v1`), cho phép nâng cấp thuật toán trong tương lai mà không làm hỏng các giá trị đã mã hóa hiện có.

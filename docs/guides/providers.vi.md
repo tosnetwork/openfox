@@ -11,7 +11,7 @@
 | ------------ | --------------------------------------- | ------------------------------------------------------------ |
 | `gemini`     | LLM (Gemini direct)                     | [aistudio.google.com](https://aistudio.google.com)           |
 | `zhipu`      | LLM (Zhipu direct)                      | [bigmodel.cn](https://bigmodel.cn)                           |
-| `volcengine` | LLM(Volcengine direct)                  | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw)                 |
+| `volcengine` | LLM(Volcengine direct)                  | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox)                 |
 | `openrouter` | LLM (recommended, access to all models) | [openrouter.ai](https://openrouter.ai)                       |
 | `anthropic`  | LLM (Claude direct)                     | [console.anthropic.com](https://console.anthropic.com)       |
 | `openai`     | LLM (GPT direct)                        | [platform.openai.com](https://platform.openai.com)           |
@@ -29,7 +29,7 @@
 
 ### Cấu Hình Mô Hình (model_list)
 
-> **Có gì mới?** PicoClaw hiện sử dụng cách tiếp cận cấu hình **tập trung vào mô hình**. Chỉ cần chỉ định định dạng `vendor/model` (ví dụ: `zhipu/glm-4.7`) để thêm provider mới — **không cần thay đổi code!**
+> **Có gì mới?** OpenFox hiện sử dụng cách tiếp cận cấu hình **tập trung vào mô hình**. Chỉ cần chỉ định định dạng `vendor/model` (ví dụ: `zhipu/glm-4.7`) để thêm provider mới — **không cần thay đổi code!**
 
 Thiết kế này cũng cho phép **hỗ trợ đa agent** với lựa chọn provider linh hoạt:
 
@@ -56,7 +56,7 @@ Thiết kế này cũng cho phép **hỗ trợ đa agent** với lựa chọn pr
 | **LiteLLM Proxy**   | `litellm/`        | `http://localhost:4000/v1`                          | OpenAI    | Your LiteLLM proxy key                                            |
 | **VLLM**            | `vllm/`           | `http://localhost:8000/v1`                          | OpenAI    | Local                                                            |
 | **Cerebras**        | `cerebras/`       | `https://api.cerebras.ai/v1`                        | OpenAI    | [Get Key](https://cerebras.ai)                                   |
-| **VolcEngine (Doubao)** | `volcengine/`     | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [Get Key](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw)                        |
+| **VolcEngine (Doubao)** | `volcengine/`     | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [Get Key](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox)                        |
 | **神算云**          | `shengsuanyun/`   | `https://router.shengsuanyun.com/api/v1`            | OpenAI    | -                                                                |
 | **BytePlus**        | `byteplus/`       | `https://ark.ap-southeast.bytepluses.com/api/v3`    | OpenAI    | [Get Key](https://www.byteplus.com)                        |
 | **Vivgrid**         | `vivgrid/`        | `https://api.vivgrid.com/v1`                        | OpenAI    | [Get Key](https://vivgrid.com)                                   |
@@ -172,7 +172,7 @@ Khi không dùng streaming, hãy bỏ qua block `streaming`. Viết `"streaming"
 }
 ```
 
-> Chạy `picoclaw auth login --provider anthropic` để dán API token.
+> Chạy `openfox auth login --provider anthropic` để dán API token.
 
 **Anthropic Messages API (định dạng native)**
 
@@ -227,11 +227,11 @@ Khi không dùng streaming, hãy bỏ qua block `streaming`. Viết `"streaming"
 }
 ```
 
-PicoClaw chỉ loại bỏ tiền tố ngoài `litellm/` trước khi gửi yêu cầu, nên alias proxy như `litellm/lite-gpt4` gửi `lite-gpt4`, trong khi `litellm/openai/gpt-4o` gửi `openai/gpt-4o`.
+OpenFox chỉ loại bỏ tiền tố ngoài `litellm/` trước khi gửi yêu cầu, nên alias proxy như `litellm/lite-gpt4` gửi `lite-gpt4`, trong khi `litellm/openai/gpt-4o` gửi `openai/gpt-4o`.
 
 #### Cân Bằng Tải
 
-Cấu hình nhiều endpoint cho cùng tên mô hình — PicoClaw sẽ tự động round-robin giữa chúng:
+Cấu hình nhiều endpoint cho cùng tên mô hình — OpenFox sẽ tự động round-robin giữa chúng:
 
 ```json
 {
@@ -299,7 +299,7 @@ Cấu hình `providers` cũ đã **bị deprecated** và đã được loại b�
 
 ### Kiến Trúc Provider
 
-PicoClaw định tuyến provider theo họ giao thức:
+OpenFox định tuyến provider theo họ giao thức:
 
 - Giao thức tương thích OpenAI: OpenRouter, gateway tương thích OpenAI, Groq, Zhipu, và endpoint kiểu vLLM.
 - Giao thức Gemini native: Google Gemini qua các endpoint native `models/*:generateContent` và `models/*:streamGenerateContent`.
@@ -321,7 +321,7 @@ PicoClaw định tuyến provider theo họ giao thức:
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.openfox/workspace",
       "model_name": "glm-4.7",
       "max_tokens": 8192,
       "temperature": 0.7,
@@ -340,7 +340,7 @@ PicoClaw định tuyến provider theo họ giao thức:
 **3. Chạy**
 
 ```bash
-picoclaw agent -m "Hello"
+openfox agent -m "Hello"
 ```
 
 </details>
@@ -458,5 +458,5 @@ picoclaw agent -m "Hello"
 ---
 
 <div align="center">
-  <img src="../../assets/logo.jpg" alt="PicoClaw Meme" width="512">
+  <img src="../../assets/logo.jpg" alt="OpenFox Meme" width="512">
 </div>

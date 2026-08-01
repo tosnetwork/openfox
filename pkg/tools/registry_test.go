@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/media"
+	"github.com/tosnetwork/openfox/pkg/providers"
 )
 
 // --- mock types ---

@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/memory"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/providers/messageutil"
-	"github.com/sipeed/picoclaw/pkg/session"
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/memory"
+	"github.com/tosnetwork/openfox/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/providers/messageutil"
+	"github.com/tosnetwork/openfox/pkg/session"
+	"github.com/tosnetwork/openfox/pkg/utils"
 )
 
 // registerSessionRoutes binds session list and detail endpoints to the ServeMux.
@@ -776,7 +776,7 @@ func parseMessageToolContent(argsJSON string) (string, bool) {
 }
 
 // sessionsDir resolves the path to the gateway's session storage directory.
-// It reads the workspace from config, falling back to ~/.picoclaw/workspace.
+// It reads the workspace from config, falling back to ~/.openfox/workspace.
 func (h *Handler) sessionsDir() (string, error) {
 	cfg, err := config.LoadConfig(h.configPath)
 	if err != nil {
@@ -798,7 +798,7 @@ func (h *Handler) sessionRuntimeSettings() (string, int, error) {
 func resolveSessionsDir(workspace string) string {
 	if workspace == "" {
 		home, _ := os.UserHomeDir()
-		workspace = filepath.Join(home, ".picoclaw", "workspace")
+		workspace = filepath.Join(home, ".openfox", "workspace")
 	}
 
 	// Expand ~ prefix

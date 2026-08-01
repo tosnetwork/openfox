@@ -1,13 +1,13 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// OpenFox - Ultra-lightweight personal AI agent
 
 package adapters
 
 import (
 	"context"
 
-	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
+	"github.com/tosnetwork/openfox/pkg/agent/interfaces"
+	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/channels"
 )
 
 // channelManagerAdapter wraps *channels.Manager to implement interfaces.ChannelManager.

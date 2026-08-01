@@ -1,6 +1,6 @@
 package evolution
 
-import "github.com/sipeed/picoclaw/pkg/providers"
+import "github.com/tosnetwork/openfox/pkg/providers"
 
 func NewDraftGeneratorForWorkspace(workspace string, provider providers.LLMProvider, modelID string) DraftGenerator {
 	fallback := NewDefaultDraftGenerator(workspace)

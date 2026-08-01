@@ -4,7 +4,7 @@
 
 ## 💬 Ứng Dụng Chat
 
-Trò chuyện với picoclaw của bạn qua Telegram, Discord, WhatsApp, Matrix, QQ, DingTalk, LINE, WeCom, Feishu, Slack, IRC, OneBot, MQTT hoặc MaixCam
+Trò chuyện với openfox của bạn qua Telegram, Discord, WhatsApp, Matrix, QQ, DingTalk, LINE, WeCom, Feishu, Slack, IRC, OneBot, MQTT hoặc MaixCam
 
 > **Lưu ý**: Tất cả các kênh dựa trên webhook (LINE, WeCom, v.v.) được phục vụ trên một máy chủ HTTP Gateway chung (`gateway.host`:`gateway.port`, mặc định `127.0.0.1:18790`). Không có port riêng cho từng kênh. Lưu ý: Feishu sử dụng chế độ WebSocket/SDK và không sử dụng máy chủ HTTP webhook chung.
 
@@ -24,8 +24,8 @@ Trò chuyện với picoclaw của bạn qua Telegram, Discord, WhatsApp, Matrix
 | **IRC**              | ⭐⭐ Trung bình    | Máy chủ + cấu hình TLS                                | [Tài liệu](#irc) |
 | **OneBot**           | ⭐⭐ Trung bình    | Tương thích NapCat/Go-CQHTTP, hệ sinh thái cộng đồng  | [Tài liệu](../channels/onebot/README.vi.md)                                                                     |
 | **MQTT**             | ⭐ Dễ              | Bất kỳ client MQTT nào qua broker pub/sub            | [Tài liệu](../channels/mqtt/README.vi.md)                                                                    |
-| **MaixCam**          | ⭐ Dễ              | Kênh tích hợp phần cứng cho camera AI Sipeed          | [Tài liệu](../channels/maixcam/README.vi.md)                                                                    |
-| **Pico**             | ⭐ Dễ              | Kênh giao thức bản địa PicoClaw                       |                                                                                                                  |
+| **MaixCam**          | ⭐ Dễ              | Kênh tích hợp phần cứng cho camera AI | [Tài liệu](../channels/maixcam/README.vi.md)                                                                    |
+| **Pico**             | ⭐ Dễ              | Kênh giao thức bản địa OpenFox                       |                                                                                                                  |
 
 <a id="telegram"></a>
 <details>
@@ -57,15 +57,15 @@ Trò chuyện với picoclaw của bạn qua Telegram, Discord, WhatsApp, Matrix
 **3. Chạy**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 **4. Menu lệnh Telegram (tự động đăng ký khi khởi động)**
 
-PicoClaw hiện lưu trữ định nghĩa lệnh trong một registry chung. Khi khởi động, Telegram sẽ tự động đăng ký các lệnh bot được hỗ trợ (ví dụ `/start`, `/help`, `/show`, `/list`, `/use`, `/btw`) để menu lệnh và hành vi runtime luôn đồng bộ.
+OpenFox hiện lưu trữ định nghĩa lệnh trong một registry chung. Khi khởi động, Telegram sẽ tự động đăng ký các lệnh bot được hỗ trợ (ví dụ `/start`, `/help`, `/show`, `/list`, `/use`, `/btw`) để menu lệnh và hành vi runtime luôn đồng bộ.
 Đăng ký menu lệnh Telegram vẫn là UX khám phá cục bộ của kênh; thực thi lệnh chung được xử lý tập trung trong vòng lặp agent qua commands executor.
 
-Nếu đăng ký lệnh thất bại (lỗi tạm thời mạng/API), kênh vẫn khởi động và PicoClaw thử lại đăng ký trong nền.
+Nếu đăng ký lệnh thất bại (lỗi tạm thời mạng/API), kênh vẫn khởi động và OpenFox thử lại đăng ký trong nền.
 
 Ban cung co the quan ly skill da cai dat truc tiep tu Telegram:
 
@@ -147,7 +147,7 @@ Bạn cũng có thể kích hoạt bằng tiền tố từ khóa (ví dụ: `!bo
 **6. Chạy**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -156,7 +156,7 @@ picoclaw gateway
 <details>
 <summary><b>WhatsApp</b> (native qua whatsmeow)</summary>
 
-PicoClaw có thể kết nối WhatsApp theo hai cách:
+OpenFox có thể kết nối WhatsApp theo hai cách:
 
 - **Native (khuyến nghị):** In-process sử dụng [whatsmeow](https://github.com/tulir/whatsmeow). Không cần bridge riêng. Đặt `"use_native": true` và để trống `bridge_url`. Lần chạy đầu tiên, quét mã QR bằng WhatsApp (Thiết bị liên kết). Phiên được lưu trong workspace (ví dụ: `workspace/whatsapp/`). Kênh native là **tùy chọn** để giữ binary mặc định nhỏ; build với `-tags whatsapp_native` (ví dụ: `make build-whatsapp-native` hoặc `go build -tags whatsapp_native ./cmd/...`).
 - **Bridge:** Kết nối đến bridge WebSocket bên ngoài. Đặt `bridge_url` (ví dụ: `ws://localhost:3001`) và giữ `use_native` là false.
@@ -177,7 +177,7 @@ PicoClaw có thể kết nối WhatsApp theo hai cách:
 }
 ```
 
-Nếu `session_store_path` trống, phiên được lưu tại `<workspace>/whatsapp/`. Chạy `picoclaw gateway`; lần chạy đầu tiên, quét mã QR hiển thị trong terminal bằng WhatsApp → Thiết bị liên kết.
+Nếu `session_store_path` trống, phiên được lưu tại `<workspace>/whatsapp/`. Chạy `openfox gateway`; lần chạy đầu tiên, quét mã QR hiển thị trong terminal bằng WhatsApp → Thiết bị liên kết.
 
 </details>
 
@@ -185,13 +185,13 @@ Nếu `session_store_path` trống, phiên được lưu tại `<workspace>/what
 <details>
 <summary><b>Weixin</b> (WeChat Cá nhân)</summary>
 
-PicoClaw hỗ trợ kết nối với tài khoản WeChat cá nhân của bạn thông qua API chính thức Tencent iLink.
+OpenFox hỗ trợ kết nối với tài khoản WeChat cá nhân của bạn thông qua API chính thức Tencent iLink.
 
 **1. Đăng nhập**
 
 Chạy luồng đăng nhập QR tương tác:
 ```bash
-picoclaw auth weixin
+openfox auth weixin
 ```
 Quét mã QR được in ra bằng ứng dụng WeChat trên điện thoại. Sau khi đăng nhập thành công, token sẽ được lưu vào cấu hình.
 
@@ -213,7 +213,7 @@ Quét mã QR được in ra bằng ứng dụng WeChat trên điện thoại. Sa
 
 **3. Chạy**
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -228,7 +228,7 @@ QQ Open Platform cung cấp trang thiết lập một chạm cho bot tương th�
 
 1. Mở [QQ Bot Quick Start](https://q.qq.com/qqbot/openclaw/index.html) và quét mã QR để đăng nhập
 2. Bot được tạo tự động — sao chép **App ID** và **App Secret**
-3. Cấu hình PicoClaw:
+3. Cấu hình OpenFox:
 
 ```json
 {
@@ -244,7 +244,7 @@ QQ Open Platform cung cấp trang thiết lập một chạm cho bot tương th�
 }
 ```
 
-4. Chạy `picoclaw gateway` và mở QQ để trò chuyện với bot của bạn
+4. Chạy `openfox gateway` và mở QQ để trò chuyện với bot của bạn
 
 > App Secret chỉ hiển thị một lần. Lưu ngay lập tức — xem lại sẽ buộc phải đặt lại.
 >
@@ -257,7 +257,7 @@ Nếu bạn muốn tạo bot thủ công:
 * Đăng nhập tại [QQ Open Platform](https://q.qq.com/) để đăng ký làm nhà phát triển
 * Tạo bot QQ — tùy chỉnh avatar và tên
 * Sao chép **App ID** và **App Secret** từ cài đặt bot
-* Cấu hình như trên và chạy `picoclaw gateway`
+* Cấu hình như trên và chạy `openfox gateway`
 
 </details>
 
@@ -292,7 +292,7 @@ Nếu bạn muốn tạo bot thủ công:
 **3. Chạy**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -301,7 +301,7 @@ picoclaw gateway
 <details>
 <summary><b>MaixCam</b></summary>
 
-Kênh tích hợp được thiết kế đặc biệt cho phần cứng camera AI Sipeed.
+Kênh tích hợp được thiết kế đặc biệt cho phần cứng camera AI.
 
 ```json
 {
@@ -315,7 +315,7 @@ Kênh tích hợp được thiết kế đặc biệt cho phần cứng camera A
 ```
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -350,7 +350,7 @@ picoclaw gateway
 **3. Chạy**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 Để xem đầy đủ các tùy chọn (`device_id`, `join_on_invite`, `group_trigger`, `placeholder`, `reasoning_channel_id`), xem [Hướng Dẫn Cấu Hình Kênh Matrix](../channels/matrix/README.md).
@@ -400,7 +400,7 @@ Sau đó đặt Webhook URL trong LINE Developers Console thành `https://your-d
 **4. Chạy**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > Trong chat nhóm, bot chỉ phản hồi khi được @mention. Phản hồi trích dẫn tin nhắn gốc.
@@ -411,7 +411,7 @@ picoclaw gateway
 <details>
 <summary><b>WeCom (企业微信)</b></summary>
 
-PicoClaw hỗ trợ ba loại tích hợp WeCom:
+OpenFox hỗ trợ ba loại tích hợp WeCom:
 
 **Tùy chọn 1: WeCom Bot (Bot)** - Thiết lập dễ hơn, hỗ trợ chat nhóm
 **Tùy chọn 2: WeCom App (App Tùy chỉnh)** - Nhiều tính năng hơn, nhắn tin chủ động, chỉ chat riêng
@@ -482,7 +482,7 @@ Xem [Hướng Dẫn Cấu Hình WeCom](../channels/wecom/README.vi.md) để bi�
 **4. Chạy**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > **Lưu ý**: Callback webhook WeCom được phục vụ trên port Gateway (mặc định 18790). Sử dụng reverse proxy cho HTTPS.
@@ -516,7 +516,7 @@ picoclaw gateway
 **3. Chạy**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > **Lưu ý**: WeCom AI Bot sử dụng giao thức streaming pull — không lo timeout phản hồi. Tác vụ dài (>30 giây) tự động chuyển sang gửi qua `response_url` push.
@@ -527,7 +527,7 @@ picoclaw gateway
 <details>
 <summary><b>Feishu (Lark)</b></summary>
 
-PicoClaw kết nối với Feishu qua chế độ WebSocket/SDK — không cần URL webhook công khai hay máy chủ callback.
+OpenFox kết nối với Feishu qua chế độ WebSocket/SDK — không cần URL webhook công khai hay máy chủ callback.
 
 **1. Tạo ứng dụng**
 
@@ -557,7 +557,7 @@ Tùy chọn: `encrypt_key` và `verification_token` để mã hóa sự kiện (
 **3. Chạy và trò chuyện**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 Mở Feishu, tìm tên bot của bạn và bắt đầu trò chuyện. Bạn cũng có thể thêm bot vào nhóm — sử dụng `group_trigger.mention_only: true` để chỉ phản hồi khi được @mention.
@@ -596,7 +596,7 @@ Mở Feishu, tìm tên bot của bạn và bắt đầu trò chuyện. Bạn cũ
 **3. Chạy**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -615,7 +615,7 @@ picoclaw gateway
       "type": "irc",
       "server": "irc.libera.chat:6697",
       "tls": true,
-      "nick": "picoclaw-bot",
+      "nick": "openfox-bot",
       "channels": ["#your-channel"],
       "password": "",
       "allow_from": []
@@ -629,7 +629,7 @@ Tùy chọn: `nickserv_password` để xác thực NickServ, `sasl_user`/`sasl_p
 **2. Chạy**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 Bot sẽ kết nối đến máy chủ IRC và tham gia các kênh đã chỉ định.
@@ -640,7 +640,7 @@ Bot sẽ kết nối đến máy chủ IRC và tham gia các kênh đã chỉ đ
 <details>
 <summary><b>OneBot (QQ qua giao thức OneBot)</b></summary>
 
-OneBot là giao thức mở cho bot QQ. PicoClaw kết nối với bất kỳ triển khai tương thích OneBot v11 nào (ví dụ: [Lagrange](https://github.com/LagrangeDev/Lagrange.Core), [NapCat](https://github.com/NapNeko/NapCatQQ)) qua WebSocket.
+OneBot là giao thức mở cho bot QQ. OpenFox kết nối với bất kỳ triển khai tương thích OneBot v11 nào (ví dụ: [Lagrange](https://github.com/LagrangeDev/Lagrange.Core), [NapCat](https://github.com/NapNeko/NapCatQQ)) qua WebSocket.
 
 **1. Thiết lập triển khai OneBot**
 
@@ -671,7 +671,7 @@ Cài đặt và chạy framework bot QQ tương thích OneBot v11. Bật máy ch
 **3. Chạy**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -679,7 +679,7 @@ picoclaw gateway
 <details>
 <summary><b>MaixCam</b></summary>
 
-Kênh tích hợp được thiết kế đặc biệt cho phần cứng camera AI Sipeed.
+Kênh tích hợp được thiết kế đặc biệt cho phần cứng camera AI.
 
 ```json
 {
@@ -693,7 +693,7 @@ Kênh tích hợp được thiết kế đặc biệt cho phần cứng camera A
 ```
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -702,7 +702,7 @@ picoclaw gateway
 <details>
 <summary><b>MQTT</b></summary>
 
-Bất kỳ client MQTT nào đều có thể giao tiếp với PicoClaw qua broker. Thiết bị hoặc dịch vụ publish yêu cầu lên broker; PicoClaw subscribe, xử lý và publish phản hồi trở lại.
+Bất kỳ client MQTT nào đều có thể giao tiếp với OpenFox qua broker. Thiết bị hoặc dịch vụ publish yêu cầu lên broker; OpenFox subscribe, xử lý và publish phản hồi trở lại.
 
 **1. Cấu hình**
 
@@ -715,7 +715,7 @@ Bất kỳ client MQTT nào đều có thể giao tiếp với PicoClaw qua brok
       "settings": {
         "broker": "ssl://your-broker:8883",
         "agent_id": "assistant",
-        "topic_prefix": "/picoclaw",
+        "topic_prefix": "/openfox",
         "keep_alive": 60,
         "qos": 0
       }
@@ -724,7 +724,7 @@ Bất kỳ client MQTT nào đều có thể giao tiếp với PicoClaw qua brok
 }
 ```
 
-Tên người dùng và mật khẩu trong `~/.picoclaw/.security.yml`:
+Tên người dùng và mật khẩu trong `~/.openfox/.security.yml`:
 
 ```yaml
 channel_list:
@@ -737,8 +737,8 @@ channel_list:
 **Định dạng topic**
 
 ```
-{prefix}/{agent_id}/{client_id}/request    # Client → PicoClaw
-{prefix}/{agent_id}/{client_id}/response   # PicoClaw → Client
+{prefix}/{agent_id}/{client_id}/request    # Client → OpenFox
+{prefix}/{agent_id}/{client_id}/response   # OpenFox → Client
 ```
 
 `client_id` do ứng dụng client đặt để phân biệt thiết bị hoặc phiên.
@@ -746,16 +746,16 @@ channel_list:
 **2. Khởi động**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 **3. Kiểm tra**
 
 ```bash
-mosquitto_pub -t "/picoclaw/assistant/device1/request" \
+mosquitto_pub -t "/openfox/assistant/device1/request" \
   -m '{"text": "Xin chào"}'
 
-mosquitto_sub -t "/picoclaw/assistant/device1/response"
+mosquitto_sub -t "/openfox/assistant/device1/response"
 ```
 
 Xem đầy đủ tùy chọn cấu hình tại [Tài liệu Kênh MQTT](../channels/mqtt/README.vi.md).

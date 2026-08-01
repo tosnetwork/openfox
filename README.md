@@ -107,4 +107,4 @@ Give a decade-old phone a second life as an always-on agent. See the [Android Te
 
 ## 🤝 Contribute
 
-PRs welcome — the codebase is intentionally small and readable. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+PRs welcome — the codebase is intentionally small and readable.

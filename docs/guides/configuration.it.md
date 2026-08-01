@@ -4,36 +4,36 @@
 
 ## ⚙️ Configurazione
 
-File di configurazione: `~/.picoclaw/config.json`
+File di configurazione: `~/.openfox/config.json`
 
 ### Variabili d'Ambiente
 
-Puoi sovrascrivere i percorsi predefiniti usando variabili d'ambiente. Questo è utile per installazioni portatili, distribuzioni containerizzate, o per eseguire picoclaw come servizio di sistema. Queste variabili sono indipendenti e controllano percorsi diversi.
+Puoi sovrascrivere i percorsi predefiniti usando variabili d'ambiente. Questo è utile per installazioni portatili, distribuzioni containerizzate, o per eseguire openfox come servizio di sistema. Queste variabili sono indipendenti e controllano percorsi diversi.
 
 | Variabile         | Descrizione                                                                                                                             | Percorso Predefinito      |
 |-------------------|-----------------------------------------------------------------------------------------------------------------------------------------|---------------------------|
-| `PICOCLAW_CONFIG` | Sovrascrive il percorso al file di configurazione. Indica direttamente a picoclaw quale `config.json` caricare, ignorando tutte le altre posizioni. | `~/.picoclaw/config.json` |
-| `PICOCLAW_HOME`   | Sovrascrive la directory radice per i dati di picoclaw. Modifica la posizione predefinita del `workspace` e delle altre directory dati.  | `~/.picoclaw`             |
+| `OPENFOX_CONFIG` | Sovrascrive il percorso al file di configurazione. Indica direttamente a openfox quale `config.json` caricare, ignorando tutte le altre posizioni. | `~/.openfox/config.json` |
+| `OPENFOX_HOME`   | Sovrascrive la directory radice per i dati di openfox. Modifica la posizione predefinita del `workspace` e delle altre directory dati.  | `~/.openfox`             |
 
 **Esempi:**
 
 ```bash
-# Esegui picoclaw usando un file di configurazione specifico
+# Esegui openfox usando un file di configurazione specifico
 # Il percorso del workspace verrà letto da quel file di configurazione
-PICOCLAW_CONFIG=/etc/picoclaw/production.json picoclaw gateway
+OPENFOX_CONFIG=/etc/openfox/production.json openfox gateway
 
-# Esegui picoclaw con tutti i dati salvati in /opt/picoclaw
-# La configurazione verrà caricata dal percorso predefinito ~/.picoclaw/config.json
-# Il workspace verrà creato in /opt/picoclaw/workspace
-PICOCLAW_HOME=/opt/picoclaw picoclaw agent
+# Esegui openfox con tutti i dati salvati in /opt/openfox
+# La configurazione verrà caricata dal percorso predefinito ~/.openfox/config.json
+# Il workspace verrà creato in /opt/openfox/workspace
+OPENFOX_HOME=/opt/openfox openfox agent
 
 # Usa entrambi per un setup completamente personalizzato
-PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gateway
+OPENFOX_HOME=/srv/openfox OPENFOX_CONFIG=/srv/openfox/main.json openfox gateway
 ```
 
 ### Configurazione Streaming
 
-Lo streaming del provider usa un double opt-in ed è disattivato per impostazione predefinita. L'agent prova lo streaming solo quando il canale corrente ha `settings.streaming.enabled: true`, l'entry del modello attivo ha `streaming.enabled: true`, e sia il provider sia il canale supportano lo streaming. Se manca una qualsiasi condizione, PicoClaw usa il normale percorso di richiesta non streaming.
+Lo streaming del provider usa un double opt-in ed è disattivato per impostazione predefinita. L'agent prova lo streaming solo quando il canale corrente ha `settings.streaming.enabled: true`, l'entry del modello attivo ha `streaming.enabled: true`, e sia il provider sia il canale supportano lo streaming. Se manca una qualsiasi condizione, OpenFox usa il normale percorso di richiesta non streaming.
 
 Pico WebUI è il primo canale completamente collegato. Pico crea il primo messaggio assistant con il wire message esistente `message.create`, poi aggiorna lo stesso messaggio con `message.update`; non viene introdotto alcun nuovo tipo di wire message Pico.
 
@@ -76,16 +76,16 @@ Esempio di attivazione:
 | `channel_list.<name>.settings.streaming.min_growth_chars` | int | Predefinito Pico dopo l'attivazione: `1` | Crescita minima del testo prima di inviare un aggiornamento intermedio; il contenuto finale viene sempre inviato |
 | `model_list[].streaming.enabled` | bool | `false` | Permette a questa entry di modello di provare richieste provider streaming |
 
-Le variabili d'ambiente legacy di Telegram restano compatibili: `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS` e `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. Si applicano solo alle settings Telegram e non attivano né modificano `settings.streaming` di Pico.
+Le variabili d'ambiente legacy di Telegram restano compatibili: `OPENFOX_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `OPENFOX_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS` e `OPENFOX_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. Si applicano solo alle settings Telegram e non attivano né modificano `settings.streaming` di Pico.
 
-Il comportamento in caso di errore è intenzionalmente conservativo: se lo streaming fallisce prima che venga inviato un chunk visibile, PicoClaw riprova una volta tramite il normale percorso `Chat()`. Se un chunk è già stato mostrato all'utente, PicoClaw non invia una seconda risposta non streaming, evitando output duplicato.
+Il comportamento in caso di errore è intenzionalmente conservativo: se lo streaming fallisce prima che venga inviato un chunk visibile, OpenFox riprova una volta tramite il normale percorso `Chat()`. Se un chunk è già stato mostrato all'utente, OpenFox non invia una seconda risposta non streaming, evitando output duplicato.
 
 ### Struttura del Workspace
 
-PicoClaw salva i dati nel workspace configurato (predefinito: `~/.picoclaw/workspace`):
+OpenFox salva i dati nel workspace configurato (predefinito: `~/.openfox/workspace`):
 
 ```
-~/.picoclaw/workspace/
+~/.openfox/workspace/
 ├── sessions/          # Sessioni di conversazione e cronologia
 ├── memory/           # Memoria a lungo termine (MEMORY.md)
 ├── state/            # Stato persistente (ultimo canale, ecc.)
@@ -103,14 +103,14 @@ PicoClaw salva i dati nel workspace configurato (predefinito: `~/.picoclaw/works
 
 Per impostazione predefinita, le skill vengono caricate da:
 
-1. `~/.picoclaw/workspace/skills` (workspace)
-2. `~/.picoclaw/skills` (globale)
+1. `~/.openfox/workspace/skills` (workspace)
+2. `~/.openfox/skills` (globale)
 3. `<current-working-directory>/skills` (builtin)
 
 Per configurazioni avanzate/di test, puoi sovrascrivere la directory radice delle skill builtin con:
 
 ```bash
-export PICOCLAW_BUILTIN_SKILLS=/path/to/skills
+export OPENFOX_BUILTIN_SKILLS=/path/to/skills
 ```
 
 ### Politica Unificata di Esecuzione dei Comandi
@@ -124,7 +124,7 @@ export PICOCLAW_BUILTIN_SKILLS=/path/to/skills
 
 La dichiarazione dei tool per-agent vive nel frontmatter di `AGENT.md`, non in `config.json`.
 
-Se `tools` è omesso nel frontmatter, l'agent riceve il normale set globale dei tool abilitati. Se `tools` è presente, PicoClaw registra per quell'agent solo i tool runtime elencati.
+Se `tools` è omesso nel frontmatter, l'agent riceve il normale set globale dei tool abilitati. Se `tools` è presente, OpenFox registra per quell'agent solo i tool runtime elencati.
 
 ```md
 ---
@@ -147,7 +147,7 @@ Note:
 
 ### Discovery Multi-Agent (Automatica)
 
-Quando un agent ha peer spawnabili, PicoClaw inietta automaticamente nel suo system prompt un registry strutturato dei peer. Non serve una chiamata aggiuntiva a un tool `list_agents`.
+Quando un agent ha peer spawnabili, OpenFox inietta automaticamente nel suo system prompt un registry strutturato dei peer. Non serve una chiamata aggiuntiva a un tool `list_agents`.
 
 Questa discovery serve soprattutto a rendere affidabile la delega tramite `spawn` con `agent_id` esplicito.
 
@@ -185,7 +185,7 @@ In pratica, un agent generalista sceglie un peer in base alla descrizione del su
 
 ### 🔒 Sandbox di Sicurezza
 
-PicoClaw esegue in un ambiente sandboxed per impostazione predefinita. L'agent può accedere solo ai file ed eseguire comandi all'interno del workspace configurato.
+OpenFox esegue in un ambiente sandboxed per impostazione predefinita. L'agent può accedere solo ai file ed eseguire comandi all'interno del workspace configurato.
 
 #### Configurazione Predefinita
 
@@ -193,7 +193,7 @@ PicoClaw esegue in un ambiente sandboxed per impostazione predefinita. L'agent p
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.openfox/workspace",
       "restrict_to_workspace": true
     }
   }
@@ -202,7 +202,7 @@ PicoClaw esegue in un ambiente sandboxed per impostazione predefinita. L'agent p
 
 | Opzione                 | Predefinito             | Descrizione                                          |
 | ----------------------- | ----------------------- | ---------------------------------------------------- |
-| `workspace`             | `~/.picoclaw/workspace` | Directory di lavoro dell'agent                       |
+| `workspace`             | `~/.openfox/workspace` | Directory di lavoro dell'agent                       |
 | `restrict_to_workspace` | `true`                  | Limita l'accesso a file/comandi al workspace         |
 
 #### Strumenti Protetti
@@ -249,7 +249,7 @@ Anche con `restrict_to_workspace: false`, lo strumento `exec` blocca questi coma
 
 #### Limitazione Nota: Processi Figlio degli Strumenti di Build
 
-Il controllo di sicurezza exec ispeziona solo la riga di comando avviata direttamente da PicoClaw. Non ispeziona ricorsivamente i processi figlio generati da strumenti di sviluppo consentiti come `make`, `go run`, `cargo`, `npm run` o script di build personalizzati.
+Il controllo di sicurezza exec ispeziona solo la riga di comando avviata direttamente da OpenFox. Non ispeziona ricorsivamente i processi figlio generati da strumenti di sviluppo consentiti come `make`, `go run`, `cargo`, `npm run` o script di build personalizzati.
 
 Ciò significa che un comando di primo livello può comunque compilare o avviare altri binari dopo aver superato il controllo iniziale. In pratica, tratta gli script di build, i Makefile, gli script di pacchetti e i binari generati come codice eseguibile che richiede lo stesso livello di revisione di un comando shell diretto.
 
@@ -257,7 +257,7 @@ Per ambienti ad alto rischio:
 
 * Esamina gli script di build prima dell'esecuzione.
 * Preferisci l'approvazione/revisione manuale per i workflow di compilazione ed esecuzione.
-* Esegui PicoClaw in un container o VM se hai bisogno di un isolamento più forte di quello fornito dal controllo integrato.
+* Esegui OpenFox in un container o VM se hai bisogno di un isolamento più forte di quello fornito dal controllo integrato.
 
 #### Esempi di Errore
 
@@ -290,7 +290,7 @@ Se hai bisogno che l'agent acceda a percorsi al di fuori del workspace:
 **Metodo 2: Variabile d'ambiente**
 
 ```bash
-export PICOCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
+export OPENFOX_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
 ```
 
 > ⚠️ **Attenzione**: Disabilitare questa restrizione consente all'agent di accedere a qualsiasi percorso sul tuo sistema. Usare con cautela solo in ambienti controllati.
@@ -309,7 +309,7 @@ Tutti i percorsi condividono la stessa restrizione del workspace — non è poss
 
 ### Heartbeat (Task Periodici)
 
-PicoClaw può eseguire task periodici automaticamente. Crea un file `HEARTBEAT.md` nel tuo workspace:
+OpenFox può eseguire task periodici automaticamente. Crea un file `HEARTBEAT.md` nel tuo workspace:
 
 ```markdown
 # Periodic Tasks

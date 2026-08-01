@@ -4,31 +4,31 @@
 
 ## ⚙️ 設定詳細
 
-設定ファイルパス: `~/.picoclaw/config.json`
+設定ファイルパス: `~/.openfox/config.json`
 
 ### 環境変数
 
-環境変数を使用してデフォルトパスを上書きできます。ポータブルインストール、コンテナ化デプロイ、または picoclaw をシステムサービスとして実行する場合に便利です。これらの変数は独立しており、異なるパスを制御します。
+環境変数を使用してデフォルトパスを上書きできます。ポータブルインストール、コンテナ化デプロイ、または openfox をシステムサービスとして実行する場合に便利です。これらの変数は独立しており、異なるパスを制御します。
 
 | 変数              | 説明                                                                                                                             | デフォルトパス            |
 |-------------------|-----------------------------------------------------------------------------------------------------------------------------------------|---------------------------|
-| `PICOCLAW_CONFIG` | 設定ファイルのパスを上書きします。picoclaw がどの `config.json` を読み込むかを直接指定し、他のすべての場所を無視します。 | `~/.picoclaw/config.json` |
-| `PICOCLAW_HOME`   | picoclaw データのルートディレクトリを上書きします。`workspace` やその他のデータディレクトリのデフォルト場所を変更します。          | `~/.picoclaw`             |
+| `OPENFOX_CONFIG` | 設定ファイルのパスを上書きします。openfox がどの `config.json` を読み込むかを直接指定し、他のすべての場所を無視します。 | `~/.openfox/config.json` |
+| `OPENFOX_HOME`   | openfox データのルートディレクトリを上書きします。`workspace` やその他のデータディレクトリのデフォルト場所を変更します。          | `~/.openfox`             |
 
 **例：**
 
 ```bash
-# 特定の設定ファイルで picoclaw を実行
+# 特定の設定ファイルで openfox を実行
 # ワークスペースパスはその設定ファイル内から読み込まれます
-PICOCLAW_CONFIG=/etc/picoclaw/production.json picoclaw gateway
+OPENFOX_CONFIG=/etc/openfox/production.json openfox gateway
 
-# /opt/picoclaw にすべてのデータを保存して picoclaw を実行
-# 設定はデフォルトの ~/.picoclaw/config.json から読み込まれます
-# ワークスペースは /opt/picoclaw/workspace に作成されます
-PICOCLAW_HOME=/opt/picoclaw picoclaw agent
+# /opt/openfox にすべてのデータを保存して openfox を実行
+# 設定はデフォルトの ~/.openfox/config.json から読み込まれます
+# ワークスペースは /opt/openfox/workspace に作成されます
+OPENFOX_HOME=/opt/openfox openfox agent
 
 # 両方を使用して完全にカスタマイズ
-PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gateway
+OPENFOX_HOME=/srv/openfox OPENFOX_CONFIG=/srv/openfox/main.json openfox gateway
 ```
 
 ### Gateway ログレベル
@@ -45,14 +45,14 @@ PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gat
 
 デフォルト値は `warn` です。サポートされる値：`debug`、`info`、`warn`、`error`、`fatal`。
 
-環境変数でも上書き可能です：`PICOCLAW_LOG_LEVEL=info`
+環境変数でも上書き可能です：`OPENFOX_LOG_LEVEL=info`
 
 ### ワークスペースレイアウト
 
-PicoClaw は設定されたワークスペース（デフォルト: `~/.picoclaw/workspace`）にデータを保存します：
+OpenFox は設定されたワークスペース（デフォルト: `~/.openfox/workspace`）にデータを保存します：
 
 ```
-~/.picoclaw/workspace/
+~/.openfox/workspace/
 ├── sessions/          # 会話セッションと履歴
 ├── memory/           # 長期記憶 (MEMORY.md)
 ├── state/            # 永続化状態 (最後のチャネルなど)
@@ -69,13 +69,13 @@ PicoClaw は設定されたワークスペース（デフォルト: `~/.picoclaw
 
 ### リクエストコンテキストポリシー
 
-`turn_profile` は `agents.defaults.turn_profile` に置く任意のリクエストコンテキストポリシーです。各ターンに履歴、system prompt、skill prompt、許可ツールを含めるかどうかを制御します。未設定、または `"enabled": false` の場合、PicoClaw は通常動作のままです。`"enabled": true` にすると、このポリシーが各新規ターンに適用されます。
+`turn_profile` は `agents.defaults.turn_profile` に置く任意のリクエストコンテキストポリシーです。各ターンに履歴、system prompt、skill prompt、許可ツールを含めるかどうかを制御します。未設定、または `"enabled": false` の場合、OpenFox は通常動作のままです。`"enabled": true` にすると、このポリシーが各新規ターンに適用されます。
 
 各ブロックは同じ `mode` を使います。
 
 | Mode | 意味 |
 | --- | --- |
-| `default` | PicoClaw の通常動作を維持します。ブロックまたは `mode` が省略された場合も `default` です。 |
+| `default` | OpenFox の通常動作を維持します。ブロックまたは `mode` が省略された場合も `default` です。 |
 | `off` | そのブロックを無効にします。 |
 | `custom` | 許可リストを使います。このバージョンでは `skills` と `tools` のみ対応し、`history` や `system_prompt` で使うと検証エラーになります。 |
 
@@ -84,11 +84,11 @@ PicoClaw は設定されたワークスペース（デフォルト: `~/.picoclaw
 | ブロック | 制御する内容 |
 | --- | --- |
 | `history` | 履歴と要約の読み込み、ユーザー/アシスタント/ツールメッセージの保存、コンテキスト取り込み、圧縮と要約。 |
-| `system_prompt` | PicoClaw の既定の identity、ワークスペース指示、メモリ、実行時コンテキスト、要約の注入。`off` でも外部 system prompt は利用できます。 |
+| `system_prompt` | OpenFox の既定の identity、ワークスペース指示、メモリ、実行時コンテキスト、要約の注入。`off` でも外部 system prompt は利用できます。 |
 | `skills` | Skill カタログと active skill のプロンプト内容。`custom.allow` は列挙した skill 名だけを残します。 |
 | `tools` | モデルに見せ、実行を許可するツール。`custom.allow` は登録済みで列挙されたツール名だけを残します。 |
 
-`system_prompt.mode` が `off` で、ツールが表示され、外部 system prompt がない場合、PicoClaw は既存のツール使用ルールを最小のフォールバックプロンプトとして再利用します。`tools.mode` が `off` の場合、このフォールバックは追加されません。
+`system_prompt.mode` が `off` で、ツールが表示され、外部 system prompt がない場合、OpenFox は既存のツール使用ルールを最小のフォールバックプロンプトとして再利用します。`tools.mode` が `off` の場合、このフォールバックは追加されません。
 
 Web ツールだけを残すクリーンなコンテキスト例：
 
@@ -115,14 +115,14 @@ Web ツールだけを残すクリーンなコンテキスト例：
 
 デフォルトでは、スキルは以下の順序で読み込まれます：
 
-1. `~/.picoclaw/workspace/skills`（ワークスペース）
-2. `~/.picoclaw/skills`（グローバル）
+1. `~/.openfox/workspace/skills`（ワークスペース）
+2. `~/.openfox/skills`（グローバル）
 3. `<ビルド時埋め込みパス>/skills`（ビルトイン）
 
 高度な/テスト用セットアップでは、以下の環境変数でビルトインスキルのルートを上書きできます：
 
 ```bash
-export PICOCLAW_BUILTIN_SKILLS=/path/to/skills
+export OPENFOX_BUILTIN_SKILLS=/path/to/skills
 ```
 
 ### チャットチャネルからスキルとコマンドを使う
@@ -154,7 +154,7 @@ dammi le ultime news
 
 ### 🔒 セキュリティサンドボックス
 
-PicoClaw はデフォルトでサンドボックス環境で実行されます。Agent は設定されたワークスペース内のファイルアクセスとコマンド実行のみが可能です。
+OpenFox はデフォルトでサンドボックス環境で実行されます。Agent は設定されたワークスペース内のファイルアクセスとコマンド実行のみが可能です。
 
 #### デフォルト設定
 
@@ -162,7 +162,7 @@ PicoClaw はデフォルトでサンドボックス環境で実行されます�
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.openfox/workspace",
       "restrict_to_workspace": true
     }
   }
@@ -171,7 +171,7 @@ PicoClaw はデフォルトでサンドボックス環境で実行されます�
 
 | オプション              | デフォルト値            | 説明                                  |
 | ----------------------- | ----------------------- | ------------------------------------- |
-| `workspace`             | `~/.picoclaw/workspace` | Agent の作業ディレクトリ              |
+| `workspace`             | `~/.openfox/workspace` | Agent の作業ディレクトリ              |
 | `restrict_to_workspace` | `true`                  | ファイル/コマンドアクセスをワークスペース内に制限 |
 
 #### 保護されたツール
@@ -218,7 +218,7 @@ PicoClaw はデフォルトでサンドボックス環境で実行されます�
 
 #### 既知の制限：ビルドツールの子プロセス
 
-exec セキュリティガードは PicoClaw が直接起動するコマンドラインのみを検査します。`make`、`go run`、`cargo`、`npm run`、またはカスタムビルドスクリプトなどの開発ツールが生成する子プロセスは再帰的に検査しません。
+exec セキュリティガードは OpenFox が直接起動するコマンドラインのみを検査します。`make`、`go run`、`cargo`、`npm run`、またはカスタムビルドスクリプトなどの開発ツールが生成する子プロセスは再帰的に検査しません。
 
 つまり、トップレベルのコマンドが初期ガードチェックを通過した後、他のバイナリをコンパイルまたは起動できます。実際には、ビルドスクリプト、Makefile、パッケージスクリプト、生成されたバイナリを、直接のシェルコマンドと同等レベルの実行可能コードとしてレビューする必要があります。
 
@@ -226,7 +226,7 @@ exec セキュリティガードは PicoClaw が直接起動するコマンド�
 
 * 実行前にビルドスクリプトをレビューしてください。
 * コンパイル・実行ワークフローには承認/手動レビューを優先してください。
-* ビルトインガードより強力な分離が必要な場合は、コンテナまたは VM 内で PicoClaw を実行してください。
+* ビルトインガードより強力な分離が必要な場合は、コンテナまたは VM 内で OpenFox を実行してください。
 
 #### エラー例
 
@@ -259,7 +259,7 @@ Agent がワークスペース外のパスにアクセスする必要がある�
 **方法 2: 環境変数**
 
 ```bash
-export PICOCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
+export OPENFOX_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
 ```
 
 > ⚠️ **警告**: この制限を無効にすると、Agent がシステム上の任意のパスにアクセスできるようになります。管理された環境でのみ慎重に使用してください。
@@ -278,7 +278,7 @@ export PICOCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
 
 ### ハートビート（定期タスク）
 
-PicoClaw は定期タスクを自動実行できます。ワークスペースに `HEARTBEAT.md` ファイルを作成してください：
+OpenFox は定期タスクを自動実行できます。ワークスペースに `HEARTBEAT.md` ファイルを作成してください：
 
 ```markdown
 # Periodic Tasks
@@ -334,8 +334,8 @@ Agent は 30 分ごと（設定可能）にこのファイルを読み取り、�
 
 **環境変数:**
 
-- `PICOCLAW_HEARTBEAT_ENABLED=false` で無効化
-- `PICOCLAW_HEARTBEAT_INTERVAL=60` で間隔を変更
+- `OPENFOX_HEARTBEAT_ENABLED=false` で無効化
+- `OPENFOX_HEARTBEAT_INTERVAL=60` で間隔を変更
 
 #### サブ Agent の通信フロー
 
@@ -362,7 +362,7 @@ HEARTBEAT_OK を返信        ユーザーが直接結果を受信
 | ------------ | --------------------------------------- | ------------------------------------------------------------ |
 | `gemini`     | LLM（Gemini 直接）                      | [aistudio.google.com](https://aistudio.google.com)           |
 | `zhipu`      | LLM（Zhipu 直接）                       | [bigmodel.cn](https://bigmodel.cn)                           |
-| `volcengine` | LLM（Volcengine 直接）                  | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| `volcengine` | LLM（Volcengine 直接）                  | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | `openrouter` | LLM（推奨、全モデルにアクセス可能）     | [openrouter.ai](https://openrouter.ai)                       |
 | `anthropic`  | LLM（Claude 直接）                      | [console.anthropic.com](https://console.anthropic.com)       |
 | `openai`     | LLM（GPT 直接）                         | [platform.openai.com](https://platform.openai.com)           |
@@ -374,7 +374,7 @@ HEARTBEAT_OK を返信        ユーザーが直接結果を受信
 
 ### モデル設定 (model_list)
 
-> **新機能：** PicoClaw は**モデル中心**の設定アプローチを採用しました。`vendor/model` 形式（例：`zhipu/glm-4.7`）を指定するだけで新しい Provider を追加できます — **コード変更不要！**
+> **新機能：** OpenFox は**モデル中心**の設定アプローチを採用しました。`vendor/model` 形式（例：`zhipu/glm-4.7`）を指定するだけで新しい Provider を追加できます — **コード変更不要！**
 
 #### サポートされている全 Vendor
 
@@ -389,12 +389,12 @@ HEARTBEAT_OK を返信        ユーザーが直接結果を受信
 | **通義千問 (Qwen)**     | `qwen/`                | `https://dashscope.aliyuncs.com/compatible-mode/v1` | OpenAI     | [取得](https://dashscope.console.aliyun.com)                     |
 | **Ollama**              | `ollama/`              | `http://localhost:11434/v1`                         | OpenAI     | ローカル（キー不要）                                             |
 | **OpenRouter**          | `openrouter/`          | `https://openrouter.ai/api/v1`                      | OpenAI     | [取得](https://openrouter.ai/keys)                               |
-| **VolcEngine (Doubao)** | `volcengine/`          | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI     | [取得](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| **VolcEngine (Doubao)** | `volcengine/`          | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI     | [取得](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | **Antigravity**         | `antigravity/`         | Google Cloud                                        | Custom     | OAuth のみ                                                       |
 
 #### ロードバランシング
 
-同じモデル名に複数のエンドポイントを設定すると、PicoClaw が自動的にラウンドロビンします：
+同じモデル名に複数のエンドポイントを設定すると、OpenFox が自動的にラウンドロビンします：
 
 ```json
 {
@@ -411,7 +411,7 @@ HEARTBEAT_OK を返信        ユーザーが直接結果を受信
 
 #### ストリーミング設定
 
-Provider ストリーミングは二重の opt-in 方式で、デフォルトでは無効です。現在の channel に `settings.streaming.enabled: true` があり、アクティブなモデルエントリに `streaming.enabled: true` があり、さらに provider と channel の両方がストリーミングをサポートしている場合にのみ、agent はストリーミングリクエストを試行します。いずれかの条件が欠ける場合、PicoClaw は通常の非ストリーミングリクエスト経路を使います。
+Provider ストリーミングは二重の opt-in 方式で、デフォルトでは無効です。現在の channel に `settings.streaming.enabled: true` があり、アクティブなモデルエントリに `streaming.enabled: true` があり、さらに provider と channel の両方がストリーミングをサポートしている場合にのみ、agent はストリーミングリクエストを試行します。いずれかの条件が欠ける場合、OpenFox は通常の非ストリーミングリクエスト経路を使います。
 
 Pico WebUI が最初に完全対応した channel です。Pico は既存の `message.create` wire message で最初の assistant メッセージを作成し、その後 `message.update` で同じメッセージを更新します。新しい Pico wire message type は追加されません。
 
@@ -454,13 +454,13 @@ Pico WebUI が最初に完全対応した channel です。Pico は既存の `me
 | `channel_list.<name>.settings.streaming.min_growth_chars` | int | Pico で有効化後のデフォルト：`1` | 次の中間更新を送るために必要な最小文字増加数。最終内容は常に flush されます |
 | `model_list[].streaming.enabled` | bool | `false` | このモデルエントリで provider ストリーミングリクエストを試行できるようにします |
 
-既存の Telegram 環境変数 `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED`、`PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS`、`PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS` は互換性のため引き続き使えます。これらは Telegram settings にのみ適用され、Pico の `settings.streaming` を有効化または変更しません。
+既存の Telegram 環境変数 `OPENFOX_CHANNELS_TELEGRAM_STREAMING_ENABLED`、`OPENFOX_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS`、`OPENFOX_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS` は互換性のため引き続き使えます。これらは Telegram settings にのみ適用され、Pico の `settings.streaming` を有効化または変更しません。
 
-失敗時の動作は保守的です。可視 chunk が送信される前にストリーミングが失敗した場合、PicoClaw は通常の `Chat()` 経路で一度だけ再試行します。すでに chunk がユーザーに表示されている場合は、表示済み出力の重複を避けるため、二つ目の非ストリーミング回答は送信しません。
+失敗時の動作は保守的です。可視 chunk が送信される前にストリーミングが失敗した場合、OpenFox は通常の `Chat()` 経路で一度だけ再試行します。すでに chunk がユーザーに表示されている場合は、表示済み出力の重複を避けるため、二つ目の非ストリーミング回答は送信しません。
 
 ### Provider アーキテクチャ
 
-PicoClaw はプロトコルファミリーで Provider をルーティングします：
+OpenFox はプロトコルファミリーで Provider をルーティングします：
 
 - **OpenAI 互換**：OpenRouter、Groq、Zhipu、vLLM スタイルのエンドポイントなど。
 - **Gemini ネイティブ**：Google Gemini のネイティブ `models/*:generateContent` / `models/*:streamGenerateContent` エンドポイント。
@@ -471,7 +471,7 @@ PicoClaw はプロトコルファミリーで Provider をルーティングし�
 
 ### スケジュールタスク / リマインダー
 
-PicoClaw は `cron` ツールを通じて cron スタイルのスケジュールタスクをサポートします。
+OpenFox は `cron` ツールを通じて cron スタイルのスケジュールタスクをサポートします。
 
 ```json
 {
@@ -484,7 +484,7 @@ PicoClaw は `cron` ツールを通じて cron スタイルのスケジュール
 }
 ```
 
-スケジュールタスクは再起動後も `~/.picoclaw/workspace/cron/` に保存されます。
+スケジュールタスクは再起動後も `~/.openfox/workspace/cron/` に保存されます。
 
 ### 高度なトピック
 

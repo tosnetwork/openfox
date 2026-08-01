@@ -3,8 +3,8 @@ package providers
 import (
 	"testing"
 
-	cliprovider "github.com/sipeed/picoclaw/pkg/providers/cli"
-	oauthprovider "github.com/sipeed/picoclaw/pkg/providers/oauth"
+	cliprovider "github.com/tosnetwork/openfox/pkg/providers/cli"
+	oauthprovider "github.com/tosnetwork/openfox/pkg/providers/oauth"
 )
 
 func TestNormalizeToolCallFacadeMatchesCLIProvider(t *testing.T) {

@@ -1,28 +1,28 @@
-# Debugging PicoClaw
+# Debugging OpenFox
 
-PicoClaw performs multiple complex interactions under the hood for every single request it receives—from routing messages and evaluating complexity, to executing tools and adapting to model failures. Being able to see exactly what is happening is crucial, not just for troubleshooting potential issues, but also for truly understanding how the agent operates.
-## Starting PicoClaw in Debug Mode
+OpenFox performs multiple complex interactions under the hood for every single request it receives—from routing messages and evaluating complexity, to executing tools and adapting to model failures. Being able to see exactly what is happening is crucial, not just for troubleshooting potential issues, but also for truly understanding how the agent operates.
+## Starting OpenFox in Debug Mode
 
-To get detailed information about what the agent is doing (LLM requests, tool calls, message routing), you can start the PicoClaw gateway with the debug flag:
+To get detailed information about what the agent is doing (LLM requests, tool calls, message routing), you can start the OpenFox gateway with the debug flag:
 
 ```bash
-picoclaw gateway --debug
+openfox gateway --debug
 # or
-picoclaw gateway -d
+openfox gateway -d
 ```
 
 In this mode, the system will format the logs extensively and display previews of system prompts and tool execution results.
 
 ## Disabling Log Truncation (Full Logs)
 
-By default, PicoClaw truncates very long strings (such as the *System Prompt* or large JSON output results) in the debug logs to keep the console readable.
+By default, OpenFox truncates very long strings (such as the *System Prompt* or large JSON output results) in the debug logs to keep the console readable.
 
 If you need to inspect the complete output of a command or the exact payload sent to the LLM model, you can use the `--no-truncate` flag.
 
 **Note:** This flag *only* works when combined with the `--debug` mode.
 
 ```bash
-picoclaw gateway --debug --no-truncate
+openfox gateway --debug --no-truncate
 
 ```
 
@@ -50,7 +50,7 @@ A typical synchronous tool call produces two consecutive lines in the console:
 
 ```
 [...] [INFO] agent: LLM requested tool calls {tools=[web_search], count=1, iteration=1}
-[...] [INFO] agent: Tool call: web_search({"query":"picoclaw release notes"}) {tool=web_search, iteration=1}
+[...] [INFO] agent: Tool call: web_search({"query":"openfox release notes"}) {tool=web_search, iteration=1}
 ```
 
 The arguments preview is hard-capped at **200 characters** in the logs regardless of the `--no-truncate` flag, because it belongs to the `INFO`-level path. Use `--no-truncate` together with `--debug` to see the full `tools_json` field emitted by the `Full LLM request` DEBUG entry, which contains every tool definition sent to the model.
@@ -77,7 +77,7 @@ When `enabled` is `true`, every tool call sends a short message to the chat befo
 
 ```bash
 🔧 `web_search`
-{"query": "picoclaw release notes"}
+{"query": "openfox release notes"}
 ```
 
 
@@ -94,8 +94,8 @@ When `enabled` is `true`, every tool call sends a short message to the chat befo
 Both fields can also be set via environment variables:
 
 ```bash
-PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED=true
-PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_MAX_ARGS_LENGTH=300
+OPENFOX_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED=true
+OPENFOX_AGENTS_DEFAULTS_TOOL_FEEDBACK_MAX_ARGS_LENGTH=300
 ```
 
 > **Note:** `tool_feedback` is independent of `--debug` mode. It works in production and does not require the gateway to be started with any special flag.

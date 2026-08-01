@@ -6,13 +6,13 @@ All hooks use `JSON-RPC 2.0` format, with one JSON message per line, transmitted
 
 ## Basic Protocol Structure
 
-### Request (PicoClaw → Hook)
+### Request (OpenFox → Hook)
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"hook.xxx","params":{...}}
 ```
 
-### Response (Hook → PicoClaw)
+### Response (Hook → OpenFox)
 
 Success:
 ```json
@@ -574,4 +574,4 @@ def handle_before_tool(params: dict) -> dict:
     return {"action": "continue"}
 ```
 
-This way, external hooks can fully implement plugin tools without registering any tool implementation inside PicoClaw.
+This way, external hooks can fully implement plugin tools without registering any tool implementation inside OpenFox.

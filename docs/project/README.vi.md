@@ -1,19 +1,18 @@
 <div align="center">
-<img src="../../assets/logo.webp" alt="PicoClaw" width="512">
+<img src="../../assets/logo.webp" alt="OpenFox" width="512">
 
-<h1>PicoClaw: Trợ lý AI Siêu Nhẹ viết bằng Go</h1>
+<h1>OpenFox: Trợ lý AI Siêu Nhẹ viết bằng Go</h1>
 
-<h3>Phần cứng $10 · RAM 10MB · Khởi động ms · Let's Go, PicoClaw!</h3>
+<h3>Phần cứng $10 · RAM 10MB · Khởi động ms · Let's Go, OpenFox!</h3>
   <p>
     <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
     <img src="https://img.shields.io/badge/Arch-x86__64%2C%20ARM64%2C%20MIPS%2C%20RISC--V%2C%20LoongArch-blue" alt="Hardware">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     <br>
-    <a href="https://picoclaw.io"><img src="https://img.shields.io/badge/Website-picoclaw.io-blue?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
-    <a href="https://docs.picoclaw.io/"><img src="https://img.shields.io/badge/Docs-Official-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="Docs"></a>
-    <a href="https://deepwiki.com/sipeed/picoclaw"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="Wiki"></a>
+    <a href="https://openfox.im"><img src="https://img.shields.io/badge/Website-openfox.im-blue?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
+    <a href="https://docs.openfox.im/"><img src="https://img.shields.io/badge/Docs-Official-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="Docs"></a>
+    <a href="https://deepwiki.com/tosnetwork/openfox"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="Wiki"></a>
     <br>
-    <a href="https://x.com/SipeedIO"><img src="https://img.shields.io/badge/X_(Twitter)-SipeedIO-black?style=flat&logo=x&logoColor=white" alt="Twitter"></a>
     <a href="../../assets/wechat.png"><img src="https://img.shields.io/badge/WeChat-Group-41d56b?style=flat&logo=wechat&logoColor=white"></a>
     <a href="https://discord.gg/V4sAZ9XWpN"><img src="https://img.shields.io/badge/Discord-Community-4c60eb?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
@@ -24,9 +23,7 @@
 
 ---
 
-> **PicoClaw** là một dự án mã nguồn mở độc lập do [Sipeed](https://sipeed.com) khởi xướng, được viết hoàn toàn bằng **Go** từ đầu — không phải fork của OpenClaw, NanoBot hay bất kỳ dự án nào khác.
-
-**PicoClaw** là trợ lý AI cá nhân siêu nhẹ lấy cảm hứng từ [NanoBot](https://github.com/HKUDS/nanobot). Nó được xây dựng lại từ đầu bằng **Go** thông qua quá trình "tự khởi động" — chính AI Agent đã dẫn dắt quá trình di chuyển kiến trúc và tối ưu hóa mã nguồn.
+**OpenFox** là trợ lý AI cá nhân siêu nhẹ lấy cảm hứng từ [NanoBot](https://github.com/HKUDS/nanobot). Nó được xây dựng lại từ đầu bằng **Go** thông qua quá trình "tự khởi động" — chính AI Agent đã dẫn dắt quá trình di chuyển kiến trúc và tối ưu hóa mã nguồn.
 
 **Chạy trên phần cứng $10 với <10MB RAM** — ít hơn 99% bộ nhớ so với OpenClaw và rẻ hơn 98% so với Mac mini!
 
@@ -34,7 +31,7 @@
 <tr align="center">
 <td align="center" valign="top">
 <p align="center">
-<img src="../../assets/picoclaw_mem.gif" width="360" height="240">
+<img src="../../assets/openfox_mem.gif" width="360" height="240">
 </p>
 </td>
 <td align="center" valign="top">
@@ -48,15 +45,15 @@
 > [!CAUTION]
 > **Thông báo Bảo mật**
 >
-> * **KHÔNG CÓ CRYPTO:** PicoClaw **chưa** phát hành bất kỳ token hay tiền điện tử chính thức nào. Mọi thông tin trên `pump.fun` hoặc các nền tảng giao dịch khác đều là **lừa đảo**.
-> * **DOMAIN CHÍNH THỨC:** Website chính thức **DUY NHẤT** là **[picoclaw.io](https://picoclaw.io)**, và website công ty là **[sipeed.com](https://sipeed.com)**
+> * **KHÔNG CÓ CRYPTO:** OpenFox **chưa** phát hành bất kỳ token hay tiền điện tử chính thức nào. Mọi thông tin trên `pump.fun` hoặc các nền tảng giao dịch khác đều là **lừa đảo**.
+> * **DOMAIN CHÍNH THỨC:** Website chính thức **DUY NHẤT** là **[openfox.im](https://openfox.im)**
 > * **CẢNH BÁO:** Nhiều domain `.ai/.org/.com/.net/...` đã bị bên thứ ba đăng ký. Đừng tin tưởng chúng.
-> * **LƯU Ý:** PicoClaw đang trong giai đoạn phát triển nhanh. Có thể còn các vấn đề bảo mật chưa được giải quyết. Không triển khai lên môi trường production trước v1.0.
-> * **LƯU Ý:** PicoClaw gần đây đã merge nhiều PR. Các bản build gần đây có thể dùng 10-20MB RAM. Tối ưu hóa tài nguyên được lên kế hoạch sau khi tính năng ổn định.
+> * **LƯU Ý:** OpenFox đang trong giai đoạn phát triển nhanh. Có thể còn các vấn đề bảo mật chưa được giải quyết. Không triển khai lên môi trường production trước v1.0.
+> * **LƯU Ý:** OpenFox gần đây đã merge nhiều PR. Các bản build gần đây có thể dùng 10-20MB RAM. Tối ưu hóa tài nguyên được lên kế hoạch sau khi tính năng ổn định.
 
 ## 📢 Tin tức
 
-2026-05-11 🛒 **LicheeRV-Claw đã có trên AliExpress!** Bạn hiện có thể mua LicheeRV-Claw trên [AliExpress](https://www.aliexpress.com/item/1005006519668532.html), giúp việc thử PicoClaw trên phần cứng RISC-V nhỏ gọn dễ dàng hơn.
+2026-05-11 🛒 **LicheeRV-Claw đã có trên AliExpress!** Bạn hiện có thể mua LicheeRV-Claw trên [AliExpress](https://www.aliexpress.com/item/1005006519668532.html), giúp việc thử OpenFox trên phần cứng RISC-V nhỏ gọn dễ dàng hơn.
 
 <p align="center">
   <a href="https://www.aliexpress.com/item/1005006519668532.html">
@@ -64,11 +61,11 @@
   </a>
 </p>
 
-2026-03-31 📱 **Hỗ trợ Android!** PicoClaw giờ chạy trên Android! Tải APK tại [picoclaw.io](https://picoclaw.io/download)
+2026-03-31 📱 **Hỗ trợ Android!** OpenFox giờ chạy trên Android! Tải APK tại [openfox.im](https://openfox.im/download)
 
-2026-03-25 🚀 **v0.2.4 đã phát hành!** Tái cấu trúc kiến trúc Agent (SubTurn, Hooks, Steering, EventBus), tích hợp WeChat/WeCom, tăng cường bảo mật (.security.yml, lọc dữ liệu nhạy cảm), provider mới (AWS Bedrock, Azure, Xiaomi MiMo) và 35 bản vá lỗi. PicoClaw đã đạt **26K Stars**!
+2026-03-25 🚀 **v0.2.4 đã phát hành!** Tái cấu trúc kiến trúc Agent (SubTurn, Hooks, Steering, EventBus), tích hợp WeChat/WeCom, tăng cường bảo mật (.security.yml, lọc dữ liệu nhạy cảm), provider mới (AWS Bedrock, Azure, Xiaomi MiMo) và 35 bản vá lỗi. OpenFox đã đạt **26K Stars**!
 
-2026-03-17 🚀 **v0.2.3 đã phát hành!** Giao diện system tray (Windows & Linux), truy vấn trạng thái sub-agent (`spawn_status`), thử nghiệm Gateway hot-reload, bảo mật Cron, và 2 bản vá bảo mật. PicoClaw đã đạt **25K Stars**!
+2026-03-17 🚀 **v0.2.3 đã phát hành!** Giao diện system tray (Windows & Linux), truy vấn trạng thái sub-agent (`spawn_status`), thử nghiệm Gateway hot-reload, bảo mật Cron, và 2 bản vá bảo mật. OpenFox đã đạt **25K Stars**!
 
 2026-03-09 🎉 **v0.2.1 — Bản cập nhật lớn nhất từ trước đến nay!** Hỗ trợ giao thức MCP, 4 Channel mới (Matrix/IRC/WeCom/Discord Proxy), 3 Provider mới (Kimi/Minimax/Avian), pipeline thị giác, bộ nhớ JSONL, định tuyến mô hình.
 
@@ -77,13 +74,13 @@
 <details>
 <summary>Tin tức trước đó...</summary>
 
-2026-02-26 🎉 PicoClaw đạt **20K Stars** chỉ trong 17 ngày! Tự động điều phối Channel và giao diện khả năng đã hoạt động.
+2026-02-26 🎉 OpenFox đạt **20K Stars** chỉ trong 17 ngày! Tự động điều phối Channel và giao diện khả năng đã hoạt động.
 
-2026-02-16 🎉 PicoClaw vượt 12K Stars trong một tuần! Vai trò người duy trì cộng đồng và [Lộ trình](../../ROADMAP.md) chính thức ra mắt.
+2026-02-16 🎉 OpenFox vượt 12K Stars trong một tuần! Vai trò người duy trì cộng đồng và [Lộ trình](../../ROADMAP.md) chính thức ra mắt.
 
-2026-02-13 🎉 PicoClaw vượt 5000 Stars trong 4 ngày! Lộ trình dự án và nhóm nhà phát triển đang được xây dựng.
+2026-02-13 🎉 OpenFox vượt 5000 Stars trong 4 ngày! Lộ trình dự án và nhóm nhà phát triển đang được xây dựng.
 
-2026-02-09 🎉 **PicoClaw ra mắt!** Được xây dựng trong 1 ngày để đưa AI Agent lên phần cứng $10 với <10MB RAM. Let's Go, PicoClaw!
+2026-02-09 🎉 **OpenFox ra mắt!** Được xây dựng trong 1 ngày để đưa AI Agent lên phần cứng $10 với <10MB RAM. Let's Go, OpenFox!
 
 </details>
 
@@ -109,21 +106,21 @@ _*Các bản build gần đây có thể dùng 10-20MB do merge PR nhanh. Tối 
 
 <div align="center">
 
-|                                | OpenClaw      | NanoBot                  | **PicoClaw**                           |
+|                                | OpenClaw      | NanoBot                  | **OpenFox**                           |
 | ------------------------------ | ------------- | ------------------------ | -------------------------------------- |
 | **Ngôn ngữ**                   | TypeScript    | Python                   | **Go**                                 |
 | **RAM**                        | >1GB          | >100MB                   | **< 10MB***                            |
 | **Thời gian khởi động**</br>(lõi 0.8GHz) | >500s         | >30s                     | **<1s**                                |
 | **Chi phí**                    | Mac Mini $599 | Hầu hết board Linux ~$50 | **Bất kỳ board Linux**</br>**từ $10**  |
 
-<img src="../../assets/compare.jpg" alt="PicoClaw" width="512">
+<img src="../../assets/compare.jpg" alt="OpenFox" width="512">
 
 </div>
 
 > **[Danh sách Tương thích Phần cứng](../guides/hardware-compatibility.vi.md)** — Xem tất cả các board đã được kiểm tra, từ RISC-V $5 đến Raspberry Pi đến điện thoại Android. Board của bạn chưa có trong danh sách? Gửi PR!
 
 <p align="center">
-<img src="../../assets/hardware-banner.jpg" alt="PicoClaw Hardware Compatibility" width="100%">
+<img src="../../assets/hardware-banner.jpg" alt="OpenFox Hardware Compatibility" width="100%">
 </p>
 
 ## 🦾 Minh họa
@@ -137,9 +134,9 @@ _*Các bản build gần đây có thể dùng 10-20MB do merge PR nhanh. Tối 
 <th><p align="center">Tìm kiếm Web & Học tập</p></th>
 </tr>
 <tr>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_code.gif" width="240" height="180"></p></td>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_memory.gif" width="240" height="180"></p></td>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_search.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_code.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_memory.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_search.gif" width="240" height="180"></p></td>
 </tr>
 <tr>
 <td align="center">Phát triển · Triển khai · Mở rộng</td>
@@ -150,7 +147,7 @@ _*Các bản build gần đây có thể dùng 10-20MB do merge PR nhanh. Tối 
 
 ### 🐜 Triển khai Sáng tạo với Dấu chân Nhỏ
 
-PicoClaw có thể được triển khai trên hầu hết mọi thiết bị Linux!
+OpenFox có thể được triển khai trên hầu hết mọi thiết bị Linux!
 
 - $9.9 [LicheeRV-Nano](https://www.aliexpress.com/item/1005006519668532.html) phiên bản E(Ethernet) hoặc W(WiFi6), cho trợ lý gia đình tối giản
 - $30~50 [NanoKVM](https://www.aliexpress.com/item/1005007369816019.html), hoặc $100 [NanoKVM-Pro](https://www.aliexpress.com/item/1005010048471263.html), cho vận hành máy chủ tự động
@@ -162,13 +159,13 @@ PicoClaw có thể được triển khai trên hầu hết mọi thiết bị Li
 
 ## 📦 Cài đặt
 
-### Tải xuống từ picoclaw.io (Khuyến nghị)
+### Tải xuống từ openfox.im (Khuyến nghị)
 
-Truy cập **[picoclaw.io](https://picoclaw.io)** — website chính thức tự động phát hiện nền tảng của bạn và cung cấp tải xuống một cú nhấp. Không cần chọn kiến trúc thủ công.
+Truy cập **[openfox.im](https://openfox.im)** — website chính thức tự động phát hiện nền tảng của bạn và cung cấp tải xuống một cú nhấp. Không cần chọn kiến trúc thủ công.
 
 ### Tải xuống binary đã biên dịch sẵn
 
-Ngoài ra, tải binary cho nền tảng của bạn từ trang [GitHub Releases](https://github.com/sipeed/picoclaw/releases).
+Ngoài ra, tải binary cho nền tảng của bạn từ trang [GitHub Releases](https://github.com/tosnetwork/openfox/releases).
 
 ### Xây dựng từ mã nguồn (để phát triển)
 
@@ -178,9 +175,9 @@ Yêu cầu:
 - Node.js 22+ và pnpm 10.33.0+ cho các bản build Web UI / launcher
 
 ```bash
-git clone https://github.com/sipeed/picoclaw.git
+git clone https://github.com/tosnetwork/openfox.git
 
-cd picoclaw
+cd openfox
 make deps
 
 # Cài đặt dependencies frontend
@@ -212,19 +209,19 @@ WebUI Launcher cung cấp giao diện dựa trên trình duyệt để cấu hì
 
 **Tùy chọn 1: Nhấp đúp (Desktop)**
 
-Sau khi tải xuống từ [picoclaw.io](https://picoclaw.io), nhấp đúp vào `picoclaw-launcher` (hoặc `picoclaw-launcher.exe` trên Windows). Trình duyệt của bạn sẽ tự động mở tại `http://localhost:18800`.
+Sau khi tải xuống từ [openfox.im](https://openfox.im), nhấp đúp vào `openfox-launcher` (hoặc `openfox-launcher.exe` trên Windows). Trình duyệt của bạn sẽ tự động mở tại `http://localhost:18800`.
 
 **Tùy chọn 2: Dòng lệnh**
 
 ```bash
-picoclaw-launcher
+openfox-launcher
 # Mở http://localhost:18800 trong trình duyệt của bạn
 ```
 
 > [!TIP]
 > **Truy cập từ xa / Docker / VM:** Thêm cờ `-public` để lắng nghe trên tất cả giao diện:
 > ```bash
-> picoclaw-launcher -public
+> openfox-launcher -public
 > ```
 
 <p align="center">
@@ -235,15 +232,15 @@ picoclaw-launcher
 
 Mở WebUI, sau đó: **1)** Cấu hình Provider (thêm API key LLM của bạn) -> **2)** Cấu hình Channel (ví dụ: Telegram) -> **3)** Khởi động Gateway -> **4)** Trò chuyện!
 
-Để biết tài liệu WebUI chi tiết, xem [docs.picoclaw.io](https://docs.picoclaw.io).
+Để biết tài liệu WebUI chi tiết, xem [docs.openfox.im](https://docs.openfox.im).
 
 <details>
 <summary><b>Docker (thay thế)</b></summary>
 
 ```bash
 # 1. Clone this repo
-git clone https://github.com/sipeed/picoclaw.git
-cd picoclaw
+git clone https://github.com/tosnetwork/openfox.git
+cd openfox
 
 # 2. First run — auto-generates docker/data/config.json then exits
 #    (only triggers when both config.json and workspace/ are missing)
@@ -258,7 +255,7 @@ docker compose -f docker/docker-compose.yml --profile launcher up -d
 # Open http://localhost:18800
 ```
 
-> **Người dùng Docker / VM:** Gateway lắng nghe trên `127.0.0.1` theo mặc định. Đặt `PICOCLAW_GATEWAY_HOST=0.0.0.0` hoặc dùng cờ `-public` để có thể truy cập từ host.
+> **Người dùng Docker / VM:** Gateway lắng nghe trên `127.0.0.1` theo mặc định. Đặt `OPENFOX_GATEWAY_HOST=0.0.0.0` hoặc dùng cờ `-public` để có thể truy cập từ host.
 
 ```bash
 # Check logs
@@ -277,15 +274,15 @@ docker compose -f docker/docker-compose.yml --profile launcher up -d
 <details>
 <summary><b>macOS — Cảnh báo bảo mật khi khởi chạy lần đầu</b></summary>
 
-macOS có thể chặn `picoclaw-launcher` khi khởi chạy lần đầu vì nó được tải từ internet và chưa được công chứng qua Mac App Store.
+macOS có thể chặn `openfox-launcher` khi khởi chạy lần đầu vì nó được tải từ internet và chưa được công chứng qua Mac App Store.
 
-**Bước 1:** Nhấp đúp vào `picoclaw-launcher`. Bạn sẽ thấy cảnh báo bảo mật:
+**Bước 1:** Nhấp đúp vào `openfox-launcher`. Bạn sẽ thấy cảnh báo bảo mật:
 
 <p align="center">
 <img src="../../assets/macos-gatekeeper-warning.jpg" alt="Cảnh báo macOS Gatekeeper" width="400">
 </p>
 
-> *"picoclaw-launcher" Không Mở Được — Apple không thể xác minh "picoclaw-launcher" không chứa phần mềm độc hại có thể gây hại cho Mac hoặc xâm phạm quyền riêng tư của bạn.*
+> *"openfox-launcher" Không Mở Được — Apple không thể xác minh "openfox-launcher" không chứa phần mềm độc hại có thể gây hại cho Mac hoặc xâm phạm quyền riêng tư của bạn.*
 
 **Bước 2:** Mở **Cài đặt Hệ thống** → **Quyền riêng tư & Bảo mật** → cuộn xuống phần **Bảo mật** → nhấp **Vẫn Mở** → xác nhận bằng cách nhấp **Vẫn Mở** trong hộp thoại.
 
@@ -293,14 +290,14 @@ macOS có thể chặn `picoclaw-launcher` khi khởi chạy lần đầu vì n�
 <img src="../../assets/macos-gatekeeper-allow.jpg" alt="macOS Quyền riêng tư & Bảo mật — Vẫn Mở" width="600">
 </p>
 
-Sau bước này, `picoclaw-launcher` sẽ mở bình thường trong các lần khởi chạy tiếp theo.
+Sau bước này, `openfox-launcher` sẽ mở bình thường trong các lần khởi chạy tiếp theo.
 
 </details>
 
 <a id="-run-on-old-android-phones"></a>
 ### 📱 Android
 
-Hãy cho chiếc điện thoại cũ của bạn một cuộc sống mới! Biến nó thành Trợ lý AI thông minh với PicoClaw.
+Hãy cho chiếc điện thoại cũ của bạn một cuộc sống mới! Biến nó thành Trợ lý AI thông minh với OpenFox.
 
 **Tùy chọn 1: Cài đặt APK**
 
@@ -315,7 +312,7 @@ Xem trước:
   </tr>
 </table>
 
-Tải APK từ [picoclaw.io](https://picoclaw.io/download/) và cài đặt trực tiếp. Không cần Termux!
+Tải APK từ [openfox.im](https://openfox.im/download/) và cài đặt trực tiếp. Không cần Termux!
 
 **Tùy chọn 2: Termux**
 
@@ -327,27 +324,27 @@ Tải APK từ [picoclaw.io](https://picoclaw.io/download/) và cài đặt tr�
 
 ```bash
 # Download the latest release
-wget https://github.com/sipeed/picoclaw/releases/latest/download/picoclaw_Linux_arm64.tar.gz
-tar xzf picoclaw_Linux_arm64.tar.gz
+wget https://github.com/tosnetwork/openfox/releases/latest/download/openfox_Linux_arm64.tar.gz
+tar xzf openfox_Linux_arm64.tar.gz
 pkg install proot
-termux-chroot ./picoclaw onboard   # chroot provides a standard Linux filesystem layout
+termux-chroot ./openfox onboard   # chroot provides a standard Linux filesystem layout
 ```
 
 Sau đó làm theo phần Terminal Launcher bên dưới để hoàn tất cấu hình.
 
-<img src="../../assets/termux.jpg" alt="PicoClaw on Termux" width="512">
+<img src="../../assets/termux.jpg" alt="OpenFox on Termux" width="512">
 
-Đối với các môi trường tối giản chỉ có binary lõi `picoclaw` (không có Launcher UI), bạn có thể cấu hình mọi thứ qua dòng lệnh và tệp cấu hình JSON.
+Đối với các môi trường tối giản chỉ có binary lõi `openfox` (không có Launcher UI), bạn có thể cấu hình mọi thứ qua dòng lệnh và tệp cấu hình JSON.
 
 **1. Khởi tạo**
 
 ```bash
-picoclaw onboard
+openfox onboard
 ```
 
-Lệnh này tạo `~/.picoclaw/config.json` và thư mục workspace.
+Lệnh này tạo `~/.openfox/config.json` và thư mục workspace.
 
-**2. Cấu hình** (`~/.picoclaw/config.json`)
+**2. Cấu hình** (`~/.openfox/config.json`)
 
 ```json
 {
@@ -373,20 +370,20 @@ Lệnh này tạo `~/.picoclaw/config.json` và thư mục workspace.
 
 ```bash
 # One-shot question
-picoclaw agent -m "What is 2+2?"
+openfox agent -m "What is 2+2?"
 
 # Interactive mode
-picoclaw agent
+openfox agent
 
 # Start gateway for chat app integration
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
 
 ## 🔌 Providers (LLM)
 
-PicoClaw hỗ trợ 30+ Provider LLM thông qua cấu hình `model_list`. Sử dụng định dạng `protocol/model`:
+OpenFox hỗ trợ 30+ Provider LLM thông qua cấu hình `model_list`. Sử dụng định dạng `protocol/model`:
 
 | Provider | Protocol | API Key | Ghi chú |
 |----------|----------|---------|---------|
@@ -448,7 +445,7 @@ PicoClaw hỗ trợ 30+ Provider LLM thông qua cấu hình `model_list`. Sử d
 
 ## 💬 Channels (Ứng dụng Chat)
 
-Trò chuyện với PicoClaw của bạn qua 17+ nền tảng nhắn tin:
+Trò chuyện với OpenFox của bạn qua 17+ nền tảng nhắn tin:
 
 | Channel | Thiết lập | Protocol | Tài liệu |
 |---------|-----------|----------|----------|
@@ -471,7 +468,7 @@ Trò chuyện với PicoClaw của bạn qua 17+ nền tảng nhắn tin:
 
 > Tất cả các Channel dựa trên webhook dùng chung một Gateway HTTP server (`gateway.host`:`gateway.port`, mặc định `127.0.0.1:18790`). Feishu sử dụng chế độ WebSocket/SDK và không dùng HTTP server chung.
 
-> Mức độ chi tiết log được kiểm soát bởi `gateway.log_level` (mặc định: `warn`). Các giá trị được hỗ trợ: `debug`, `info`, `warn`, `error`, `fatal`. Cũng có thể đặt qua `PICOCLAW_LOG_LEVEL`. Xem [Cấu hình](../guides/configuration.vi.md#mức-log-của-gateway) để biết thêm chi tiết.
+> Mức độ chi tiết log được kiểm soát bởi `gateway.log_level` (mặc định: `warn`). Các giá trị được hỗ trợ: `debug`, `info`, `warn`, `error`, `fatal`. Cũng có thể đặt qua `OPENFOX_LOG_LEVEL`. Xem [Cấu hình](../guides/configuration.vi.md#mức-log-của-gateway) để biết thêm chi tiết.
 
 Để biết hướng dẫn thiết lập Channel chi tiết, xem [Cấu hình Ứng dụng Chat](../guides/chat-apps.vi.md).
 
@@ -479,7 +476,7 @@ Trò chuyện với PicoClaw của bạn qua 17+ nền tảng nhắn tin:
 
 ### 🔍 Tìm kiếm Web
 
-PicoClaw có thể tìm kiếm web để cung cấp thông tin cập nhật. Cấu hình trong `tools.web`:
+OpenFox có thể tìm kiếm web để cung cấp thông tin cập nhật. Cấu hình trong `tools.web`:
 
 | Công cụ Tìm kiếm | API Key | Gói miễn phí | Liên kết |
 |------------------|---------|--------------|----------|
@@ -493,7 +490,7 @@ PicoClaw có thể tìm kiếm web để cung cấp thông tin cập nhật. C�
 
 ### ⚙️ Các Tools Khác
 
-PicoClaw bao gồm các tool tích hợp sẵn cho thao tác tệp, thực thi mã, lên lịch và nhiều hơn nữa. Xem [Cấu hình Tools](../reference/tools_configuration.vi.md) để biết chi tiết.
+OpenFox bao gồm các tool tích hợp sẵn cho thao tác tệp, thực thi mã, lên lịch và nhiều hơn nữa. Xem [Cấu hình Tools](../reference/tools_configuration.vi.md) để biết chi tiết.
 
 ## 🎯 Skills
 
@@ -502,8 +499,8 @@ Skills là các khả năng mô-đun mở rộng Agent của bạn. Chúng đư�
 **Cài đặt Skills từ ClawHub:**
 
 ```bash
-picoclaw skills search "web scraping"
-picoclaw skills install <skill-name>
+openfox skills search "web scraping"
+openfox skills install <skill-name>
 ```
 
 **Cấu hình token ClawHub** (tùy chọn, để có giới hạn tốc độ cao hơn):
@@ -527,7 +524,7 @@ Thêm vào `config.json` của bạn:
 
 ## 🔗 MCP (Model Context Protocol)
 
-PicoClaw hỗ trợ [MCP](https://modelcontextprotocol.io/) gốc — kết nối bất kỳ MCP server nào để mở rộng khả năng Agent của bạn với các tool và nguồn dữ liệu bên ngoài.
+OpenFox hỗ trợ [MCP](https://modelcontextprotocol.io/) gốc — kết nối bất kỳ MCP server nào để mở rộng khả năng Agent của bạn với các tool và nguồn dữ liệu bên ngoài.
 
 ```json
 {
@@ -550,7 +547,7 @@ PicoClaw hỗ trợ [MCP](https://modelcontextprotocol.io/) gốc — kết nố
 
 ## <img src="../../assets/clawdchat-icon.png" width="24" height="24" alt="ClawdChat"> Tham gia Mạng xã hội Agent
 
-Kết nối PicoClaw với Mạng xã hội Agent chỉ bằng cách gửi một tin nhắn duy nhất qua CLI hoặc bất kỳ Ứng dụng Chat nào đã tích hợp.
+Kết nối OpenFox với Mạng xã hội Agent chỉ bằng cách gửi một tin nhắn duy nhất qua CLI hoặc bất kỳ Ứng dụng Chat nào đã tích hợp.
 
 **Đọc `https://clawdchat.ai/skill.md` và làm theo hướng dẫn để tham gia [ClawdChat.ai](https://clawdchat.ai)**
 
@@ -558,26 +555,26 @@ Kết nối PicoClaw với Mạng xã hội Agent chỉ bằng cách gửi một
 
 | Lệnh                      | Mô tả                                    |
 | ------------------------- | ---------------------------------------- |
-| `picoclaw onboard`        | Khởi tạo cấu hình & workspace           |
-| `picoclaw auth weixin` | Kết nối tài khoản WeChat qua QR |
-| `picoclaw agent -m "..."` | Trò chuyện với agent                     |
-| `picoclaw agent`          | Chế độ trò chuyện tương tác             |
-| `picoclaw gateway`        | Khởi động gateway                        |
-| `picoclaw status`         | Hiển thị trạng thái                      |
-| `picoclaw version`        | Hiển thị thông tin phiên bản            |
-| `picoclaw model`          | Xem hoặc chuyển đổi mô hình mặc định   |
-| `picoclaw cron list`      | Liệt kê tất cả công việc đã lên lịch   |
-| `picoclaw cron add ...`   | Thêm công việc đã lên lịch             |
-| `picoclaw cron disable`   | Vô hiệu hóa công việc đã lên lịch      |
-| `picoclaw cron remove`    | Xóa công việc đã lên lịch              |
-| `picoclaw skills list`    | Liệt kê các Skill đã cài đặt           |
-| `picoclaw skills install` | Cài đặt một Skill                       |
-| `picoclaw migrate`        | Di chuyển dữ liệu từ các phiên bản cũ  |
-| `picoclaw auth login`     | Xác thực với các provider               |
+| `openfox onboard`        | Khởi tạo cấu hình & workspace           |
+| `openfox auth weixin` | Kết nối tài khoản WeChat qua QR |
+| `openfox agent -m "..."` | Trò chuyện với agent                     |
+| `openfox agent`          | Chế độ trò chuyện tương tác             |
+| `openfox gateway`        | Khởi động gateway                        |
+| `openfox status`         | Hiển thị trạng thái                      |
+| `openfox version`        | Hiển thị thông tin phiên bản            |
+| `openfox model`          | Xem hoặc chuyển đổi mô hình mặc định   |
+| `openfox cron list`      | Liệt kê tất cả công việc đã lên lịch   |
+| `openfox cron add ...`   | Thêm công việc đã lên lịch             |
+| `openfox cron disable`   | Vô hiệu hóa công việc đã lên lịch      |
+| `openfox cron remove`    | Xóa công việc đã lên lịch              |
+| `openfox skills list`    | Liệt kê các Skill đã cài đặt           |
+| `openfox skills install` | Cài đặt một Skill                       |
+| `openfox migrate`        | Di chuyển dữ liệu từ các phiên bản cũ  |
+| `openfox auth login`     | Xác thực với các provider               |
 
 ### ⏰ Tác vụ Đã lên lịch / Nhắc nhở
 
-PicoClaw hỗ trợ nhắc nhở đã lên lịch và tác vụ định kỳ thông qua tool `cron`:
+OpenFox hỗ trợ nhắc nhở đã lên lịch và tác vụ định kỳ thông qua tool `cron`:
 
 * **Nhắc nhở một lần**: "Nhắc tôi sau 10 phút" -> kích hoạt một lần sau 10 phút
 * **Tác vụ định kỳ**: "Nhắc tôi mỗi 2 giờ" -> kích hoạt mỗi 2 giờ
@@ -605,7 +602,7 @@ PicoClaw hỗ trợ nhắc nhở đã lên lịch và tác vụ định kỳ th�
 
 PR luôn được chào đón! Codebase được thiết kế nhỏ gọn và dễ đọc.
 
-Xem [Lộ trình Cộng đồng](https://github.com/sipeed/picoclaw/issues/988) và [CONTRIBUTING.md](../../CONTRIBUTING.md) để biết hướng dẫn.
+Xem [Lộ trình Cộng đồng](https://github.com/tosnetwork/openfox/issues/988) để biết hướng dẫn.
 
 Nhóm nhà phát triển đang được xây dựng, tham gia sau khi PR đầu tiên của bạn được merge!
 

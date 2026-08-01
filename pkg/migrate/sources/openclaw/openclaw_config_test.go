@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/config"
 )
 
 func TestLoadOpenClawConfig(t *testing.T) {
@@ -84,8 +84,8 @@ func TestLoadOpenClawConfig(t *testing.T) {
 	}
 
 	workspace := cfg.GetDefaultWorkspace()
-	if workspace != "~/.picoclaw/workspace" {
-		t.Errorf("expected workspace '~/.picoclaw/workspace', got '%s'", workspace)
+	if workspace != "~/.openfox/workspace" {
+		t.Errorf("expected workspace '~/.openfox/workspace', got '%s'", workspace)
 	}
 
 	agents := cfg.GetAgents()
@@ -162,7 +162,7 @@ func TestGetProviderConfig(t *testing.T) {
 	}
 }
 
-func TestConvertToPicoClaw(t *testing.T) {
+func TestConvertToOpenFox(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "openclaw.json")
 
@@ -239,7 +239,7 @@ func TestConvertToPicoClaw(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	picoCfg, warnings, err := cfg.ConvertToPicoClaw("")
+	picoCfg, warnings, err := cfg.ConvertToOpenFox("")
 	if err != nil {
 		t.Fatalf("failed to convert config: %v", err)
 	}
@@ -247,8 +247,8 @@ func TestConvertToPicoClaw(t *testing.T) {
 	if picoCfg.Agents.Defaults.ModelName != "claude-sonnet-4-20250514" {
 		t.Errorf("expected model 'claude-sonnet-4-20250514', got '%s'", picoCfg.Agents.Defaults.ModelName)
 	}
-	if picoCfg.Agents.Defaults.Workspace != "~/.picoclaw/workspace" {
-		t.Errorf("expected workspace '~/.picoclaw/workspace', got '%s'", picoCfg.Agents.Defaults.Workspace)
+	if picoCfg.Agents.Defaults.Workspace != "~/.openfox/workspace" {
+		t.Errorf("expected workspace '~/.openfox/workspace', got '%s'", picoCfg.Agents.Defaults.Workspace)
 	}
 
 	if len(picoCfg.Agents.List) != 2 {
@@ -293,7 +293,7 @@ func TestConvertToPicoClaw(t *testing.T) {
 }
 
 func TestToStandardConfig_ExecAllowRemoteDefaultsTrue(t *testing.T) {
-	cfg := (&PicoClawConfig{
+	cfg := (&OpenFoxConfig{
 		Tools: ToolsConfig{
 			Exec: ExecConfig{
 				EnableDenyPatterns: true,
@@ -306,7 +306,7 @@ func TestToStandardConfig_ExecAllowRemoteDefaultsTrue(t *testing.T) {
 	}
 }
 
-func TestConvertToPicoClawWithQQAndDingTalk(t *testing.T) {
+func TestConvertToOpenFoxWithQQAndDingTalk(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "openclaw.json")
 
@@ -352,7 +352,7 @@ func TestConvertToPicoClawWithQQAndDingTalk(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	picoCfg, _, err := cfg.ConvertToPicoClaw("")
+	picoCfg, _, err := cfg.ConvertToOpenFox("")
 	if err != nil {
 		t.Fatalf("failed to convert config: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestConvertToPicoClawWithQQAndDingTalk(t *testing.T) {
 	}
 }
 
-func TestConvertToPicoClawWithMatrix(t *testing.T) {
+func TestConvertToOpenFoxWithMatrix(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "openclaw.json")
 
@@ -418,7 +418,7 @@ func TestConvertToPicoClawWithMatrix(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	picoCfg, warnings, err := cfg.ConvertToPicoClaw("")
+	picoCfg, warnings, err := cfg.ConvertToOpenFox("")
 	if err != nil {
 		t.Fatalf("failed to convert config: %v", err)
 	}
@@ -447,7 +447,7 @@ func TestConvertToPicoClawWithMatrix(t *testing.T) {
 	}
 }
 
-func TestConvertToPicoClawWithMatrixDisabled(t *testing.T) {
+func TestConvertToOpenFoxWithMatrixDisabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "openclaw.json")
 
@@ -472,7 +472,7 @@ func TestConvertToPicoClawWithMatrixDisabled(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	picoCfg, _, err := cfg.ConvertToPicoClaw("")
+	picoCfg, _, err := cfg.ConvertToOpenFox("")
 	if err != nil {
 		t.Fatalf("failed to convert config: %v", err)
 	}
@@ -636,12 +636,12 @@ func TestLoadOpenClawConfigFromDir(t *testing.T) {
 }
 
 func TestToStandardConfig(t *testing.T) {
-	picoCfg := &PicoClawConfig{
+	picoCfg := &OpenFoxConfig{
 		Agents: AgentsConfig{
 			Defaults: AgentDefaults{
 				Provider:  "anthropic",
 				ModelName: "claude-sonnet-4-20250514",
-				Workspace: "~/.picoclaw/workspace",
+				Workspace: "~/.openfox/workspace",
 			},
 			List: []AgentConfig{
 				{
@@ -683,8 +683,8 @@ func TestToStandardConfig(t *testing.T) {
 	if stdCfg.Agents.Defaults.ModelName != "claude-sonnet-4-20250514" {
 		t.Errorf("expected model name 'claude-sonnet-4-20250514', got '%s'", stdCfg.Agents.Defaults.ModelName)
 	}
-	if stdCfg.Agents.Defaults.Workspace != "~/.picoclaw/workspace" {
-		t.Errorf("expected workspace '~/.picoclaw/workspace', got '%s'", stdCfg.Agents.Defaults.Workspace)
+	if stdCfg.Agents.Defaults.Workspace != "~/.openfox/workspace" {
+		t.Errorf("expected workspace '~/.openfox/workspace', got '%s'", stdCfg.Agents.Defaults.Workspace)
 	}
 
 	if len(stdCfg.Agents.List) != 1 {

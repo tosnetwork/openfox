@@ -1,6 +1,6 @@
-# 🖥️ PicoClaw Hardware Compatibility List
+# 🖥️ OpenFox Hardware Compatibility List
 
-PicoClaw runs on virtually any Linux device. This page tracks verified chips, products, and development boards.
+OpenFox runs on virtually any Linux device. This page tracks verified chips, products, and development boards.
 
 **Your hardware not listed?** Submit a PR to add it! Hardware vendors are welcome to contribute and co-promote.
 
@@ -57,7 +57,7 @@ PicoClaw runs on virtually any Linux device. This page tracks verified chips, pr
 
 ## 2. Verified Products (by release date)
 
-Consumer products, routers, and industrial devices that have been tested with PicoClaw.
+Consumer products, routers, and industrial devices that have been tested with OpenFox.
 
 | Year | Product | Arch | SoC | RAM | Category |
 |------|---------|------|-----|-----|----------|
@@ -66,10 +66,10 @@ Consumer products, routers, and industrial devices that have been tested with Pi
 | 2016 | Xiaomi Router 3G (小米路由器3G) | MIPS | MT7620 | 256MB | Router (OpenWrt) |
 | 2018 | Phicomm N1 (斐讯N1) | ARM64 (A53) | S905D | 2GB | TV Box / Home Server |
 | 2019 | Xiaomi AI Speaker (小爱音箱) | ARM64 (A53) | — | 256MB | Smart Speaker |
-| 2024 | [NanoKVM](https://wiki.sipeed.com/hardware/en/kvm/NanoKVM/introduction.html) | RISC-V | SG2002 | 256MB | IP-KVM |
+| 2024 | NanoKVM | RISC-V | SG2002 | 256MB | IP-KVM |
 | 2025 | HaaS506-LD1 | RISC-V | D213 | 128MB | Industrial RTU |
-| 2025 | [NanoKVM-Pro](https://wiki.sipeed.com/hardware/en/kvm/NanoKVM_Pro/introduction.html) | ARM64 (A53) | AX630C | 1GB | Pro IP-KVM |
-| 2026 | [MaixCAM2](https://wiki.sipeed.com/hardware/en/maixcam/index.html) | ARM64 (A53) | AX630C | 1/4GB | 4K AI Camera |
+| 2025 | NanoKVM-Pro | ARM64 (A53) | AX630C | 1GB | Pro IP-KVM |
+| 2026 | MaixCAM2 | ARM64 (A53) | AX630C | 1/4GB | 4K AI Camera |
 
 ---
 
@@ -81,11 +81,11 @@ Consumer products, routers, and industrial devices that have been tested with Pi
 | 2015 | [Raspberry Pi 2 Model B](https://www.raspberrypi.com/products/raspberry-pi-2-model-b/) | ARMv7 (A7) | BCM2836 | 1GB | — |
 | 2015 | [Raspberry Pi Zero](https://www.raspberrypi.com/products/raspberry-pi-zero/) | ARMv6 | BCM2835 | 512MB | — |
 | 2016 | [Raspberry Pi 3 Model B](https://www.raspberrypi.com/products/raspberry-pi-3-model-b/) | ARM64 (A53) | BCM2837 | 1GB | — |
-| 2017 | [LicheePi Zero](https://wiki.sipeed.com/hardware/en/lichee/Zero/Zero.html) | ARMv7 (A7) | Allwinner V3s | 64MB | [Sipeed](https://sipeed.com/) |
+| 2017 | LicheePi Zero | ARMv7 (A7) | Allwinner V3s | 64MB | — |
 | 2019 | [Raspberry Pi 4 Model B](https://www.raspberrypi.com/products/raspberry-pi-4-model-b/) | ARM64 (A72) | BCM2711 | 1~8GB | [RPi](https://www.raspberrypi.com/) |
 | 2023 | [Raspberry Pi 5](https://www.raspberrypi.com/products/raspberry-pi-5/) | ARM64 (A76) | BCM2712 | 2~8GB | [RPi](https://www.raspberrypi.com/) |
-| 2024 | [LicheeRV-Nano](https://wiki.sipeed.com/hardware/en/lichee/RV_Nano/1_intro.html) | RISC-V | SG2002 | 256MB | [AliExpress](https://www.aliexpress.com/item/1005006519668532.html) |
-| 2024 | [MaixCAM-Pro](https://wiki.sipeed.com/hardware/en/maixcam/index.html) | RISC-V | SG2002 | 256MB | [Sipeed](https://sipeed.com/) |
+| 2024 | LicheeRV-Nano | RISC-V | SG2002 | 256MB | [AliExpress](https://www.aliexpress.com/item/1005006519668532.html) |
+| 2024 | MaixCAM-Pro | RISC-V | SG2002 | 256MB | — |
 | 2024 | [Milk-V Duo 64M](https://milkv.io/docs/duo/getting-started/duo) | RISC-V | CV1800B | 64MB | [Milk-V](https://milkv.io/) |
 | 2024 | [CanMV-K230](https://developer.canaan-creative.com/k230_canmv/en/main/) | RISC-V | K230 | 512MB | [Canaan](https://www.canaan-creative.com/) |
 
@@ -95,7 +95,7 @@ Consumer products, routers, and industrial devices that have been tested with Pi
 
 ### Android Phones (via Termux)
 
-Any ARM64 Android phone (2015+) with 1GB+ RAM. Install [Termux](https://github.com/termux/termux-app), use `proot` to run PicoClaw.
+Any ARM64 Android phone (2015+) with 1GB+ RAM. Install [Termux](https://github.com/termux/termux-app), use `proot` to run OpenFox.
 
 > See the [Android Termux Guide](android-termux.md) for setup instructions.
 
@@ -128,14 +128,14 @@ Any ARM64 Android phone (2015+) with 1GB+ RAM. Install [Termux](https://github.c
 
 ```bash
 # 1. Download for your architecture
-wget https://github.com/sipeed/picoclaw/releases/latest/download/picoclaw_Linux_arm64.tar.gz
-tar xzf picoclaw_Linux_arm64.tar.gz
+wget https://github.com/tosnetwork/openfox/releases/latest/download/openfox_Linux_arm64.tar.gz
+tar xzf openfox_Linux_arm64.tar.gz
 
 # 2. Initialize
-./picoclaw onboard
+./openfox onboard
 
 # 3. Test
-./picoclaw agent -m "Hello, what board am I running on?"
+./openfox agent -m "Hello, what board am I running on?"
 ```
 
 Available builds: `linux-amd64`, `linux-arm64`, `linux-arm`, `linux-riscv64`, `linux-loong64`, `linux-mipsle`

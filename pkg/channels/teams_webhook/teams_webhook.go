@@ -12,10 +12,10 @@ import (
 	goteamsnotify "github.com/atc0005/go-teams-notify/v2"
 	"github.com/atc0005/go-teams-notify/v2/adaptivecard"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/channels"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/logger"
 )
 
 // statusCodeRe extracts HTTP status codes from error messages like "401 Unauthorized".
@@ -205,7 +205,7 @@ func (c *TeamsWebhookChannel) buildAdaptiveCard(
 	// Add title if configured on the target
 	title := target.Title
 	if title == "" {
-		title = "PicoClaw Notification"
+		title = "OpenFox Notification"
 	}
 
 	titleBlock := adaptivecard.NewTextBlock(title, true)

@@ -15,9 +15,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/config"
+	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
+	"github.com/tosnetwork/openfox/pkg/logger"
 )
 
 // headerTransport is an http.RoundTripper that adds custom headers to requests
@@ -335,7 +335,7 @@ func connectServer(
 
 	// Create client
 	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "picoclaw",
+		Name:    "openfox",
 		Version: "1.0.0",
 	}, nil)
 

@@ -2,10 +2,10 @@
 
 # WeCom
 
-PicoClaw exposes WeCom as a single `channels.wecom` channel built on the official WeCom AI Bot WebSocket API.
+OpenFox exposes WeCom as a single `channels.wecom` channel built on the official WeCom AI Bot WebSocket API.
 This replaces the legacy `wecom`, `wecom_app`, and `wecom_aibot` split with one unified configuration model.
 
-> No public webhook callback URL is required. PicoClaw opens an outbound WebSocket connection to WeCom.
+> No public webhook callback URL is required. OpenFox opens an outbound WebSocket connection to WeCom.
 
 ## What This Channel Supports
 
@@ -33,7 +33,7 @@ Open the Web UI, navigate to **Channels → WeCom**, and click the QR binding bu
 Run:
 
 ```bash
-picoclaw auth wecom
+openfox auth wecom
 ```
 
 The command:
@@ -45,7 +45,7 @@ The command:
 The default timeout is **5 minutes**. Use `--timeout` to extend it:
 
 ```bash
-picoclaw auth wecom --timeout 10m
+openfox auth wecom --timeout 10m
 ```
 
 > ⚠️ Scanning the QR code is not enough — you must also tap **Confirm** inside the WeCom app, otherwise the command will time out.
@@ -87,23 +87,23 @@ If you already have a `bot_id` and `secret` from the WeCom AI Bot platform, conf
 
 ### Environment Variables
 
-All fields can be overridden via environment variables with the prefix `PICOCLAW_CHANNELS_WECOM_`:
+All fields can be overridden via environment variables with the prefix `OPENFOX_CHANNELS_WECOM_`:
 
 | Environment Variable | Corresponding Field |
 | -------------------- | ------------------- |
-| `PICOCLAW_CHANNELS_WECOM_ENABLED` | `enabled` |
-| `PICOCLAW_CHANNELS_WECOM_BOT_ID` | `bot_id` |
-| `PICOCLAW_CHANNELS_WECOM_SECRET` | `secret` |
-| `PICOCLAW_CHANNELS_WECOM_WEBSOCKET_URL` | `websocket_url` |
-| `PICOCLAW_CHANNELS_WECOM_SEND_THINKING_MESSAGE` | `send_thinking_message` |
-| `PICOCLAW_CHANNELS_WECOM_ALLOW_FROM` | `allow_from` |
-| `PICOCLAW_CHANNELS_WECOM_REASONING_CHANNEL_ID` | `reasoning_channel_id` |
+| `OPENFOX_CHANNELS_WECOM_ENABLED` | `enabled` |
+| `OPENFOX_CHANNELS_WECOM_BOT_ID` | `bot_id` |
+| `OPENFOX_CHANNELS_WECOM_SECRET` | `secret` |
+| `OPENFOX_CHANNELS_WECOM_WEBSOCKET_URL` | `websocket_url` |
+| `OPENFOX_CHANNELS_WECOM_SEND_THINKING_MESSAGE` | `send_thinking_message` |
+| `OPENFOX_CHANNELS_WECOM_ALLOW_FROM` | `allow_from` |
+| `OPENFOX_CHANNELS_WECOM_REASONING_CHANNEL_ID` | `reasoning_channel_id` |
 
 ---
 
 ## Runtime Behavior
 
-- PicoClaw maintains an active WeCom turn so streaming replies can continue on the same stream when possible.
+- OpenFox maintains an active WeCom turn so streaming replies can continue on the same stream when possible.
 - Streaming replies have a maximum duration of **5.5 minutes** and a minimum send interval of **500ms**.
 - If streaming is no longer available, replies fall back to active push delivery.
 - Chat route associations expire after **30 minutes** of inactivity.
@@ -131,12 +131,12 @@ All fields can be overridden via environment variables with the prefix `PICOCLAW
 ### QR binding times out
 
 - After scanning the QR code, you must also **confirm the login inside the WeCom app**. Scanning alone is not enough.
-- Re-run with a larger `--timeout`: `picoclaw auth wecom --timeout 10m`
+- Re-run with a larger `--timeout`: `openfox auth wecom --timeout 10m`
 - If the QR code in the terminal is hard to scan, use the **QR Code Link** printed below it to open in a browser.
 
 ### QR code expired
 
-- The QR code has a limited validity. Re-run `picoclaw auth wecom` to get a fresh one.
+- The QR code has a limited validity. Re-run `openfox auth wecom` to get a fresh one.
 
 ### WebSocket connection fails
 

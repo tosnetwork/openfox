@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/auth"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/auth"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/providers"
 )
 
 func resetModelProbeHooks(t *testing.T) {
@@ -2668,13 +2668,13 @@ func TestHandleFetchModels_ModelIndexUsesStoredKey(t *testing.T) {
 	defer srv.Close()
 
 	tmp := t.TempDir()
-	oldHome := os.Getenv("PICOCLAW_HOME")
-	t.Setenv("PICOCLAW_HOME", filepath.Join(tmp, ".picoclaw"))
+	oldHome := os.Getenv("OPENFOX_HOME")
+	t.Setenv("OPENFOX_HOME", filepath.Join(tmp, ".openfox"))
 	defer func() {
 		if oldHome != "" {
-			os.Setenv("PICOCLAW_HOME", oldHome)
+			os.Setenv("OPENFOX_HOME", oldHome)
 		} else {
-			os.Unsetenv("PICOCLAW_HOME")
+			os.Unsetenv("OPENFOX_HOME")
 		}
 	}()
 
@@ -2733,7 +2733,7 @@ func TestHandleFetchModels_ModelIndexProviderMismatchRejectsKey(t *testing.T) {
 	defer srv.Close()
 
 	tmp := t.TempDir()
-	t.Setenv("PICOCLAW_HOME", filepath.Join(tmp, ".picoclaw"))
+	t.Setenv("OPENFOX_HOME", filepath.Join(tmp, ".openfox"))
 
 	cfg := config.DefaultConfig()
 	cfg.ModelList = []*config.ModelConfig{

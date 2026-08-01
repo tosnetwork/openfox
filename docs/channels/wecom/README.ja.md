@@ -2,10 +2,10 @@
 
 # WeCom
 
-PicoClaw は WeCom を公式 WeCom AI Bot WebSocket API に基づく単一の `channels.wecom` チャンネルとして公開します。
+OpenFox は WeCom を公式 WeCom AI Bot WebSocket API に基づく単一の `channels.wecom` チャンネルとして公開します。
 従来の `wecom`、`wecom_app`、`wecom_aibot` の分割を統一された設定モデルに置き換えました。
 
-> パブリックな Webhook コールバック URL は不要です。PicoClaw は WeCom へのアウトバウンド WebSocket 接続を確立します。
+> パブリックな Webhook コールバック URL は不要です。OpenFox は WeCom へのアウトバウンド WebSocket 接続を確立します。
 
 ## サポートされる機能
 
@@ -33,7 +33,7 @@ Web UI を開き、**Channels → WeCom** に移動して、QR バインディ�
 実行：
 
 ```bash
-picoclaw auth wecom
+openfox auth wecom
 ```
 
 コマンドの動作：
@@ -45,7 +45,7 @@ picoclaw auth wecom
 デフォルトのタイムアウトは **5 分** です。`--timeout` で延長できます：
 
 ```bash
-picoclaw auth wecom --timeout 10m
+openfox auth wecom --timeout 10m
 ```
 
 > ⚠️ QR コードのスキャンだけでは不十分です — WeCom アプリ内で **確認** をタップする必要があります。そうしないとコマンドがタイムアウトします。
@@ -87,23 +87,23 @@ WeCom AI Bot プラットフォームから `bot_id` と `secret` を既にお�
 
 ### 環境変数
 
-すべてのフィールドは `PICOCLAW_CHANNELS_WECOM_` プレフィックスの環境変数で上書きできます：
+すべてのフィールドは `OPENFOX_CHANNELS_WECOM_` プレフィックスの環境変数で上書きできます：
 
 | 環境変数 | 対応フィールド |
 | -------- | -------------- |
-| `PICOCLAW_CHANNELS_WECOM_ENABLED` | `enabled` |
-| `PICOCLAW_CHANNELS_WECOM_BOT_ID` | `bot_id` |
-| `PICOCLAW_CHANNELS_WECOM_SECRET` | `secret` |
-| `PICOCLAW_CHANNELS_WECOM_WEBSOCKET_URL` | `websocket_url` |
-| `PICOCLAW_CHANNELS_WECOM_SEND_THINKING_MESSAGE` | `send_thinking_message` |
-| `PICOCLAW_CHANNELS_WECOM_ALLOW_FROM` | `allow_from` |
-| `PICOCLAW_CHANNELS_WECOM_REASONING_CHANNEL_ID` | `reasoning_channel_id` |
+| `OPENFOX_CHANNELS_WECOM_ENABLED` | `enabled` |
+| `OPENFOX_CHANNELS_WECOM_BOT_ID` | `bot_id` |
+| `OPENFOX_CHANNELS_WECOM_SECRET` | `secret` |
+| `OPENFOX_CHANNELS_WECOM_WEBSOCKET_URL` | `websocket_url` |
+| `OPENFOX_CHANNELS_WECOM_SEND_THINKING_MESSAGE` | `send_thinking_message` |
+| `OPENFOX_CHANNELS_WECOM_ALLOW_FROM` | `allow_from` |
+| `OPENFOX_CHANNELS_WECOM_REASONING_CHANNEL_ID` | `reasoning_channel_id` |
 
 ---
 
 ## ランタイム動作
 
-- PicoClaw はアクティブな WeCom ターンを維持し、可能な限り同じストリームでストリーミング返信を継続します。
+- OpenFox はアクティブな WeCom ターンを維持し、可能な限り同じストリームでストリーミング返信を継続します。
 - ストリーミング返信の最大持続時間は **5.5 分**、最小送信間隔は **500ms** です。
 - ストリーミングが利用できなくなった場合、返信はアクティブプッシュ配信にフォールバックします。
 - チャットルートの関連付けは **30 分** の非アクティブ後に期限切れになります。
@@ -131,12 +131,12 @@ WeCom AI Bot プラットフォームから `bot_id` と `secret` を既にお�
 ### QR バインディングがタイムアウトする
 
 - QR コードをスキャンした後、**WeCom アプリ内でログインを確認** する必要があります。スキャンだけでは不十分です。
-- より長い `--timeout` で再実行してください：`picoclaw auth wecom --timeout 10m`
+- より長い `--timeout` で再実行してください：`openfox auth wecom --timeout 10m`
 - ターミナルの QR コードがスキャンしにくい場合は、その下に表示される **QR コードリンク** を使用してブラウザで開いてください。
 
 ### QR コードの有効期限切れ
 
-- QR コードには有効期限があります。`picoclaw auth wecom` を再実行して新しいものを取得してください。
+- QR コードには有効期限があります。`openfox auth wecom` を再実行して新しいものを取得してください。
 
 ### WebSocket 接続の失敗
 

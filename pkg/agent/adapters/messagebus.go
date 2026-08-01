@@ -1,12 +1,12 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// OpenFox - Ultra-lightweight personal AI agent
 
 package adapters
 
 import (
 	"context"
 
-	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
-	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/agent/interfaces"
+	"github.com/tosnetwork/openfox/pkg/bus"
 )
 
 // messageBusAdapter wraps *bus.MessageBus to implement interfaces.MessageBus.

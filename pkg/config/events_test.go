@@ -67,11 +67,11 @@ func TestLoadConfigEventLoggingOverrides(t *testing.T) {
 }
 
 func TestLoadConfigEventLoggingEnvOverrides(t *testing.T) {
-	t.Setenv("PICOCLAW_EVENTS_LOGGING_ENABLED", "false")
-	t.Setenv("PICOCLAW_EVENTS_LOGGING_INCLUDE", "gateway.*,channel.lifecycle.*")
-	t.Setenv("PICOCLAW_EVENTS_LOGGING_EXCLUDE", "gateway.ready")
-	t.Setenv("PICOCLAW_EVENTS_LOGGING_MIN_SEVERITY", "error")
-	t.Setenv("PICOCLAW_EVENTS_LOGGING_INCLUDE_PAYLOAD", "true")
+	t.Setenv("OPENFOX_EVENTS_LOGGING_ENABLED", "false")
+	t.Setenv("OPENFOX_EVENTS_LOGGING_INCLUDE", "gateway.*,channel.lifecycle.*")
+	t.Setenv("OPENFOX_EVENTS_LOGGING_EXCLUDE", "gateway.ready")
+	t.Setenv("OPENFOX_EVENTS_LOGGING_MIN_SEVERITY", "error")
+	t.Setenv("OPENFOX_EVENTS_LOGGING_INCLUDE_PAYLOAD", "true")
 
 	path := filepath.Join(t.TempDir(), "config.json")
 	data := []byte(`{"version": 3}`)

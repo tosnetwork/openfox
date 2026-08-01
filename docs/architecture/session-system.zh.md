@@ -2,7 +2,7 @@
 
 > 返回 [README](../README.md)
 
-本文说明 PicoClaw 运行时的 Session 系统如何完成以下事情：
+本文说明 OpenFox 运行时的 Session 系统如何完成以下事情：
 
 - 把入站消息映射到稳定的会话作用域
 - 持久化消息历史与摘要

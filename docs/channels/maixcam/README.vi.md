@@ -2,7 +2,7 @@
 
 # MaixCam
 
-MaixCam là kênh chuyên dụng để kết nối với các thiết bị camera AI Sipeed MaixCAM và MaixCAM2. Sử dụng TCP socket để giao tiếp hai chiều và hỗ trợ các kịch bản triển khai AI tại biên.
+MaixCam là kênh chuyên dụng để kết nối với các thiết bị camera AI MaixCAM và MaixCAM2. Sử dụng TCP socket để giao tiếp hai chiều và hỗ trợ các kịch bản triển khai AI tại biên.
 
 ## Cấu hình
 
@@ -29,8 +29,8 @@ MaixCam là kênh chuyên dụng để kết nối với các thiết bị camer
 
 ## Trường hợp sử dụng
 
-Kênh MaixCam cho phép PicoClaw hoạt động như backend AI cho các thiết bị biên:
+Kênh MaixCam cho phép OpenFox hoạt động như backend AI cho các thiết bị biên:
 
-- **Giám sát thông minh**: MaixCAM gửi khung hình ảnh; PicoClaw phân tích bằng mô hình thị giác
-- **Điều khiển IoT**: Thiết bị gửi dữ liệu cảm biến; PicoClaw điều phối phản hồi
-- **AI ngoại tuyến**: Triển khai PicoClaw trên mạng nội bộ để suy luận độ trễ thấp
+- **Giám sát thông minh**: MaixCAM gửi khung hình ảnh; OpenFox phân tích bằng mô hình thị giác
+- **Điều khiển IoT**: Thiết bị gửi dữ liệu cảm biến; OpenFox điều phối phản hồi
+- **AI ngoại tuyến**: Triển khai OpenFox trên mạng nội bộ để suy luận độ trễ thấp

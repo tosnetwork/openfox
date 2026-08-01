@@ -4,31 +4,31 @@
 
 ## ⚙️ Configuration
 
-Fichier de configuration : `~/.picoclaw/config.json`
+Fichier de configuration : `~/.openfox/config.json`
 
 ### Variables d'Environnement
 
-Vous pouvez remplacer les chemins par défaut à l'aide de variables d'environnement. Ceci est utile pour les installations portables, les déploiements conteneurisés ou l'exécution de PicoClaw en tant que service système. Ces variables sont indépendantes et contrôlent des chemins différents.
+Vous pouvez remplacer les chemins par défaut à l'aide de variables d'environnement. Ceci est utile pour les installations portables, les déploiements conteneurisés ou l'exécution de OpenFox en tant que service système. Ces variables sont indépendantes et contrôlent des chemins différents.
 
 | Variable          | Description                                                                                                                             | Chemin par défaut         |
 |-------------------|-----------------------------------------------------------------------------------------------------------------------------------------|---------------------------|
-| `PICOCLAW_CONFIG` | Remplace le chemin vers le fichier de configuration. Indique directement à PicoClaw quel `config.json` charger, en ignorant tous les autres emplacements. | `~/.picoclaw/config.json` |
-| `PICOCLAW_HOME`   | Remplace le répertoire racine des données PicoClaw. Change l'emplacement par défaut du `workspace` et des autres répertoires de données. | `~/.picoclaw`             |
+| `OPENFOX_CONFIG` | Remplace le chemin vers le fichier de configuration. Indique directement à OpenFox quel `config.json` charger, en ignorant tous les autres emplacements. | `~/.openfox/config.json` |
+| `OPENFOX_HOME`   | Remplace le répertoire racine des données OpenFox. Change l'emplacement par défaut du `workspace` et des autres répertoires de données. | `~/.openfox`             |
 
 **Exemples :**
 
 ```bash
-# Run picoclaw using a specific config file
+# Run openfox using a specific config file
 # The workspace path will be read from within that config file
-PICOCLAW_CONFIG=/etc/picoclaw/production.json picoclaw gateway
+OPENFOX_CONFIG=/etc/openfox/production.json openfox gateway
 
-# Run picoclaw with all its data stored in /opt/picoclaw
-# Config will be loaded from the default ~/.picoclaw/config.json
-# Workspace will be created at /opt/picoclaw/workspace
-PICOCLAW_HOME=/opt/picoclaw picoclaw agent
+# Run openfox with all its data stored in /opt/openfox
+# Config will be loaded from the default ~/.openfox/config.json
+# Workspace will be created at /opt/openfox/workspace
+OPENFOX_HOME=/opt/openfox openfox agent
 
 # Use both for a fully customized setup
-PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gateway
+OPENFOX_HOME=/srv/openfox OPENFOX_CONFIG=/srv/openfox/main.json openfox gateway
 ```
 
 ### Niveau de Log du Gateway
@@ -45,14 +45,14 @@ PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gat
 
 La valeur par défaut est `warn`. Valeurs supportées : `debug`, `info`, `warn`, `error`, `fatal`.
 
-Peut également être surchargé via la variable d'environnement : `PICOCLAW_LOG_LEVEL=info`
+Peut également être surchargé via la variable d'environnement : `OPENFOX_LOG_LEVEL=info`
 
 ### Structure du Workspace
 
-PicoClaw stocke les données dans votre workspace configuré (par défaut : `~/.picoclaw/workspace`) :
+OpenFox stocke les données dans votre workspace configuré (par défaut : `~/.openfox/workspace`) :
 
 ```
-~/.picoclaw/workspace/
+~/.openfox/workspace/
 ├── sessions/          # Sessions de conversation et historique
 ├── memory/           # Mémoire à long terme (MEMORY.md)
 ├── state/            # État persistant (dernier canal, etc.)
@@ -68,13 +68,13 @@ PicoClaw stocke les données dans votre workspace configuré (par défaut : `~/.
 
 ### Politique de contexte de requête
 
-`turn_profile` est une politique facultative sous `agents.defaults.turn_profile` pour contrôler le contexte chargé par chaque nouveau tour : historique, prompt système, prompts de skills et outils autorisés. Sans cette configuration, ou avec `"enabled": false`, PicoClaw garde son comportement normal. Avec `"enabled": true`, la politique ci-dessous s'applique à chaque nouveau tour.
+`turn_profile` est une politique facultative sous `agents.defaults.turn_profile` pour contrôler le contexte chargé par chaque nouveau tour : historique, prompt système, prompts de skills et outils autorisés. Sans cette configuration, ou avec `"enabled": false`, OpenFox garde son comportement normal. Avec `"enabled": true`, la politique ci-dessous s'applique à chaque nouveau tour.
 
 Tous les blocs utilisent les mêmes valeurs de `mode` :
 
 | Mode | Signification |
 | --- | --- |
-| `default` | Garde le comportement normal de PicoClaw. Un bloc absent ou sans `mode` vaut `default`. |
+| `default` | Garde le comportement normal de OpenFox. Un bloc absent ou sans `mode` vaut `default`. |
 | `off` | Désactive ce bloc pour le tour. |
 | `custom` | Utilise une liste d'autorisation. Dans cette version, `custom` est pris en charge seulement pour `skills` et `tools`; l'utiliser pour `history` ou `system_prompt` produit une erreur de validation. |
 
@@ -83,11 +83,11 @@ Blocs disponibles :
 | Bloc | Ce qu'il contrôle |
 | --- | --- |
 | `history` | Lecture de l'historique et du résumé, écriture des messages utilisateur/assistant/outil, ingestion de contexte, compression et résumé. |
-| `system_prompt` | Injection de l'identité PicoClaw, des instructions de l'espace de travail, de la mémoire, du contexte d'exécution et du résumé. Les prompts système externes restent autorisés quand ce bloc est `off`. |
+| `system_prompt` | Injection de l'identité OpenFox, des instructions de l'espace de travail, de la mémoire, du contexte d'exécution et du résumé. Les prompts système externes restent autorisés quand ce bloc est `off`. |
 | `skills` | Chargement du catalogue de skills et du contenu des skills actifs. `custom.allow` ne garde que les noms listés. |
 | `tools` | Outils exposés au modèle et autorisés à l'exécution. `custom.allow` ne garde que les outils enregistrés et listés. |
 
-Quand `system_prompt.mode` vaut `off`, que des outils restent visibles et qu'aucun prompt système externe n'est fourni, PicoClaw réutilise sa règle existante d'utilisation des outils comme prompt minimal de secours. Si `tools.mode` vaut `off`, ce prompt de secours n'est pas ajouté.
+Quand `system_prompt.mode` vaut `off`, que des outils restent visibles et qu'aucun prompt système externe n'est fourni, OpenFox réutilise sa règle existante d'utilisation des outils comme prompt minimal de secours. Si `tools.mode` vaut `off`, ce prompt de secours n'est pas ajouté.
 
 Exemple de contexte propre avec outils web :
 
@@ -114,14 +114,14 @@ Exemple de contexte propre avec outils web :
 
 Par défaut, les compétences sont chargées depuis :
 
-1. `~/.picoclaw/workspace/skills` (workspace)
-2. `~/.picoclaw/skills` (global)
+1. `~/.openfox/workspace/skills` (workspace)
+2. `~/.openfox/skills` (global)
 3. `<chemin-intégré-à-la-compilation>/skills` (intégré)
 
 Pour les configurations avancées/de test, vous pouvez remplacer la racine des compétences builtin avec :
 
 ```bash
-export PICOCLAW_BUILTIN_SKILLS=/path/to/skills
+export OPENFOX_BUILTIN_SKILLS=/path/to/skills
 ```
 
 ### Utiliser les Commandes Depuis les Canaux de Chat
@@ -153,7 +153,7 @@ dammi le ultime news
 
 ### 🔒 Sandbox de Sécurité
 
-PicoClaw s'exécute dans un environnement sandboxé par défaut. L'agent ne peut accéder aux fichiers et exécuter des commandes que dans le workspace configuré.
+OpenFox s'exécute dans un environnement sandboxé par défaut. L'agent ne peut accéder aux fichiers et exécuter des commandes que dans le workspace configuré.
 
 #### Configuration par Défaut
 
@@ -161,7 +161,7 @@ PicoClaw s'exécute dans un environnement sandboxé par défaut. L'agent ne peut
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.openfox/workspace",
       "restrict_to_workspace": true
     }
   }
@@ -170,7 +170,7 @@ PicoClaw s'exécute dans un environnement sandboxé par défaut. L'agent ne peut
 
 | Option                  | Par défaut              | Description                                       |
 | ----------------------- | ----------------------- | ------------------------------------------------- |
-| `workspace`             | `~/.picoclaw/workspace` | Répertoire de travail de l'agent                  |
+| `workspace`             | `~/.openfox/workspace` | Répertoire de travail de l'agent                  |
 | `restrict_to_workspace` | `true`                  | Restreindre l'accès fichiers/commandes au workspace |
 
 #### Outils Protégés
@@ -217,7 +217,7 @@ Même avec `restrict_to_workspace: false`, l'outil `exec` bloque ces commandes d
 
 #### Limitation Connue : Processus Enfants des Outils de Build
 
-Le garde de sécurité exec n'inspecte que la ligne de commande lancée directement par PicoClaw. Il n'inspecte pas récursivement les processus enfants générés par les outils de développement autorisés tels que `make`, `go run`, `cargo`, `npm run` ou les scripts de build personnalisés.
+Le garde de sécurité exec n'inspecte que la ligne de commande lancée directement par OpenFox. Il n'inspecte pas récursivement les processus enfants générés par les outils de développement autorisés tels que `make`, `go run`, `cargo`, `npm run` ou les scripts de build personnalisés.
 
 Cela signifie qu'une commande de niveau supérieur peut toujours compiler ou lancer d'autres binaires après avoir passé la vérification initiale du garde. En pratique, traitez les scripts de build, les Makefiles, les scripts de packages et les binaires générés comme du code exécutable nécessitant le même niveau de revue qu'une commande shell directe.
 
@@ -225,7 +225,7 @@ Pour les environnements à haut risque :
 
 * Examinez les scripts de build avant l'exécution.
 * Préférez l'approbation/revue manuelle pour les workflows de compilation et d'exécution.
-* Exécutez PicoClaw dans un conteneur ou une VM si vous avez besoin d'une isolation plus forte que celle fournie par le garde intégré.
+* Exécutez OpenFox dans un conteneur ou une VM si vous avez besoin d'une isolation plus forte que celle fournie par le garde intégré.
 
 #### Exemples d'Erreurs
 
@@ -258,7 +258,7 @@ Si vous avez besoin que l'agent accède à des chemins en dehors du workspace :
 **Méthode 2 : Variable d'environnement**
 
 ```bash
-export PICOCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
+export OPENFOX_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
 ```
 
 > ⚠️ **Avertissement** : Désactiver cette restriction permet à l'agent d'accéder à n'importe quel chemin sur votre système. À utiliser avec précaution dans des environnements contrôlés uniquement.
@@ -277,7 +277,7 @@ Tous les chemins partagent la même restriction de workspace — il n'y a aucun 
 
 ### Heartbeat (Tâches Périodiques)
 
-PicoClaw peut effectuer des tâches périodiques automatiquement. Créez un fichier `HEARTBEAT.md` dans votre workspace :
+OpenFox peut effectuer des tâches périodiques automatiquement. Créez un fichier `HEARTBEAT.md` dans votre workspace :
 
 ```markdown
 # Periodic Tasks
@@ -349,8 +349,8 @@ Répond HEARTBEAT_OK        Utilisateur reçoit le résultat
 
 **Variables d'environnement :**
 
-* `PICOCLAW_HEARTBEAT_ENABLED=false` pour désactiver
-* `PICOCLAW_HEARTBEAT_INTERVAL=60` pour changer l'intervalle
+* `OPENFOX_HEARTBEAT_ENABLED=false` pour désactiver
+* `OPENFOX_HEARTBEAT_INTERVAL=60` pour changer l'intervalle
 
 ### Providers
 
@@ -361,7 +361,7 @@ Répond HEARTBEAT_OK        Utilisateur reçoit le résultat
 | ------------ | --------------------------------------- | ------------------------------------------------------------ |
 | `gemini`     | LLM (Gemini direct)                     | [aistudio.google.com](https://aistudio.google.com)           |
 | `zhipu`      | LLM (Zhipu direct)                      | [bigmodel.cn](https://bigmodel.cn)                           |
-| `volcengine` | LLM (Volcengine direct)                 | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| `volcengine` | LLM (Volcengine direct)                 | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | `openrouter` | LLM (recommandé, accès à tous modèles)  | [openrouter.ai](https://openrouter.ai)                       |
 | `anthropic`  | LLM (Claude direct)                     | [console.anthropic.com](https://console.anthropic.com)       |
 | `openai`     | LLM (GPT direct)                        | [platform.openai.com](https://platform.openai.com)           |
@@ -373,7 +373,7 @@ Répond HEARTBEAT_OK        Utilisateur reçoit le résultat
 
 ### Configuration des Modèles (model_list)
 
-> **Nouveauté :** PicoClaw utilise désormais une approche **centrée sur le modèle**. Spécifiez simplement le format `vendor/model` (ex. `zhipu/glm-4.7`) pour ajouter de nouveaux providers — **aucune modification de code requise !**
+> **Nouveauté :** OpenFox utilise désormais une approche **centrée sur le modèle**. Spécifiez simplement le format `vendor/model` (ex. `zhipu/glm-4.7`) pour ajouter de nouveaux providers — **aucune modification de code requise !**
 
 #### Tous les Vendors Supportés
 
@@ -388,12 +388,12 @@ Répond HEARTBEAT_OK        Utilisateur reçoit le résultat
 | **通义千问 (Qwen)**     | `qwen/`         | `https://dashscope.aliyuncs.com/compatible-mode/v1` | OpenAI    | [Obtenir](https://dashscope.console.aliyun.com)                  |
 | **Ollama**              | `ollama/`       | `http://localhost:11434/v1`                         | OpenAI    | Local (pas de clé)                                               |
 | **OpenRouter**          | `openrouter/`   | `https://openrouter.ai/api/v1`                      | OpenAI    | [Obtenir](https://openrouter.ai/keys)                            |
-| **VolcEngine (Doubao)** | `volcengine/`   | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [Obtenir](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| **VolcEngine (Doubao)** | `volcengine/`   | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [Obtenir](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | **Antigravity**         | `antigravity/`  | Google Cloud                                        | Custom    | OAuth uniquement                                                 |
 
 #### Équilibrage de Charge
 
-Configurez plusieurs endpoints pour le même nom de modèle — PicoClaw effectuera automatiquement un round-robin :
+Configurez plusieurs endpoints pour le même nom de modèle — OpenFox effectuera automatiquement un round-robin :
 
 ```json
 {
@@ -410,7 +410,7 @@ L'ancienne configuration `providers` est **dépréciée** et a été supprimée 
 
 #### Configuration du Streaming
 
-Le streaming provider utilise un double opt-in et est désactivé par défaut. L'agent ne tente le streaming que lorsque le channel courant a `settings.streaming.enabled: true`, que l'entrée de modèle active a `streaming.enabled: true`, et que le provider comme le channel prennent en charge le streaming. Si une condition manque, PicoClaw utilise le chemin de requête non-streaming normal.
+Le streaming provider utilise un double opt-in et est désactivé par défaut. L'agent ne tente le streaming que lorsque le channel courant a `settings.streaming.enabled: true`, que l'entrée de modèle active a `streaming.enabled: true`, et que le provider comme le channel prennent en charge le streaming. Si une condition manque, OpenFox utilise le chemin de requête non-streaming normal.
 
 Pico WebUI est le premier channel entièrement câblé. Pico crée le premier message assistant avec le message wire existant `message.create`, puis met à jour ce même message avec `message.update`; aucun nouveau type de message Pico n'est introduit.
 
@@ -453,13 +453,13 @@ Exemple d'activation :
 | `channel_list.<name>.settings.streaming.min_growth_chars` | int | Défaut Pico après activation : `1` | Croissance minimale du texte avant une mise à jour intermédiaire; le contenu final est toujours envoyé |
 | `model_list[].streaming.enabled` | bool | `false` | Autorise cette entrée de modèle à tenter des requêtes provider en streaming |
 
-Les anciennes variables d'environnement Telegram restent compatibles : `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS` et `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. Elles s'appliquent uniquement aux settings Telegram et n'activent ni ne modifient `settings.streaming` de Pico.
+Les anciennes variables d'environnement Telegram restent compatibles : `OPENFOX_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `OPENFOX_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS` et `OPENFOX_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. Elles s'appliquent uniquement aux settings Telegram et n'activent ni ne modifient `settings.streaming` de Pico.
 
-Le comportement d'échec est volontairement conservateur : si le streaming échoue avant l'envoi d'un chunk visible, PicoClaw réessaie une fois via le chemin `Chat()` normal. Si un chunk a déjà été affiché à l'utilisateur, PicoClaw n'envoie pas une deuxième réponse non-streaming, afin d'éviter une sortie dupliquée.
+Le comportement d'échec est volontairement conservateur : si le streaming échoue avant l'envoi d'un chunk visible, OpenFox réessaie une fois via le chemin `Chat()` normal. Si un chunk a déjà été affiché à l'utilisateur, OpenFox n'envoie pas une deuxième réponse non-streaming, afin d'éviter une sortie dupliquée.
 
 ### Architecture des Providers
 
-PicoClaw route les providers par famille de protocole :
+OpenFox route les providers par famille de protocole :
 
 - **Compatible OpenAI** : OpenRouter, Groq, Zhipu, endpoints vLLM et la plupart des autres.
 - **Gemini natif** : Google Gemini via les endpoints natifs `models/*:generateContent` et `models/*:streamGenerateContent`.
@@ -470,7 +470,7 @@ Cela maintient le runtime léger tout en faisant des nouveaux backends compatibl
 
 ### Tâches Planifiées / Rappels
 
-PicoClaw supporte les tâches planifiées via l'outil `cron`. L'agent peut définir, lister et annuler des rappels ou tâches récurrentes.
+OpenFox supporte les tâches planifiées via l'outil `cron`. L'agent peut définir, lister et annuler des rappels ou tâches récurrentes.
 
 ```json
 {
@@ -483,7 +483,7 @@ PicoClaw supporte les tâches planifiées via l'outil `cron`. L'agent peut défi
 }
 ```
 
-Les tâches planifiées persistent après redémarrage dans `~/.picoclaw/workspace/cron/`.
+Les tâches planifiées persistent après redémarrage dans `~/.openfox/workspace/cron/`.
 
 ### Sujets Avancés
 

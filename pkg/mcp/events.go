@@ -1,8 +1,8 @@
 package mcp
 
 import (
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/tosnetwork/openfox/pkg/config"
+	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
 )
 
 func (m *Manager) publishServerEvent(

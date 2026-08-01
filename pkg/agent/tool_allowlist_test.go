@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	agenttools "github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/tosnetwork/openfox/pkg/config"
+	agenttools "github.com/tosnetwork/openfox/pkg/tools"
 )
 
 type allowlistTestTool struct {

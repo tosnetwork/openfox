@@ -295,8 +295,8 @@ flowchart TD
 
 | Field | Type | Default | Env var | Description |
 |-------|------|---------|---------|-------------|
-| `steering_mode` | `string` | `"one-at-a-time"` | `PICOCLAW_AGENTS_DEFAULTS_STEERING_MODE` | How the steering queue is drained per poll |
-| `max_parallel_turns` | `int` | `1` | `PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS` | Max concurrent turns. `0` or `1` = sequential; `>1` = parallel across sessions |
+| `steering_mode` | `string` | `"one-at-a-time"` | `OPENFOX_AGENTS_DEFAULTS_STEERING_MODE` | How the steering queue is drained per poll |
+| `max_parallel_turns` | `int` | `1` | `OPENFOX_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS` | Max concurrent turns. `0` or `1` = sequential; `>1` = parallel across sessions |
 
 
 ## Design decisions and trade-offs

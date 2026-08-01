@@ -2,7 +2,7 @@
 
 # 凭据加密
 
-PicoClaw 支持对 `model_list` 配置条目中的 `api_key` 值进行加密。
+OpenFox 支持对 `model_list` 配置条目中的 `api_key` 值进行加密。
 加密后的密钥以 `enc://<base64>` 字符串形式存储，并在启动时自动解密。
 
 ---
@@ -12,12 +12,12 @@ PicoClaw 支持对 `model_list` 配置条目中的 `api_key` 值进行加密。
 **1. 设置密码短语**
 
 ```bash
-export PICOCLAW_KEY_PASSPHRASE="your-passphrase"
+export OPENFOX_KEY_PASSPHRASE="your-passphrase"
 ```
 
 **2. 加密 API 密钥**
 
-运行 `picoclaw onboard` — 它会提示你输入密码短语并生成 SSH 密钥，
+运行 `openfox onboard` — 它会提示你输入密码短语并生成 SSH 密钥，
 然后在下一次 `SaveConfig` 调用时自动重新加密配置中所有明文 `api_key` 条目。生成的 `enc://` 值如下所示：
 
 ```
@@ -47,7 +47,7 @@ enc://AAAA...base64...
 |------|------|------|
 | 明文 | `sk-abc123` | 直接使用 |
 | 文件引用 | `file://openai.key` | 从配置文件所在目录读取内容 |
-| 加密 | `enc://<base64>` | 启动时使用 `PICOCLAW_KEY_PASSPHRASE` 解密 |
+| 加密 | `enc://<base64>` | 启动时使用 `OPENFOX_KEY_PASSPHRASE` 解密 |
 | 空值 | `""` | 原样传递（用于 `auth_method: oauth`） |
 
 ---
@@ -61,7 +61,7 @@ enc://AAAA...base64...
 ```
 sshHash = SHA256(ssh_private_key_file_bytes)
 ikm     = HMAC-SHA256(key=sshHash, message=passphrase)
-aes_key = HKDF-SHA256(ikm, salt, info="picoclaw-credential-v1", 32 bytes)
+aes_key = HKDF-SHA256(ikm, salt, info="openfox-credential-v1", 32 bytes)
 ```
 
 ### 加密
@@ -98,7 +98,7 @@ GCM 认证标签会自动附加到密文之后。任何篡改都会导致解密�
 
 当提供 SSH 私钥时，破解加密需要**同时具备**：
 
-1. **密码短语** (`PICOCLAW_KEY_PASSPHRASE`)
+1. **密码短语** (`OPENFOX_KEY_PASSPHRASE`)
 2. **SSH 私钥文件**
 
 这意味着仅泄露配置文件不足以恢复 API 密钥，即使密码短语较弱也是如此。SSH 密钥贡献 256 位熵（Ed25519），与密码短语强度无关。
@@ -118,33 +118,33 @@ GCM 认证标签会自动附加到密文之后。任何篡改都会导致解密�
 
 | 变量 | 是否必需 | 描述 |
 |------|----------|------|
-| `PICOCLAW_KEY_PASSPHRASE` | 是（用于 `enc://`） | 用于密钥派生的密码短语 |
-| `PICOCLAW_SSH_KEY_PATH` | 否 | SSH 私钥路径。如未设置，自动从 `~/.ssh/picoclaw_ed25519.key` 检测 |
+| `OPENFOX_KEY_PASSPHRASE` | 是（用于 `enc://`） | 用于密钥派生的密码短语 |
+| `OPENFOX_SSH_KEY_PATH` | 否 | SSH 私钥路径。如未设置，自动从 `~/.ssh/openfox_ed25519.key` 检测 |
 
 ### SSH 密钥自动检测
 
-如果未设置 `PICOCLAW_SSH_KEY_PATH`，PicoClaw 会查找专用密钥：
+如果未设置 `OPENFOX_SSH_KEY_PATH`，OpenFox 会查找专用密钥：
 
 ```
-~/.ssh/picoclaw_ed25519.key
+~/.ssh/openfox_ed25519.key
 ```
 
 此专用文件避免与用户现有的 SSH 密钥冲突。
-运行 `picoclaw onboard` 可自动生成该密钥。
+运行 `openfox onboard` 可自动生成该密钥。
 
 `os.UserHomeDir()` 用于跨平台主目录解析（在 Windows 上读取 `USERPROFILE`，在 Unix/macOS 上读取 `HOME`）。
 
-> **注意：** SSH 密钥文件是凭据加密的必要条件。如果未找到密钥且未设置 `PICOCLAW_SSH_KEY_PATH`，加密/解密将失败。运行 `picoclaw onboard` 可自动生成密钥。
+> **注意：** SSH 密钥文件是凭据加密的必要条件。如果未找到密钥且未设置 `OPENFOX_SSH_KEY_PATH`，加密/解密将失败。运行 `openfox onboard` 可自动生成密钥。
 
 ---
 
 ## 迁移
 
-由于唯一的密钥材料是 `PICOCLAW_KEY_PASSPHRASE` 和 SSH 私钥文件，迁移非常简单：
+由于唯一的密钥材料是 `OPENFOX_KEY_PASSPHRASE` 和 SSH 私钥文件，迁移非常简单：
 
 1. 将配置文件复制到新机器。
-2. 将 `PICOCLAW_KEY_PASSPHRASE` 设置为相同的值。
-3. 将 SSH 私钥文件复制到相同路径（或将 `PICOCLAW_SSH_KEY_PATH` 设置为新位置）。
+2. 将 `OPENFOX_KEY_PASSPHRASE` 设置为相同的值。
+3. 将 SSH 私钥文件复制到相同路径（或将 `OPENFOX_SSH_KEY_PATH` 设置为新位置）。
 
 无需重新加密。
 
@@ -152,7 +152,7 @@ GCM 认证标签会自动附加到密文之后。任何篡改都会导致解密�
 
 ## 安全注意事项
 
-- **密码短语和 SSH 密钥都是必需的。** SSH 密钥作为第二因子 — 没有它，加密/解密将失败。如果密钥不存在，运行 `picoclaw onboard` 生成。
-- **SSH 密钥在运行时为只读。** PicoClaw 不会写入或修改 SSH 密钥文件。
+- **密码短语和 SSH 密钥都是必需的。** SSH 密钥作为第二因子 — 没有它，加密/解密将失败。如果密钥不存在，运行 `openfox onboard` 生成。
+- **SSH 密钥在运行时为只读。** OpenFox 不会写入或修改 SSH 密钥文件。
 - **仍然支持明文密钥。** 不使用 `enc://` 的现有配置不受影响。
-- **`enc://` 格式通过版本控制**，通过 HKDF `info` 字段（`picoclaw-credential-v1`）实现，允许未来升级算法而不破坏现有加密值。
+- **`enc://` 格式通过版本控制**，通过 HKDF `info` 字段（`openfox-credential-v1`）实现，允许未来升级算法而不破坏现有加密值。

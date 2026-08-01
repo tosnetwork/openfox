@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/config"
 )
 
 // TestShellTool_Success verifies successful command execution
@@ -705,7 +705,7 @@ func TestShellTool_URLsNotBlocked(t *testing.T) {
 		"wget http://example.com/file",
 		"browser open https://github.com/user/repo",
 		"fetch ftp://ftp.example.com/file.txt",
-		"git clone https://github.com/sipeed/picoclaw.git",
+		"git clone https://github.com/tosnetwork/openfox.git",
 	}
 
 	for _, cmd := range commands {
@@ -1948,7 +1948,7 @@ func TestShellTool_CustomAllowDoesNotBypassDenyPatterns(t *testing.T) {
 		t.Fatalf("NewExecToolWithConfig() error: %v", err)
 	}
 
-	got := tool.guardCommand(`jq -n '$ENV.PICOCLAW_VARIANT_CANARY'`, t.TempDir())
+	got := tool.guardCommand(`jq -n '$ENV.OPENFOX_VARIANT_CANARY'`, t.TempDir())
 	if !strings.Contains(got, "dangerous pattern detected") {
 		t.Fatalf("custom allow should not bypass deny patterns, got: %q", got)
 	}

@@ -2,7 +2,7 @@
 
 > Back to [README](../README.md)
 
-This document describes the runtime session system used by PicoClaw to:
+This document describes the runtime session system used by OpenFox to:
 
 - map inbound messages onto stable conversation scopes
 - persist message history and summaries

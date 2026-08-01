@@ -2,7 +2,7 @@
 
 > [README](../project/README.ja.md) に戻る
 
-PicoClaw のツール設定は `config.json` の `tools` フィールドにあります。
+OpenFox のツール設定は `config.json` の `tools` フィールドにあります。
 
 ## ディレクトリ構造
 
@@ -143,7 +143,7 @@ Exec ツールはシェルコマンドの実行に使用されます。
 
 **環境変数経由：**
 ```bash
-PICOCLAW_TOOLS_EXEC_ENABLED=false
+OPENFOX_TOOLS_EXEC_ENABLED=false
 ```
 
 > **注意：** 無効にすると、エージェントはシェルコマンドを実行できなくなります。これは Cron ツールがスケジュールされたシェルコマンドを実行する能力にも影響します。
@@ -155,7 +155,7 @@ PICOCLAW_TOOLS_EXEC_ENABLED=false
 
 ### デフォルトでブロックされるコマンドパターン
 
-デフォルトで、PicoClaw は以下の危険なコマンドをブロックします：
+デフォルトで、OpenFox は以下の危険なコマンドをブロックします：
 
 - 削除コマンド：`rm -rf`、`del /f/q`、`rmdir /s`
 - ディスク操作：`format`、`mkfs`、`diskpart`、`dd if=`、`/dev/sd*` への書き込み
@@ -172,7 +172,7 @@ PICOCLAW_TOOLS_EXEC_ENABLED=false
 
 ### 既知のアーキテクチャ上の制限
 
-exec ガードは PicoClaw に送信されたトップレベルのコマンドのみを検証します。そのコマンドの実行開始後にビルドツールやスクリプトが生成する子プロセスを再帰的に検査することは**ありません**。
+exec ガードは OpenFox に送信されたトップレベルのコマンドのみを検証します。そのコマンドの実行開始後にビルドツールやスクリプトが生成する子プロセスを再帰的に検査することは**ありません**。
 
 初期コマンドが許可された後、直接コマンドガードをバイパスできるワークフローの例：
 
@@ -402,14 +402,14 @@ Skills ツールは ClawHub などのレジストリを通じたスキルの発�
 
 ## 環境変数
 
-すべての設定オプションは `PICOCLAW_TOOLS_<SECTION>_<KEY>` 形式の環境変数で上書きできます：
+すべての設定オプションは `OPENFOX_TOOLS_<SECTION>_<KEY>` 形式の環境変数で上書きできます：
 
 例：
 
-- `PICOCLAW_TOOLS_WEB_BRAVE_ENABLED=true`
-- `PICOCLAW_TOOLS_EXEC_ENABLED=false`
-- `PICOCLAW_TOOLS_EXEC_ENABLE_DENY_PATTERNS=false`
-- `PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES=10`
-- `PICOCLAW_TOOLS_MCP_ENABLED=true`
+- `OPENFOX_TOOLS_WEB_BRAVE_ENABLED=true`
+- `OPENFOX_TOOLS_EXEC_ENABLED=false`
+- `OPENFOX_TOOLS_EXEC_ENABLE_DENY_PATTERNS=false`
+- `OPENFOX_TOOLS_CRON_EXEC_TIMEOUT_MINUTES=10`
+- `OPENFOX_TOOLS_MCP_ENABLED=true`
 
 注意：ネストされたマップ形式の設定（例：`tools.mcp.servers.<name>.*`）は環境変数ではなく `config.json` で設定します。

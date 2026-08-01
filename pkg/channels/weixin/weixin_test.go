@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	basechannels "github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
+	basechannels "github.com/tosnetwork/openfox/pkg/channels"
+	"github.com/tosnetwork/openfox/pkg/config"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -256,7 +256,7 @@ func TestLoadSaveGetUpdatesBuf(t *testing.T) {
 	}
 }
 
-func TestBuildWeixinSyncBufPathUsesPicoclawHome(t *testing.T) {
+func TestBuildWeixinSyncBufPathUsesOpenfoxHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(config.EnvHome, home)
 

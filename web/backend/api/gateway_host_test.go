@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/netbind"
-	"github.com/sipeed/picoclaw/web/backend/launcherconfig"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/netbind"
+	"github.com/tosnetwork/openfox/web/backend/launcherconfig"
 )
 
 func TestGatewayHostOverrideUsesExplicitRuntimePublic(t *testing.T) {
@@ -264,14 +264,14 @@ func TestBuildWsURLDoesNotTrustOriginWhenProxyOmitsForwardedProto(t *testing.T) 
 	h := NewHandler(configPath)
 
 	req := httptest.NewRequest("GET", "http://launcher.local/api/pico/info", nil)
-	req.Host = "fs-952210-xwj.picoclaw.lan.sipeed.com"
-	req.Header.Set("Origin", "https://fs-952210-xwj.picoclaw.lan.sipeed.com")
+	req.Host = "fs-952210-xwj.openfox.lan.example.com"
+	req.Header.Set("Origin", "https://fs-952210-xwj.openfox.lan.example.com")
 
-	if got := h.buildWsURL(req); got != "ws://fs-952210-xwj.picoclaw.lan.sipeed.com:80/pico/ws" {
+	if got := h.buildWsURL(req); got != "ws://fs-952210-xwj.openfox.lan.example.com:80/pico/ws" {
 		t.Fatalf(
 			"buildWsURL() = %q, want %q",
 			got,
-			"ws://fs-952210-xwj.picoclaw.lan.sipeed.com:80/pico/ws",
+			"ws://fs-952210-xwj.openfox.lan.example.com:80/pico/ws",
 		)
 	}
 }

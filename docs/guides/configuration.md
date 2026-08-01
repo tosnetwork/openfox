@@ -4,33 +4,33 @@
 
 ## ⚙️ Configuration
 
-Config file: `~/.picoclaw/config.json`
+Config file: `~/.openfox/config.json`
 
 > **Security Configuration:** For storing API keys, tokens, and other sensitive data, see the [Security Configuration Guide](../security/security_configuration.md).
 
 ### Environment Variables
 
-You can override default paths using environment variables. This is useful for portable installations, containerized deployments, or running picoclaw as a system service. These variables are independent and control different paths.
+You can override default paths using environment variables. This is useful for portable installations, containerized deployments, or running openfox as a system service. These variables are independent and control different paths.
 
 | Variable          | Description                                                                                                                             | Default Path              |
 |-------------------|-----------------------------------------------------------------------------------------------------------------------------------------|---------------------------|
-| `PICOCLAW_CONFIG` | Overrides the path to the configuration file. This directly tells picoclaw which `config.json` to load, ignoring all other locations. | `~/.picoclaw/config.json` |
-| `PICOCLAW_HOME`   | Overrides the root directory for picoclaw data. This changes the default location of the `workspace` and other data directories.          | `~/.picoclaw`             |
+| `OPENFOX_CONFIG` | Overrides the path to the configuration file. This directly tells openfox which `config.json` to load, ignoring all other locations. | `~/.openfox/config.json` |
+| `OPENFOX_HOME`   | Overrides the root directory for openfox data. This changes the default location of the `workspace` and other data directories.          | `~/.openfox`             |
 
 **Examples:**
 
 ```bash
-# Run picoclaw using a specific config file
+# Run openfox using a specific config file
 # The workspace path will be read from within that config file
-PICOCLAW_CONFIG=/etc/picoclaw/production.json picoclaw gateway
+OPENFOX_CONFIG=/etc/openfox/production.json openfox gateway
 
-# Run picoclaw with all its data stored in /opt/picoclaw
-# Config will be loaded from the default ~/.picoclaw/config.json
-# Workspace will be created at /opt/picoclaw/workspace
-PICOCLAW_HOME=/opt/picoclaw picoclaw agent
+# Run openfox with all its data stored in /opt/openfox
+# Config will be loaded from the default ~/.openfox/config.json
+# Workspace will be created at /opt/openfox/workspace
+OPENFOX_HOME=/opt/openfox openfox agent
 
 # Use both for a fully customized setup
-PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gateway
+OPENFOX_HOME=/srv/openfox OPENFOX_CONFIG=/srv/openfox/main.json openfox gateway
 ```
 
 ### Gateway Log Level
@@ -47,14 +47,14 @@ PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gat
 
 When omitted, the default is `warn`. Supported values: `debug`, `info`, `warn`, `error`, `fatal`.
 
-You can also override this with the environment variable `PICOCLAW_LOG_LEVEL`.
+You can also override this with the environment variable `OPENFOX_LOG_LEVEL`.
 
 ### Workspace Layout
 
-PicoClaw stores data in your configured workspace (default: `~/.picoclaw/workspace`):
+OpenFox stores data in your configured workspace (default: `~/.openfox/workspace`):
 
 ```
-~/.picoclaw/workspace/
+~/.openfox/workspace/
 ├── sessions/          # Conversation sessions and history
 ├── memory/           # Long-term memory (MEMORY.md)
 ├── state/            # Persistent state (last channel, etc.)
@@ -71,7 +71,7 @@ PicoClaw stores data in your configured workspace (default: `~/.picoclaw/workspa
 
 ### Agent Self-Evolution
 
-The `evolution` block controls PicoClaw's self-evolution runtime. When enabled, the agent records completed turns as learning records. In higher modes it can group repeated successful patterns, generate skill drafts, and optionally apply accepted drafts into workspace skills.
+The `evolution` block controls OpenFox's self-evolution runtime. When enabled, the agent records completed turns as learning records. In higher modes it can group repeated successful patterns, generate skill drafts, and optionally apply accepted drafts into workspace skills.
 
 ```json
 {
@@ -97,17 +97,17 @@ The `evolution` block controls PicoClaw's self-evolution runtime. When enabled, 
 | `cold_path_trigger` | `after_turn` | Runs draft generation `after_turn`, on a `scheduled` cadence, or disables automatic cold-path runs when set to `manual`. There is no user-facing manual trigger yet. Applies only in `draft` and `apply` modes. |
 | `cold_path_times` | `[]` | Scheduled run times used when `cold_path_trigger` is `scheduled`, written as `HH:MM` strings. |
 
-Use `observe` first if you want to inspect learning records without generating skill changes. Use `draft` when you want PicoClaw to prepare reviewable improvements. Use `apply` only when you are comfortable letting accepted drafts update workspace skills.
+Use `observe` first if you want to inspect learning records without generating skill changes. Use `draft` when you want OpenFox to prepare reviewable improvements. Use `apply` only when you are comfortable letting accepted drafts update workspace skills.
 
 ### Request Context Policy
 
-`turn_profile` is an optional request context policy under `agents.defaults.turn_profile`. Leave it unset or set `"enabled": false` to keep PicoClaw's normal behavior. When `"enabled": true`, the same policy applies to every new turn.
+`turn_profile` is an optional request context policy under `agents.defaults.turn_profile`. Leave it unset or set `"enabled": false` to keep OpenFox's normal behavior. When `"enabled": true`, the same policy applies to every new turn.
 
 Each block uses the same `mode` values:
 
 | Mode | Meaning |
 | --- | --- |
-| `default` | Keep PicoClaw's normal behavior for that block. Missing blocks and missing `mode` fields are treated as `default`. |
+| `default` | Keep OpenFox's normal behavior for that block. Missing blocks and missing `mode` fields are treated as `default`. |
 | `off` | Disable that block for the turn. |
 | `custom` | Use an allow list. In this version, `custom` is supported only for `skills` and `tools`; using it for `history` or `system_prompt` is a validation error. |
 
@@ -116,11 +116,11 @@ Profile blocks:
 | Block | What it controls |
 | --- | --- |
 | `history` | Whether the turn reads prior session history and summary, writes user/assistant/tool messages, ingests context, and runs compaction or summarization. |
-| `system_prompt` | Whether PicoClaw injects its default identity, workspace instructions, memory, runtime context, and summary. External request system prompts are still allowed when this is `off`. |
+| `system_prompt` | Whether OpenFox injects its default identity, workspace instructions, memory, runtime context, and summary. External request system prompts are still allowed when this is `off`. |
 | `skills` | Whether the skill catalog and active skill prompt content are loaded. `custom.allow` keeps only the listed skill names in prompt context. |
 | `tools` | Which callable tools are exposed to the model and allowed at execution time. `custom.allow` keeps only listed registered tool names. |
 
-When `system_prompt.mode` is `off`, tools are still visible, and no external system prompt is supplied, PicoClaw uses its existing tool-use rule as the minimal fallback prompt. If `tools.mode` is `off`, no fallback prompt is added.
+When `system_prompt.mode` is `off`, tools are still visible, and no external system prompt is supplied, OpenFox uses its existing tool-use rule as the minimal fallback prompt. If `tools.mode` is `off`, no fallback prompt is added.
 
 Example clean web policy:
 
@@ -145,13 +145,13 @@ Example clean web policy:
 
 ### Web launcher dashboard
 
-**picoclaw-launcher** serves a browser UI that requires password sign-in first. On first run, open `/launcher-setup` to create the dashboard password. Later manual sign-ins use `/launcher-login`.
+**openfox-launcher** serves a browser UI that requires password sign-in first. On first run, open `/launcher-setup` to create the dashboard password. Later manual sign-ins use `/launcher-login`.
 
-- **Config file**: Same directory as `config.json` (or the file pointed to by `PICOCLAW_CONFIG`). The launcher-specific file is `launcher-config.json`.
+- **Config file**: Same directory as `config.json` (or the file pointed to by `OPENFOX_CONFIG`). The launcher-specific file is `launcher-config.json`.
 - **Password storage**: On supported platforms, the password is stored as a bcrypt hash in `launcher-auth.db`. On platforms where the SQLite password store is unavailable, the bcrypt hash is stored in `launcher-config.json`.
 - **Legacy migration**: Older `launcher_token` values are migrated once into password login and removed from saved launcher config.
 - **Local auto-login**: When the launcher auto-opens a local browser after startup, it uses a one-shot loopback-only bootstrap endpoint to set the session cookie automatically.
-- **Unsupported auth paths**: URL token login (`?token=...`), `PICOCLAW_LAUNCHER_TOKEN`, and `Authorization: Bearer` dashboard auth are no longer supported.
+- **Unsupported auth paths**: URL token login (`?token=...`), `OPENFOX_LAUNCHER_TOKEN`, and `Authorization: Bearer` dashboard auth are no longer supported.
 - **Sign-out**: Use **`POST /api/auth/logout`** with **`Content-Type: application/json`** (body may be `{}`). Do not rely on a GET URL for logout (CSRF-safe pattern).
 - **Brute-force**: **`POST /api/auth/login`** is **rate-limited per client IP per minute** (HTTP 429 when exceeded).
 - **Session lifetime**: The HttpOnly session cookie lasts about **31 days** by default, but sessions are invalidated when the launcher process restarts.
@@ -160,14 +160,14 @@ Example clean web policy:
 
 By default, skills are loaded from:
 
-1. `~/.picoclaw/workspace/skills` (workspace)
-2. `~/.picoclaw/skills` (global)
+1. `~/.openfox/workspace/skills` (workspace)
+2. `~/.openfox/skills` (global)
 3. `<binary-embedded-path>/skills` (builtin, set at build time)
 
 For advanced/test setups, you can override the builtin skills root with:
 
 ```bash
-export PICOCLAW_BUILTIN_SKILLS=/path/to/skills
+export OPENFOX_BUILTIN_SKILLS=/path/to/skills
 ```
 
 ### Using Skills From Chat Channels
@@ -216,7 +216,7 @@ Routing is configured through `agents.dispatch.rules`.
 
 Each rule matches against the normalized inbound context produced by channels.
 Rules are evaluated from top to bottom. The first matching rule wins. If no
-rule matches, PicoClaw falls back to the configured default agent.
+rule matches, OpenFox falls back to the configured default agent.
 
 Supported match fields:
 
@@ -289,7 +289,7 @@ For more complete routing and model-tier examples, see the [Routing Guide](routi
 
 Per-agent tool declarations live in `AGENT.md` frontmatter, not in `config.json`.
 
-If `tools` is omitted from frontmatter, the agent gets the normal globally enabled tool set. If `tools` is present, PicoClaw registers only the listed runtime tools for that agent.
+If `tools` is omitted from frontmatter, the agent gets the normal globally enabled tool set. If `tools` is present, OpenFox registers only the listed runtime tools for that agent.
 
 ```md
 ---
@@ -312,7 +312,7 @@ Notes:
 
 ### Agent Discovery (Automatic)
 
-When an agent has spawnable peers and can call `spawn`, PicoClaw injects a structured agent registry into that agent's system prompt on every turn. No extra `list_agents` tool call is required.
+When an agent has spawnable peers and can call `spawn`, OpenFox injects a structured agent registry into that agent's system prompt on every turn. No extra `list_agents` tool call is required.
 
 This registry is intended to make delegation concrete and reliable, especially when using `spawn` with a target `agent_id`.
 
@@ -350,7 +350,7 @@ In practice, this means a generalist agent can choose a peer based on its role d
 
 ### 🔒 Security Sandbox
 
-PicoClaw runs in a sandboxed environment by default. The agent can only access files and execute commands within the configured workspace.
+OpenFox runs in a sandboxed environment by default. The agent can only access files and execute commands within the configured workspace.
 
 #### Default Configuration
 
@@ -358,7 +358,7 @@ PicoClaw runs in a sandboxed environment by default. The agent can only access f
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.openfox/workspace",
       "restrict_to_workspace": true
     }
   }
@@ -367,7 +367,7 @@ PicoClaw runs in a sandboxed environment by default. The agent can only access f
 
 | Option                  | Default                 | Description                               |
 | ----------------------- | ----------------------- | ----------------------------------------- |
-| `workspace`             | `~/.picoclaw/workspace` | Working directory for the agent           |
+| `workspace`             | `~/.openfox/workspace` | Working directory for the agent           |
 | `restrict_to_workspace` | `true`                  | Restrict file/command access to workspace |
 
 #### Protected Tools
@@ -404,7 +404,7 @@ Even with `restrict_to_workspace: false`, the `exec` tool blocks these dangerous
 
 ### Read File Mode
 
-`read_file` has two mutually exclusive implementations selected by config. PicoClaw registers exactly one of them at startup:
+`read_file` has two mutually exclusive implementations selected by config. OpenFox registers exactly one of them at startup:
 
 | Config Key | Type | Default | Description |
 |------------|------|---------|-------------|
@@ -475,7 +475,7 @@ Use `mode = lines` when:
 
 #### Known Limitation: Child Processes From Build Tools
 
-The exec safety guard only inspects the command line PicoClaw launches directly. It does not recursively inspect child
+The exec safety guard only inspects the command line OpenFox launches directly. It does not recursively inspect child
 processes spawned by allowed developer tools such as `make`, `go run`, `cargo`, `npm run`, or custom build scripts.
 
 That means a top-level command can still compile or launch other binaries after it passes the initial guard check. In
@@ -486,7 +486,7 @@ For higher-risk environments:
 
 * Review build scripts before execution.
 * Prefer approval/manual review for compile-and-run workflows.
-* Run PicoClaw inside a container or VM if you need stronger isolation than the built-in guard provides.
+* Run OpenFox inside a container or VM if you need stronger isolation than the built-in guard provides.
 
 #### Error Examples
 
@@ -519,7 +519,7 @@ If you need the agent to access paths outside the workspace:
 **Method 2: Environment variable**
 
 ```bash
-export PICOCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
+export OPENFOX_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
 ```
 
 > ⚠️ **Warning**: Disabling this restriction allows the agent to access any path on your system. Use with caution in controlled environments only.
@@ -538,7 +538,7 @@ All paths share the same workspace restriction — there's no way to bypass the 
 
 ### Heartbeat (Periodic Tasks)
 
-PicoClaw can perform periodic tasks automatically. Create a `HEARTBEAT.md` file in your workspace:
+OpenFox can perform periodic tasks automatically. Create a `HEARTBEAT.md` file in your workspace:
 
 ```markdown
 # Periodic Tasks
@@ -612,8 +612,8 @@ The subagent has access to tools (message, web_search, etc.) and can communicate
 
 **Environment variables:**
 
-* `PICOCLAW_HEARTBEAT_ENABLED=false` to disable
-* `PICOCLAW_HEARTBEAT_INTERVAL=60` to change interval
+* `OPENFOX_HEARTBEAT_ENABLED=false` to disable
+* `OPENFOX_HEARTBEAT_INTERVAL=60` to change interval
 
 ### Providers
 
@@ -624,7 +624,7 @@ The subagent has access to tools (message, web_search, etc.) and can communicate
 | ------------ | --------------------------------------- | ------------------------------------------------------------ |
 | `gemini`     | LLM (Gemini direct)                     | [aistudio.google.com](https://aistudio.google.com)           |
 | `zhipu`      | LLM (Zhipu direct)                      | [bigmodel.cn](https://bigmodel.cn)                           |
-| `volcengine` | LLM (Volcengine direct)                 | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| `volcengine` | LLM (Volcengine direct)                 | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | `openrouter` | LLM (recommended, access to all models) | [openrouter.ai](https://openrouter.ai)                       |
 | `anthropic`  | LLM (Claude direct)                     | [console.anthropic.com](https://console.anthropic.com)       |
 | `openai`     | LLM (GPT direct)                        | [platform.openai.com](https://platform.openai.com)           |
@@ -636,7 +636,7 @@ The subagent has access to tools (message, web_search, etc.) and can communicate
 
 ### Model Configuration (model_list)
 
-> **What's New?** PicoClaw now prefers explicit `provider` + native `model` configuration (for example `"provider": "zhipu", "model": "glm-4.7"`). The legacy single-field `provider/model` form remains supported for compatibility when `provider` is omitted.
+> **What's New?** OpenFox now prefers explicit `provider` + native `model` configuration (for example `"provider": "zhipu", "model": "glm-4.7"`). The legacy single-field `provider/model` form remains supported for compatibility when `provider` is omitted.
 
 This design also enables **multi-agent support** with flexible provider selection:
 
@@ -648,7 +648,7 @@ This design also enables **multi-agent support** with flexible provider selectio
 
 #### 🔒 Security Configuration (Recommended)
 
-PicoClaw supports separating sensitive data (API keys, tokens, secrets) from your main configuration by storing them in a `.security.yml` file.
+OpenFox supports separating sensitive data (API keys, tokens, secrets) from your main configuration by storing them in a `.security.yml` file.
 
 **Key Benefits:**
 - **Security**: Sensitive data is never in your main config file
@@ -658,7 +658,7 @@ PicoClaw supports separating sensitive data (API keys, tokens, secrets) from you
 
 **Quick Setup:**
 
-1. Create `~/.picoclaw/.security.yml` with your API keys:
+1. Create `~/.openfox/.security.yml` with your API keys:
 ```yaml
 model_list:
   gpt-5.4:
@@ -680,7 +680,7 @@ web:
 
 2. Set proper permissions:
 ```bash
-chmod 600 ~/.picoclaw/.security.yml
+chmod 600 ~/.openfox/.security.yml
 ```
 
 3. Remove sensitive fields from `config.json` (recommended):
@@ -731,7 +731,7 @@ For complete documentation, see [`../security/security_configuration.md`](../sec
 | **LiteLLM Proxy**       | `litellm`         | `http://localhost:4000/v1`                          | OpenAI    | Your LiteLLM proxy key                                           |
 | **VLLM**                | `vllm`            | `http://localhost:8000/v1`                          | OpenAI    | Local                                                            |
 | **Cerebras**            | `cerebras`        | `https://api.cerebras.ai/v1`                        | OpenAI    | [Get Key](https://cerebras.ai)                                   |
-| **VolcEngine (Doubao)** | `volcengine`      | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [Get Key](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| **VolcEngine (Doubao)** | `volcengine`      | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [Get Key](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | **神算云**              | `shengsuanyun`    | `https://router.shengsuanyun.com/api/v1`            | OpenAI    | —                                                                |
 | **BytePlus**            | `byteplus`        | `https://ark.ap-southeast.bytepluses.com/api/v3`    | OpenAI    | [Get Key](https://www.byteplus.com)                              |
 | **Vivgrid**             | `vivgrid`         | `https://api.vivgrid.com/v1`                        | OpenAI    | [Get Key](https://vivgrid.com)                                   |
@@ -785,13 +785,13 @@ For complete documentation, see [`../security/security_configuration.md`](../sec
 Resolution rules:
 
 - Prefer explicit `"provider": "openai", "model": "gpt-5.4"`.
-- If `provider` is set, PicoClaw sends `model` unchanged.
-- If `provider` is omitted, PicoClaw treats the first `/` segment in `model` as the provider and everything after that first `/` as the runtime model ID.
+- If `provider` is set, OpenFox sends `model` unchanged.
+- If `provider` is omitted, OpenFox treats the first `/` segment in `model` as the provider and everything after that first `/` as the runtime model ID.
 - This means `"model": "openrouter/openai/gpt-5.4"` still works as a compatibility form and sends `openai/gpt-5.4` to OpenRouter.
 
 #### Streaming Configuration
 
-Provider streaming uses a double opt-in and is disabled by default. The agent only tries streaming when the current channel has `settings.streaming.enabled: true`, the active model entry has `streaming.enabled: true`, and both the provider and channel support streaming. If any condition is missing, PicoClaw uses the normal non-streaming request path.
+Provider streaming uses a double opt-in and is disabled by default. The agent only tries streaming when the current channel has `settings.streaming.enabled: true`, the active model entry has `streaming.enabled: true`, and both the provider and channel support streaming. If any condition is missing, OpenFox uses the normal non-streaming request path.
 
 Pico WebUI is the first fully wired channel. Pico creates the first assistant message with the existing `message.create` wire message, then updates that same message with `message.update`; no new Pico wire message type is introduced.
 
@@ -834,9 +834,9 @@ Opt-in example:
 | `channel_list.<name>.settings.streaming.min_growth_chars` | int | Pico default after enabling: `1` | Minimum character growth before sending an intermediate update; final content is always flushed |
 | `model_list[].streaming.enabled` | bool | `false` | Allows this model entry to try provider streaming requests |
 
-Legacy Telegram environment variables remain compatible: `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS`, and `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. They only apply to Telegram settings and do not enable or modify Pico `settings.streaming`.
+Legacy Telegram environment variables remain compatible: `OPENFOX_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `OPENFOX_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS`, and `OPENFOX_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. They only apply to Telegram settings and do not enable or modify Pico `settings.streaming`.
 
-Failure behavior is intentionally conservative: if streaming fails before any visible chunk is sent, PicoClaw retries once through the normal `Chat()` path. If a chunk has already been shown to the user, PicoClaw does not send a second non-streaming answer, because that would duplicate visible output.
+Failure behavior is intentionally conservative: if streaming fails before any visible chunk is sent, OpenFox retries once through the normal `Chat()` path. If a chunk has already been shown to the user, OpenFox does not send a second non-streaming answer, because that would duplicate visible output.
 
 For model-specific TTS request fields such as custom speech `voice` names or
 `response_format: "mp3"`, use `model_list[].extra_body`.
@@ -942,7 +942,7 @@ Pair this with:
 }
 ```
 
-> Run `picoclaw auth login --provider anthropic` to paste your API token.
+> Run `openfox auth login --provider anthropic` to paste your API token.
 
 For direct Anthropic API access or custom endpoints that only support Anthropic's native message format:
 
@@ -985,7 +985,7 @@ For direct Anthropic API access or custom endpoints that only support Anthropic'
 ```
 
 `api_base` defaults to `http://localhost:1234/v1`. API key is optional unless your LM Studio server enables authentication.<br/>
-With explicit `provider`, PicoClaw sends `openai/gpt-oss-20b` unchanged to LM Studio. The legacy compatibility form `"model": "lmstudio/openai/gpt-oss-20b"` still resolves to the same upstream model ID when `provider` is omitted.
+With explicit `provider`, OpenFox sends `openai/gpt-oss-20b` unchanged to LM Studio. The legacy compatibility form `"model": "lmstudio/openai/gpt-oss-20b"` still resolves to the same upstream model ID when `provider` is omitted.
 
 </details>
 
@@ -1002,13 +1002,13 @@ With explicit `provider`, PicoClaw sends `openai/gpt-oss-20b` unchanged to LM St
 }
 ```
 
-With explicit `provider`, PicoClaw sends `model` unchanged. That means `"provider": "litellm", "model": "lite-gpt4"` sends `lite-gpt4`, while `"provider": "litellm", "model": "openai/gpt-4o"` sends `openai/gpt-4o`. The legacy compatibility forms `litellm/lite-gpt4` and `litellm/openai/gpt-4o` still resolve the same way when `provider` is omitted.
+With explicit `provider`, OpenFox sends `model` unchanged. That means `"provider": "litellm", "model": "lite-gpt4"` sends `lite-gpt4`, while `"provider": "litellm", "model": "openai/gpt-4o"` sends `openai/gpt-4o`. The legacy compatibility forms `litellm/lite-gpt4` and `litellm/openai/gpt-4o` still resolve the same way when `provider` is omitted.
 
 </details>
 
 #### Load Balancing
 
-Configure multiple endpoints for the same model name — PicoClaw will automatically round-robin between them:
+Configure multiple endpoints for the same model name — OpenFox will automatically round-robin between them:
 
 **Option 1: Multiple API Keys in .security.yml (Recommended)**
 
@@ -1065,7 +1065,7 @@ The old `providers` configuration is **deprecated** and has been removed in V2. 
 
 ### Provider Architecture
 
-PicoClaw routes providers by protocol family:
+OpenFox routes providers by protocol family:
 
 - **OpenAI-compatible**: OpenRouter, Groq, Zhipu, vLLM-style endpoints, and most others.
 - **Gemini native**: Google Gemini via the native `models/*:generateContent` and `models/*:streamGenerateContent` endpoints.
@@ -1081,7 +1081,7 @@ This keeps the runtime lightweight while making new OpenAI-compatible backends m
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.openfox/workspace",
       "model": "glm-4.7",
       "max_tokens": 8192,
       "temperature": 0.7,
@@ -1147,7 +1147,7 @@ This keeps the runtime lightweight while making new OpenAI-compatible backends m
 
 ### Scheduled Tasks / Reminders
 
-PicoClaw supports cron-style scheduled tasks via the `cron` tool. The agent can set, list, and cancel reminders or recurring jobs that trigger at specified times.
+OpenFox supports cron-style scheduled tasks via the `cron` tool. The agent can set, list, and cancel reminders or recurring jobs that trigger at specified times.
 
 ```json
 {
@@ -1162,9 +1162,9 @@ PicoClaw supports cron-style scheduled tasks via the `cron` tool. The agent can 
 }
 ```
 
-Scheduled tasks persist across restarts and are stored in `~/.picoclaw/workspace/cron/`.
+Scheduled tasks persist across restarts and are stored in `~/.openfox/workspace/cron/`.
 
-Command cron jobs can execute shell commands. By default, remote channels cannot schedule command jobs. To allow specific remote channels, set `command_allowed_remotes` to entries such as `"telegram"` or `"telegram:1234567890"`; use `"*"` only if every non-empty channel should be allowed. The `"*"` wildcard is potentially dangerous because any remote channel that can talk to PicoClaw can schedule shell commands. This does not bypass `allow_command`, `command_confirm`, or exec safety checks.
+Command cron jobs can execute shell commands. By default, remote channels cannot schedule command jobs. To allow specific remote channels, set `command_allowed_remotes` to entries such as `"telegram"` or `"telegram:1234567890"`; use `"*"` only if every non-empty channel should be allowed. The `"*"` wildcard is potentially dangerous because any remote channel that can talk to OpenFox can schedule shell commands. This does not bypass `allow_command`, `command_confirm`, or exec safety checks.
 
 ### Advanced Topics
 

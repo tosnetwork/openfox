@@ -2,7 +2,7 @@
 
 > 返回 [README](../project/README.zh.md)
 
-PicoClaw 里用户能直接感知到的“路由”主要有两部分：
+OpenFox 里用户能直接感知到的“路由”主要有两部分：
 
 - **agent 路由**：决定哪一个 agent 处理一条消息
 - **模型路由**：决定这一轮是走主模型，还是走轻量模型
@@ -103,7 +103,7 @@ agents.dispatch.rules
 
 规则从上到下依次检查。
 **第一条匹配的规则直接生效**。
-如果没有规则命中，PicoClaw 会回退到默认 agent。
+如果没有规则命中，OpenFox 会回退到默认 agent。
 
 ## 支持的匹配字段
 
@@ -240,7 +240,7 @@ agents.defaults.routing
 关键行为：
 
 - `light_model` 必须存在于 `model_list`
-- PicoClaw 会在启动时解析轻量模型；如果模型无效，路由会被禁用
+- OpenFox 会在启动时解析轻量模型；如果模型无效，路由会被禁用
 - 同一轮 turn 只会使用同一档模型，不会中途切档
 
 ## 什么会影响复杂度分数

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/media"
 )
 
 func TestNewDeltaChatChannel(t *testing.T) {
@@ -35,7 +35,7 @@ func TestNewDeltaChatChannel(t *testing.T) {
 		if !strings.Contains(err.Error(), "@nine.testrun.org") {
 			t.Fatalf("error = %v, want bootstrap server guidance", err)
 		}
-		if !strings.Contains(err.Error(), "Next step:") || !strings.Contains(err.Error(), "picoclaw g") {
+		if !strings.Contains(err.Error(), "Next step:") || !strings.Contains(err.Error(), "openfox g") {
 			t.Fatalf("error = %v, want next-step guidance", err)
 		}
 	})
@@ -118,14 +118,14 @@ func TestMentionsBot(t *testing.T) {
 		{"case insensitive name", "hey picobot", "PicoBot", "bot@example.org", true},
 		{"short display name exact", "hey bot can you help", "bot", "bot@example.org", true},
 		{"short display name with punctuation", "AI, summarize this", "ai", "bot@example.org", true},
-		{"multi word display name", "hey PicoClaw Bot, can you help", "PicoClaw Bot", "bot@example.org", true},
+		{"multi word display name", "hey OpenFox Bot, can you help", "OpenFox Bot", "bot@example.org", true},
 		{"email local part", "@bot please summarize", "", "bot@example.org", true},
 		{"email local part with punctuation", "please summarize, @bot.", "", "bot@example.org", true},
 		{"no mention", "just chatting here", "PicoBot", "bot@example.org", false},
 		{"local part without @", "the robot is cool", "", "bot@example.org", false},
 		{"short display name inside word", "the robot is cool", "bot", "bot@example.org", false},
 		{"short display name inside mail", "please email me later", "ai", "bot@example.org", false},
-		{"display name with prefix word", "hey SuperPicoClaw Bot", "PicoClaw Bot", "bot@example.org", false},
+		{"display name with prefix word", "hey SuperOpenFox Bot", "OpenFox Bot", "bot@example.org", false},
 		{"email local part inside handle", "hello @botanic", "", "bot@example.org", false},
 	}
 	for _, tt := range tests {
@@ -161,7 +161,7 @@ func TestResolveDataDir(t *testing.T) {
 		t.Errorf("explicit data dir = %q, want /explicit/dir", got)
 	}
 	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".picoclaw", "deltachat", "mychan")
+	want := filepath.Join(home, ".openfox", "deltachat", "mychan")
 	if got := resolveDataDir("", "mychan"); got != want {
 		t.Errorf("default data dir = %q, want %q", got, want)
 	}
@@ -442,7 +442,7 @@ func TestEnsureAccountCreatesBootstrapAccountAndStops(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected created-account instruction error")
 	}
-	if !strings.Contains(err.Error(), "bot123@mehl.cloud") || !strings.Contains(err.Error(), "run PicoClaw again") {
+	if !strings.Contains(err.Error(), "bot123@mehl.cloud") || !strings.Contains(err.Error(), "run OpenFox again") {
 		t.Fatalf("error = %v, want generated email and rerun instruction", err)
 	}
 }

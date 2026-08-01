@@ -4,7 +4,7 @@
 
 ## 💬 チャットアプリ連携
 
-PicoClaw は複数のチャットプラットフォームをサポートしており、Agent をどこにでも接続できます。
+OpenFox は複数のチャットプラットフォームをサポートしており、Agent をどこにでも接続できます。
 
 > **注意**: すべての Webhook ベースのチャネル（LINE、WeCom など）は、共有 Gateway HTTP サーバー（`gateway.host`:`gateway.port`、デフォルト `127.0.0.1:18790`）上で提供されます。チャネルごとにポートを設定する必要はありません。注意：飛書（Feishu）は WebSocket/SDK モードを使用し、共有 HTTP Webhook サーバーは使用しません。
 
@@ -26,8 +26,8 @@ PicoClaw は複数のチャットプラットフォームをサポートして�
 | **IRC**              | ⭐⭐ 中程度        | サーバー + TLS 設定                        | [ドキュメント](#irc) |
 | **OneBot**           | ⭐⭐ 中程度        | NapCat/Go-CQHTTP 互換、コミュニティエコシステム充実 | [ドキュメント](../channels/onebot/README.ja.md)                                                               |
 | **MQTT**             | ⭐ 簡単            | ブローカー経由で任意の MQTT クライアントと通信 | [ドキュメント](../channels/mqtt/README.ja.md)                                                                 |
-| **MaixCam**          | ⭐ 簡単            | Sipeed AI カメラハードウェア統合チャネル   | [ドキュメント](../channels/maixcam/README.ja.md)                                                              |
-| **Pico**             | ⭐ 簡単            | PicoClaw ネイティブプロトコルチャネル     |                                                                                                               |
+| **MaixCam**          | ⭐ 簡単            | AI カメラハードウェア統合チャネル   | [ドキュメント](../channels/maixcam/README.ja.md)                                                              |
+| **Pico**             | ⭐ 簡単            | OpenFox ネイティブプロトコルチャネル     |                                                                                                               |
 
 ---
 
@@ -61,12 +61,12 @@ PicoClaw は複数のチャットプラットフォームをサポートして�
 **3. 実行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 **4. Telegram コマンドメニュー（起動時に自動登録）**
 
-PicoClaw は統一されたコマンド定義を使用します。起動時に Telegram がサポートするコマンド（例: `/start`、`/help`、`/show`、`/list`、`/use`、`/btw`）を Bot コマンドメニューに自動登録し、メニュー表示と実際の動作を一致させます。
+OpenFox は統一されたコマンド定義を使用します。起動時に Telegram がサポートするコマンド（例: `/start`、`/help`、`/show`、`/list`、`/use`、`/btw`）を Bot コマンドメニューに自動登録し、メニュー表示と実際の動作を一致させます。
 Telegram 側はコマンドメニュー登録機能を保持し、汎用コマンドの実行は Agent Loop 内の commands executor で統一的に処理されます。
 
 ネットワークや API の一時的なエラーで登録に失敗しても、チャネルの起動はブロックされません。システムがバックグラウンドで自動リトライします。
@@ -144,7 +144,7 @@ Telegram 側はコマンドメニュー登録機能を保持し、汎用コマ�
 **6. 実行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -153,7 +153,7 @@ picoclaw gateway
 <details>
 <summary><b>WhatsApp</b>（ネイティブ whatsmeow）</summary>
 
-PicoClaw は 2 つの WhatsApp 接続方式をサポートしています：
+OpenFox は 2 つの WhatsApp 接続方式をサポートしています：
 
 - **ネイティブ（推奨）：** プロセス内で [whatsmeow](https://github.com/tulir/whatsmeow) を使用。独立した Bridge は不要です。`"use_native": true` に設定し、`bridge_url` を空にします。初回実行時に WhatsApp で QR コードをスキャン（リンクデバイス）。セッションはワークスペース配下（例: `workspace/whatsapp/`）に保存されます。ネイティブチャネルは**オプション**ビルドで、`-tags whatsapp_native` でコンパイルします（例: `make build-whatsapp-native` または `go build -tags whatsapp_native ./cmd/...`）。
 - **Bridge：** 外部 WebSocket Bridge に接続。`bridge_url`（例: `ws://localhost:3001`）を設定し、`use_native` を false のままにします。
@@ -174,7 +174,7 @@ PicoClaw は 2 つの WhatsApp 接続方式をサポートしています：
 }
 ```
 
-`session_store_path` が空の場合、セッションは `<workspace>/whatsapp/` に保存されます。`picoclaw gateway` を実行し、初回実行時にターミナルに表示される QR コードをスキャンしてください（WhatsApp → リンクデバイス）。
+`session_store_path` が空の場合、セッションは `<workspace>/whatsapp/` に保存されます。`openfox gateway` を実行し、初回実行時にターミナルに表示される QR コードをスキャンしてください（WhatsApp → リンクデバイス）。
 
 </details>
 
@@ -182,13 +182,13 @@ PicoClaw は 2 つの WhatsApp 接続方式をサポートしています：
 <details>
 <summary><b>微信 (Weixin)</b></summary>
 
-PicoClaw は Tencent iLink 公式 API を使用して WeChat 個人アカウントへの接続をサポートしています。
+OpenFox は Tencent iLink 公式 API を使用して WeChat 個人アカウントへの接続をサポートしています。
 
 **1. ログイン**
 
 インタラクティブな QR ログインフローを実行します：
 ```bash
-picoclaw auth weixin
+openfox auth weixin
 ```
 WeChat モバイルアプリで表示された QR コードをスキャンしてください。ログイン成功後、トークンが設定ファイルに保存されます。
 
@@ -210,7 +210,7 @@ WeChat モバイルアプリで表示された QR コードをスキャンして
 
 **3. 実行**
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -244,7 +244,7 @@ picoclaw gateway
 **3. 実行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 すべてのオプション（`device_id`、`join_on_invite`、`group_trigger`、`placeholder`、`reasoning_channel_id`）については [Matrix チャネル設定ガイド](../channels/matrix/README.md) を参照してください。
@@ -261,7 +261,7 @@ QQ 開放プラットフォームでは、OpenClaw 互換ボットのワンク�
 
 1. [QQ Bot クイックスタート](https://q.qq.com/qqbot/openclaw/index.html) を開き、QR コードをスキャンしてログイン
 2. ボットが自動的に作成されます — **App ID** と **App Secret** をコピー
-3. PicoClaw を設定：
+3. OpenFox を設定：
 
 ```json
 {
@@ -277,7 +277,7 @@ QQ 開放プラットフォームでは、OpenClaw 互換ボットのワンク�
 }
 ```
 
-4. `picoclaw gateway` を実行し、QQ を開いてボットとチャット
+4. `openfox gateway` を実行し、QQ を開いてボットとチャット
 
 > App Secret は一度しか表示されません。すぐに保存してください — 再度表示するとリセットされます。
 >
@@ -290,7 +290,7 @@ QQ 開放プラットフォームでは、OpenClaw 互換ボットのワンク�
 * [QQ 開放プラットフォーム](https://q.qq.com/) にログインして開発者登録
 * QQ ボットを作成 — アバターと名前をカスタマイズ
 * ボット設定から **App ID** と **App Secret** をコピー
-* 上記の設定を行い、`picoclaw gateway` を実行
+* 上記の設定を行い、`openfox gateway` を実行
 
 </details>
 
@@ -324,7 +324,7 @@ QQ 開放プラットフォームでは、OpenClaw 互換ボットのワンク�
 **3. 実行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -343,7 +343,7 @@ picoclaw gateway
       "type": "irc",
       "server": "irc.libera.chat:6697",
       "tls": true,
-      "nick": "picoclaw-bot",
+      "nick": "openfox-bot",
       "channels": ["#your-channel"],
       "password": "",
       "allow_from": []
@@ -357,7 +357,7 @@ picoclaw gateway
 **2. 実行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 ボットは IRC サーバーに接続し、指定されたチャネルに参加します。
@@ -395,7 +395,7 @@ picoclaw gateway
 **3. 実行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -443,7 +443,7 @@ LINE Developers Console で Webhook URL を `https://your-domain/webhook/line` �
 **4. 実行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > グループチャットでは、Bot は @メンション時のみ応答します。返信は元のメッセージを引用します。
@@ -454,7 +454,7 @@ picoclaw gateway
 <details>
 <summary><b>Feishu (飛書)</b></summary>
 
-PicoClaw は WebSocket/SDK モードで飛書に接続します — 公開 Webhook URL やコールバックサーバーは不要です。
+OpenFox は WebSocket/SDK モードで飛書に接続します — 公開 Webhook URL やコールバックサーバーは不要です。
 
 **1. アプリを作成**
 
@@ -484,7 +484,7 @@ PicoClaw は WebSocket/SDK モードで飛書に接続します — 公開 Webho
 **3. 実行してチャット**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 飛書を開き、ボット名を検索してチャットを開始できます。ボットをグループに追加することもできます — `group_trigger.mention_only: true` を設定すると @メンション時のみ応答します。
@@ -497,7 +497,7 @@ picoclaw gateway
 <details>
 <summary><b>WeCom (企業微信)</b></summary>
 
-PicoClaw は 3 種類の WeCom 統合をサポートしています：
+OpenFox は 3 種類の WeCom 統合をサポートしています：
 
 **方式 1: グループ Bot (Bot)** — セットアップ簡単、グループチャット対応
 **方式 2: カスタムアプリ (App)** — より多機能、プロアクティブメッセージング、プライベートチャットのみ
@@ -568,7 +568,7 @@ PicoClaw は 3 種類の WeCom 統合をサポートしています：
 **4. 実行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > **注意**: WeCom Webhook コールバックは Gateway ポート（デフォルト 18790）で提供されます。HTTPS にはリバースプロキシを使用してください。
@@ -602,7 +602,7 @@ picoclaw gateway
 **3. 実行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > **注意**: WeCom AI Bot はストリーミングプルプロトコルを使用しており、返信タイムアウトの心配はありません。長時間タスク（30 秒超）は自動的に `response_url` プッシュ配信に切り替わります。
@@ -613,7 +613,7 @@ picoclaw gateway
 <details>
 <summary><b>OneBot（OneBot プロトコル経由の QQ）</b></summary>
 
-OneBot は QQ ボット向けのオープンプロトコルです。PicoClaw は OneBot v11 互換の実装（例：[Lagrange](https://github.com/LagrangeDev/Lagrange.Core)、[NapCat](https://github.com/NapNeko/NapCatQQ)）に WebSocket で接続します。
+OneBot は QQ ボット向けのオープンプロトコルです。OpenFox は OneBot v11 互換の実装（例：[Lagrange](https://github.com/LagrangeDev/Lagrange.Core)、[NapCat](https://github.com/NapNeko/NapCatQQ)）に WebSocket で接続します。
 
 **1. OneBot 実装をセットアップ**
 
@@ -644,7 +644,7 @@ OneBot v11 互換の QQ ボットフレームワークをインストールし�
 **3. 実行**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -653,7 +653,7 @@ picoclaw gateway
 <details>
 <summary><b>MaixCam</b></summary>
 
-Sipeed AI カメラハードウェア向けの統合チャネルです。
+AI カメラハードウェア向けの統合チャネルです。
 
 ```json
 {
@@ -667,7 +667,7 @@ Sipeed AI カメラハードウェア向けの統合チャネルです。
 ```
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -676,7 +676,7 @@ picoclaw gateway
 <details>
 <summary><b>MQTT</b></summary>
 
-任意の MQTT クライアントがブローカーを介して PicoClaw と通信できます。デバイスやサービスがブローカーにリクエストをパブリッシュし、PicoClaw がサブスクライブして処理し、レスポンスをパブリッシュして返します。
+任意の MQTT クライアントがブローカーを介して OpenFox と通信できます。デバイスやサービスがブローカーにリクエストをパブリッシュし、OpenFox がサブスクライブして処理し、レスポンスをパブリッシュして返します。
 
 **1. 設定**
 
@@ -689,7 +689,7 @@ picoclaw gateway
       "settings": {
         "broker": "ssl://your-broker:8883",
         "agent_id": "assistant",
-        "topic_prefix": "/picoclaw",
+        "topic_prefix": "/openfox",
         "keep_alive": 60,
         "qos": 0
       }
@@ -698,7 +698,7 @@ picoclaw gateway
 }
 ```
 
-ユーザー名とパスワードは `~/.picoclaw/.security.yml` に記載します：
+ユーザー名とパスワードは `~/.openfox/.security.yml` に記載します：
 
 ```yaml
 channel_list:
@@ -711,8 +711,8 @@ channel_list:
 **トピック形式**
 
 ```
-{prefix}/{agent_id}/{client_id}/request    # クライアント → PicoClaw
-{prefix}/{agent_id}/{client_id}/response   # PicoClaw → クライアント
+{prefix}/{agent_id}/{client_id}/request    # クライアント → OpenFox
+{prefix}/{agent_id}/{client_id}/response   # OpenFox → クライアント
 ```
 
 `client_id` はクライアントアプリケーションがデバイスやセッションを識別するために設定します。
@@ -720,16 +720,16 @@ channel_list:
 **2. 起動**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 **3. テスト**
 
 ```bash
-mosquitto_pub -t "/picoclaw/assistant/device1/request" \
+mosquitto_pub -t "/openfox/assistant/device1/request" \
   -m '{"text": "こんにちは"}'
 
-mosquitto_sub -t "/picoclaw/assistant/device1/response"
+mosquitto_sub -t "/openfox/assistant/device1/response"
 ```
 
 完全な設定オプションは [MQTT チャンネルドキュメント](../channels/mqtt/README.ja.md) を参照してください。

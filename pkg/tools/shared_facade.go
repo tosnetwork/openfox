@@ -3,8 +3,8 @@ package tools
 import (
 	"context"
 
-	"github.com/sipeed/picoclaw/pkg/session"
-	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
+	"github.com/tosnetwork/openfox/pkg/session"
+	toolshared "github.com/tosnetwork/openfox/pkg/tools/shared"
 )
 
 type (

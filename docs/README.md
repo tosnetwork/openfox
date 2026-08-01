@@ -1,6 +1,6 @@
-# PicoClaw Documentation
+# OpenFox Documentation
 
-PicoClaw documentation is organized by document type first and language second.
+OpenFox documentation is organized by document type first and language second.
 
 This file describes the recommended documentation layout, how translated files should be named, and what `make lint-docs` currently checks locally.
 

@@ -1,6 +1,6 @@
 package agent
 
-import runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+import runtimeevents "github.com/tosnetwork/openfox/pkg/events"
 
 func (al *AgentLoop) publishRuntimeEvent(evt runtimeevents.Event) {
 	if al == nil || al.runtimeEvents == nil {

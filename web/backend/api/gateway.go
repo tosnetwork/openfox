@@ -20,13 +20,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/health"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/netbind"
-	ppid "github.com/sipeed/picoclaw/pkg/pid"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/web/backend/utils"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/health"
+	"github.com/tosnetwork/openfox/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/netbind"
+	ppid "github.com/tosnetwork/openfox/pkg/pid"
+	"github.com/tosnetwork/openfox/pkg/providers"
+	"github.com/tosnetwork/openfox/web/backend/utils"
 )
 
 // gateway holds the state for the managed gateway process.
@@ -39,7 +39,7 @@ var gateway = struct {
 	runtimeStatus       string
 	startupDeadline     time.Time
 	logs                *LogBuffer
-	pidData             *ppid.PidFileData // pid file data read from picoclaw.pid.json
+	pidData             *ppid.PidFileData // pid file data read from openfox.pid.json
 	picoToken           string            // cached raw pico token for upstream gateway proxy injection
 }{
 	runtimeStatus: "stopped",
@@ -156,7 +156,7 @@ func getGatewayHealthByURL(url string, timeout time.Duration) (*health.StatusRes
 	return &healthResponse, resp.StatusCode, nil
 }
 
-// isLikelyGatewayProcess returns whether PID appears to be a picoclaw gateway
+// isLikelyGatewayProcess returns whether PID appears to be a openfox gateway
 // process plus whether inspection was conclusive on this platform/environment.
 func isLikelyGatewayProcess(pid int) (bool, bool) {
 	if pid <= 0 {
@@ -188,7 +188,7 @@ func isLikelyGatewayProcess(pid int) (bool, bool) {
 		// A CSV row means the process exists, but may have a custom executable
 		// name we cannot classify here.
 		if strings.HasPrefix(line, "\"") {
-			if strings.Contains(line, "\"picoclaw.exe\"") {
+			if strings.Contains(line, "\"openfox.exe\"") {
 				return true, true
 			}
 			return false, true
@@ -211,7 +211,7 @@ func isLikelyGatewayProcess(pid int) (bool, bool) {
 }
 
 // looksLikeGatewayCommandLine checks whether a process command line likely
-// represents "picoclaw gateway ..." regardless of executable filename.
+// represents "openfox gateway ..." regardless of executable filename.
 func looksLikeGatewayCommandLine(cmdline string) bool {
 	fields := strings.Fields(strings.ToLower(strings.TrimSpace(cmdline)))
 	if len(fields) == 0 {
@@ -265,7 +265,7 @@ func (h *Handler) validateGatewayPidData(
 
 	if gatewayProcess, inspected := gatewayProcessMatcher(pidData.PID); inspected {
 		if !gatewayProcess {
-			return false, true, "pid process command is not picoclaw gateway"
+			return false, true, "pid process command is not openfox gateway"
 		}
 		return true, true, ""
 	}
@@ -1028,8 +1028,8 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 	}
 
 	// Start new process
-	// Locate the picoclaw executable
-	execPath := utils.FindPicoclawBinary()
+	// Locate the openfox executable
+	execPath := utils.FindOpenfoxBinary()
 	logger.InfoC("gateway", fmt.Sprintf("Starting gateway process (%s)", execPath))
 
 	cmd = gatewayExecCommand(execPath, h.gatewayCommandArgs()...)
@@ -1086,7 +1086,7 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 	gateway.bootConfigSignature = computeConfigSignature(cfg)
 	setGatewayRuntimeStatusLocked(initialStatus)
 	pid = cmd.Process.Pid
-	logger.InfoC("gateway", fmt.Sprintf("Started picoclaw gateway (PID: %d) from %s", pid, execPath))
+	logger.InfoC("gateway", fmt.Sprintf("Started openfox gateway (PID: %d) from %s", pid, execPath))
 
 	// Capture stdout/stderr in background
 	go scanPipe(stdoutPipe, gateway.logs)
@@ -1170,7 +1170,7 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 	return pid, nil
 }
 
-// handleGatewayStart starts the picoclaw gateway subprocess.
+// handleGatewayStart starts the openfox gateway subprocess.
 //
 //	POST /api/gateway/start
 func (h *Handler) handleGatewayStart(w http.ResponseWriter, r *http.Request) {

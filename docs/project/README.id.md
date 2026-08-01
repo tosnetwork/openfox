@@ -1,19 +1,18 @@
 <div align="center">
-<img src="../../assets/logo.webp" alt="PicoClaw" width="512">
+<img src="../../assets/logo.webp" alt="OpenFox" width="512">
 
-<h1>PicoClaw: Asisten AI Super Ringan berbasis Go</h1>
+<h1>OpenFox: Asisten AI Super Ringan berbasis Go</h1>
 
-<h3>Perangkat Keras $10 · RAM 10MB · Boot ms · Let's Go, PicoClaw!</h3>
+<h3>Perangkat Keras $10 · RAM 10MB · Boot ms · Let's Go, OpenFox!</h3>
   <p>
     <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
     <img src="https://img.shields.io/badge/Arch-x86__64%2C%20ARM64%2C%20MIPS%2C%20RISC--V%2C%20LoongArch-blue" alt="Hardware">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     <br>
-    <a href="https://picoclaw.io"><img src="https://img.shields.io/badge/Website-picoclaw.io-blue?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
-    <a href="https://docs.picoclaw.io/"><img src="https://img.shields.io/badge/Docs-Official-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="Docs"></a>
-    <a href="https://deepwiki.com/sipeed/picoclaw"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="Wiki"></a>
+    <a href="https://openfox.im"><img src="https://img.shields.io/badge/Website-openfox.im-blue?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
+    <a href="https://docs.openfox.im/"><img src="https://img.shields.io/badge/Docs-Official-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="Docs"></a>
+    <a href="https://deepwiki.com/tosnetwork/openfox"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="Wiki"></a>
     <br>
-    <a href="https://x.com/SipeedIO"><img src="https://img.shields.io/badge/X_(Twitter)-SipeedIO-black?style=flat&logo=x&logoColor=white" alt="Twitter"></a>
     <a href="../../assets/wechat.png"><img src="https://img.shields.io/badge/WeChat-Group-41d56b?style=flat&logo=wechat&logoColor=white"></a>
     <a href="https://discord.gg/V4sAZ9XWpN"><img src="https://img.shields.io/badge/Discord-Community-4c60eb?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
@@ -24,9 +23,7 @@
 
 ---
 
-> **PicoClaw** adalah proyek open-source independen yang diinisiasi oleh [Sipeed](https://sipeed.com), ditulis sepenuhnya dalam **Go** — bukan fork dari OpenClaw, NanoBot, atau proyek lainnya.
-
-**PicoClaw** adalah asisten AI pribadi yang super ringan, terinspirasi dari [NanoBot](https://github.com/HKUDS/nanobot). Dibangun ulang dari awal dalam **Go** melalui proses "self-bootstrapping" — AI Agent itu sendiri yang memandu migrasi arsitektur dan optimasi kode.
+**OpenFox** adalah asisten AI pribadi yang super ringan, terinspirasi dari [NanoBot](https://github.com/HKUDS/nanobot). Dibangun ulang dari awal dalam **Go** melalui proses "self-bootstrapping" — AI Agent itu sendiri yang memandu migrasi arsitektur dan optimasi kode.
 
 **Berjalan di perangkat keras $10 dengan RAM <10MB** — hemat 99% memori dibanding OpenClaw dan 98% lebih murah dari Mac mini!
 
@@ -34,7 +31,7 @@
 <tr align="center">
 <td align="center" valign="top">
 <p align="center">
-<img src="../../assets/picoclaw_mem.gif" width="360" height="240">
+<img src="../../assets/openfox_mem.gif" width="360" height="240">
 </p>
 </td>
 <td align="center" valign="top">
@@ -48,15 +45,15 @@
 > [!CAUTION]
 > **Peringatan Keamanan**
 >
-> * **TANPA KRIPTO:** PicoClaw **tidak** menerbitkan token atau cryptocurrency resmi apa pun. Semua klaim di `pump.fun` atau platform trading lainnya adalah **penipuan**.
-> * **DOMAIN RESMI:** Satu-satunya website resmi adalah **[picoclaw.io](https://picoclaw.io)**, dan website perusahaan adalah **[sipeed.com](https://sipeed.com)**
+> * **TANPA KRIPTO:** OpenFox **tidak** menerbitkan token atau cryptocurrency resmi apa pun. Semua klaim di `pump.fun` atau platform trading lainnya adalah **penipuan**.
+> * **DOMAIN RESMI:** Satu-satunya website resmi adalah **[openfox.im](https://openfox.im)**
 > * **WASPADA:** Banyak domain `.ai/.org/.com/.net/...` telah didaftarkan oleh pihak ketiga. Jangan percaya mereka.
-> * **CATATAN:** PicoClaw masih dalam tahap pengembangan awal yang cepat. Mungkin ada masalah keamanan yang belum terselesaikan. Jangan deploy ke produksi sebelum v1.0.
-> * **CATATAN:** PicoClaw baru-baru ini menggabungkan banyak PR. Build terbaru mungkin menggunakan RAM 10-20MB. Optimasi sumber daya direncanakan setelah fitur stabil.
+> * **CATATAN:** OpenFox masih dalam tahap pengembangan awal yang cepat. Mungkin ada masalah keamanan yang belum terselesaikan. Jangan deploy ke produksi sebelum v1.0.
+> * **CATATAN:** OpenFox baru-baru ini menggabungkan banyak PR. Build terbaru mungkin menggunakan RAM 10-20MB. Optimasi sumber daya direncanakan setelah fitur stabil.
 
 ## 📢 Berita
 
-2026-05-11 🛒 **LicheeRV-Claw tersedia di AliExpress!** Kini Anda dapat membeli LicheeRV-Claw di [AliExpress](https://www.aliexpress.com/item/1005006519668532.html), sehingga lebih mudah mencoba PicoClaw di hardware RISC-V ringkas.
+2026-05-11 🛒 **LicheeRV-Claw tersedia di AliExpress!** Kini Anda dapat membeli LicheeRV-Claw di [AliExpress](https://www.aliexpress.com/item/1005006519668532.html), sehingga lebih mudah mencoba OpenFox di hardware RISC-V ringkas.
 
 <p align="center">
   <a href="https://www.aliexpress.com/item/1005006519668532.html">
@@ -64,11 +61,11 @@
   </a>
 </p>
 
-2026-03-31 📱 **Dukungan Android!** PicoClaw sekarang berjalan di Android! Unduh APK di [picoclaw.io](https://picoclaw.io/download)
+2026-03-31 📱 **Dukungan Android!** OpenFox sekarang berjalan di Android! Unduh APK di [openfox.im](https://openfox.im/download)
 
-2026-03-25 🚀 **v0.2.4 Dirilis!** Perombakan arsitektur Agent (SubTurn, Hooks, Steering, EventBus), integrasi WeChat/WeCom, penguatan keamanan (.security.yml, penyaringan data sensitif), provider baru (AWS Bedrock, Azure, Xiaomi MiMo), dan 35 perbaikan bug. PicoClaw telah mencapai **26K Stars**!
+2026-03-25 🚀 **v0.2.4 Dirilis!** Perombakan arsitektur Agent (SubTurn, Hooks, Steering, EventBus), integrasi WeChat/WeCom, penguatan keamanan (.security.yml, penyaringan data sensitif), provider baru (AWS Bedrock, Azure, Xiaomi MiMo), dan 35 perbaikan bug. OpenFox telah mencapai **26K Stars**!
 
-2026-03-17 🚀 **v0.2.3 Dirilis!** UI system tray (Windows & Linux), pelacakan status sub-agent (`spawn_status`), eksperimental Gateway hot-reload, gerbang keamanan Cron, dan 2 perbaikan keamanan. PicoClaw telah mencapai **25K Stars**!
+2026-03-17 🚀 **v0.2.3 Dirilis!** UI system tray (Windows & Linux), pelacakan status sub-agent (`spawn_status`), eksperimental Gateway hot-reload, gerbang keamanan Cron, dan 2 perbaikan keamanan. OpenFox telah mencapai **25K Stars**!
 
 2026-03-09 🎉 **v0.2.1 — Pembaruan terbesar sejauh ini!** Dukungan protokol MCP, 4 channel baru (Matrix/IRC/WeCom/Discord Proxy), 3 provider baru (Kimi/Minimax/Avian), pipeline visi, penyimpanan memori JSONL, perutean model.
 
@@ -77,13 +74,13 @@
 <details>
 <summary>Berita sebelumnya...</summary>
 
-2026-02-26 🎉 PicoClaw mencapai **20K Stars** hanya dalam 17 hari! Orkestrasi channel otomatis dan antarmuka kapabilitas kini aktif.
+2026-02-26 🎉 OpenFox mencapai **20K Stars** hanya dalam 17 hari! Orkestrasi channel otomatis dan antarmuka kapabilitas kini aktif.
 
-2026-02-16 🎉 PicoClaw menembus 12K Stars dalam satu minggu! Peran maintainer komunitas dan [Roadmap](../../ROADMAP.md) resmi diluncurkan.
+2026-02-16 🎉 OpenFox menembus 12K Stars dalam satu minggu! Peran maintainer komunitas dan [Roadmap](../../ROADMAP.md) resmi diluncurkan.
 
-2026-02-13 🎉 PicoClaw menembus 5000 Stars dalam 4 hari! Roadmap proyek dan grup pengembang sedang dalam proses.
+2026-02-13 🎉 OpenFox menembus 5000 Stars dalam 4 hari! Roadmap proyek dan grup pengembang sedang dalam proses.
 
-2026-02-09 🎉 **PicoClaw Diluncurkan!** Dibangun dalam 1 hari untuk menghadirkan AI Agent ke perangkat keras $10 dengan RAM <10MB. Let's Go, PicoClaw!
+2026-02-09 🎉 **OpenFox Diluncurkan!** Dibangun dalam 1 hari untuk menghadirkan AI Agent ke perangkat keras $10 dengan RAM <10MB. Let's Go, OpenFox!
 
 </details>
 
@@ -109,21 +106,21 @@ _*Build terbaru mungkin menggunakan 10-20MB karena penggabungan PR yang cepat. O
 
 <div align="center">
 
-|                                | OpenClaw      | NanoBot                  | **PicoClaw**                           |
+|                                | OpenClaw      | NanoBot                  | **OpenFox**                           |
 | ------------------------------ | ------------- | ------------------------ | -------------------------------------- |
 | **Bahasa**                     | TypeScript    | Python                   | **Go**                                 |
 | **RAM**                        | >1GB          | >100MB                   | **< 10MB***                            |
 | **Waktu Boot**</br>(core 0,8GHz) | >500d       | >30d                     | **<1d**                                |
 | **Biaya**                      | Mac Mini $599 | Kebanyakan board Linux ~$50 | **Board Linux mana pun**</br>**mulai $10** |
 
-<img src="../../assets/compare.jpg" alt="PicoClaw" width="512">
+<img src="../../assets/compare.jpg" alt="OpenFox" width="512">
 
 </div>
 
 > **[Daftar Kompatibilitas Hardware](../guides/hardware-compatibility.md)** — Lihat semua board yang telah diuji, dari RISC-V $5 hingga Raspberry Pi hingga ponsel Android. Board Anda belum terdaftar? Kirim PR!
 
 <p align="center">
-<img src="../../assets/hardware-banner.jpg" alt="PicoClaw Hardware Compatibility" width="100%">
+<img src="../../assets/hardware-banner.jpg" alt="OpenFox Hardware Compatibility" width="100%">
 </p>
 
 ## 🦾 Demonstrasi
@@ -137,9 +134,9 @@ _*Build terbaru mungkin menggunakan 10-20MB karena penggabungan PR yang cepat. O
 <th><p align="center">Pencarian Web & Pembelajaran</p></th>
 </tr>
 <tr>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_code.gif" width="240" height="180"></p></td>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_memory.gif" width="240" height="180"></p></td>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_search.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_code.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_memory.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_search.gif" width="240" height="180"></p></td>
 </tr>
 <tr>
 <td align="center">Develop · Deploy · Scale</td>
@@ -150,7 +147,7 @@ _*Build terbaru mungkin menggunakan 10-20MB karena penggabungan PR yang cepat. O
 
 ### 🐜 Deploy Inovatif dengan Footprint Rendah
 
-PicoClaw dapat di-deploy di hampir semua perangkat Linux!
+OpenFox dapat di-deploy di hampir semua perangkat Linux!
 
 - $9,9 [LicheeRV-Nano](https://www.aliexpress.com/item/1005006519668532.html) versi E(Ethernet) atau W(WiFi6), untuk home assistant minimal
 - $30~50 [NanoKVM](https://www.aliexpress.com/item/1005007369816019.html), atau $100 [NanoKVM-Pro](https://www.aliexpress.com/item/1005010048471263.html), untuk operasi server otomatis
@@ -162,13 +159,13 @@ PicoClaw dapat di-deploy di hampir semua perangkat Linux!
 
 ## 📦 Instalasi
 
-### Unduh dari picoclaw.io (Direkomendasikan)
+### Unduh dari openfox.im (Direkomendasikan)
 
-Kunjungi **[picoclaw.io](https://picoclaw.io)** — website resmi mendeteksi platform Anda secara otomatis dan menyediakan unduhan satu klik. Tidak perlu memilih arsitektur secara manual.
+Kunjungi **[openfox.im](https://openfox.im)** — website resmi mendeteksi platform Anda secara otomatis dan menyediakan unduhan satu klik. Tidak perlu memilih arsitektur secara manual.
 
 ### Unduh binary yang sudah dikompilasi
 
-Atau, unduh binary untuk platform Anda dari halaman [GitHub Releases](https://github.com/sipeed/picoclaw/releases).
+Atau, unduh binary untuk platform Anda dari halaman [GitHub Releases](https://github.com/tosnetwork/openfox/releases).
 
 ### Build dari source (untuk pengembangan)
 
@@ -178,9 +175,9 @@ Prasyarat:
 - Node.js 22+ dan pnpm 10.33.0+ untuk build Web UI / launcher
 
 ```bash
-git clone https://github.com/sipeed/picoclaw.git
+git clone https://github.com/tosnetwork/openfox.git
 
-cd picoclaw
+cd openfox
 make deps
 
 # Instal dependensi frontend
@@ -212,19 +209,19 @@ WebUI Launcher menyediakan antarmuka berbasis browser untuk konfigurasi dan chat
 
 **Opsi 1: Klik dua kali (Desktop)**
 
-Setelah mengunduh dari [picoclaw.io](https://picoclaw.io), klik dua kali `picoclaw-launcher` (atau `picoclaw-launcher.exe` di Windows). Browser Anda akan terbuka otomatis di `http://localhost:18800`.
+Setelah mengunduh dari [openfox.im](https://openfox.im), klik dua kali `openfox-launcher` (atau `openfox-launcher.exe` di Windows). Browser Anda akan terbuka otomatis di `http://localhost:18800`.
 
 **Opsi 2: Command line**
 
 ```bash
-picoclaw-launcher
+openfox-launcher
 # Buka http://localhost:18800 di browser Anda
 ```
 
 > [!TIP]
 > **Akses jarak jauh / Docker / VM:** Tambahkan flag `-public` untuk mendengarkan di semua antarmuka:
 > ```bash
-> picoclaw-launcher -public
+> openfox-launcher -public
 > ```
 
 <p align="center">
@@ -235,15 +232,15 @@ picoclaw-launcher
 
 Buka WebUI, lalu: **1)** Konfigurasi Provider (tambahkan API key LLM Anda) -> **2)** Konfigurasi Channel (mis. Telegram) -> **3)** Mulai Gateway -> **4)** Chat!
 
-Untuk dokumentasi WebUI lengkap, lihat [docs.picoclaw.io](https://docs.picoclaw.io).
+Untuk dokumentasi WebUI lengkap, lihat [docs.openfox.im](https://docs.openfox.im).
 
 <details>
 <summary><b>Docker (alternatif)</b></summary>
 
 ```bash
 # 1. Clone repo ini
-git clone https://github.com/sipeed/picoclaw.git
-cd picoclaw
+git clone https://github.com/tosnetwork/openfox.git
+cd openfox
 
 # 2. Jalankan pertama kali — otomatis membuat docker/data/config.json lalu keluar
 #    (hanya terpicu ketika config.json dan workspace/ keduanya tidak ada)
@@ -258,7 +255,7 @@ docker compose -f docker/docker-compose.yml --profile launcher up -d
 # Buka http://localhost:18800
 ```
 
-> **Pengguna Docker / VM:** Gateway mendengarkan di `127.0.0.1` secara default. Atur `PICOCLAW_GATEWAY_HOST=0.0.0.0` atau gunakan flag `-public` agar dapat diakses dari host.
+> **Pengguna Docker / VM:** Gateway mendengarkan di `127.0.0.1` secara default. Atur `OPENFOX_GATEWAY_HOST=0.0.0.0` atau gunakan flag `-public` agar dapat diakses dari host.
 
 ```bash
 # Cek log
@@ -277,15 +274,15 @@ docker compose -f docker/docker-compose.yml --profile launcher up -d
 <details>
 <summary><b>macOS — Peringatan Keamanan saat Pertama Kali Diluncurkan</b></summary>
 
-macOS mungkin memblokir `picoclaw-launcher` saat pertama kali diluncurkan karena diunduh dari internet dan tidak dinotarisasi melalui Mac App Store.
+macOS mungkin memblokir `openfox-launcher` saat pertama kali diluncurkan karena diunduh dari internet dan tidak dinotarisasi melalui Mac App Store.
 
-**Langkah 1:** Klik dua kali `picoclaw-launcher`. Anda akan melihat peringatan keamanan:
+**Langkah 1:** Klik dua kali `openfox-launcher`. Anda akan melihat peringatan keamanan:
 
 <p align="center">
 <img src="../../assets/macos-gatekeeper-warning.jpg" alt="Peringatan macOS Gatekeeper" width="400">
 </p>
 
-> *"picoclaw-launcher" Tidak Dapat Dibuka — Apple tidak dapat memverifikasi bahwa "picoclaw-launcher" bebas dari malware yang dapat membahayakan Mac Anda atau mengancam privasi Anda.*
+> *"openfox-launcher" Tidak Dapat Dibuka — Apple tidak dapat memverifikasi bahwa "openfox-launcher" bebas dari malware yang dapat membahayakan Mac Anda atau mengancam privasi Anda.*
 
 **Langkah 2:** Buka **Pengaturan Sistem** → **Privasi & Keamanan** → gulir ke bawah ke bagian **Keamanan** → klik **Tetap Buka** → konfirmasi dengan mengklik **Tetap Buka** pada dialog.
 
@@ -293,13 +290,13 @@ macOS mungkin memblokir `picoclaw-launcher` saat pertama kali diluncurkan karena
 <img src="../../assets/macos-gatekeeper-allow.jpg" alt="macOS Privasi & Keamanan — Tetap Buka" width="600">
 </p>
 
-Setelah langkah satu kali ini, `picoclaw-launcher` akan terbuka secara normal pada peluncuran berikutnya.
+Setelah langkah satu kali ini, `openfox-launcher` akan terbuka secara normal pada peluncuran berikutnya.
 
 </details>
 
 ### 📱 Android
 
-Berikan kehidupan kedua untuk ponsel lama Anda! Ubah menjadi Asisten AI pintar dengan PicoClaw.
+Berikan kehidupan kedua untuk ponsel lama Anda! Ubah menjadi Asisten AI pintar dengan OpenFox.
 
 **Opsi 1: Instal APK**
 
@@ -314,7 +311,7 @@ Pratinjau:
   </tr>
 </table>
 
-Unduh APK dari [picoclaw.io](https://picoclaw.io/download/) dan instal langsung. Tanpa Termux!
+Unduh APK dari [openfox.im](https://openfox.im/download/) dan instal langsung. Tanpa Termux!
 
 **Opsi 2: Termux**
 
@@ -326,27 +323,27 @@ Unduh APK dari [picoclaw.io](https://picoclaw.io/download/) dan instal langsung.
 
 ```bash
 # Unduh rilis terbaru
-wget https://github.com/sipeed/picoclaw/releases/latest/download/picoclaw_Linux_arm64.tar.gz
-tar xzf picoclaw_Linux_arm64.tar.gz
+wget https://github.com/tosnetwork/openfox/releases/latest/download/openfox_Linux_arm64.tar.gz
+tar xzf openfox_Linux_arm64.tar.gz
 pkg install proot
-termux-chroot ./picoclaw onboard   # chroot menyediakan tata letak filesystem Linux standar
+termux-chroot ./openfox onboard   # chroot menyediakan tata letak filesystem Linux standar
 ```
 
 Kemudian ikuti bagian Terminal Launcher di bawah untuk menyelesaikan konfigurasi.
 
-<img src="../../assets/termux.jpg" alt="PicoClaw on Termux" width="512">
+<img src="../../assets/termux.jpg" alt="OpenFox on Termux" width="512">
 
-Untuk lingkungan minimal di mana hanya binary inti `picoclaw` yang tersedia (tanpa Launcher UI), Anda dapat mengonfigurasi semuanya melalui command line dan file konfigurasi JSON.
+Untuk lingkungan minimal di mana hanya binary inti `openfox` yang tersedia (tanpa Launcher UI), Anda dapat mengonfigurasi semuanya melalui command line dan file konfigurasi JSON.
 
 **1. Inisialisasi**
 
 ```bash
-picoclaw onboard
+openfox onboard
 ```
 
-Ini membuat `~/.picoclaw/config.json` dan direktori workspace.
+Ini membuat `~/.openfox/config.json` dan direktori workspace.
 
-**2. Konfigurasi** (`~/.picoclaw/config.json`)
+**2. Konfigurasi** (`~/.openfox/config.json`)
 
 ```json
 {
@@ -372,20 +369,20 @@ Ini membuat `~/.picoclaw/config.json` dan direktori workspace.
 
 ```bash
 # Pertanyaan satu kali
-picoclaw agent -m "What is 2+2?"
+openfox agent -m "What is 2+2?"
 
 # Mode interaktif
-picoclaw agent
+openfox agent
 
 # Mulai gateway untuk integrasi aplikasi chat
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
 
 ## 🔌 Providers (LLM)
 
-PicoClaw mendukung 30+ provider LLM melalui konfigurasi `model_list`. Gunakan format `protocol/model`:
+OpenFox mendukung 30+ provider LLM melalui konfigurasi `model_list`. Gunakan format `protocol/model`:
 
 | Provider | Protocol | API Key | Catatan |
 |----------|----------|---------|---------|
@@ -447,7 +444,7 @@ Untuk detail konfigurasi provider lengkap, lihat [Providers & Models](../guides/
 
 ## 💬 Channels (Aplikasi Chat)
 
-Bicara dengan PicoClaw Anda melalui 17+ platform pesan:
+Bicara dengan OpenFox Anda melalui 17+ platform pesan:
 
 | Channel | Pengaturan | Protocol | Dokumentasi |
 |---------|------------|----------|-------------|
@@ -470,7 +467,7 @@ Bicara dengan PicoClaw Anda melalui 17+ platform pesan:
 
 > Semua channel berbasis webhook berbagi satu server HTTP Gateway (`gateway.host`:`gateway.port`, default `127.0.0.1:18790`). Feishu menggunakan mode WebSocket/SDK dan tidak menggunakan server HTTP bersama.
 
-> Verbositas log dikontrol oleh `gateway.log_level` (default: `warn`). Nilai yang didukung: `debug`, `info`, `warn`, `error`, `fatal`. Juga dapat diatur melalui `PICOCLAW_LOG_LEVEL`. Lihat [Konfigurasi](../guides/configuration.md#gateway-log-level) untuk detail.
+> Verbositas log dikontrol oleh `gateway.log_level` (default: `warn`). Nilai yang didukung: `debug`, `info`, `warn`, `error`, `fatal`. Juga dapat diatur melalui `OPENFOX_LOG_LEVEL`. Lihat [Konfigurasi](../guides/configuration.md#gateway-log-level) untuk detail.
 
 Untuk instruksi pengaturan channel lengkap, lihat [Konfigurasi Aplikasi Chat](../guides/chat-apps.md).
 
@@ -478,7 +475,7 @@ Untuk instruksi pengaturan channel lengkap, lihat [Konfigurasi Aplikasi Chat](..
 
 ### 🔍 Pencarian Web
 
-PicoClaw dapat mencari web untuk memberikan informasi terkini. Konfigurasi di `tools.web`:
+OpenFox dapat mencari web untuk memberikan informasi terkini. Konfigurasi di `tools.web`:
 
 | Mesin Pencari | API Key | Tier Gratis | Tautan |
 |--------------|---------|-------------|--------|
@@ -492,7 +489,7 @@ PicoClaw dapat mencari web untuk memberikan informasi terkini. Konfigurasi di `t
 
 ### ⚙️ Tools Lainnya
 
-PicoClaw menyertakan tools bawaan untuk operasi file, eksekusi kode, penjadwalan, dan lainnya. Lihat [Konfigurasi Tools](../reference/tools_configuration.md) untuk detail.
+OpenFox menyertakan tools bawaan untuk operasi file, eksekusi kode, penjadwalan, dan lainnya. Lihat [Konfigurasi Tools](../reference/tools_configuration.md) untuk detail.
 
 ## 🎯 Skills
 
@@ -501,8 +498,8 @@ Skills adalah kapabilitas modular yang memperluas Agent Anda. Dimuat dari file `
 **Instal skills dari ClawHub:**
 
 ```bash
-picoclaw skills search "web scraping"
-picoclaw skills install <skill-name>
+openfox skills search "web scraping"
+openfox skills install <skill-name>
 ```
 
 **Konfigurasi token ClawHub** (opsional, untuk rate limit lebih tinggi):
@@ -526,7 +523,7 @@ Untuk detail lebih lanjut, lihat [Konfigurasi Tools - Skills](../reference/tools
 
 ## 🔗 MCP (Model Context Protocol)
 
-PicoClaw mendukung [MCP](https://modelcontextprotocol.io/) secara native — hubungkan server MCP mana pun untuk memperluas kapabilitas Agent Anda dengan tools dan sumber data eksternal.
+OpenFox mendukung [MCP](https://modelcontextprotocol.io/) secara native — hubungkan server MCP mana pun untuk memperluas kapabilitas Agent Anda dengan tools dan sumber data eksternal.
 
 ```json
 {
@@ -549,7 +546,7 @@ Untuk konfigurasi MCP lengkap (transport stdio, SSE, HTTP, Tool Discovery), liha
 
 ## <img src="../../assets/clawdchat-icon.png" width="24" height="24" alt="ClawdChat"> Bergabung dengan Jaringan Sosial Agent
 
-Hubungkan PicoClaw ke Jaringan Sosial Agent hanya dengan mengirim satu pesan melalui CLI atau Aplikasi Chat terintegrasi mana pun.
+Hubungkan OpenFox ke Jaringan Sosial Agent hanya dengan mengirim satu pesan melalui CLI atau Aplikasi Chat terintegrasi mana pun.
 
 **Baca `https://clawdchat.ai/skill.md` dan ikuti instruksi untuk bergabung dengan [ClawdChat.ai](https://clawdchat.ai)**
 
@@ -557,26 +554,26 @@ Hubungkan PicoClaw ke Jaringan Sosial Agent hanya dengan mengirim satu pesan mel
 
 | Perintah                   | Deskripsi                        |
 | -------------------------- | -------------------------------- |
-| `picoclaw onboard`         | Inisialisasi konfigurasi & workspace |
-| `picoclaw auth weixin` | Hubungkan akun WeChat via QR |
-| `picoclaw agent -m "..."` | Chat dengan agent                |
-| `picoclaw agent`           | Mode chat interaktif             |
-| `picoclaw gateway`         | Mulai gateway                    |
-| `picoclaw status`          | Tampilkan status                 |
-| `picoclaw version`         | Tampilkan info versi             |
-| `picoclaw model`           | Lihat atau ganti model default   |
-| `picoclaw cron list`       | Daftar semua tugas terjadwal     |
-| `picoclaw cron add ...`    | Tambah tugas terjadwal           |
-| `picoclaw cron disable`    | Nonaktifkan tugas terjadwal      |
-| `picoclaw cron remove`     | Hapus tugas terjadwal            |
-| `picoclaw skills list`     | Daftar skill yang terinstal      |
-| `picoclaw skills install`  | Instal skill                     |
-| `picoclaw migrate`         | Migrasi data dari versi lama     |
-| `picoclaw auth login`      | Autentikasi dengan provider      |
+| `openfox onboard`         | Inisialisasi konfigurasi & workspace |
+| `openfox auth weixin` | Hubungkan akun WeChat via QR |
+| `openfox agent -m "..."` | Chat dengan agent                |
+| `openfox agent`           | Mode chat interaktif             |
+| `openfox gateway`         | Mulai gateway                    |
+| `openfox status`          | Tampilkan status                 |
+| `openfox version`         | Tampilkan info versi             |
+| `openfox model`           | Lihat atau ganti model default   |
+| `openfox cron list`       | Daftar semua tugas terjadwal     |
+| `openfox cron add ...`    | Tambah tugas terjadwal           |
+| `openfox cron disable`    | Nonaktifkan tugas terjadwal      |
+| `openfox cron remove`     | Hapus tugas terjadwal            |
+| `openfox skills list`     | Daftar skill yang terinstal      |
+| `openfox skills install`  | Instal skill                     |
+| `openfox migrate`         | Migrasi data dari versi lama     |
+| `openfox auth login`      | Autentikasi dengan provider      |
 
 ### ⏰ Tugas Terjadwal / Pengingat
 
-PicoClaw mendukung pengingat terjadwal dan tugas berulang melalui tool `cron`:
+OpenFox mendukung pengingat terjadwal dan tugas berulang melalui tool `cron`:
 
 * **Pengingat satu kali**: "Ingatkan saya dalam 10 menit" -> terpicu sekali setelah 10 menit
 * **Tugas berulang**: "Ingatkan saya setiap 2 jam" -> terpicu setiap 2 jam
@@ -604,7 +601,7 @@ Untuk panduan lengkap di luar README ini:
 
 PR sangat diterima! Codebase sengaja dibuat kecil dan mudah dibaca.
 
-Lihat [Roadmap Komunitas](https://github.com/sipeed/picoclaw/issues/988) dan [CONTRIBUTING.md](../../CONTRIBUTING.md) untuk panduan.
+Lihat [Roadmap Komunitas](https://github.com/tosnetwork/openfox/issues/988) untuk panduan.
 
 Grup pengembang sedang dibangun, bergabunglah setelah PR pertama Anda di-merge!
 

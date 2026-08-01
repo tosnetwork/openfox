@@ -2,7 +2,7 @@
 
 > 返回 [README](../project/README.zh.md)
 
-PicoClaw 的 Session 决定了哪些消息会共享同一段对话历史。
+OpenFox 的 Session 决定了哪些消息会共享同一段对话历史。
 如果你的 bot 表现为“记得太多”或“忘得太快”，首先就该检查 session 配置。
 
 这份文档面向编辑 `config.json` 的普通用户。
@@ -20,7 +20,7 @@ PicoClaw 的 Session 决定了哪些消息会共享同一段对话历史。
 Session 数据保存在工作区目录下，通常是：
 
 ```text
-~/.picoclaw/workspace/sessions/
+~/.openfox/workspace/sessions/
 ```
 
 ## 快速开始
@@ -113,7 +113,7 @@ Session 数据保存在工作区目录下，通常是：
 
 ### Session 仍然会按 channel 和 account 分开
 
-`session.dimensions` 只是添加更细的隔离维度，PicoClaw 仍然保留一层基础隔离：
+`session.dimensions` 只是添加更细的隔离维度，OpenFox 仍然保留一层基础隔离：
 
 - agent
 - channel
@@ -203,7 +203,7 @@ Telegram forum 消息在默认 `chat` 模式下就会保留 topic 隔离。
 
 ## Identity Links
 
-`session.identity_links` 适合处理这种场景：同一个人可能会以多个原始 sender ID 出现，但你希望 PicoClaw 把它们视为同一个发送者身份。
+`session.identity_links` 适合处理这种场景：同一个人可能会以多个原始 sender ID 出现，但你希望 OpenFox 把它们视为同一个发送者身份。
 
 示例：
 
@@ -247,7 +247,7 @@ Telegram forum 消息在默认 `chat` 模式下就会保留 topic 隔离。
 ### 同一个用户在 Slack 和 Telegram 之间没有共享记忆
 
 这是当前实现下的预期行为。
-即使使用了 `sender`，PicoClaw 仍然会按 channel 做基础隔离。
+即使使用了 `sender`，OpenFox 仍然会按 channel 做基础隔离。
 
 ### 不同线程混在一起了
 
@@ -264,7 +264,7 @@ Telegram forum 消息在默认 `chat` 模式下就会保留 topic 隔离。
 ### 升级后看到旧的 session key
 
 这属于正常兼容行为。
-PicoClaw 在迁移到新的 opaque canonical key 时，仍会兼容旧的 `agent:...` session key。
+OpenFox 在迁移到新的 opaque canonical key 时，仍会兼容旧的 `agent:...` session key。
 
 ## 相关文档
 

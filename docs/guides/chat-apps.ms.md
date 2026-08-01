@@ -4,7 +4,7 @@
 
 ## 💬 Aplikasi Sembang
 
-Berbual dengan picoclaw anda melalui Telegram, Discord, WhatsApp, Matrix, QQ, DingTalk, LINE, WeCom, Feishu, Slack, IRC, OneBot, MQTT, MaixCam, atau Pico (protokol asli)
+Berbual dengan openfox anda melalui Telegram, Discord, WhatsApp, Matrix, QQ, DingTalk, LINE, WeCom, Feishu, Slack, IRC, OneBot, MQTT, MaixCam, atau Pico (protokol asli)
 
 > **Nota**: Semua saluran berasaskan webhook (LINE, WeCom, dan sebagainya) diservis pada satu pelayan HTTP Gateway yang dikongsi (`gateway.host`:`gateway.port`, lalai `127.0.0.1:18790`). Tiada port khusus per saluran untuk dikonfigurasikan. Nota: Feishu menggunakan mod WebSocket/SDK dan tidak menggunakan pelayan HTTP webhook yang dikongsi.
 
@@ -23,8 +23,8 @@ Berbual dengan picoclaw anda melalui Telegram, Discord, WhatsApp, Matrix, QQ, Di
 | **IRC**          | Sederhana (pelayan + konfigurasi TLS)      |
 | **OneBot**       | Sederhana (QQ melalui protokol OneBot)     |
 | **MQTT**         | Mudah (broker + agent_id)                  |
-| **MaixCam**      | Mudah (integrasi perkakasan Sipeed)        |
-| **Pico**         | Protokol PicoClaw asli                     |
+| **MaixCam**      | Mudah (integrasi perkakasan)        |
+| **Pico**         | Protokol OpenFox asli                     |
 
 <details>
 <summary><b>Telegram</b> (Disyorkan)</summary>
@@ -56,15 +56,15 @@ Berbual dengan picoclaw anda melalui Telegram, Discord, WhatsApp, Matrix, QQ, Di
 **3. Jalankan**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 **4. Menu arahan Telegram (auto-register semasa startup)**
 
-PicoClaw kini menyimpan definisi arahan dalam satu registry bersama. Semasa startup, Telegram akan mendaftarkan arahan bot yang disokong secara automatik (contohnya `/start`, `/help`, `/show`, `/list`, `/use`, `/btw`) supaya menu arahan dan tingkah laku runtime sentiasa selari.
+OpenFox kini menyimpan definisi arahan dalam satu registry bersama. Semasa startup, Telegram akan mendaftarkan arahan bot yang disokong secara automatik (contohnya `/start`, `/help`, `/show`, `/list`, `/use`, `/btw`) supaya menu arahan dan tingkah laku runtime sentiasa selari.
 Pendaftaran menu arahan Telegram kekal sebagai UX penemuan setempat saluran; pelaksanaan arahan generik dikendalikan secara berpusat dalam gelung agen melalui commands executor.
 
-Jika pendaftaran arahan gagal (ralat sementara rangkaian/API), saluran tetap akan bermula dan PicoClaw akan mencuba semula pendaftaran di latar belakang.
+Jika pendaftaran arahan gagal (ralat sementara rangkaian/API), saluran tetap akan bermula dan OpenFox akan mencuba semula pendaftaran di latar belakang.
 
 Anda juga boleh mengurus skill yang dipasang terus dari Telegram:
 
@@ -148,7 +148,7 @@ Anda juga boleh mencetuskan dengan awalan kata kunci (contohnya `!bot`):
 **6. Jalankan**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -156,7 +156,7 @@ picoclaw gateway
 <details>
 <summary><b>WhatsApp</b> (asli melalui whatsmeow)</summary>
 
-PicoClaw boleh menyambung ke WhatsApp dalam dua cara:
+OpenFox boleh menyambung ke WhatsApp dalam dua cara:
 
 - **Asli (disyorkan):** Dalam proses menggunakan [whatsmeow](https://github.com/tulir/whatsmeow). Tiada bridge berasingan. Tetapkan `"use_native": true` dan biarkan `bridge_url` kosong. Pada larian pertama, imbas kod QR dengan WhatsApp (Linked Devices). Sesi disimpan di bawah workspace anda (contohnya `workspace/whatsapp/`). Saluran asli ini adalah **pilihan** untuk memastikan binari lalai kekal kecil; bina dengan `-tags whatsapp_native` (contohnya `make build-whatsapp-native` atau `go build -tags whatsapp_native ./cmd/...`).
 - **Bridge:** Sambung ke bridge WebSocket luaran. Tetapkan `bridge_url` (contohnya `ws://localhost:3001`) dan biarkan `use_native` sebagai false.
@@ -177,7 +177,7 @@ PicoClaw boleh menyambung ke WhatsApp dalam dua cara:
 }
 ```
 
-Jika `session_store_path` kosong, sesi akan disimpan dalam `<workspace>/whatsapp/`. Jalankan `picoclaw gateway`; pada larian pertama, imbas kod QR yang dipaparkan dalam terminal menggunakan WhatsApp → Linked Devices.
+Jika `session_store_path` kosong, sesi akan disimpan dalam `<workspace>/whatsapp/`. Jalankan `openfox gateway`; pada larian pertama, imbas kod QR yang dipaparkan dalam terminal menggunakan WhatsApp → Linked Devices.
 
 </details>
 
@@ -210,7 +210,7 @@ Jika `session_store_path` kosong, sesi akan disimpan dalam `<workspace>/whatsapp
 **3. Jalankan**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -245,7 +245,7 @@ picoclaw gateway
 **3. Jalankan**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 </details>
 
@@ -277,7 +277,7 @@ picoclaw gateway
 **3. Jalankan**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 Untuk pilihan penuh (`device_id`, `join_on_invite`, `group_trigger`, `placeholder`, `reasoning_channel_id`), lihat [Panduan Konfigurasi Saluran Matrix](../channels/matrix/README.md).
@@ -326,7 +326,7 @@ Kemudian tetapkan Webhook URL dalam LINE Developers Console kepada `https://your
 **4. Jalankan**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > Dalam sembang kumpulan, bot hanya membalas apabila @disebut. Balasan akan memetik mesej asal.
@@ -336,7 +336,7 @@ picoclaw gateway
 <details>
 <summary><b>WeCom (企业微信)</b></summary>
 
-PicoClaw menyokong tiga jenis integrasi WeCom:
+OpenFox menyokong tiga jenis integrasi WeCom:
 
 **Pilihan 1: WeCom Bot (Bot)** - Penyediaan lebih mudah, menyokong sembang kumpulan
 **Pilihan 2: WeCom App (Custom App)** - Lebih banyak ciri, pemesejan proaktif, sembang peribadi sahaja
@@ -407,7 +407,7 @@ Lihat [Panduan Konfigurasi WeCom](../channels/wecom/README.zh.md) untuk arahan p
 **4. Jalankan**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > **Nota**: Callback webhook WeCom diservis pada port Gateway (lalai 18790). Gunakan reverse proxy untuk HTTPS.
@@ -440,7 +440,7 @@ picoclaw gateway
 **3. Jalankan**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 > **Nota**: WeCom AI Bot menggunakan protokol streaming pull — tiada isu timeout balasan. Tugasan panjang (>30 saat) akan bertukar secara automatik kepada penghantaran push `response_url`.
@@ -451,7 +451,7 @@ picoclaw gateway
 <details>
 <summary><b>MQTT</b></summary>
 
-Mana-mana client MQTT boleh berkomunikasi dengan PicoClaw melalui broker. Peranti atau perkhidmatan menerbitkan permintaan ke broker; PicoClaw melanggan, memproses dan menerbitkan respons kembali.
+Mana-mana client MQTT boleh berkomunikasi dengan OpenFox melalui broker. Peranti atau perkhidmatan menerbitkan permintaan ke broker; OpenFox melanggan, memproses dan menerbitkan respons kembali.
 
 **1. Konfigurasi**
 
@@ -464,7 +464,7 @@ Mana-mana client MQTT boleh berkomunikasi dengan PicoClaw melalui broker. Perant
       "settings": {
         "broker": "ssl://your-broker:8883",
         "agent_id": "assistant",
-        "topic_prefix": "/picoclaw",
+        "topic_prefix": "/openfox",
         "keep_alive": 60,
         "qos": 0
       }
@@ -473,7 +473,7 @@ Mana-mana client MQTT boleh berkomunikasi dengan PicoClaw melalui broker. Perant
 }
 ```
 
-Nama pengguna dan kata laluan dalam `~/.picoclaw/.security.yml`:
+Nama pengguna dan kata laluan dalam `~/.openfox/.security.yml`:
 
 ```yaml
 channel_list:
@@ -486,8 +486,8 @@ channel_list:
 **Format topik**
 
 ```
-{prefix}/{agent_id}/{client_id}/request    # Client → PicoClaw
-{prefix}/{agent_id}/{client_id}/response   # PicoClaw → Client
+{prefix}/{agent_id}/{client_id}/request    # Client → OpenFox
+{prefix}/{agent_id}/{client_id}/response   # OpenFox → Client
 ```
 
 `client_id` ditetapkan oleh aplikasi client anda untuk mengenal pasti peranti atau sesi.
@@ -495,16 +495,16 @@ channel_list:
 **2. Jalankan**
 
 ```bash
-picoclaw gateway
+openfox gateway
 ```
 
 **3. Uji**
 
 ```bash
-mosquitto_pub -t "/picoclaw/assistant/device1/request" \
+mosquitto_pub -t "/openfox/assistant/device1/request" \
   -m '{"text": "Helo"}'
 
-mosquitto_sub -t "/picoclaw/assistant/device1/response"
+mosquitto_sub -t "/openfox/assistant/device1/response"
 ```
 
 Untuk semua pilihan konfigurasi, lihat [Dokumentasi Saluran MQTT](../channels/mqtt/README.md).

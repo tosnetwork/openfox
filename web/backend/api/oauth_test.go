@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/auth"
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/auth"
+	"github.com/tosnetwork/openfox/pkg/config"
 )
 
 func TestOAuthLoginRejectsUnsupportedMethod(t *testing.T) {
@@ -267,13 +267,13 @@ func setupOAuthTestEnv(t *testing.T) (string, func()) {
 
 	tmp := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	oldPicoHome := os.Getenv("PICOCLAW_HOME")
+	oldPicoHome := os.Getenv("OPENFOX_HOME")
 
 	if err := os.Setenv("HOME", tmp); err != nil {
 		t.Fatalf("set HOME: %v", err)
 	}
-	if err := os.Setenv("PICOCLAW_HOME", filepath.Join(tmp, ".picoclaw")); err != nil {
-		t.Fatalf("set PICOCLAW_HOME: %v", err)
+	if err := os.Setenv("OPENFOX_HOME", filepath.Join(tmp, ".openfox")); err != nil {
+		t.Fatalf("set OPENFOX_HOME: %v", err)
 	}
 
 	cfg := config.DefaultConfig()
@@ -292,9 +292,9 @@ func setupOAuthTestEnv(t *testing.T) (string, func()) {
 	cleanup := func() {
 		_ = os.Setenv("HOME", oldHome)
 		if oldPicoHome == "" {
-			_ = os.Unsetenv("PICOCLAW_HOME")
+			_ = os.Unsetenv("OPENFOX_HOME")
 		} else {
-			_ = os.Setenv("PICOCLAW_HOME", oldPicoHome)
+			_ = os.Setenv("OPENFOX_HOME", oldPicoHome)
 		}
 	}
 	return configPath, cleanup

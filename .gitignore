@@ -8,14 +8,14 @@ build/
 *.dylib
 *.test
 *.out
-/picoclaw
-/picoclaw-test
+/openfox
+/openfox-test
 cmd/**/workspace
 
-# Picoclaw specific
+# Openfox specific
 
-# PicoClaw
-.picoclaw/
+# OpenFox
+.openfox/
 config.json
 sessions/
 build/

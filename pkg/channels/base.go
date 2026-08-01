@@ -11,11 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/identity"
+	"github.com/tosnetwork/openfox/pkg/logger"
+	"github.com/tosnetwork/openfox/pkg/media"
 )
 
 var (
@@ -124,7 +124,7 @@ func NewBaseChannel(
 	}
 
 	// Security Audit: Check for open-by-default (unsecured) channels.
-	// PicoClaw aims to be secure-by-default. If allow_from is empty, the bot
+	// OpenFox aims to be secure-by-default. If allow_from is empty, the bot
 	// currently defaults to accepting messages from ANYONE. To explicitly
 	// acknowledge and permit this (e.g. for a public bot), use ["*"].
 	if len(bc.allowList) == 0 {

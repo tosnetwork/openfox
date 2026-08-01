@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/evolution"
+	"github.com/tosnetwork/openfox/pkg/evolution"
 )
 
 func TestRecallSimilarSkills_ReturnsWorkspaceSkillFirst(t *testing.T) {
@@ -15,7 +15,7 @@ func TestRecallSimilarSkills_ReturnsWorkspaceSkillFirst(t *testing.T) {
 	builtinRoot := t.TempDir()
 
 	t.Setenv("HOME", globalHome)
-	t.Setenv("PICOCLAW_BUILTIN_SKILLS", builtinRoot)
+	t.Setenv("OPENFOX_BUILTIN_SKILLS", builtinRoot)
 
 	mustWriteSkill := func(root, name, content string) {
 		t.Helper()
@@ -34,7 +34,7 @@ func TestRecallSimilarSkills_ReturnsWorkspaceSkillFirst(t *testing.T) {
 		"---\nname: weather\ndescription: weather lookup\n---\n# Weather\nUse weather queries.\n",
 	)
 	mustWriteSkill(
-		filepath.Join(globalHome, ".picoclaw", "skills"),
+		filepath.Join(globalHome, ".openfox", "skills"),
 		"release",
 		"---\nname: release\ndescription: release flow\n---\n# Release\nRelease build.\n",
 	)
@@ -67,7 +67,7 @@ func TestRecallSimilarSkills_UsesExplicitWinningPathOnly(t *testing.T) {
 	builtinRoot := t.TempDir()
 
 	t.Setenv("HOME", globalHome)
-	t.Setenv("PICOCLAW_BUILTIN_SKILLS", builtinRoot)
+	t.Setenv("OPENFOX_BUILTIN_SKILLS", builtinRoot)
 
 	mustWriteSkill := func(root, name, description string) {
 		t.Helper()

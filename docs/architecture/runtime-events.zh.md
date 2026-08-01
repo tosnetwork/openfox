@@ -1,6 +1,6 @@
 # Runtime Events 与事件日志
 
-PicoClaw 的 runtime event 是运行时观察面，用来描述 agent、channel、gateway、message bus、MCP 等组件发生了什么。事件发布和日志打印是两件事：
+OpenFox 的 runtime event 是运行时观察面，用来描述 agent、channel、gateway、message bus、MCP 等组件发生了什么。事件发布和日志打印是两件事：
 
 - 事件发布：组件把 `pkg/events.Event` 发布到 runtime event bus，供 hook、测试、调试工具或后续 UI 消费。
 - 事件日志：内置 runtime event logger 订阅同一个 bus，并按配置把匹配的事件打印到日志。
@@ -69,11 +69,11 @@ PicoClaw 的 runtime event 是运行时观察面，用来描述 agent、channel�
 同一组配置也可以通过环境变量覆盖，适合临时调试：
 
 ```bash
-PICOCLAW_EVENTS_LOGGING_ENABLED=true
-PICOCLAW_EVENTS_LOGGING_INCLUDE="gateway.*,channel.lifecycle.*"
-PICOCLAW_EVENTS_LOGGING_EXCLUDE="gateway.ready"
-PICOCLAW_EVENTS_LOGGING_MIN_SEVERITY=info
-PICOCLAW_EVENTS_LOGGING_INCLUDE_PAYLOAD=false
+OPENFOX_EVENTS_LOGGING_ENABLED=true
+OPENFOX_EVENTS_LOGGING_INCLUDE="gateway.*,channel.lifecycle.*"
+OPENFOX_EVENTS_LOGGING_EXCLUDE="gateway.ready"
+OPENFOX_EVENTS_LOGGING_MIN_SEVERITY=info
+OPENFOX_EVENTS_LOGGING_INCLUDE_PAYLOAD=false
 ```
 
 `include` 和 `exclude` 的环境变量使用逗号分隔。

@@ -22,8 +22,8 @@ import (
 	"github.com/minio/selfupdate"
 	"github.com/spf13/cobra"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/utils"
 )
 
 // httpClient is a shared HTTP client used for release checks and downloads.
@@ -55,7 +55,7 @@ func DownloadAndExtractRelease(releaseURL, platform, arch string) (string, error
 
 	// Download asset to temp file. Use the asset URL extension so
 	// extractArchive can detect the archive format (zip/tar.gz/tar).
-	tmpPattern := "picoclaw-release-*"
+	tmpPattern := "openfox-release-*"
 	if u, perr := url.Parse(assetURL); perr == nil {
 		base := filepath.Base(u.Path)
 		lbase := strings.ToLower(base)
@@ -113,7 +113,7 @@ func DownloadAndExtractRelease(releaseURL, platform, arch string) (string, error
 	}
 
 	// Extract
-	destDir, err := os.MkdirTemp("", "picoclaw-extract-*")
+	destDir, err := os.MkdirTemp("", "openfox-extract-*")
 	if err != nil {
 		os.Remove(tmpPath)
 		return "", err
@@ -187,25 +187,25 @@ func UpdateSelf(programName string) error {
 }
 
 // GetReleaseAPIURL returns the GitHub Releases API URL for the given repo owner.
-// Example: owner="sky5454" -> https://api.github.com/repos/sky5454/picoclaw/releases/latest
+// Example: owner="sky5454" -> https://api.github.com/repos/sky5454/openfox/releases/latest
 func GetReleaseAPIURL(owner string) string {
-	return fmt.Sprintf("https://api.github.com/repos/%s/picoclaw/releases/latest", owner)
+	return fmt.Sprintf("https://api.github.com/repos/%s/openfox/releases/latest", owner)
 }
 
 // GetProdReleaseAPIURL returns the production release API URL (upstream).
 func GetProdReleaseAPIURL() string {
-	return GetReleaseAPIURL("sipeed")
+	return GetReleaseAPIURL("tosnetwork")
 }
 
 // GetReleaseTagAPIURL returns the GitHub Releases API URL for a specific tag.
-// Example: owner="sipeed", tag="nightly" -> https://api.github.com/repos/sipeed/picoclaw/releases/tags/nightly
+// Example: owner="tosnetwork", tag="nightly" -> https://api.github.com/repos/tosnetwork/openfox/releases/tags/nightly
 func GetReleaseTagAPIURL(owner, tag string) string {
-	return fmt.Sprintf("https://api.github.com/repos/%s/picoclaw/releases/tags/%s", owner, tag)
+	return fmt.Sprintf("https://api.github.com/repos/%s/openfox/releases/tags/%s", owner, tag)
 }
 
 // GetNightlyReleaseAPIURL returns the nightly release API URL for the production repo.
 func GetNightlyReleaseAPIURL() string {
-	return GetReleaseTagAPIURL("sipeed", "nightly")
+	return GetReleaseTagAPIURL("tosnetwork", "nightly")
 }
 
 // findAssetURL resolves the appropriate asset URL for the given release

@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/config"
 )
 
 var execCommand = LauncherExecCommand
@@ -19,7 +19,7 @@ func EnsureOnboarded(configPath string) error {
 		return fmt.Errorf("stat config: %w", err)
 	}
 
-	cmd := execCommand(FindPicoclawBinary(), "onboard")
+	cmd := execCommand(FindOpenfoxBinary(), "onboard")
 	cmd.Env = append(os.Environ(), config.EnvConfig+"="+configPath)
 	cmd.Stdin = strings.NewReader("n\n")
 

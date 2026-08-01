@@ -1,7 +1,7 @@
 <div align="center">
-<img src="../../assets/logo.webp" alt="PicoClaw" width="512">
+<img src="../../assets/logo.webp" alt="OpenFox" width="512">
 
-<h1>PicoClaw: 基于Go语言的超高效 AI 助手</h1>
+<h1>OpenFox: 基于Go语言的超高效 AI 助手</h1>
 
 <h3>$10 硬件 · 10MB 内存 · 毫秒启动 · 皮皮虾，我们走！</h3>
   <p>
@@ -9,11 +9,10 @@
     <img src="https://img.shields.io/badge/Arch-x86__64%2C%20ARM64%2C%20MIPS%2C%20RISC--V%2C%20LoongArch-blue" alt="Hardware">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     <br>
-    <a href="https://picoclaw.io"><img src="https://img.shields.io/badge/Website-picoclaw.io-blue?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
-    <a href="https://docs.picoclaw.io/"><img src="https://img.shields.io/badge/Docs-Official-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="Docs"></a>
-    <a href="https://deepwiki.com/sipeed/picoclaw"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="Wiki"></a>
+    <a href="https://openfox.im"><img src="https://img.shields.io/badge/Website-openfox.im-blue?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
+    <a href="https://docs.openfox.im/"><img src="https://img.shields.io/badge/Docs-Official-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="Docs"></a>
+    <a href="https://deepwiki.com/tosnetwork/openfox"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="Wiki"></a>
     <br>
-    <a href="https://x.com/SipeedIO"><img src="https://img.shields.io/badge/X_(Twitter)-SipeedIO-black?style=flat&logo=x&logoColor=white" alt="Twitter"></a>
     <a href="../../assets/wechat.png"><img src="https://img.shields.io/badge/WeChat-Group-41d56b?style=flat&logo=wechat&logoColor=white"></a>
     <a href="https://discord.gg/V4sAZ9XWpN"><img src="https://img.shields.io/badge/Discord-Community-4c60eb?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
@@ -24,9 +23,7 @@
 
 ---
 
-> **PicoClaw** 是由 [矽速科技 (Sipeed)](https://sipeed.com) 发起的独立开源项目，完全使用 **Go 语言**从零编写——不是 OpenClaw、NanoBot 或其他项目的分支。
-
-🦐 **PicoClaw** 是一个受 [NanoBot](https://github.com/HKUDS/nanobot) 启发的超轻量级个人 AI 助手。它采用 **Go 语言** 从零重构，经历了一个"自举"过程——即由 AI Agent 自身驱动了整个架构迁移和代码优化。
+🦐 **OpenFox** 是一个受 [NanoBot](https://github.com/HKUDS/nanobot) 启发的超轻量级个人 AI 助手。它采用 **Go 语言** 从零重构，经历了一个"自举"过程——即由 AI Agent 自身驱动了整个架构迁移和代码优化。
 
 ⚡️ **极致轻量**：可在 **10 美元** 的硬件上运行，内存占用 **<10MB**。这意味着比 OpenClaw 节省 99% 的内存，比 Mac mini 便宜 98%！
 
@@ -34,7 +31,7 @@
 <tr align="center">
 <td align="center" valign="top">
 <p align="center">
-<img src="../../assets/picoclaw_mem.gif" width="360" height="240">
+<img src="../../assets/openfox_mem.gif" width="360" height="240">
 </p>
 </td>
 <td align="center" valign="top">
@@ -48,15 +45,15 @@
 > [!CAUTION]
 > **🚨 安全声明**
 >
-> - **无加密货币 (NO CRYPTO):** PicoClaw **没有** 发行任何官方代币、Token 或虚拟货币。所有在 `pump.fun` 或其他交易平台上的相关声称均为 **诈骗**。
-> - **官方域名:** 唯一的官方网站是 **[picoclaw.io](https://picoclaw.io)**，公司官网是 **[sipeed.com](https://sipeed.com)**。
+> - **无加密货币 (NO CRYPTO):** OpenFox **没有** 发行任何官方代币、Token 或虚拟货币。所有在 `pump.fun` 或其他交易平台上的相关声称均为 **诈骗**。
+> - **官方域名:** 唯一的官方网站是 **[openfox.im](https://openfox.im)**。
 > - **警惕:** 许多 `.ai/.org/.com/.net/...` 后缀的域名被第三方抢注，请勿轻信。
-> - **注意:** PicoClaw 正在初期的快速功能开发阶段，可能有尚未修复的网络安全问题，在 1.0 正式版发布前，请不要将其部署到生产环境中。
-> - **注意:** PicoClaw 最近合并了大量 PR，近期版本可能内存占用较大 (10~20MB)，我们将在功能较为收敛后进行资源占用优化。
+> - **注意:** OpenFox 正在初期的快速功能开发阶段，可能有尚未修复的网络安全问题，在 1.0 正式版发布前，请不要将其部署到生产环境中。
+> - **注意:** OpenFox 最近合并了大量 PR，近期版本可能内存占用较大 (10~20MB)，我们将在功能较为收敛后进行资源占用优化。
 
 ## 📢 新闻
 
-2026-05-11 🛒 **LicheeRV-Claw 已上架淘宝！** 现在可以在 [淘宝](https://item.taobao.com/item.htm?abbucket=20&id=764939520376) 购买 LicheeRV-Claw，更方便地在小型 RISC-V 硬件上体验 PicoClaw。
+2026-05-11 🛒 **LicheeRV-Claw 已上架淘宝！** 现在可以在 [淘宝](https://item.taobao.com/item.htm?abbucket=20&id=764939520376) 购买 LicheeRV-Claw，更方便地在小型 RISC-V 硬件上体验 OpenFox。
 
 <p align="center">
   <a href="https://item.taobao.com/item.htm?abbucket=20&id=764939520376">
@@ -64,11 +61,11 @@
   </a>
 </p>
 
-2026-03-31 📱 **Android 支持！** PicoClaw 现可在 Android 上运行！APK 下载地址：[picoclaw.io](https://picoclaw.io/download)
+2026-03-31 📱 **Android 支持！** OpenFox 现可在 Android 上运行！APK 下载地址：[openfox.im](https://openfox.im/download)
 
-2026-03-25 🚀 **v0.2.4 发布！** Agent 架构全面重构（SubTurn、Hook、Steering、EventBus）、微信/企业微信深度集成、安全体系升级（.security.yml、敏感数据过滤）、新增 Provider（AWS Bedrock、Azure、小米 MiMo），以及 35 项 Bug 修复。PicoClaw 已达 **26K ⭐**！
+2026-03-25 🚀 **v0.2.4 发布！** Agent 架构全面重构（SubTurn、Hook、Steering、EventBus）、微信/企业微信深度集成、安全体系升级（.security.yml、敏感数据过滤）、新增 Provider（AWS Bedrock、Azure、小米 MiMo），以及 35 项 Bug 修复。OpenFox 已达 **26K ⭐**！
 
-2026-03-17 🚀 **v0.2.3 发布！** 系统托盘 UI（Windows & Linux）、子 Agent 状态查询 (`spawn_status`)、实验性 Gateway 热重载、Cron 安全门控，以及 2 项安全修复。PicoClaw 已达 **25K ⭐**！
+2026-03-17 🚀 **v0.2.3 发布！** 系统托盘 UI（Windows & Linux）、子 Agent 状态查询 (`spawn_status`)、实验性 Gateway 热重载、Cron 安全门控，以及 2 项安全修复。OpenFox 已达 **25K ⭐**！
 
 2026-03-09 🎉 **v0.2.1 — 史上最大更新！** MCP 协议支持、4 个新频道 (Matrix/IRC/WeCom/Discord Proxy)、3 个新 Provider (Kimi/Minimax/Avian)、视觉管线、JSONL 记忆存储、模型路由。
 
@@ -77,13 +74,13 @@
 <details>
 <summary>更早的新闻...</summary>
 
-2026-02-26 🎉 PicoClaw 仅 17 天突破 **20K Stars**！频道自动编排和能力接口上线。
+2026-02-26 🎉 OpenFox 仅 17 天突破 **20K Stars**！频道自动编排和能力接口上线。
 
-2026-02-16 🎉 PicoClaw 一周内突破 12K Stars！社区维护者角色和 [路线图](../../ROADMAP.md) 正式发布。
+2026-02-16 🎉 OpenFox 一周内突破 12K Stars！社区维护者角色和 [路线图](../../ROADMAP.md) 正式发布。
 
-2026-02-13 🎉 PicoClaw 4 天内突破 5000 Stars！项目路线图和开发者群组筹建中。
+2026-02-13 🎉 OpenFox 4 天内突破 5000 Stars！项目路线图和开发者群组筹建中。
 
-2026-02-09 🎉 **PicoClaw 正式发布！** 仅用 1 天构建，将 AI Agent 带入 $10 硬件与 <10MB 内存的世界。🦐 皮皮虾，我们走！
+2026-02-09 🎉 **OpenFox 正式发布！** 仅用 1 天构建，将 AI Agent 带入 $10 硬件与 <10MB 内存的世界。🦐 皮皮虾，我们走！
 
 </details>
 
@@ -109,21 +106,21 @@ _*近期版本因快速合并 PR 可能占用 10–20MB，资源优化已列入�
 
 <div align="center">
 
-|                                | OpenClaw      | NanoBot                  | **PicoClaw**                           |
+|                                | OpenClaw      | NanoBot                  | **OpenFox**                           |
 | ------------------------------ | ------------- | ------------------------ | -------------------------------------- |
 | **语言**                       | TypeScript    | Python                   | **Go**                                 |
 | **RAM**                        | >1GB          | >100MB                   | **< 10MB***                            |
 | **启动时间**</br>(0.8GHz core) | >500s         | >30s                     | **<1s**                                |
 | **成本**                       | Mac Mini $599 | 大多数 Linux 开发板 ~$50 | **任意 Linux 开发板**</br>**低至 $10** |
 
-<img src="../../assets/compare.jpg" alt="PicoClaw" width="512">
+<img src="../../assets/compare.jpg" alt="OpenFox" width="512">
 
 </div>
 
 > 📋 **[硬件兼容列表](../guides/hardware-compatibility.zh.md)** — 查看所有已测试的板卡，从 $5 RISC-V 到树莓派到安卓手机。你的板卡没在列表中？欢迎提交 PR！
 
 <p align="center">
-<img src="../../assets/hardware-banner.jpg" alt="PicoClaw Hardware Compatibility" width="100%">
+<img src="../../assets/hardware-banner.jpg" alt="OpenFox Hardware Compatibility" width="100%">
 </p>
 
 ## 🦾 演示
@@ -137,9 +134,9 @@ _*近期版本因快速合并 PR 可能占用 10–20MB，资源优化已列入�
 <th><p align="center">🔎 网络搜索与学习</p></th>
 </tr>
 <tr>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_code.gif" width="240" height="180"></p></td>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_memory.gif" width="240" height="180"></p></td>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_search.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_code.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_memory.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_search.gif" width="240" height="180"></p></td>
 </tr>
 <tr>
 <td align="center">开发 • 部署 • 扩展</td>
@@ -150,7 +147,7 @@ _*近期版本因快速合并 PR 可能占用 10–20MB，资源优化已列入�
 
 ### 🐜 创新的低占用部署
 
-PicoClaw 几乎可以部署在任何 Linux 设备上！
+OpenFox 几乎可以部署在任何 Linux 设备上！
 
 - $9.9 [LicheeRV-Nano](https://item.taobao.com/item.htm?id=764939520376) E(网口) 或 W(WiFi6) 版本，用于极简家庭助手
 - $30~50 [NanoKVM](https://item.taobao.com/item.htm?id=811206560480)，或 $100 [NanoKVM-Pro](https://item.taobao.com/item.htm?id=994419942411)，用于自动化服务器运维
@@ -162,13 +159,13 @@ PicoClaw 几乎可以部署在任何 Linux 设备上！
 
 ## 📦 安装
 
-### 从 picoclaw.io 下载（推荐）
+### 从 openfox.im 下载（推荐）
 
-访问 **[picoclaw.io](https://picoclaw.io)** — 官网自动检测你的平台，提供一键下载，无需手动选择架构。
+访问 **[openfox.im](https://openfox.im)** — 官网自动检测你的平台，提供一键下载，无需手动选择架构。
 
 ### 下载预编译二进制文件
 
-也可以从 [GitHub Releases](https://github.com/sipeed/picoclaw/releases) 页面手动下载对应平台的二进制文件。
+也可以从 [GitHub Releases](https://github.com/tosnetwork/openfox/releases) 页面手动下载对应平台的二进制文件。
 
 ### 从源码构建（开发用）
 
@@ -178,9 +175,9 @@ PicoClaw 几乎可以部署在任何 Linux 设备上！
 - Node.js 22+ 和 pnpm 10.33.0+（用于 Web UI / launcher 构建）
 
 ```bash
-git clone https://github.com/sipeed/picoclaw.git
+git clone https://github.com/tosnetwork/openfox.git
 
-cd picoclaw
+cd openfox
 make deps
 
 # 安装前端依赖
@@ -212,19 +209,19 @@ WebUI Launcher 提供基于浏览器的配置与聊天界面，是最简单的�
 
 **方式一：双击启动（桌面）**
 
-从 [picoclaw.io](https://picoclaw.io) 下载后，双击 `picoclaw-launcher`（Windows 上为 `picoclaw-launcher.exe`），浏览器将自动打开 `http://localhost:18800`。
+从 [openfox.im](https://openfox.im) 下载后，双击 `openfox-launcher`（Windows 上为 `openfox-launcher.exe`），浏览器将自动打开 `http://localhost:18800`。
 
 **方式二：命令行**
 
 ```bash
-picoclaw-launcher
+openfox-launcher
 # 在浏览器中打开 http://localhost:18800
 ```
 
 > [!TIP]
 > **远程访问 / Docker / 虚拟机：** 添加 `-public` 参数以监听所有网络接口：
 > ```bash
-> picoclaw-launcher -public
+> openfox-launcher -public
 > ```
 
 <p align="center">
@@ -235,15 +232,15 @@ picoclaw-launcher
 
 打开 WebUI，然后：**1)** 配置 Provider（填入 LLM API Key）-> **2)** 配置 Channel（如 Telegram）-> **3)** 启动 Gateway -> **4)** 开始聊天！
 
-详细 WebUI 文档请参阅 [docs.picoclaw.io](https://docs.picoclaw.io)。
+详细 WebUI 文档请参阅 [docs.openfox.im](https://docs.openfox.im)。
 
 <details>
 <summary><b>Docker（备选方案）</b></summary>
 
 ```bash
 # 1. 克隆本仓库
-git clone https://github.com/sipeed/picoclaw.git
-cd picoclaw
+git clone https://github.com/tosnetwork/openfox.git
+cd openfox
 
 # 2. 首次运行——自动生成 docker/data/config.json 后退出
 #    （仅在 config.json 和 workspace/ 均不存在时触发）
@@ -258,7 +255,7 @@ docker compose -f docker/docker-compose.yml --profile launcher up -d
 # 打开 http://localhost:18800
 ```
 
-> **Docker / 虚拟机用户：** Gateway 默认监听 `127.0.0.1`。设置 `PICOCLAW_GATEWAY_HOST=0.0.0.0` 或使用 `-public` 参数以允许从宿主机访问。
+> **Docker / 虚拟机用户：** Gateway 默认监听 `127.0.0.1`。设置 `OPENFOX_GATEWAY_HOST=0.0.0.0` 或使用 `-public` 参数以允许从宿主机访问。
 
 ```bash
 # 查看日志
@@ -277,15 +274,15 @@ docker compose -f docker/docker-compose.yml --profile launcher up -d
 <details>
 <summary><b>macOS — 首次启动安全警告</b></summary>
 
-macOS 可能会在首次启动时拦截 `picoclaw-launcher`，因为它从互联网下载，未经 Mac App Store 公证。
+macOS 可能会在首次启动时拦截 `openfox-launcher`，因为它从互联网下载，未经 Mac App Store 公证。
 
-**第一步：** 双击 `picoclaw-launcher`，会出现安全警告：
+**第一步：** 双击 `openfox-launcher`，会出现安全警告：
 
 <p align="center">
 <img src="../../assets/macos-gatekeeper-warning.jpg" alt="macOS Gatekeeper 警告" width="400">
 </p>
 
-> *"picoclaw-launcher" 无法打开 — Apple 无法验证 "picoclaw-launcher" 不含可能损害 Mac 或危及隐私的恶意软件。*
+> *"openfox-launcher" 无法打开 — Apple 无法验证 "openfox-launcher" 不含可能损害 Mac 或危及隐私的恶意软件。*
 
 **第二步：** 打开**系统设置** → **隐私与安全性** → 向下滚动找到**安全性**部分 → 点击**仍要打开** → 在弹窗中再次点击**打开**。
 
@@ -293,7 +290,7 @@ macOS 可能会在首次启动时拦截 `picoclaw-launcher`，因为它从互联
 <img src="../../assets/macos-gatekeeper-allow.jpg" alt="macOS 隐私与安全性 — 仍要打开" width="600">
 </p>
 
-完成这一次操作后，后续启动 `picoclaw-launcher` 将不再弹出警告。
+完成这一次操作后，后续启动 `openfox-launcher` 将不再弹出警告。
 
 </details>
 
@@ -315,7 +312,7 @@ macOS 可能会在首次启动时拦截 `picoclaw-launcher`，因为它从互联
   </tr>
 </table>
 
-从 [picoclaw.io](https://picoclaw.io/download/) 下载 APK 并直接安装，无需 Termux！
+从 [openfox.im](https://openfox.im/download/) 下载 APK 并直接安装，无需 Termux！
 
 **方式二：Termux**
 
@@ -327,27 +324,27 @@ macOS 可能会在首次启动时拦截 `picoclaw-launcher`，因为它从互联
 
 ```bash
 # 从 Release 页面下载最新版本
-wget https://github.com/sipeed/picoclaw/releases/latest/download/picoclaw_Linux_arm64.tar.gz
-tar xzf picoclaw_Linux_arm64.tar.gz
+wget https://github.com/tosnetwork/openfox/releases/latest/download/openfox_Linux_arm64.tar.gz
+tar xzf openfox_Linux_arm64.tar.gz
 pkg install proot
-termux-chroot ./picoclaw onboard   # chroot 提供标准 Linux 文件系统布局
+termux-chroot ./openfox onboard   # chroot 提供标准 Linux 文件系统布局
 ```
 
 然后跟随下面的"Terminal Launcher"章节继续配置。
 
-<img src="../../assets/termux.jpg" alt="PicoClaw on Termux" width="512">
+<img src="../../assets/termux.jpg" alt="OpenFox on Termux" width="512">
 
-对于只有 `picoclaw` 核心二进制文件的极简环境（无 Launcher UI），可通过命令行和 JSON 配置文件完成所有配置。
+对于只有 `openfox` 核心二进制文件的极简环境（无 Launcher UI），可通过命令行和 JSON 配置文件完成所有配置。
 
 **1. 初始化**
 
 ```bash
-picoclaw onboard
+openfox onboard
 ```
 
-此命令会创建 `~/.picoclaw/config.json` 和工作区目录。
+此命令会创建 `~/.openfox/config.json` 和工作区目录。
 
-**2. 配置** (`~/.picoclaw/config.json`)
+**2. 配置** (`~/.openfox/config.json`)
 
 ```json
 {
@@ -373,20 +370,20 @@ picoclaw onboard
 
 ```bash
 # 单次提问
-picoclaw agent -m "What is 2+2?"
+openfox agent -m "What is 2+2?"
 
 # 交互式对话模式
-picoclaw agent
+openfox agent
 
 # 启动 Gateway 以接入聊天应用
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
 
 ## 🔌 Providers (LLM)
 
-PicoClaw 通过 `model_list` 配置支持 30+ LLM Provider，使用 `协议/模型` 格式：
+OpenFox 通过 `model_list` 配置支持 30+ LLM Provider，使用 `协议/模型` 格式：
 
 | Provider | 协议 | API Key | 备注 |
 |----------|------|---------|------|
@@ -448,7 +445,7 @@ PicoClaw 通过 `model_list` 配置支持 30+ LLM Provider，使用 `协议/模�
 
 ## 💬 Channels（聊天应用）
 
-通过 18+ 消息平台与你的 PicoClaw 对话：
+通过 18+ 消息平台与你的 OpenFox 对话：
 
 | Channel | 配置难度 | 协议 | 文档 |
 |---------|----------|------|------|
@@ -472,7 +469,7 @@ PicoClaw 通过 `model_list` 配置支持 30+ LLM Provider，使用 `协议/模�
 
 > 所有基于 Webhook 的 Channel 共用同一个 Gateway HTTP 服务器（`gateway.host`:`gateway.port`，默认 `127.0.0.1:18790`）。飞书使用 WebSocket/SDK 模式，不使用共享 HTTP 服务器。
 
-> 日志详细程度通过 `gateway.log_level` 控制（默认：`warn`）。支持的值：`debug`、`info`、`warn`、`error`、`fatal`。也可通过 `PICOCLAW_LOG_LEVEL` 环境变量设置。详见[配置指南](../guides/configuration.zh.md#gateway-日志等级)。
+> 日志详细程度通过 `gateway.log_level` 控制（默认：`warn`）。支持的值：`debug`、`info`、`warn`、`error`、`fatal`。也可通过 `OPENFOX_LOG_LEVEL` 环境变量设置。详见[配置指南](../guides/configuration.zh.md#gateway-日志等级)。
 
 详细 Channel 配置说明请参阅 [聊天应用配置](../guides/chat-apps.zh.md)。
 
@@ -480,7 +477,7 @@ PicoClaw 通过 `model_list` 配置支持 30+ LLM Provider，使用 `协议/模�
 
 ### 🔍 网络搜索
 
-PicoClaw 可以搜索网络以提供最新信息。在 `tools.web` 中配置：
+OpenFox 可以搜索网络以提供最新信息。在 `tools.web` 中配置：
 
 | 搜索引擎 | API Key | 免费额度 | 链接 |
 |---------|---------|---------|------|
@@ -494,7 +491,7 @@ PicoClaw 可以搜索网络以提供最新信息。在 `tools.web` 中配置：
 
 ### ⚙️ 其他工具
 
-PicoClaw 内置文件操作、代码执行、定时任务等工具。详情请参阅 [工具配置](../reference/tools_configuration.zh.md)。
+OpenFox 内置文件操作、代码执行、定时任务等工具。详情请参阅 [工具配置](../reference/tools_configuration.zh.md)。
 
 ## 🎯 Skills
 
@@ -503,8 +500,8 @@ Skills 是扩展 Agent 能力的模块化插件，从工作区的 `SKILL.md` 文
 **从 ClawHub 安装 Skills：**
 
 ```bash
-picoclaw skills search "web scraping"
-picoclaw skills install <skill-name>
+openfox skills search "web scraping"
+openfox skills install <skill-name>
 ```
 
 **配置 Skills 仓库源**：
@@ -535,7 +532,7 @@ picoclaw skills install <skill-name>
 
 ## 🔗 MCP (Model Context Protocol)
 
-PicoClaw 原生支持 [MCP](https://modelcontextprotocol.io/) — 连接任意 MCP 服务器，通过外部工具和数据源扩展 Agent 能力。
+OpenFox 原生支持 [MCP](https://modelcontextprotocol.io/) — 连接任意 MCP 服务器，通过外部工具和数据源扩展 Agent 能力。
 
 ```json
 {
@@ -558,7 +555,7 @@ PicoClaw 原生支持 [MCP](https://modelcontextprotocol.io/) — 连接任意 M
 
 ## <img src="../../assets/clawdchat-icon.png" width="24" height="24" alt="ClawdChat"> 加入 Agent 社交网络
 
-通过 CLI 或任何已集成的聊天应用发送一条消息，即可将 PicoClaw 连接到 Agent 社交网络。
+通过 CLI 或任何已集成的聊天应用发送一条消息，即可将 OpenFox 连接到 Agent 社交网络。
 
 **阅读 `https://clawdchat.ai/skill.md` 并按照说明加入 [ClawdChat.ai](https://clawdchat.ai)**
 
@@ -566,26 +563,26 @@ PicoClaw 原生支持 [MCP](https://modelcontextprotocol.io/) — 连接任意 M
 
 | 命令                       | 说明                   |
 | ------------------------- | ---------------------- |
-| `picoclaw onboard`        | 初始化配置与工作区       |
-| `picoclaw auth weixin` | 扫码连接微信个人号 |
-| `picoclaw agent -m "..."` | 与 Agent 对话           |
-| `picoclaw agent`          | 交互式对话模式           |
-| `picoclaw gateway`        | 启动网关                |
-| `picoclaw status`         | 查看状态                |
-| `picoclaw version`        | 查看版本信息             |
-| `picoclaw model`          | 查看或切换默认模型       |
-| `picoclaw cron list`      | 列出所有定时任务         |
-| `picoclaw cron add ...`   | 添加定时任务             |
-| `picoclaw cron disable`   | 禁用定时任务             |
-| `picoclaw cron remove`    | 删除定时任务             |
-| `picoclaw skills list`    | 列出已安装 Skills        |
-| `picoclaw skills install` | 安装 Skill              |
-| `picoclaw migrate`        | 从旧版本迁移数据         |
-| `picoclaw auth login`     | 认证 Provider           |
+| `openfox onboard`        | 初始化配置与工作区       |
+| `openfox auth weixin` | 扫码连接微信个人号 |
+| `openfox agent -m "..."` | 与 Agent 对话           |
+| `openfox agent`          | 交互式对话模式           |
+| `openfox gateway`        | 启动网关                |
+| `openfox status`         | 查看状态                |
+| `openfox version`        | 查看版本信息             |
+| `openfox model`          | 查看或切换默认模型       |
+| `openfox cron list`      | 列出所有定时任务         |
+| `openfox cron add ...`   | 添加定时任务             |
+| `openfox cron disable`   | 禁用定时任务             |
+| `openfox cron remove`    | 删除定时任务             |
+| `openfox skills list`    | 列出已安装 Skills        |
+| `openfox skills install` | 安装 Skill              |
+| `openfox migrate`        | 从旧版本迁移数据         |
+| `openfox auth login`     | 认证 Provider           |
 
 ### ⏰ 定时任务 / 提醒
 
-PicoClaw 通过 `cron` 工具支持定时提醒和重复任务：
+OpenFox 通过 `cron` 工具支持定时提醒和重复任务：
 
 * **一次性提醒**: "10分钟后提醒我" → 10分钟后触发一次
 * **重复任务**: "每2小时提醒我" → 每2小时触发
@@ -613,7 +610,7 @@ PicoClaw 通过 `cron` 工具支持定时提醒和重复任务：
 
 欢迎提交 PR！代码库刻意保持小巧和可读。🤗
 
-查看完整的 [社区路线图](https://github.com/sipeed/picoclaw/issues/988) 和 [CONTRIBUTING.md](../../CONTRIBUTING.md)。
+查看完整的 [社区路线图](https://github.com/tosnetwork/openfox/issues/988)。
 
 开发者群组正在组建中，入群门槛：至少合并过 1 个 PR。
 

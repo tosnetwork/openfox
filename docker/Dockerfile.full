@@ -1,5 +1,5 @@
 # ============================================================
-# Stage 1: Build the picoclaw binary
+# Stage 1: Build the openfox binary
 # ============================================================
 FROM golang:1.25-alpine AS builder
 
@@ -35,10 +35,10 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
   uv --version
 
 # Copy binary
-COPY --from=builder /src/build/picoclaw /usr/local/bin/picoclaw
+COPY --from=builder /src/build/openfox /usr/local/bin/openfox
 
-# Create picoclaw home directory
-RUN /usr/local/bin/picoclaw onboard
+# Create openfox home directory
+RUN /usr/local/bin/openfox onboard
 
-ENTRYPOINT ["picoclaw"]
+ENTRYPOINT ["openfox"]
 CMD ["gateway"]

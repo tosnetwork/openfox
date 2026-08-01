@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/evolution"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/evolution"
+	"github.com/tosnetwork/openfox/pkg/providers"
 )
 
 type llmClusterTestProvider struct {

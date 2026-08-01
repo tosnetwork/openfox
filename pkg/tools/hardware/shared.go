@@ -1,6 +1,6 @@
 package hardwaretools
 
-import toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
+import toolshared "github.com/tosnetwork/openfox/pkg/tools/shared"
 
 type ToolResult = toolshared.ToolResult
 

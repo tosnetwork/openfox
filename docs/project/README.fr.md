@@ -1,19 +1,18 @@
 <div align="center">
-  <img src="../../assets/logo.webp" alt="PicoClaw" width="512">
+  <img src="../../assets/logo.webp" alt="OpenFox" width="512">
 
-  <h1>PicoClaw : Assistant IA Ultra-Efficace en Go</h1>
+  <h1>OpenFox : Assistant IA Ultra-Efficace en Go</h1>
 
-  <h3>Matériel à $10 · 10 Mo de RAM · Démarrage en ms · Let's Go, PicoClaw!</h3>
+  <h3>Matériel à $10 · 10 Mo de RAM · Démarrage en ms · Let's Go, OpenFox!</h3>
   <p>
     <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
     <img src="https://img.shields.io/badge/Arch-x86__64%2C%20ARM64%2C%20MIPS%2C%20RISC--V%2C%20LoongArch-blue" alt="Hardware">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     <br>
-    <a href="https://picoclaw.io"><img src="https://img.shields.io/badge/Website-picoclaw.io-blue?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
-    <a href="https://docs.picoclaw.io/"><img src="https://img.shields.io/badge/Docs-Official-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="Docs"></a>
-    <a href="https://deepwiki.com/sipeed/picoclaw"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="Wiki"></a>
+    <a href="https://openfox.im"><img src="https://img.shields.io/badge/Website-openfox.im-blue?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
+    <a href="https://docs.openfox.im/"><img src="https://img.shields.io/badge/Docs-Official-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="Docs"></a>
+    <a href="https://deepwiki.com/tosnetwork/openfox"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="Wiki"></a>
     <br>
-    <a href="https://x.com/SipeedIO"><img src="https://img.shields.io/badge/X_(Twitter)-SipeedIO-black?style=flat&logo=x&logoColor=white" alt="Twitter"></a>
     <a href="../../assets/wechat.png"><img src="https://img.shields.io/badge/WeChat-Group-41d56b?style=flat&logo=wechat&logoColor=white"></a>
     <a href="https://discord.gg/V4sAZ9XWpN"><img src="https://img.shields.io/badge/Discord-Community-4c60eb?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
@@ -24,9 +23,7 @@
 
 ---
 
-> **PicoClaw** est un projet open-source indépendant initié par [Sipeed](https://sipeed.com), entièrement écrit en **Go** à partir de zéro — ce n'est pas un fork d'OpenClaw, de NanoBot ou de tout autre projet.
-
-**PicoClaw** est un assistant personnel IA ultra-léger inspiré de [NanoBot](https://github.com/HKUDS/nanobot). Il a été entièrement reconstruit en **Go** via un processus d'auto-amorçage (self-bootstrapping) — l'Agent IA lui-même a piloté la migration architecturale et l'optimisation du code.
+**OpenFox** est un assistant personnel IA ultra-léger inspiré de [NanoBot](https://github.com/HKUDS/nanobot). Il a été entièrement reconstruit en **Go** via un processus d'auto-amorçage (self-bootstrapping) — l'Agent IA lui-même a piloté la migration architecturale et l'optimisation du code.
 
 **Fonctionne sur du matériel à $10 avec <10 Mo de RAM** — c'est 99% de mémoire en moins qu'OpenClaw et 98% moins cher qu'un Mac mini !
 
@@ -35,7 +32,7 @@
 <tr align="center">
 <td align="center" valign="top">
 <p align="center">
-<img src="../../assets/picoclaw_mem.gif" width="360" height="240">
+<img src="../../assets/openfox_mem.gif" width="360" height="240">
 </p>
 </td>
 <td align="center" valign="top">
@@ -49,15 +46,15 @@
 > [!CAUTION]
 > **Avis de sécurité**
 >
-> * **PAS DE CRYPTO :** PicoClaw n'a **pas** émis de tokens officiels ni de cryptomonnaie. Toute affirmation sur `pump.fun` ou d'autres plateformes de trading est une **arnaque**.
-> * **DOMAINE OFFICIEL :** Le **SEUL** site officiel est **[picoclaw.io](https://picoclaw.io)**, et le site de l'entreprise est **[sipeed.com](https://sipeed.com)**
+> * **PAS DE CRYPTO :** OpenFox n'a **pas** émis de tokens officiels ni de cryptomonnaie. Toute affirmation sur `pump.fun` ou d'autres plateformes de trading est une **arnaque**.
+> * **DOMAINE OFFICIEL :** Le **SEUL** site officiel est **[openfox.im](https://openfox.im)**
 > * **ATTENTION :** De nombreux domaines `.ai/.org/.com/.net/...` ont été enregistrés par des tiers. Ne leur faites pas confiance.
-> * **NOTE :** PicoClaw est en développement rapide précoce. Des problèmes de sécurité non résolus peuvent exister. Ne pas déployer en production avant la v1.0.
-> * **NOTE :** PicoClaw a récemment fusionné de nombreuses PRs. Les builds récents peuvent utiliser 10-20 Mo de RAM. L'optimisation des ressources est prévue après la stabilisation des fonctionnalités.
+> * **NOTE :** OpenFox est en développement rapide précoce. Des problèmes de sécurité non résolus peuvent exister. Ne pas déployer en production avant la v1.0.
+> * **NOTE :** OpenFox a récemment fusionné de nombreuses PRs. Les builds récents peuvent utiliser 10-20 Mo de RAM. L'optimisation des ressources est prévue après la stabilisation des fonctionnalités.
 
 ## 📢 Actualités
 
-2026-05-11 🛒 **LicheeRV-Claw disponible sur AliExpress !** Vous pouvez désormais acheter le LicheeRV-Claw sur [AliExpress](https://www.aliexpress.com/item/1005006519668532.html), ce qui facilite l'essai de PicoClaw sur du matériel RISC-V compact.
+2026-05-11 🛒 **LicheeRV-Claw disponible sur AliExpress !** Vous pouvez désormais acheter le LicheeRV-Claw sur [AliExpress](https://www.aliexpress.com/item/1005006519668532.html), ce qui facilite l'essai de OpenFox sur du matériel RISC-V compact.
 
 <p align="center">
   <a href="https://www.aliexpress.com/item/1005006519668532.html">
@@ -65,11 +62,11 @@
   </a>
 </p>
 
-2026-03-31 📱 **Support Android !** PicoClaw fonctionne maintenant sur Android ! Téléchargez l'APK sur [picoclaw.io](https://picoclaw.io/download)
+2026-03-31 📱 **Support Android !** OpenFox fonctionne maintenant sur Android ! Téléchargez l'APK sur [openfox.im](https://openfox.im/download)
 
-2026-03-25 🚀 **v0.2.4 publiée !** Refonte de l'architecture Agent (SubTurn, Hooks, Steering, EventBus), intégration WeChat/WeCom, renforcement de la sécurité (.security.yml, filtrage des données sensibles), nouveaux providers (AWS Bedrock, Azure, Xiaomi MiMo), et 35 corrections de bugs. PicoClaw a atteint **26K Stars** !
+2026-03-25 🚀 **v0.2.4 publiée !** Refonte de l'architecture Agent (SubTurn, Hooks, Steering, EventBus), intégration WeChat/WeCom, renforcement de la sécurité (.security.yml, filtrage des données sensibles), nouveaux providers (AWS Bedrock, Azure, Xiaomi MiMo), et 35 corrections de bugs. OpenFox a atteint **26K Stars** !
 
-2026-03-17 🚀 **v0.2.3 publiée !** Interface system tray (Windows & Linux), requête de statut des sous-agents (`spawn_status`), rechargement à chaud expérimental du Gateway, sécurisation Cron, et 2 correctifs de sécurité. PicoClaw a atteint **25K Stars** !
+2026-03-17 🚀 **v0.2.3 publiée !** Interface system tray (Windows & Linux), requête de statut des sous-agents (`spawn_status`), rechargement à chaud expérimental du Gateway, sécurisation Cron, et 2 correctifs de sécurité. OpenFox a atteint **25K Stars** !
 
 2026-03-09 🎉 **v0.2.1 — Plus grande mise à jour à ce jour !** Support du protocole MCP, 4 nouveaux channels (Matrix/IRC/WeCom/Discord Proxy), 3 nouveaux providers (Kimi/Minimax/Avian), pipeline vision, stockage mémoire JSONL, routage de modèles.
 
@@ -78,13 +75,13 @@
 <details>
 <summary>Actualités précédentes...</summary>
 
-2026-02-26 🎉 PicoClaw atteint **20K Stars** en seulement 17 jours ! L'orchestration automatique des channels et les interfaces de capacités sont disponibles.
+2026-02-26 🎉 OpenFox atteint **20K Stars** en seulement 17 jours ! L'orchestration automatique des channels et les interfaces de capacités sont disponibles.
 
-2026-02-16 🎉 PicoClaw dépasse 12K Stars en une semaine ! Rôles de mainteneurs communautaires et [Roadmap](../../ROADMAP.md) officiellement lancés.
+2026-02-16 🎉 OpenFox dépasse 12K Stars en une semaine ! Rôles de mainteneurs communautaires et [Roadmap](../../ROADMAP.md) officiellement lancés.
 
-2026-02-13 🎉 PicoClaw dépasse 5000 Stars en 4 jours ! Roadmap du projet et groupes de développeurs en cours.
+2026-02-13 🎉 OpenFox dépasse 5000 Stars en 4 jours ! Roadmap du projet et groupes de développeurs en cours.
 
-2026-02-09 🎉 **PicoClaw publié !** Construit en 1 jour pour apporter les Agents IA sur du matériel à $10 avec <10 Mo de RAM. Let's Go, PicoClaw !
+2026-02-09 🎉 **OpenFox publié !** Construit en 1 jour pour apporter les Agents IA sur du matériel à $10 avec <10 Mo de RAM. Let's Go, OpenFox !
 
 </details>
 
@@ -111,21 +108,21 @@ _*Les builds récents peuvent utiliser 10-20 Mo en raison des fusions rapides de
 
 <div align="center">
 
-|                                | OpenClaw      | NanoBot                  | **PicoClaw**                           |
+|                                | OpenClaw      | NanoBot                  | **OpenFox**                           |
 | ------------------------------ | ------------- | ------------------------ | -------------------------------------- |
 | **Langage**                    | TypeScript    | Python                   | **Go**                                 |
 | **RAM**                        | >1 Go         | >100 Mo                  | **< 10 Mo***                           |
 | **Temps de démarrage**</br>(cœur 0,8 GHz) | >500s | >30s              | **<1s**                                |
 | **Coût**                       | Mac Mini $599 | La plupart des cartes Linux ~$50 | **N'importe quelle carte Linux**</br>**à partir de $10** |
 
-<img src="../../assets/compare.jpg" alt="PicoClaw" width="512">
+<img src="../../assets/compare.jpg" alt="OpenFox" width="512">
 
 </div>
 
 > **[Liste de compatibilité matérielle](../guides/hardware-compatibility.fr.md)** — Voir toutes les cartes testées, du RISC-V à $5 au Raspberry Pi en passant par les téléphones Android. Votre carte n'est pas listée ? Soumettez une PR !
 
 <p align="center">
-<img src="../../assets/hardware-banner.jpg" alt="PicoClaw Hardware Compatibility" width="100%">
+<img src="../../assets/hardware-banner.jpg" alt="OpenFox Hardware Compatibility" width="100%">
 </p>
 
 ## 🦾 Démonstration
@@ -139,9 +136,9 @@ _*Les builds récents peuvent utiliser 10-20 Mo en raison des fusions rapides de
 <th><p align="center">Recherche Web & Apprentissage</p></th>
 </tr>
 <tr>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_code.gif" width="240" height="180"></p></td>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_memory.gif" width="240" height="180"></p></td>
-<td align="center"><p align="center"><img src="../../assets/picoclaw_search.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_code.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_memory.gif" width="240" height="180"></p></td>
+<td align="center"><p align="center"><img src="../../assets/openfox_search.gif" width="240" height="180"></p></td>
 </tr>
 <tr>
 <td align="center">Développer · Déployer · Mettre à l'échelle</td>
@@ -152,7 +149,7 @@ _*Les builds récents peuvent utiliser 10-20 Mo en raison des fusions rapides de
 
 ### 🐜 Déploiement innovant à faible empreinte
 
-PicoClaw peut être déployé sur pratiquement n'importe quel appareil Linux !
+OpenFox peut être déployé sur pratiquement n'importe quel appareil Linux !
 
 - $9,9 [LicheeRV-Nano](https://www.aliexpress.com/item/1005006519668532.html) édition E(Ethernet) ou W(WiFi6), pour un assistant domestique minimal
 - $30~50 [NanoKVM](https://www.aliexpress.com/item/1005007369816019.html), ou $100 [NanoKVM-Pro](https://www.aliexpress.com/item/1005010048471263.html), pour des opérations serveur automatisées
@@ -165,13 +162,13 @@ PicoClaw peut être déployé sur pratiquement n'importe quel appareil Linux !
 
 ## 📦 Installation
 
-### Télécharger depuis picoclaw.io (Recommandé)
+### Télécharger depuis openfox.im (Recommandé)
 
-Visitez **[picoclaw.io](https://picoclaw.io)** — le site officiel détecte automatiquement votre plateforme et fournit un téléchargement en un clic. Pas besoin de choisir manuellement une architecture.
+Visitez **[openfox.im](https://openfox.im)** — le site officiel détecte automatiquement votre plateforme et fournit un téléchargement en un clic. Pas besoin de choisir manuellement une architecture.
 
 ### Télécharger le binaire précompilé
 
-Vous pouvez aussi télécharger le binaire pour votre plateforme depuis la page [GitHub Releases](https://github.com/sipeed/picoclaw/releases).
+Vous pouvez aussi télécharger le binaire pour votre plateforme depuis la page [GitHub Releases](https://github.com/tosnetwork/openfox/releases).
 
 ### Compiler depuis les sources (pour le développement)
 
@@ -181,9 +178,9 @@ Prérequis :
 - Node.js 22+ et pnpm 10.33.0+ pour les builds Web UI / launcher
 
 ```bash
-git clone https://github.com/sipeed/picoclaw.git
+git clone https://github.com/tosnetwork/openfox.git
 
-cd picoclaw
+cd openfox
 make deps
 
 # Installer les dépendances frontend
@@ -215,19 +212,19 @@ Le WebUI Launcher fournit une interface basée sur navigateur pour la configurat
 
 **Option 1 : Double-clic (Bureau)**
 
-Après téléchargement depuis [picoclaw.io](https://picoclaw.io), double-cliquez sur `picoclaw-launcher` (ou `picoclaw-launcher.exe` sous Windows). Votre navigateur s'ouvrira automatiquement sur `http://localhost:18800`.
+Après téléchargement depuis [openfox.im](https://openfox.im), double-cliquez sur `openfox-launcher` (ou `openfox-launcher.exe` sous Windows). Votre navigateur s'ouvrira automatiquement sur `http://localhost:18800`.
 
 **Option 2 : Ligne de commande**
 
 ```bash
-picoclaw-launcher
+openfox-launcher
 # Ouvrez http://localhost:18800 dans votre navigateur
 ```
 
 > [!TIP]
 > **Accès distant / Docker / VM :** Ajoutez le flag `-public` pour écouter sur toutes les interfaces :
 > ```bash
-> picoclaw-launcher -public
+> openfox-launcher -public
 > ```
 
 <p align="center">
@@ -238,15 +235,15 @@ picoclaw-launcher
 
 Ouvrez le WebUI, puis : **1)** Configurez un Provider (ajoutez votre clé API LLM) -> **2)** Configurez un Channel (ex. Telegram) -> **3)** Démarrez le Gateway -> **4)** Chattez !
 
-Pour la documentation détaillée du WebUI, voir [docs.picoclaw.io](https://docs.picoclaw.io).
+Pour la documentation détaillée du WebUI, voir [docs.openfox.im](https://docs.openfox.im).
 
 <details>
 <summary><b>Docker (alternative)</b></summary>
 
 ```bash
 # 1. Cloner ce dépôt
-git clone https://github.com/sipeed/picoclaw.git
-cd picoclaw
+git clone https://github.com/tosnetwork/openfox.git
+cd openfox
 
 # 2. Premier lancement — génère automatiquement docker/data/config.json puis s'arrête
 #    (se déclenche uniquement quand config.json et workspace/ sont tous deux absents)
@@ -261,7 +258,7 @@ docker compose -f docker/docker-compose.yml --profile launcher up -d
 # Ouvrez http://localhost:18800
 ```
 
-> **Utilisateurs Docker / VM :** Le Gateway écoute sur `127.0.0.1` par défaut. Définissez `PICOCLAW_GATEWAY_HOST=0.0.0.0` ou utilisez le flag `-public` pour le rendre accessible depuis l'hôte.
+> **Utilisateurs Docker / VM :** Le Gateway écoute sur `127.0.0.1` par défaut. Définissez `OPENFOX_GATEWAY_HOST=0.0.0.0` ou utilisez le flag `-public` pour le rendre accessible depuis l'hôte.
 
 ```bash
 # Vérifier les logs
@@ -280,15 +277,15 @@ docker compose -f docker/docker-compose.yml --profile launcher up -d
 <details>
 <summary><b>macOS — Avertissement de sécurité au premier lancement</b></summary>
 
-macOS peut bloquer `picoclaw-launcher` au premier lancement car il est téléchargé depuis Internet et n'est pas notarisé via le Mac App Store.
+macOS peut bloquer `openfox-launcher` au premier lancement car il est téléchargé depuis Internet et n'est pas notarisé via le Mac App Store.
 
-**Étape 1 :** Double-cliquez sur `picoclaw-launcher`. Un avertissement de sécurité s'affiche :
+**Étape 1 :** Double-cliquez sur `openfox-launcher`. Un avertissement de sécurité s'affiche :
 
 <p align="center">
 <img src="../../assets/macos-gatekeeper-warning.jpg" alt="Avertissement macOS Gatekeeper" width="400">
 </p>
 
-> *"picoclaw-launcher" n'a pas pu être ouvert — Apple n'a pas pu vérifier que "picoclaw-launcher" ne contient pas de logiciel malveillant susceptible de nuire à votre Mac ou de compromettre votre confidentialité.*
+> *"openfox-launcher" n'a pas pu être ouvert — Apple n'a pas pu vérifier que "openfox-launcher" ne contient pas de logiciel malveillant susceptible de nuire à votre Mac ou de compromettre votre confidentialité.*
 
 **Étape 2 :** Ouvrez **Réglages Système** → **Confidentialité et sécurité** → faites défiler jusqu'à la section **Sécurité** → cliquez sur **Ouvrir quand même** → confirmez en cliquant sur **Ouvrir quand même** dans la boîte de dialogue.
 
@@ -296,14 +293,14 @@ macOS peut bloquer `picoclaw-launcher` au premier lancement car il est télécha
 <img src="../../assets/macos-gatekeeper-allow.jpg" alt="macOS Confidentialité et sécurité — Ouvrir quand même" width="600">
 </p>
 
-Après cette étape unique, `picoclaw-launcher` s'ouvrira normalement lors des lancements suivants.
+Après cette étape unique, `openfox-launcher` s'ouvrira normalement lors des lancements suivants.
 
 </details>
 
 <a id="-run-on-old-android-phones"></a>
 ### 📱 Android
 
-Donnez une seconde vie à votre téléphone vieux de dix ans ! Transformez-le en assistant IA intelligent avec PicoClaw.
+Donnez une seconde vie à votre téléphone vieux de dix ans ! Transformez-le en assistant IA intelligent avec OpenFox.
 
 **Option 1 : Installation APK**
 
@@ -318,7 +315,7 @@ Aperçu :
   </tr>
 </table>
 
-Téléchargez l'APK depuis [picoclaw.io](https://picoclaw.io/download/) et installez-le directement. Pas besoin de Termux !
+Téléchargez l'APK depuis [openfox.im](https://openfox.im/download/) et installez-le directement. Pas besoin de Termux !
 
 **Option 2 : Termux**
 
@@ -330,27 +327,27 @@ Téléchargez l'APK depuis [picoclaw.io](https://picoclaw.io/download/) et insta
 
 ```bash
 # Télécharger la dernière version
-wget https://github.com/sipeed/picoclaw/releases/latest/download/picoclaw_Linux_arm64.tar.gz
-tar xzf picoclaw_Linux_arm64.tar.gz
+wget https://github.com/tosnetwork/openfox/releases/latest/download/openfox_Linux_arm64.tar.gz
+tar xzf openfox_Linux_arm64.tar.gz
 pkg install proot
-termux-chroot ./picoclaw onboard   # chroot fournit une arborescence Linux standard
+termux-chroot ./openfox onboard   # chroot fournit une arborescence Linux standard
 ```
 
 Suivez ensuite la section Terminal Launcher ci-dessous pour terminer la configuration.
 
-<img src="../../assets/termux.jpg" alt="PicoClaw on Termux" width="512">
+<img src="../../assets/termux.jpg" alt="OpenFox on Termux" width="512">
 
-Pour les environnements minimaux où seul le binaire principal `picoclaw` est disponible (sans Launcher UI), vous pouvez tout configurer via la ligne de commande et un fichier de configuration JSON.
+Pour les environnements minimaux où seul le binaire principal `openfox` est disponible (sans Launcher UI), vous pouvez tout configurer via la ligne de commande et un fichier de configuration JSON.
 
 **1. Initialiser**
 
 ```bash
-picoclaw onboard
+openfox onboard
 ```
 
-Cela crée `~/.picoclaw/config.json` et le répertoire workspace.
+Cela crée `~/.openfox/config.json` et le répertoire workspace.
 
-**2. Configurer** (`~/.picoclaw/config.json`)
+**2. Configurer** (`~/.openfox/config.json`)
 
 ```json
 {
@@ -376,13 +373,13 @@ Cela crée `~/.picoclaw/config.json` et le répertoire workspace.
 
 ```bash
 # Question ponctuelle
-picoclaw agent -m "What is 2+2?"
+openfox agent -m "What is 2+2?"
 
 # Mode interactif
-picoclaw agent
+openfox agent
 
 # Démarrer le gateway pour l'intégration d'applications de chat
-picoclaw gateway
+openfox gateway
 ```
 
 </details>
@@ -390,7 +387,7 @@ picoclaw gateway
 
 ## 🔌 Providers (LLM)
 
-PicoClaw supporte plus de 30 providers LLM via la configuration `model_list`. Utilisez le format `protocole/modèle` :
+OpenFox supporte plus de 30 providers LLM via la configuration `model_list`. Utilisez le format `protocole/modèle` :
 
 | Provider | Protocole | Clé API | Notes |
 |----------|-----------|---------|-------|
@@ -452,7 +449,7 @@ Pour les détails complets de configuration des providers, voir [Providers & Mod
 
 ## 💬 Channels (Applications de chat)
 
-Parlez à votre PicoClaw via plus de 17 plateformes de messagerie :
+Parlez à votre OpenFox via plus de 17 plateformes de messagerie :
 
 | Channel | Configuration | Protocole | Docs |
 |---------|---------------|-----------|------|
@@ -475,7 +472,7 @@ Parlez à votre PicoClaw via plus de 17 plateformes de messagerie :
 
 > Tous les channels basés sur webhook partagent un seul serveur HTTP Gateway (`gateway.host`:`gateway.port`, par défaut `127.0.0.1:18790`). Feishu utilise le mode WebSocket/SDK et n'utilise pas le serveur HTTP partagé.
 
-> La verbosité des logs est contrôlée par `gateway.log_level` (par défaut : `warn`). Valeurs supportées : `debug`, `info`, `warn`, `error`, `fatal`. Peut aussi être défini via `PICOCLAW_LOG_LEVEL`. Voir [Configuration](../guides/configuration.fr.md#niveau-de-log-du-gateway) pour plus de détails.
+> La verbosité des logs est contrôlée par `gateway.log_level` (par défaut : `warn`). Valeurs supportées : `debug`, `info`, `warn`, `error`, `fatal`. Peut aussi être défini via `OPENFOX_LOG_LEVEL`. Voir [Configuration](../guides/configuration.fr.md#niveau-de-log-du-gateway) pour plus de détails.
 
 Pour les instructions détaillées de configuration des channels, voir [Configuration des applications de chat](../guides/chat-apps.fr.md).
 
@@ -483,7 +480,7 @@ Pour les instructions détaillées de configuration des channels, voir [Configur
 
 ### 🔍 Recherche Web
 
-PicoClaw peut effectuer des recherches sur le web pour fournir des informations à jour. Configurez dans `tools.web` :
+OpenFox peut effectuer des recherches sur le web pour fournir des informations à jour. Configurez dans `tools.web` :
 
 | Moteur de recherche | Clé API | Niveau gratuit | Lien |
 |--------------------|---------|----------------|------|
@@ -497,7 +494,7 @@ PicoClaw peut effectuer des recherches sur le web pour fournir des informations 
 
 ### ⚙️ Autres outils
 
-PicoClaw inclut des outils intégrés pour les opérations sur fichiers, l'exécution de code, la planification et plus encore. Voir [Configuration des outils](../reference/tools_configuration.fr.md) pour les détails.
+OpenFox inclut des outils intégrés pour les opérations sur fichiers, l'exécution de code, la planification et plus encore. Voir [Configuration des outils](../reference/tools_configuration.fr.md) pour les détails.
 
 ## 🎯 Skills
 
@@ -506,8 +503,8 @@ Les Skills sont des capacités modulaires qui étendent votre Agent. Elles sont 
 **Installer des Skills depuis ClawHub :**
 
 ```bash
-picoclaw skills search "web scraping"
-picoclaw skills install <skill-name>
+openfox skills search "web scraping"
+openfox skills install <skill-name>
 ```
 
 **Configurer le token ClawHub** (optionnel, pour des limites de débit plus élevées) :
@@ -531,7 +528,7 @@ Pour plus de détails, voir [Configuration des outils - Skills](../reference/too
 
 ## 🔗 MCP (Model Context Protocol)
 
-PicoClaw supporte nativement [MCP](https://modelcontextprotocol.io/) — connectez n'importe quel serveur MCP pour étendre les capacités de votre Agent avec des outils et sources de données externes.
+OpenFox supporte nativement [MCP](https://modelcontextprotocol.io/) — connectez n'importe quel serveur MCP pour étendre les capacités de votre Agent avec des outils et sources de données externes.
 
 ```json
 {
@@ -554,7 +551,7 @@ Pour la configuration MCP complète (transports stdio, SSE, HTTP, Tool Discovery
 
 ## <img src="../../assets/clawdchat-icon.png" width="24" height="24" alt="ClawdChat"> Rejoignez le réseau social des Agents
 
-Connectez PicoClaw au réseau social des Agents simplement en envoyant un seul message via le CLI ou n'importe quelle application de chat intégrée.
+Connectez OpenFox au réseau social des Agents simplement en envoyant un seul message via le CLI ou n'importe quelle application de chat intégrée.
 
 **Lisez `https://clawdchat.ai/skill.md` et suivez les instructions pour rejoindre [ClawdChat.ai](https://clawdchat.ai)**
 
@@ -562,26 +559,26 @@ Connectez PicoClaw au réseau social des Agents simplement en envoyant un seul m
 
 | Commande                  | Description                              |
 | ------------------------- | ---------------------------------------- |
-| `picoclaw onboard`        | Initialiser la config & le workspace     |
-| `picoclaw auth weixin` | Connecter un compte WeChat via QR |
-| `picoclaw agent -m "..."` | Chatter avec l'agent                     |
-| `picoclaw agent`          | Mode chat interactif                     |
-| `picoclaw gateway`        | Démarrer le gateway                      |
-| `picoclaw status`         | Afficher le statut                       |
-| `picoclaw version`        | Afficher les informations de version     |
-| `picoclaw model`          | Voir ou changer le modèle par défaut     |
-| `picoclaw cron list`      | Lister toutes les tâches planifiées      |
-| `picoclaw cron add ...`   | Ajouter une tâche planifiée              |
-| `picoclaw cron disable`   | Désactiver une tâche planifiée           |
-| `picoclaw cron remove`    | Supprimer une tâche planifiée            |
-| `picoclaw skills list`    | Lister les Skills installées             |
-| `picoclaw skills install` | Installer une Skill                      |
-| `picoclaw migrate`        | Migrer les données depuis d'anciennes versions |
-| `picoclaw auth login`     | S'authentifier auprès des providers      |
+| `openfox onboard`        | Initialiser la config & le workspace     |
+| `openfox auth weixin` | Connecter un compte WeChat via QR |
+| `openfox agent -m "..."` | Chatter avec l'agent                     |
+| `openfox agent`          | Mode chat interactif                     |
+| `openfox gateway`        | Démarrer le gateway                      |
+| `openfox status`         | Afficher le statut                       |
+| `openfox version`        | Afficher les informations de version     |
+| `openfox model`          | Voir ou changer le modèle par défaut     |
+| `openfox cron list`      | Lister toutes les tâches planifiées      |
+| `openfox cron add ...`   | Ajouter une tâche planifiée              |
+| `openfox cron disable`   | Désactiver une tâche planifiée           |
+| `openfox cron remove`    | Supprimer une tâche planifiée            |
+| `openfox skills list`    | Lister les Skills installées             |
+| `openfox skills install` | Installer une Skill                      |
+| `openfox migrate`        | Migrer les données depuis d'anciennes versions |
+| `openfox auth login`     | S'authentifier auprès des providers      |
 
 ### ⏰ Tâches planifiées / Rappels
 
-PicoClaw supporte les rappels planifiés et les tâches récurrentes via l'outil `cron` :
+OpenFox supporte les rappels planifiés et les tâches récurrentes via l'outil `cron` :
 
 * **Rappels ponctuels** : "Rappelle-moi dans 10 minutes" -> se déclenche une fois après 10 min
 * **Tâches récurrentes** : "Rappelle-moi toutes les 2 heures" -> se déclenche toutes les 2 heures
@@ -609,7 +606,7 @@ Pour des guides détaillés au-delà de ce README :
 
 Les PRs sont les bienvenues ! Le code source est intentionnellement petit et lisible.
 
-Consultez notre [Roadmap communautaire](https://github.com/sipeed/picoclaw/issues/988) et [CONTRIBUTING.md](../../CONTRIBUTING.md) pour les directives.
+Consultez notre [Roadmap communautaire](https://github.com/tosnetwork/openfox/issues/988) pour les directives.
 
 Groupe de développeurs en construction, rejoignez-le après votre première PR fusionnée !
 

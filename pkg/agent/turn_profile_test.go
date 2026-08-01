@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/tools"
 )
 
 type turnProfileCaptureProvider struct {
@@ -61,7 +61,7 @@ func newTurnProfileAgentLoop(
 	provider *turnProfileCaptureProvider,
 ) *AgentLoop {
 	t.Helper()
-	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
+	t.Setenv("OPENFOX_BUILTIN_SKILLS", t.TempDir())
 	if cfg.Agents.Defaults.Workspace == "" {
 		cfg.Agents.Defaults.Workspace = t.TempDir()
 	}
@@ -242,7 +242,7 @@ func TestTurnProfile_BtwCommandUsesEnabledTurnProfile(t *testing.T) {
 			Model:     "openai/test-model",
 		}},
 	}
-	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
+	t.Setenv("OPENFOX_BUILTIN_SKILLS", t.TempDir())
 	sideProvider := &turnProfileSideQuestionCaptureProvider{}
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), &turnProfileCaptureProvider{})
 	al.providerFactory = func(mc *config.ModelConfig) (providers.LLMProvider, string, error) {
@@ -303,7 +303,7 @@ func TestTurnProfile_BtwCommandDoesNotAddToolFallbackWhenSystemPromptOff(t *test
 			Model:     "openai/test-model",
 		}},
 	}
-	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
+	t.Setenv("OPENFOX_BUILTIN_SKILLS", t.TempDir())
 	sideProvider := &turnProfileSideQuestionCaptureProvider{}
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), &turnProfileCaptureProvider{})
 	al.RegisterTool(&echoTextTool{})

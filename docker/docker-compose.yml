@@ -1,35 +1,35 @@
 services:
   # ─────────────────────────────────────────────
-  # PicoClaw Agent (one-shot query)
-  #   docker compose -f docker/docker-compose.yml run --rm picoclaw-agent -m "Hello"
+  # OpenFox Agent (one-shot query)
+  #   docker compose -f docker/docker-compose.yml run --rm openfox-agent -m "Hello"
   # ─────────────────────────────────────────────
-  picoclaw-agent:
+  openfox-agent:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: docker.io/sipeed/picoclaw:latest
-    container_name: picoclaw-agent
+    image: docker.io/tosnetwork/openfox:latest
+    container_name: openfox-agent
     profiles:
       - agent
     # Uncomment to access host network; leave commented unless needed.
     #extra_hosts:
     #  - "host.docker.internal:host-gateway"
     volumes:
-      - ./data:/root/.picoclaw
-    entrypoint: ["picoclaw", "agent"]
+      - ./data:/root/.openfox
+    entrypoint: ["openfox", "agent"]
     stdin_open: true
     tty: true
 
   # ─────────────────────────────────────────────
-  # PicoClaw Gateway (Long-running Bot)
+  # OpenFox Gateway (Long-running Bot)
   #   docker compose -f docker/docker-compose.yml --profile gateway up
   # ─────────────────────────────────────────────
-  picoclaw-gateway:
+  openfox-gateway:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: docker.io/sipeed/picoclaw:latest
-    container_name: picoclaw-gateway
+    image: docker.io/tosnetwork/openfox:latest
+    container_name: openfox-gateway
     restart: unless-stopped
     profiles:
       - gateway
@@ -37,28 +37,28 @@ services:
     #extra_hosts:
     #  - "host.docker.internal:host-gateway"
     volumes:
-      - ./data:/root/.picoclaw
+      - ./data:/root/.openfox
 
   # ─────────────────────────────────────────────
-  # PicoClaw Launcher (Web Console + Gateway)
+  # OpenFox Launcher (Web Console + Gateway)
   #   docker compose -f docker/docker-compose.yml --profile launcher up
   # ─────────────────────────────────────────────
-  picoclaw-launcher:
+  openfox-launcher:
     build:
       context: ..
       dockerfile: docker/Dockerfile.launcher
-    image: docker.io/sipeed/picoclaw:launcher
-    container_name: picoclaw-launcher
+    image: docker.io/tosnetwork/openfox:launcher
+    container_name: openfox-launcher
     restart: unless-stopped
     profiles:
       - launcher
     environment:
-      - PICOCLAW_GATEWAY_HOST=0.0.0.0
+      - OPENFOX_GATEWAY_HOST=0.0.0.0
       # Set a fixed dashboard token instead of a random one each restart.
       # If not set, a random token is generated and printed to the console on startup.
-      #- PICOCLAW_LAUNCHER_TOKEN=your-secret-token-here
+      #- OPENFOX_LAUNCHER_TOKEN=your-secret-token-here
     ports:
       - "18800:18800"
       - "18790:18790"
     volumes:
-      - ./data:/root/.picoclaw
+      - ./data:/root/.openfox

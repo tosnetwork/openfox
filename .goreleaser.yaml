@@ -15,7 +15,7 @@ before:
     - sh -c 'if [ "${INCLUDE_ANDROID_BUNDLE:-}" = "true" ]; then make build-android-bundle; fi'
 
 builds:
-  - id: picoclaw
+  - id: openfox
     env:
       - CGO_ENABLED=0
     tags:
@@ -23,10 +23,10 @@ builds:
       - stdjson
     ldflags:
       - -s -w
-      - -X github.com/sipeed/picoclaw/pkg/config.Version={{ .Version }}
-      - -X github.com/sipeed/picoclaw/pkg/config.GitCommit={{ .ShortCommit }}
-      - -X github.com/sipeed/picoclaw/pkg/config.BuildTime={{ .Date }}
-      - -X github.com/sipeed/picoclaw/pkg/config.GoVersion={{ with index .Env "GOVERSION" }}{{ . }}{{ else }}unknown{{ end }}
+      - -X github.com/tosnetwork/openfox/pkg/config.Version={{ .Version }}
+      - -X github.com/tosnetwork/openfox/pkg/config.GitCommit={{ .ShortCommit }}
+      - -X github.com/tosnetwork/openfox/pkg/config.BuildTime={{ .Date }}
+      - -X github.com/tosnetwork/openfox/pkg/config.GoVersion={{ with index .Env "GOVERSION" }}{{ . }}{{ else }}unknown{{ end }}
     goos:
       - linux
       - windows
@@ -46,7 +46,7 @@ builds:
       - "7"
     gomips:
       - softfloat
-    main: ./cmd/picoclaw
+    main: ./cmd/openfox
     ignore:
       - goos: windows
         goarch: arm
@@ -57,8 +57,8 @@ builds:
       - goos: netbsd
         goarch: arm
 
-  - id: picoclaw-launcher
-    binary: picoclaw-launcher
+  - id: openfox-launcher
+    binary: openfox-launcher
     env:
       - CGO_ENABLED=0
     tags:
@@ -66,10 +66,10 @@ builds:
       - stdjson
     ldflags:
       - -s -w
-      - -X github.com/sipeed/picoclaw/pkg/config.Version={{ .Version }}
-      - -X github.com/sipeed/picoclaw/pkg/config.GitCommit={{ .ShortCommit }}
-      - -X github.com/sipeed/picoclaw/pkg/config.BuildTime={{ .Date }}
-      - -X github.com/sipeed/picoclaw/pkg/config.GoVersion={{ with index .Env "GOVERSION" }}{{ . }}{{ else }}unknown{{ end }}
+      - -X github.com/tosnetwork/openfox/pkg/config.Version={{ .Version }}
+      - -X github.com/tosnetwork/openfox/pkg/config.GitCommit={{ .ShortCommit }}
+      - -X github.com/tosnetwork/openfox/pkg/config.BuildTime={{ .Date }}
+      - -X github.com/tosnetwork/openfox/pkg/config.GoVersion={{ with index .Env "GOVERSION" }}{{ . }}{{ else }}unknown{{ end }}
     goos:
       - linux
       - windows
@@ -101,14 +101,14 @@ builds:
         goarch: arm
 
 dockers_v2:
-  - id: picoclaw
+  - id: openfox
     dockerfile: docker/Dockerfile.goreleaser
     extra_files:
       - docker/entrypoint.sh
     ids:
-      - picoclaw
+      - openfox
     images:
-      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/picoclaw"
+      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/openfox"
       - 'docker.io/{{ .Env.DOCKERHUB_IMAGE_NAME }}'
     tags:
       - '{{ if isEnvSet "NIGHTLY_BUILD" }}nightly{{ else }}{{ .Tag }}{{ end }}'
@@ -118,13 +118,13 @@ dockers_v2:
       - linux/arm64
       - linux/riscv64
 
-  - id: picoclaw-launcher
+  - id: openfox-launcher
     dockerfile: docker/Dockerfile.goreleaser.launcher
     ids:
-      - picoclaw
-      - picoclaw-launcher
+      - openfox
+      - openfox-launcher
     images:
-      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/picoclaw"
+      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/openfox"
       - 'docker.io/{{ .Env.DOCKERHUB_IMAGE_NAME }}'
     tags:
       - '{{ if isEnvSet "NIGHTLY_BUILD" }}nightly-launcher{{ else }}{{ .Tag }}-launcher{{ end }}'
@@ -138,8 +138,8 @@ notarize:
   macos:
     - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
       ids:
-        - picoclaw
-        - picoclaw-launcher
+        - openfox
+        - openfox-launcher
       sign:
         certificate: "{{.Env.MACOS_SIGN_P12}}"
         password: "{{.Env.MACOS_SIGN_PASSWORD}}"
@@ -166,31 +166,31 @@ archives:
         formats: [zip]
 
 nfpms:
-  - id: picoclaw
+  - id: openfox
     ids:
-      - picoclaw
-      - picoclaw-launcher
-    package_name: picoclaw
+      - openfox
+      - openfox-launcher
+    package_name: openfox
     file_name_template: >-
       {{ .PackageName }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "arm64" }}aarch64
       {{- else if eq .Arch "arm" }}armv{{ .Arm }}
       {{- else }}{{ .Arch }}{{ end }}
-    vendor: picoclaw
-    homepage: https://github.com/{{ .Env.GITHUB_REPOSITORY_OWNER }}/picoclaw
-    maintainer: picoclaw contributors
-    description: picoclaw - a tool for managing and running tasks
+    vendor: openfox
+    homepage: https://github.com/{{ .Env.GITHUB_REPOSITORY_OWNER }}/openfox
+    maintainer: openfox contributors
+    description: openfox - a tool for managing and running tasks
     license: MIT
     formats:
       - rpm
       - deb
     bindir: /usr/bin
     contents:
-      - src: web/picoclaw-launcher.desktop
-        dst: /usr/share/applications/picoclaw-launcher.desktop
-      - src: web/picoclaw-launcher.png
-        dst: /usr/share/icons/hicolor/512x512/apps/picoclaw-launcher.png
+      - src: web/openfox-launcher.desktop
+        dst: /usr/share/applications/openfox-launcher.desktop
+      - src: web/openfox-launcher.png
+        dst: /usr/share/icons/hicolor/512x512/apps/openfox-launcher.png
 
 changelog:
   sort: asc
@@ -207,7 +207,7 @@ changelog:
 release:
   disable: '{{ isEnvSet "NIGHTLY_BUILD" }}'
   extra_files:
-    - glob: ./build/picoclaw-android-universal.zip
+    - glob: ./build/openfox-android-universal.zip
   footer: >-
 
     ---

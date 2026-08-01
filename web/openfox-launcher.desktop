@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=OpenFox Launcher
+Comment=Web-based configuration and management UI for OpenFox
+Exec=openfox-launcher
+Icon=openfox-launcher
+Terminal=true
+Type=Application
+Categories=Utility;Network;
+Keywords=openfox;ai;agent;bot;

@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/auth"
-	"github.com/sipeed/picoclaw/pkg/config"
-	ppid "github.com/sipeed/picoclaw/pkg/pid"
-	"github.com/sipeed/picoclaw/web/backend/utils"
+	"github.com/tosnetwork/openfox/pkg/auth"
+	"github.com/tosnetwork/openfox/pkg/config"
+	ppid "github.com/tosnetwork/openfox/pkg/pid"
+	"github.com/tosnetwork/openfox/web/backend/utils"
 )
 
 func startLongRunningProcess(t *testing.T) *exec.Cmd {
@@ -45,7 +45,7 @@ func startGatewayLikeProcess(t *testing.T) *exec.Cmd {
 	if runtime.GOOS == "windows" {
 		t.Skip("gateway-like process commandline check is not deterministic on Windows tests")
 	}
-	cmd = exec.Command("sh", "-c", "sleep 30 # picoclaw gateway")
+	cmd = exec.Command("sh", "-c", "sleep 30 # openfox gateway")
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -57,7 +57,7 @@ func startGatewayLikeProcess(t *testing.T) *exec.Cmd {
 func writeTestPidFile(t *testing.T, data ppid.PidFileData) string {
 	t.Helper()
 
-	path := filepath.Join(globalConfigDir(), ".picoclaw.pid")
+	path := filepath.Join(globalConfigDir(), ".openfox.pid")
 	raw, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal pid file: %v", err)
@@ -101,7 +101,7 @@ func resetGatewayTestState(t *testing.T) {
 	originalRestartGracePeriod := gatewayRestartGracePeriod
 	originalRestartForceKillWindow := gatewayRestartForceKillWindow
 	originalRestartPollInterval := gatewayRestartPollInterval
-	t.Setenv("PICOCLAW_HOME", t.TempDir())
+	t.Setenv("OPENFOX_HOME", t.TempDir())
 	t.Cleanup(func() {
 		gatewayHealthGet = originalHealthGet
 		gatewayProcessMatcher = originalProcessMatcher
@@ -402,8 +402,8 @@ func TestLooksLikeGatewayCommandLine(t *testing.T) {
 		want    bool
 	}{
 		{
-			name:    "default picoclaw gateway",
-			cmdline: "/usr/local/bin/picoclaw gateway -E",
+			name:    "default openfox gateway",
+			cmdline: "/usr/local/bin/openfox gateway -E",
 			want:    true,
 		},
 		{
@@ -2180,11 +2180,11 @@ func TestGatewayRestartReturnsErrorStatusWhenReplacementFailsToStart(t *testing.
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	invalidBinaryPath := filepath.Join(t.TempDir(), "fake-picoclaw")
+	invalidBinaryPath := filepath.Join(t.TempDir(), "fake-openfox")
 	if err := os.WriteFile(invalidBinaryPath, []byte("#!/bin/sh\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	t.Setenv("PICOCLAW_BINARY", invalidBinaryPath)
+	t.Setenv("OPENFOX_BINARY", invalidBinaryPath)
 
 	h := NewHandler(configPath)
 	mux := http.NewServeMux()
@@ -2357,29 +2357,29 @@ func TestGatewayClearLogsResetsBufferedHistory(t *testing.T) {
 	}
 }
 
-func TestFindPicoclawBinary_EnvOverride(t *testing.T) {
+func TestFindOpenfoxBinary_EnvOverride(t *testing.T) {
 	// Create a temporary file to act as the mock binary
 	tmpDir := t.TempDir()
-	mockBinary := filepath.Join(tmpDir, "picoclaw-mock")
+	mockBinary := filepath.Join(tmpDir, "openfox-mock")
 	if err := os.WriteFile(mockBinary, []byte("mock"), 0o755); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	t.Setenv("PICOCLAW_BINARY", mockBinary)
+	t.Setenv("OPENFOX_BINARY", mockBinary)
 
-	got := utils.FindPicoclawBinary()
+	got := utils.FindOpenfoxBinary()
 	if got != mockBinary {
-		t.Errorf("FindPicoclawBinary() = %q, want %q", got, mockBinary)
+		t.Errorf("FindOpenfoxBinary() = %q, want %q", got, mockBinary)
 	}
 }
 
-func TestFindPicoclawBinary_EnvOverride_InvalidPath(t *testing.T) {
-	// When PICOCLAW_BINARY points to a non-existent path, fall through to next strategy
-	t.Setenv("PICOCLAW_BINARY", "/nonexistent/picoclaw-binary")
+func TestFindOpenfoxBinary_EnvOverride_InvalidPath(t *testing.T) {
+	// When OPENFOX_BINARY points to a non-existent path, fall through to next strategy
+	t.Setenv("OPENFOX_BINARY", "/nonexistent/openfox-binary")
 
-	got := utils.FindPicoclawBinary()
-	// Should not return the invalid path; falls back to "picoclaw" or another found path
-	if got == "/nonexistent/picoclaw-binary" {
-		t.Errorf("FindPicoclawBinary() returned invalid env path %q, expected fallback", got)
+	got := utils.FindOpenfoxBinary()
+	// Should not return the invalid path; falls back to "openfox" or another found path
+	if got == "/nonexistent/openfox-binary" {
+		t.Errorf("FindOpenfoxBinary() returned invalid env path %q, expected fallback", got)
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/web/backend/middleware"
+	"github.com/tosnetwork/openfox/web/backend/middleware"
 )
 
 type fakePasswordStore struct {

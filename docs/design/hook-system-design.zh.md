@@ -1,4 +1,4 @@
-# PicoClaw Hook 系统设计（基于 `refactor/agent`）
+# OpenFox Hook 系统设计（基于 `refactor/agent`）
 
 > 当前状态：本文是 hook 系统的早期设计记录。事件系统升级后，观察型 hook 的主路径已经切到
 > `pkg/events.Event`、`RuntimeEventObserver` 和进程 hook 的 `hook.runtime_event`。
@@ -31,7 +31,7 @@ OpenClaw 的扩展能力分成三层：
 
 不建议直接照搬的点：
 
-- OpenClaw 的 hooks / plugin hooks / webhooks 是三套路由，PicoClaw 当前体量下会偏重
+- OpenClaw 的 hooks / plugin hooks / webhooks 是三套路由，OpenFox 当前体量下会偏重
 - HTTP webhook 更适合“事件进入系统”，不适合作为“可同步拦截 agent loop”的基础机制
 
 ### pi-mono
@@ -240,12 +240,12 @@ func init() {
 
 - 跨平台最简单
 - 不依赖额外端口
-- 非常适合“由 PicoClaw 启动一个外部 hook 进程”
+- 非常适合“由 OpenFox 启动一个外部 hook 进程”
 - 比 HTTP webhook 更适合同步拦截
 
 ### 外部 hook 进程模型
 
-PicoClaw 启动外部进程，并在其 stdin/stdout 上跑协议。
+OpenFox 启动外部进程，并在其 stdin/stdout 上跑协议。
 
 配置示例：
 
@@ -256,7 +256,7 @@ PicoClaw 启动外部进程，并在其 stdin/stdout 上跑协议。
       "review-gate": {
         "enabled": true,
         "transport": "stdio",
-        "command": ["uvx", "picoclaw-hook-reviewer"],
+        "command": ["uvx", "openfox-hook-reviewer"],
         "observe": ["turn_start", "turn_end", "tool_exec_end"],
         "intercept": ["before_tool", "approve_tool"],
         "timeout_ms": 5000
@@ -290,8 +290,8 @@ PicoClaw 启动外部进程，并在其 stdin/stdout 上跑协议。
 
 因为两者用途不同：
 
-- HTTP webhook 更适合“外部系统向 PicoClaw 投递事件”
-- stdio/RPC 更适合“PicoClaw 在 turn 内同步询问外部 hook 是否改写 / 放行 / 拒绝”
+- HTTP webhook 更适合“外部系统向 OpenFox 投递事件”
+- stdio/RPC 更适合“OpenFox 在 turn 内同步询问外部 hook 是否改写 / 放行 / 拒绝”
 
 如果未来需要 OpenClaw 式 webhook，可以作为独立入口层，再把外部事件转成 inbound message 或 steering，而不是直接替代 hook IPC。
 
@@ -464,7 +464,7 @@ V1 不做复杂自动发现。
 
 ## 最终结论
 
-最适合 PicoClaw 当前分支的方案，不是直接复制 OpenClaw 的 hooks，也不是完整照搬 pi-mono 的 extension system，而是：
+最适合 OpenFox 当前分支的方案，不是直接复制 OpenClaw 的 hooks，也不是完整照搬 pi-mono 的 extension system，而是：
 
 - 以 `pkg/events` runtime event bus 为只读观察面
 - 以新增 `HookManager` 为同步拦截面

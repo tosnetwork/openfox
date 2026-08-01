@@ -11,7 +11,7 @@
 | -------------------- | ---------------------------- | -------------------------------------------------------------------- |
 | `gemini`             | LLM (Gemini 直连)            | [aistudio.google.com](https://aistudio.google.com)                   |
 | `zhipu`              | LLM (智谱直连)               | [bigmodel.cn](https://bigmodel.cn)                                   |
-| `volcengine`         | LLM (火山引擎直连)           | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| `volcengine`         | LLM (火山引擎直连)           | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | `openrouter`         | LLM (推荐，可访问所有模型)   | [openrouter.ai](https://openrouter.ai)                               |
 | `anthropic`          | LLM (Claude 直连)            | [console.anthropic.com](https://console.anthropic.com)               |
 | `openai`             | LLM (GPT 直连)               | [platform.openai.com](https://platform.openai.com)                   |
@@ -32,7 +32,7 @@
 <a id="模型配置-model_list"></a>
 ### 模型配置 (model_list)
 
-> **新功能！** PicoClaw 现在优先推荐显式 `provider` + 原生 `model` 的配置方式，例如 `"provider": "zhipu", "model": "glm-4.7"`。如果未设置 `provider`，旧的单字段 `provider/model` 写法仍然兼容。
+> **新功能！** OpenFox 现在优先推荐显式 `provider` + 原生 `model` 的配置方式，例如 `"provider": "zhipu", "model": "glm-4.7"`。如果未设置 `provider`，旧的单字段 `provider/model` 写法仍然兼容。
 
 如果你想看 agent 分发和轻量模型路由的完整示例，请看 [路由使用指南](routing-guide.zh.md)。
 
@@ -63,7 +63,7 @@
 | **LiteLLM Proxy**   | `litellm`         | `http://localhost:4000/v1`                          | OpenAI    | 你的 LiteLLM 代理密钥                                             |
 | **VLLM**            | `vllm`            | `http://localhost:8000/v1`                          | OpenAI    | 本地                                                              |
 | **Cerebras**        | `cerebras`        | `https://api.cerebras.ai/v1`                        | OpenAI    | [获取密钥](https://cerebras.ai)                                   |
-| **火山引擎（Doubao）** | `volcengine`   | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [获取密钥](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| **火山引擎（Doubao）** | `volcengine`   | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [获取密钥](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | **神算云**          | `shengsuanyun`    | `https://router.shengsuanyun.com/api/v1`            | OpenAI    | -                                                                 |
 | **BytePlus**        | `byteplus`        | `https://ark.ap-southeast.bytepluses.com/api/v3`    | OpenAI    | [获取密钥](https://www.byteplus.com)                              |
 | **Vivgrid**         | `vivgrid`         | `https://api.vivgrid.com/v1`                        | OpenAI    | [获取密钥](https://vivgrid.com)                                   |
@@ -116,7 +116,7 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `model_name` | string | 是 | 在 agent 配置中引用此模型的唯一名称 |
-| `provider` | string | 否 | 推荐的 provider 标识。设置后，PicoClaw 会将 `model` 原样发送给该 provider |
+| `provider` | string | 否 | 推荐的 provider 标识。设置后，OpenFox 会将 `model` 原样发送给该 provider |
 | `model` | string | 是 | 当设置 `provider` 时，这里填写 provider 原生模型 ID。若未设置 `provider`，仍兼容旧的 `provider/model` 写法 |
 | `api_keys` | string[] | 是* | 认证密钥。多个密钥可按请求轮换。本地 provider（Ollama、LM Studio、VLLM）不需要 |
 | `api_base` | string | 否 | 覆盖默认的 API 端点 URL |
@@ -136,7 +136,7 @@
 
 #### `provider` / `model` 解析规则
 
-PicoClaw 按下面的规则解析 `provider` 和最终发给上游的模型 ID：
+OpenFox 按下面的规则解析 `provider` 和最终发给上游的模型 ID：
 
 - 如果设置了 `provider`，则直接使用 `model`。
 - 如果未设置 `provider`，则把 `model` 中第一个 `/` 之前的字段当作 provider，第一个 `/` 之后的全部内容当作最终模型 ID。
@@ -154,7 +154,7 @@ PicoClaw 按下面的规则解析 `provider` 和最终发给上游的模型 ID�
 
 你可以通过 `voice.model_name` 为语音转录指定一个专用模型。这样可以直接复用已经配置好的、支持音频输入的多模态 provider，而不必只依赖 Groq。
 
-如果没有配置 `voice.model_name`，且存在 Groq API Key，PicoClaw 会继续回退到 Groq 转录。
+如果没有配置 `voice.model_name`，且存在 Groq API Key，OpenFox 会继续回退到 Groq 转录。
 
 ```json
 {
@@ -235,7 +235,7 @@ PicoClaw 按下面的规则解析 `provider` 和最终发给上游的模型 ID�
 }
 ```
 
-> 运行 `picoclaw auth login --provider anthropic` 来设置 OAuth 凭证。
+> 运行 `openfox auth login --provider anthropic` 来设置 OAuth 凭证。
 
 **Anthropic Messages API（原生格式）**
 
@@ -279,7 +279,7 @@ PicoClaw 按下面的规则解析 `provider` 和最终发给上游的模型 ID�
 ```
 
 `api_base` 默认是 `http://localhost:1234/v1`。除非你在 LM Studio 侧启用了认证，否则不需要配置 API Key。
-显式设置 `provider` 后，PicoClaw 会把 `openai/gpt-oss-20b` 原样发送给 LM Studio。旧的兼容写法 `"model": "lmstudio/openai/gpt-oss-20b"` 在未设置 `provider` 时也会解析成相同的上游模型 ID。
+显式设置 `provider` 后，OpenFox 会把 `openai/gpt-oss-20b` 原样发送给 LM Studio。旧的兼容写法 `"model": "lmstudio/openai/gpt-oss-20b"` 在未设置 `provider` 时也会解析成相同的上游模型 ID。
 
 **自定义代理/API**
 
@@ -307,11 +307,11 @@ PicoClaw 按下面的规则解析 `provider` 和最终发给上游的模型 ID�
 }
 ```
 
-显式设置 `provider` 后，PicoClaw 会将 `model` 原样发送。因此 `"provider": "litellm", "model": "lite-gpt4"` 会发送 `lite-gpt4`，而 `"provider": "litellm", "model": "openai/gpt-4o"` 会发送 `openai/gpt-4o`。旧的兼容写法 `litellm/lite-gpt4` 和 `litellm/openai/gpt-4o` 在未设置 `provider` 时也会得到相同结果。
+显式设置 `provider` 后，OpenFox 会将 `model` 原样发送。因此 `"provider": "litellm", "model": "lite-gpt4"` 会发送 `lite-gpt4`，而 `"provider": "litellm", "model": "openai/gpt-4o"` 会发送 `openai/gpt-4o`。旧的兼容写法 `litellm/lite-gpt4` 和 `litellm/openai/gpt-4o` 在未设置 `provider` 时也会得到相同结果。
 
 #### 负载均衡
 
-为同一个模型名称配置多个端点——PicoClaw 会自动在它们之间轮询：
+为同一个模型名称配置多个端点——OpenFox 会自动在它们之间轮询：
 
 ```json
 {
@@ -336,7 +336,7 @@ PicoClaw 按下面的规则解析 `provider` 和最终发给上游的模型 ID�
 
 #### 自动模型失败切换（Cascade）
 
-当你在 Agent 的模型设置里配置 `primary` + `fallbacks` 时，PicoClaw 已经支持自动失败切换。
+当你在 Agent 的模型设置里配置 `primary` + `fallbacks` 时，OpenFox 已经支持自动失败切换。
 运行时 fallback 链会在可重试错误时切到下一个候选（例如 HTTP `429`、配额/限流错误、超时错误）。
 同时会对每个候选应用 cooldown，避免对刚失败的目标立即重试。
 
@@ -372,7 +372,7 @@ PicoClaw 按下面的规则解析 `provider` 和最终发给上游的模型 ID�
 }
 ```
 
-如果你在同一模型上启用了 key 级失败切换，PicoClaw 会先在该模型的多 key 候选间切换，再继续切到跨模型备选。
+如果你在同一模型上启用了 key 级失败切换，OpenFox 会先在该模型的多 key 候选间切换，再继续切到跨模型备选。
 
 #### 从旧的 `providers` 配置迁移
 
@@ -422,7 +422,7 @@ PicoClaw 按下面的规则解析 `provider` 和最终发给上游的模型 ID�
 
 ### Provider 架构
 
-PicoClaw 按协议族路由 Provider：
+OpenFox 按协议族路由 Provider：
 
 - OpenAI 兼容协议：OpenRouter、OpenAI 兼容网关、Groq、智谱、vLLM 风格端点。
 - Gemini 原生协议：Google Gemini 通过原生 `models/*:generateContent` 和 `models/*:streamGenerateContent` 端点接入。
@@ -444,7 +444,7 @@ PicoClaw 按协议族路由 Provider：
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.openfox/workspace",
       "model_name": "glm-4.7",
       "max_tokens": 8192,
       "temperature": 0.7,
@@ -463,7 +463,7 @@ PicoClaw 按协议族路由 Provider：
 **3. 运行**
 
 ```bash
-picoclaw agent -m "你好"
+openfox agent -m "你好"
 ```
 
 </details>

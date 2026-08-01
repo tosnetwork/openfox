@@ -234,8 +234,8 @@ func TestRewriteWorkspacePath(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"~/.openclaw/workspace", "~/.picoclaw/workspace"},
-		{"/home/user/.openclaw/workspace", "/home/user/.picoclaw/workspace"},
+		{"~/.openclaw/workspace", "~/.openfox/workspace"},
+		{"/home/user/.openclaw/workspace", "/home/user/.openfox/workspace"},
 		{"/path/without/openclaw/change", "/path/without/openclaw/change"},
 		{"", ""},
 	}

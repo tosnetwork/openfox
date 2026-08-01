@@ -4,31 +4,31 @@
 
 ## ⚙️ Cấu Hình
 
-File cấu hình: `~/.picoclaw/config.json`
+File cấu hình: `~/.openfox/config.json`
 
 ### Biến Môi Trường
 
-Bạn có thể ghi đè các đường dẫn mặc định bằng biến môi trường. Điều này hữu ích cho cài đặt portable, triển khai container, hoặc chạy picoclaw như dịch vụ hệ thống. Các biến này độc lập và kiểm soát các đường dẫn khác nhau.
+Bạn có thể ghi đè các đường dẫn mặc định bằng biến môi trường. Điều này hữu ích cho cài đặt portable, triển khai container, hoặc chạy openfox như dịch vụ hệ thống. Các biến này độc lập và kiểm soát các đường dẫn khác nhau.
 
 | Biến              | Mô tả                                                                                                                             | Đường Dẫn Mặc Định       |
 |-------------------|-----------------------------------------------------------------------------------------------------------------------------------------|---------------------------|
-| `PICOCLAW_CONFIG` | Ghi đè đường dẫn đến file cấu hình. Chỉ định trực tiếp cho picoclaw file `config.json` nào cần tải, bỏ qua tất cả vị trí khác. | `~/.picoclaw/config.json` |
-| `PICOCLAW_HOME`   | Ghi đè thư mục gốc cho dữ liệu picoclaw. Thay đổi vị trí mặc định của `workspace` và các thư mục dữ liệu khác.          | `~/.picoclaw`             |
+| `OPENFOX_CONFIG` | Ghi đè đường dẫn đến file cấu hình. Chỉ định trực tiếp cho openfox file `config.json` nào cần tải, bỏ qua tất cả vị trí khác. | `~/.openfox/config.json` |
+| `OPENFOX_HOME`   | Ghi đè thư mục gốc cho dữ liệu openfox. Thay đổi vị trí mặc định của `workspace` và các thư mục dữ liệu khác.          | `~/.openfox`             |
 
 **Ví dụ:**
 
 ```bash
-# Chạy picoclaw với file cấu hình cụ thể
+# Chạy openfox với file cấu hình cụ thể
 # Đường dẫn workspace sẽ được đọc từ trong file cấu hình đó
-PICOCLAW_CONFIG=/etc/picoclaw/production.json picoclaw gateway
+OPENFOX_CONFIG=/etc/openfox/production.json openfox gateway
 
-# Chạy picoclaw với tất cả dữ liệu lưu tại /opt/picoclaw
-# Cấu hình sẽ được tải từ mặc định ~/.picoclaw/config.json
-# Workspace sẽ được tạo tại /opt/picoclaw/workspace
-PICOCLAW_HOME=/opt/picoclaw picoclaw agent
+# Chạy openfox với tất cả dữ liệu lưu tại /opt/openfox
+# Cấu hình sẽ được tải từ mặc định ~/.openfox/config.json
+# Workspace sẽ được tạo tại /opt/openfox/workspace
+OPENFOX_HOME=/opt/openfox openfox agent
 
 # Sử dụng cả hai cho thiết lập tùy chỉnh hoàn toàn
-PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gateway
+OPENFOX_HOME=/srv/openfox OPENFOX_CONFIG=/srv/openfox/main.json openfox gateway
 ```
 
 ### Mức Log của Gateway
@@ -45,14 +45,14 @@ PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gat
 
 Giá trị mặc định là `warn`. Các giá trị được hỗ trợ: `debug`, `info`, `warn`, `error`, `fatal`.
 
-Cũng có thể ghi đè bằng biến môi trường: `PICOCLAW_LOG_LEVEL=info`
+Cũng có thể ghi đè bằng biến môi trường: `OPENFOX_LOG_LEVEL=info`
 
 ### Bố Cục Workspace
 
-PicoClaw lưu trữ dữ liệu trong workspace đã cấu hình (mặc định: `~/.picoclaw/workspace`):
+OpenFox lưu trữ dữ liệu trong workspace đã cấu hình (mặc định: `~/.openfox/workspace`):
 
 ```
-~/.picoclaw/workspace/
+~/.openfox/workspace/
 ├── sessions/          # Phiên hội thoại và lịch sử
 ├── memory/           # Bộ nhớ dài hạn (MEMORY.md)
 ├── state/            # Trạng thái bền vững (kênh cuối, v.v.)
@@ -69,13 +69,13 @@ PicoClaw lưu trữ dữ liệu trong workspace đã cấu hình (mặc định:
 
 ### Chính sách ngữ cảnh request
 
-`turn_profile` là chính sách tùy chọn trong `agents.defaults.turn_profile` để kiểm soát ngữ cảnh mỗi turn mới mang theo: lịch sử, system prompt, prompt skills và các tool được phép gọi. Nếu không cấu hình, hoặc đặt `"enabled": false`, PicoClaw giữ nguyên hành vi mặc định. Khi đặt `"enabled": true`, chính sách bên dưới áp dụng cho mỗi turn mới.
+`turn_profile` là chính sách tùy chọn trong `agents.defaults.turn_profile` để kiểm soát ngữ cảnh mỗi turn mới mang theo: lịch sử, system prompt, prompt skills và các tool được phép gọi. Nếu không cấu hình, hoặc đặt `"enabled": false`, OpenFox giữ nguyên hành vi mặc định. Khi đặt `"enabled": true`, chính sách bên dưới áp dụng cho mỗi turn mới.
 
 Mỗi block dùng chung các giá trị `mode`:
 
 | Mode | Ý nghĩa |
 | --- | --- |
-| `default` | Giữ hành vi bình thường của PicoClaw. Block bị thiếu hoặc thiếu `mode` đều được xem là `default`. |
+| `default` | Giữ hành vi bình thường của OpenFox. Block bị thiếu hoặc thiếu `mode` đều được xem là `default`. |
 | `off` | Tắt block đó cho turn. |
 | `custom` | Dùng danh sách cho phép. Phiên bản này chỉ hỗ trợ `custom` cho `skills` và `tools`; dùng cho `history` hoặc `system_prompt` sẽ lỗi validate. |
 
@@ -84,11 +84,11 @@ Các block:
 | Block | Nội dung kiểm soát |
 | --- | --- |
 | `history` | Đọc lịch sử và tóm tắt, ghi tin nhắn user/assistant/tool, nạp context, compact và summarize. |
-| `system_prompt` | Chèn identity mặc định của PicoClaw, chỉ dẫn workspace, memory, runtime context và summary. System prompt từ request bên ngoài vẫn được dùng khi block này `off`. |
+| `system_prompt` | Chèn identity mặc định của OpenFox, chỉ dẫn workspace, memory, runtime context và summary. System prompt từ request bên ngoài vẫn được dùng khi block này `off`. |
 | `skills` | Catalog skills và nội dung active skill trong prompt. `custom.allow` chỉ giữ các tên skill được liệt kê. |
 | `tools` | Công cụ hiển thị cho model và được phép thực thi. `custom.allow` chỉ giữ các tool đã đăng ký và được liệt kê. |
 
-Khi `system_prompt.mode` là `off`, tools vẫn hiển thị và không có system prompt bên ngoài, PicoClaw dùng lại quy tắc dùng tool hiện có làm prompt fallback tối thiểu. Nếu `tools.mode` là `off`, fallback này không được thêm.
+Khi `system_prompt.mode` là `off`, tools vẫn hiển thị và không có system prompt bên ngoài, OpenFox dùng lại quy tắc dùng tool hiện có làm prompt fallback tối thiểu. Nếu `tools.mode` là `off`, fallback này không được thêm.
 
 Ví dụ ngữ cảnh sạch chỉ giữ tool web:
 
@@ -115,14 +115,14 @@ Ví dụ ngữ cảnh sạch chỉ giữ tool web:
 
 Mặc định, skill được tải từ:
 
-1. `~/.picoclaw/workspace/skills` (workspace)
-2. `~/.picoclaw/skills` (global)
+1. `~/.openfox/workspace/skills` (workspace)
+2. `~/.openfox/skills` (global)
 3. `<đường-dẫn-nhúng-khi-build>/skills` (tích hợp)
 
 Cho thiết lập nâng cao/test, bạn có thể ghi đè thư mục gốc skill builtin với:
 
 ```bash
-export PICOCLAW_BUILTIN_SKILLS=/path/to/skills
+export OPENFOX_BUILTIN_SKILLS=/path/to/skills
 ```
 
 ### Dung Skill va Lenh Tu Kenh Chat
@@ -154,7 +154,7 @@ dammi le ultime news
 
 ### 🔒 Sandbox Bảo Mật
 
-PicoClaw chạy trong môi trường sandbox mặc định. Agent chỉ có thể truy cập file và thực thi lệnh trong workspace đã cấu hình.
+OpenFox chạy trong môi trường sandbox mặc định. Agent chỉ có thể truy cập file và thực thi lệnh trong workspace đã cấu hình.
 
 #### Cấu Hình Mặc Định
 
@@ -162,7 +162,7 @@ PicoClaw chạy trong môi trường sandbox mặc định. Agent chỉ có th�
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.openfox/workspace",
       "restrict_to_workspace": true
     }
   }
@@ -171,7 +171,7 @@ PicoClaw chạy trong môi trường sandbox mặc định. Agent chỉ có th�
 
 | Tùy chọn                | Mặc định                | Mô tả                                    |
 | ----------------------- | ----------------------- | ----------------------------------------- |
-| `workspace`             | `~/.picoclaw/workspace` | Thư mục làm việc của agent               |
+| `workspace`             | `~/.openfox/workspace` | Thư mục làm việc của agent               |
 | `restrict_to_workspace` | `true`                  | Giới hạn truy cập file/lệnh trong workspace |
 
 #### Công Cụ Được Bảo Vệ
@@ -218,7 +218,7 @@ Ngay cả khi `restrict_to_workspace: false`, công cụ `exec` chặn các lệ
 
 #### Hạn Chế Đã Biết: Tiến Trình Con Từ Công Cụ Build
 
-Guard bảo mật exec chỉ kiểm tra dòng lệnh mà PicoClaw khởi chạy trực tiếp. Nó không kiểm tra đệ quy các tiến trình con được tạo bởi công cụ phát triển được phép như `make`, `go run`, `cargo`, `npm run`, hoặc script build tùy chỉnh.
+Guard bảo mật exec chỉ kiểm tra dòng lệnh mà OpenFox khởi chạy trực tiếp. Nó không kiểm tra đệ quy các tiến trình con được tạo bởi công cụ phát triển được phép như `make`, `go run`, `cargo`, `npm run`, hoặc script build tùy chỉnh.
 
 Điều này có nghĩa là lệnh cấp cao nhất vẫn có thể biên dịch hoặc khởi chạy binary khác sau khi vượt qua kiểm tra guard ban đầu. Trong thực tế, hãy coi script build, Makefile, script package, và binary được tạo như mã thực thi cần cùng mức độ review như lệnh shell trực tiếp.
 
@@ -226,7 +226,7 @@ Cho môi trường rủi ro cao hơn:
 
 * Review script build trước khi thực thi.
 * Ưu tiên phê duyệt/review thủ công cho quy trình biên dịch và chạy.
-* Chạy PicoClaw trong container hoặc VM nếu bạn cần cách ly mạnh hơn guard tích hợp.
+* Chạy OpenFox trong container hoặc VM nếu bạn cần cách ly mạnh hơn guard tích hợp.
 
 #### Ví Dụ Lỗi
 
@@ -259,7 +259,7 @@ Nếu bạn cần agent truy cập đường dẫn ngoài workspace:
 **Phương pháp 2: Biến môi trường**
 
 ```bash
-export PICOCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
+export OPENFOX_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
 ```
 
 > ⚠️ **Cảnh báo**: Tắt giới hạn này cho phép agent truy cập bất kỳ đường dẫn nào trên hệ thống. Chỉ sử dụng cẩn thận trong môi trường được kiểm soát.
@@ -278,7 +278,7 @@ Tất cả đường dẫn chia sẻ cùng giới hạn workspace — không có
 
 ### Heartbeat (Tác Vụ Định Kỳ)
 
-PicoClaw có thể thực hiện tác vụ định kỳ tự động. Tạo file `HEARTBEAT.md` trong workspace:
+OpenFox có thể thực hiện tác vụ định kỳ tự động. Tạo file `HEARTBEAT.md` trong workspace:
 
 ```markdown
 # Tác Vụ Định Kỳ
@@ -350,8 +350,8 @@ Trả lời HEARTBEAT_OK        Người dùng nhận kết quả trực tiếp
 
 **Biến môi trường:**
 
-* `PICOCLAW_HEARTBEAT_ENABLED=false` để tắt
-* `PICOCLAW_HEARTBEAT_INTERVAL=60` để thay đổi khoảng thời gian
+* `OPENFOX_HEARTBEAT_ENABLED=false` để tắt
+* `OPENFOX_HEARTBEAT_INTERVAL=60` để thay đổi khoảng thời gian
 
 ### Providers
 
@@ -362,7 +362,7 @@ Trả lời HEARTBEAT_OK        Người dùng nhận kết quả trực tiếp
 | ------------ | --------------------------------------- | ------------------------------------------------------------ |
 | `gemini`     | LLM (Gemini trực tiếp)                  | [aistudio.google.com](https://aistudio.google.com)           |
 | `zhipu`      | LLM (Zhipu trực tiếp)                   | [bigmodel.cn](https://bigmodel.cn)                           |
-| `volcengine` | LLM (Volcengine trực tiếp)              | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| `volcengine` | LLM (Volcengine trực tiếp)              | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | `openrouter` | LLM (khuyến nghị, truy cập tất cả mô hình) | [openrouter.ai](https://openrouter.ai)                   |
 | `anthropic`  | LLM (Claude trực tiếp)                  | [console.anthropic.com](https://console.anthropic.com)       |
 | `openai`     | LLM (GPT trực tiếp)                     | [platform.openai.com](https://platform.openai.com)           |
@@ -374,7 +374,7 @@ Trả lời HEARTBEAT_OK        Người dùng nhận kết quả trực tiếp
 
 ### Cấu Hình Mô Hình (model_list)
 
-> **Tính năng mới:** PicoClaw hiện sử dụng cách tiếp cận **lấy mô hình làm trung tâm**. Chỉ cần chỉ định định dạng `vendor/model` (ví dụ: `zhipu/glm-4.7`) để thêm provider mới — **không cần thay đổi code!**
+> **Tính năng mới:** OpenFox hiện sử dụng cách tiếp cận **lấy mô hình làm trung tâm**. Chỉ cần chỉ định định dạng `vendor/model` (ví dụ: `zhipu/glm-4.7`) để thêm provider mới — **không cần thay đổi code!**
 
 #### Tất Cả Vendor Được Hỗ Trợ
 
@@ -389,12 +389,12 @@ Trả lời HEARTBEAT_OK        Người dùng nhận kết quả trực tiếp
 | **通义千问 (Qwen)**     | `qwen/`         | `https://dashscope.aliyuncs.com/compatible-mode/v1` | OpenAI    | [Lấy](https://dashscope.console.aliyun.com)                      |
 | **Ollama**              | `ollama/`       | `http://localhost:11434/v1`                         | OpenAI    | Cục bộ (không cần key)                                           |
 | **OpenRouter**          | `openrouter/`   | `https://openrouter.ai/api/v1`                      | OpenAI    | [Lấy](https://openrouter.ai/keys)                                |
-| **VolcEngine (Doubao)** | `volcengine/`   | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [Lấy](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| **VolcEngine (Doubao)** | `volcengine/`   | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [Lấy](https://www.volcengine.com/activity/codingplan?utm_campaign=OpenFox&utm_content=OpenFox&utm_medium=devrel&utm_source=OWO&utm_term=OpenFox) |
 | **Antigravity**         | `antigravity/`  | Google Cloud                                        | Custom    | Chỉ OAuth                                                        |
 
 #### Cân Bằng Tải
 
-Cấu hình nhiều endpoint cho cùng tên mô hình — PicoClaw sẽ tự động round-robin:
+Cấu hình nhiều endpoint cho cùng tên mô hình — OpenFox sẽ tự động round-robin:
 
 ```json
 {
@@ -411,7 +411,7 @@ Cấu hình `providers` cũ đã **bị deprecated** và đã được loại b�
 
 #### Cấu Hình Streaming
 
-Provider streaming dùng cơ chế double opt-in và bị tắt theo mặc định. Agent chỉ thử streaming khi channel hiện tại có `settings.streaming.enabled: true`, entry model đang dùng có `streaming.enabled: true`, và cả provider lẫn channel đều hỗ trợ streaming. Nếu thiếu bất kỳ điều kiện nào, PicoClaw dùng đường dẫn yêu cầu không streaming thông thường.
+Provider streaming dùng cơ chế double opt-in và bị tắt theo mặc định. Agent chỉ thử streaming khi channel hiện tại có `settings.streaming.enabled: true`, entry model đang dùng có `streaming.enabled: true`, và cả provider lẫn channel đều hỗ trợ streaming. Nếu thiếu bất kỳ điều kiện nào, OpenFox dùng đường dẫn yêu cầu không streaming thông thường.
 
 Pico WebUI là channel đầu tiên được nối đầy đủ. Pico tạo message assistant đầu tiên bằng wire message hiện có `message.create`, sau đó cập nhật chính message đó bằng `message.update`; không thêm loại wire message Pico mới.
 
@@ -454,13 +454,13 @@ Ví dụ bật streaming:
 | `channel_list.<name>.settings.streaming.min_growth_chars` | int | Mặc định Pico sau khi bật: `1` | Số ký tự tăng tối thiểu trước khi gửi cập nhật trung gian; nội dung cuối luôn được flush |
 | `model_list[].streaming.enabled` | bool | `false` | Cho phép entry model này thử yêu cầu provider streaming |
 
-Các biến môi trường Telegram cũ vẫn tương thích: `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS`, và `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. Chúng chỉ áp dụng cho Telegram settings và không bật hoặc thay đổi `settings.streaming` của Pico.
+Các biến môi trường Telegram cũ vẫn tương thích: `OPENFOX_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `OPENFOX_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS`, và `OPENFOX_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. Chúng chỉ áp dụng cho Telegram settings và không bật hoặc thay đổi `settings.streaming` của Pico.
 
-Hành vi lỗi được giữ thận trọng: nếu streaming lỗi trước khi gửi bất kỳ chunk hiển thị nào, PicoClaw thử lại một lần qua đường dẫn `Chat()` thông thường. Nếu đã có chunk hiển thị cho người dùng, PicoClaw không gửi thêm một câu trả lời non-streaming thứ hai để tránh lặp output.
+Hành vi lỗi được giữ thận trọng: nếu streaming lỗi trước khi gửi bất kỳ chunk hiển thị nào, OpenFox thử lại một lần qua đường dẫn `Chat()` thông thường. Nếu đã có chunk hiển thị cho người dùng, OpenFox không gửi thêm một câu trả lời non-streaming thứ hai để tránh lặp output.
 
 ### Kiến Trúc Provider
 
-PicoClaw định tuyến provider theo họ giao thức:
+OpenFox định tuyến provider theo họ giao thức:
 
 - **Tương thích OpenAI**: OpenRouter, Groq, Zhipu, endpoint kiểu vLLM và hầu hết các provider khác.
 - **Gemini native**: Google Gemini qua các endpoint native `models/*:generateContent` và `models/*:streamGenerateContent`.
@@ -471,7 +471,7 @@ PicoClaw định tuyến provider theo họ giao thức:
 
 ### Tác Vụ Đã Lên Lịch / Nhắc Nhở
 
-PicoClaw hỗ trợ tác vụ theo lịch qua công cụ `cron`.
+OpenFox hỗ trợ tác vụ theo lịch qua công cụ `cron`.
 
 ```json
 {
@@ -484,7 +484,7 @@ PicoClaw hỗ trợ tác vụ theo lịch qua công cụ `cron`.
 }
 ```
 
-Tác vụ đã lên lịch được lưu trữ bền vững sau khi khởi động lại tại `~/.picoclaw/workspace/cron/`.
+Tác vụ đã lên lịch được lưu trữ bền vững sau khi khởi động lại tại `~/.openfox/workspace/cron/`.
 
 ### Chủ Đề Nâng Cao
 

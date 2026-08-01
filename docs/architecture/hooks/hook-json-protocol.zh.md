@@ -6,13 +6,13 @@
 
 ## 基础协议结构
 
-### 请求（PicoClaw → Hook）
+### 请求（OpenFox → Hook）
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"hook.xxx","params":{...}}
 ```
 
-### 响应（Hook → PicoClaw）
+### 响应（Hook → OpenFox）
 
 成功：
 ```json
@@ -574,4 +574,4 @@ def handle_before_tool(params: dict) -> dict:
     return {"action": "continue"}
 ```
 
-通过这种方式，外部 hook 可以完全实现插件工具，无需在 PicoClaw 内部注册任何工具实现。
+通过这种方式，外部 hook 可以完全实现插件工具，无需在 OpenFox 内部注册任何工具实现。

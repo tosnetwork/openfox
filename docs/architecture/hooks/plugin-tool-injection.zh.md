@@ -1,6 +1,6 @@
 # 插件工具注入示例
 
-本文档展示如何利用 PicoClaw 的 hook 系统实现外部插件工具注入，让 LLM 能调用由外部 hook 进程实现的工具。
+本文档展示如何利用 OpenFox 的 hook 系统实现外部插件工具注入，让 LLM 能调用由外部 hook 进程实现的工具。
 
 ---
 
@@ -11,7 +11,7 @@
 1. 在 `before_llm` 中注入工具**定义**，让 LLM 知道有这个工具可用
 2. 在 `before_tool` 中使用 `respond` action 直接返回工具**执行结果**，跳过 ToolRegistry
 
-这样，外部 hook 可以完全实现插件工具，无需在 PicoClaw 内部注册任何工具。
+这样，外部 hook 可以完全实现插件工具，无需在 OpenFox 内部注册任何工具。
 
 ---
 
@@ -182,7 +182,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-### 2. 配置 PicoClaw
+### 2. 配置 OpenFox
 
 在配置文件中添加 hook 配置：
 
@@ -207,9 +207,9 @@ if __name__ == "__main__":
 
 当用户问"北京今天天气怎么样？"时：
 
-1. PicoClaw 发送 `hook.before_llm`，hook 注入 `get_weather` 工具定义
+1. OpenFox 发送 `hook.before_llm`，hook 注入 `get_weather` 工具定义
 2. LLM 看到工具定义，决定调用 `get_weather(city="北京")`
-3. PicoClaw 发送 `hook.before_tool`，hook 使用 `respond` action 返回天气数据
+3. OpenFox 发送 `hook.before_tool`，hook 使用 `respond` action 返回天气数据
 4. LLM 收到结果，回复用户"北京今天晴天，温度15°C"
 
 ---
@@ -219,7 +219,7 @@ if __name__ == "__main__":
 ```
 用户: "北京今天天气怎么样？"
         ↓
-    PicoClaw
+    OpenFox
         ↓
     hook.before_llm
         ↓ (注入 get_weather 工具定义)
@@ -342,7 +342,7 @@ LLM 看到内容后，可以自主决定：
 media://<store-id>
 ```
 
-这些引用由 PicoClaw 的 MediaStore 管理，可以：
+这些引用由 OpenFox 的 MediaStore 管理，可以：
 - 通过 channel 发送给用户
 - 在 LLM vision 请求中转换为 base64
 
@@ -459,7 +459,7 @@ def handle_before_tool(params: dict) -> dict:
 
 ## 与内置工具共存
 
-注入的插件工具与 PicoClaw 内置工具共存：
+注入的插件工具与 OpenFox 内置工具共存：
 
 - 内置工具（如 `bash`、`read_file`）正常通过 ToolRegistry 执行
 - 插件工具通过 hook 的 `respond` action 返回结果
@@ -476,8 +476,8 @@ package myhooks
 
 import (
     "context"
-    "github.com/sipeed/picoclaw/pkg/agent"
-    "github.com/sipeed/picoclaw/pkg/tools"
+    "github.com/tosnetwork/openfox/pkg/agent"
+    "github.com/tosnetwork/openfox/pkg/tools"
 )
 
 type WeatherPluginHook struct{}
@@ -543,7 +543,7 @@ func getWeatherData(city string) string {
 
 1. **注入工具定义**：让 LLM 知道有新工具可用
 2. **提供工具实现**：直接返回执行结果，无需注册到 ToolRegistry
-3. **与内置工具共存**：不影响 PicoClaw 原有工具的正常运行
+3. **与内置工具共存**：不影响 OpenFox 原有工具的正常运行
 
 这为插件开发提供了灵活、优雅的解决方案。
 

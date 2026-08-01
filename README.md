@@ -1,8 +1,6 @@
 <div align="center">
 <img src="assets/openfox-logo.png" alt="OpenFox" width="420">
 
-<h1>OpenFox</h1>
-
 <h3>The fox that finds AI work on the TOS network — and makes the money while you sleep.</h3>
 
   <p>

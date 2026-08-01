@@ -32,6 +32,15 @@ We're building it fully in the open — the runtime, the agent loop, and the roa
 <img src="assets/openfox-night.png" alt="OpenFox working through the night" width="360">
 </p>
 
+## 💰 New: Autonomous Money-Making
+
+Unlike a chatbot that sits idle until you type something, OpenFox actively hunts for paid work on the TOS network:
+
+- 🔍 **Opportunity discovery** — continuously scans the TOS network for available jobs instead of waiting for a prompt
+- 🤝 **Autonomous execution** — picks up jobs on its own, calling tools and other agents as needed to get the work done
+- 🧾 **Automatic settlement** — completes tasks and settles the results, quietly, in the background, around the clock
+- 😴 **No human in the loop** — runs unattended while you sleep, so value keeps accruing without you standing over it
+
 ## 🪶 Built for $10 Hardware
 
 None of that works if the agent needs a data center to stay awake 24/7. OpenFox's runtime is written entirely in **Go** and engineered to be ultra-lightweight, so it can run continuously on the cheapest hardware you can buy, not just a beefy server.
@@ -105,6 +114,26 @@ make install
 
 Give a decade-old phone a second life as an always-on agent. See the [Android Termux Guide](docs/guides/android-termux.md) for the full command-line setup.
 
-## 🤝 Contribute
+## 🆚 OpenClaw vs OpenFox
 
-PRs welcome — the codebase is intentionally small and readable.
+OpenFox reimplements the OpenClaw concept from scratch in Go, aiming for the same always-on agent experience at a fraction of the resource cost. A one-command migration path (`openfox migrate --from openclaw`) is provided for existing OpenClaw users.
+
+|                              | OpenClaw                          | **OpenFox**                                              |
+| ---------------------------- | ---------------------------------- | ---------------------------------------------------------- |
+| **Language**                 | TypeScript                         | **Go**                                                      |
+| **RAM**                      | > 1GB                              | **< 10MB***                                                 |
+| **Boot time**</br>(0.8GHz core) | > 500s                          | **<1s**                                                     |
+| **Minimum hardware cost**    | Mac Mini-class, ~$599              | **Any Linux board from $10**                                |
+| **Artifact**                 | Requires Node.js runtime           | **Single static binary**, cross-platform                    |
+| **Supported architectures**  | Mainly x86 / server / desktop      | x86_64, ARM64, MIPS, RISC-V, LoongArch                       |
+| **Typical deployment**       | Cloud server / always-on desktop   | LicheeRV-Nano ($9.9), NanoKVM, MaixCAM, Pi Zero 2W, old Android phones |
+| **MCP protocol support**     | Depends on version                 | Native, managed via `openfox mcp`                            |
+| **Vision / multimodal**      | Depends on version                 | Built-in vision pipeline, auto base64 for multimodal models  |
+| **Model routing**            | —                                  | Rule-based routing to cheaper models for simple requests     |
+| **Chat channels**            | Handful of mainstream IM apps      | 16+ channels, including Feishu/DingTalk/WeCom/QQ/WeChat        |
+| **Security sandbox**         | —                                  | Built-in file access control, exec boundary, sensitive data filtering |
+| **Migration path**           | —                                  | `openfox migrate --from openclaw` reuses OpenClaw's provider config and workspace |
+| **Autonomous earning**       | —                                  | **Built for the TOS network** — discovers jobs, executes them, and settles payment on its own |
+| **License**                  | Varies by project                  | MIT                                                          |
+
+_*Recent builds may use 10-20MB RAM due to rapid feature development; language/RAM/boot time/cost figures are OpenFox's own benchmark claims (0.8GHz single-core), the rest reflects the current feature set in this repository — check each project's latest docs for authoritative details._

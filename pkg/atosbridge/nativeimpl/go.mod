@@ -9,4 +9,4 @@ require (
 
 replace github.com/tosnetwork/openfox => ../../..
 
-replace github.com/tosnetwork/tos-ai => /home/tomi/tos-ai
+replace github.com/tosnetwork/tos-ai => ../../../../tos-ai

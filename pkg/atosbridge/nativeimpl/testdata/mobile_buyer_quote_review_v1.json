@@ -1,0 +1,172 @@
+{
+  "schema": "atos.native.mobile-buyer-quote-review.v1",
+  "note": "Canonical Accepted Quote facts the buyer must validate before approval, shared by the iOS and Android confirmation screens. Checks run in a fixed order for a deterministic reason. A Gateway response or a friendly asset ticker never substitutes for a commitment: a missing or malformed commitment is a rejection. Verified against the Go QuoteReview reference.",
+  "now_unix": 1786800000,
+  "cases": [
+    {
+      "name": "valid",
+      "review": {
+        "capability_version": "1.0.0",
+        "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "25000000",
+        "escrow_address": "0:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "quote_commitment": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "buyer",
+        "expiry_unix": 2000000000
+      },
+      "expect": "ok"
+    },
+    {
+      "name": "missing_capability_version",
+      "review": {
+        "capability_version": "",
+        "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "25000000",
+        "escrow_address": "0:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "quote_commitment": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "buyer",
+        "expiry_unix": 2000000000
+      },
+      "expect": "capability_version_missing"
+    },
+    {
+      "name": "malformed_manifest_digest",
+      "review": {
+        "capability_version": "1.0.0",
+        "manifest_digest": "sha256:short",
+        "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "25000000",
+        "escrow_address": "0:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "quote_commitment": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "buyer",
+        "expiry_unix": 2000000000
+      },
+      "expect": "manifest_digest_malformed"
+    },
+    {
+      "name": "asset_master_not_raw",
+      "review": {
+        "capability_version": "1.0.0",
+        "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_master": "EQD-KXNGT7iJl8YnHu_G1icQHbKLKxuKB2kV5GHa3QTZFrpU",
+        "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "25000000",
+        "escrow_address": "0:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "quote_commitment": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "buyer",
+        "expiry_unix": 2000000000
+      },
+      "expect": "asset_master_malformed"
+    },
+    {
+      "name": "asset_wallet_code_hash_wrong_prefix",
+      "review": {
+        "capability_version": "1.0.0",
+        "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_wallet_code_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "25000000",
+        "escrow_address": "0:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "quote_commitment": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "buyer",
+        "expiry_unix": 2000000000
+      },
+      "expect": "asset_wallet_code_hash_malformed"
+    },
+    {
+      "name": "amount_zero",
+      "review": {
+        "capability_version": "1.0.0",
+        "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "0",
+        "escrow_address": "0:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "quote_commitment": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "buyer",
+        "expiry_unix": 2000000000
+      },
+      "expect": "amount_not_positive"
+    },
+    {
+      "name": "amount_overflow",
+      "review": {
+        "capability_version": "1.0.0",
+        "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "18446744073709551616",
+        "escrow_address": "0:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "quote_commitment": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "buyer",
+        "expiry_unix": 2000000000
+      },
+      "expect": "amount_not_positive"
+    },
+    {
+      "name": "escrow_address_short",
+      "review": {
+        "capability_version": "1.0.0",
+        "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "25000000",
+        "escrow_address": "0:bb",
+        "quote_commitment": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "buyer",
+        "expiry_unix": 2000000000
+      },
+      "expect": "escrow_address_malformed"
+    },
+    {
+      "name": "quote_commitment_wrong_prefix",
+      "review": {
+        "capability_version": "1.0.0",
+        "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "25000000",
+        "escrow_address": "0:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "quote_commitment": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "buyer",
+        "expiry_unix": 2000000000
+      },
+      "expect": "quote_commitment_malformed"
+    },
+    {
+      "name": "fee_payer_gateway",
+      "review": {
+        "capability_version": "1.0.0",
+        "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "25000000",
+        "escrow_address": "0:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "quote_commitment": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "gateway",
+        "expiry_unix": 2000000000
+      },
+      "expect": "fee_payer_unknown"
+    },
+    {
+      "name": "expired",
+      "review": {
+        "capability_version": "1.0.0",
+        "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount_atomic": "25000000",
+        "escrow_address": "0:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "quote_commitment": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fee_payer": "buyer",
+        "expiry_unix": 1000000000
+      },
+      "expect": "expired"
+    }
+  ]
+}

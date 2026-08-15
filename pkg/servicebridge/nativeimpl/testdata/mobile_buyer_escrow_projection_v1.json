@@ -1,0 +1,132 @@
+{
+  "schema": "tos.service.mobile-buyer-escrow-projection.v1",
+  "note": "Buyer-facing projection of finalized escrow runtime state, shared by the iOS and Android Native clients. 'released' is true ONLY in the escrow decoder's release-pending status (settled == funded, receipt bound); 'refunded' only in refund-pending. A gateway response or HTTP success is never payment evidence. A not-found escrow reads as unfunded/awaiting, never funded. Amounts are decimal atomic strings; a value that does not fit an unsigned 64-bit integer must be rejected, never wrapped. iOS and Android must decode these identically.",
+  "escrow_status": {
+    "awaiting_funding": 0,
+    "funded": 1,
+    "release_pending": 2,
+    "refund_pending": 3
+  },
+  "cases": [
+    {
+      "name": "not_found",
+      "present": false,
+      "funding_view": {
+        "found": false,
+        "awaiting_funding": true,
+        "funded_atomic": "0",
+        "settled_atomic": "0",
+        "receipt_commitment": ""
+      },
+      "settlement_view": {
+        "released": false,
+        "refunded": false,
+        "provider_credit_atomic": "0"
+      }
+    },
+    {
+      "name": "awaiting_funding",
+      "present": true,
+      "escrow": {
+        "status": 0,
+        "quote_commitment": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "funded_atomic_amount": "0",
+        "settled_atomic_amount": "0",
+        "receipt_commitment": ""
+      },
+      "funding_view": {
+        "found": true,
+        "awaiting_funding": true,
+        "funded_atomic": "0",
+        "settled_atomic": "0",
+        "receipt_commitment": ""
+      },
+      "settlement_view": {
+        "released": false,
+        "refunded": false,
+        "provider_credit_atomic": "0"
+      }
+    },
+    {
+      "name": "funded_exact",
+      "present": true,
+      "escrow": {
+        "status": 1,
+        "quote_commitment": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "funded_atomic_amount": "25000000",
+        "settled_atomic_amount": "0",
+        "receipt_commitment": ""
+      },
+      "funding_view": {
+        "found": true,
+        "awaiting_funding": false,
+        "funded_atomic": "25000000",
+        "settled_atomic": "0",
+        "receipt_commitment": ""
+      },
+      "settlement_view": {
+        "released": false,
+        "refunded": false,
+        "provider_credit_atomic": "0"
+      }
+    },
+    {
+      "name": "release_pending",
+      "present": true,
+      "escrow": {
+        "status": 2,
+        "quote_commitment": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "funded_atomic_amount": "25000000",
+        "settled_atomic_amount": "25000000",
+        "receipt_commitment": "tvm-cell-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "funding_view": {
+        "found": true,
+        "awaiting_funding": false,
+        "funded_atomic": "25000000",
+        "settled_atomic": "25000000",
+        "receipt_commitment": "tvm-cell-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "settlement_view": {
+        "released": true,
+        "refunded": false,
+        "provider_credit_atomic": "25000000"
+      }
+    },
+    {
+      "name": "refund_pending",
+      "present": true,
+      "escrow": {
+        "status": 3,
+        "quote_commitment": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "funded_atomic_amount": "25000000",
+        "settled_atomic_amount": "0",
+        "receipt_commitment": ""
+      },
+      "funding_view": {
+        "found": true,
+        "awaiting_funding": false,
+        "funded_atomic": "25000000",
+        "settled_atomic": "0",
+        "receipt_commitment": ""
+      },
+      "settlement_view": {
+        "released": false,
+        "refunded": true,
+        "provider_credit_atomic": "0"
+      }
+    },
+    {
+      "name": "malformed_overflow_amount",
+      "present": true,
+      "escrow": {
+        "status": 1,
+        "quote_commitment": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "funded_atomic_amount": "18446744073709551616",
+        "settled_atomic_amount": "0",
+        "receipt_commitment": ""
+      },
+      "expect_decode_error": true
+    }
+  ]
+}

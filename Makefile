@@ -39,11 +39,13 @@ GO_BUILD_TAGS?=goolm,stdjson
 GOFLAGS?=-v -tags $(GO_BUILD_TAGS)
 GOCACHE?=$(CURDIR)/.cache/go-build
 GOMODCACHE?=$(CURDIR)/.cache/go-mod
-GOTOOLCHAIN?=local
+GOTOOLCHAIN?=auto
+GOWORK?=off
 export CGO_ENABLED
 export GOCACHE
 export GOMODCACHE
 export GOTOOLCHAIN
+export GOWORK
 comma:=,
 empty:=
 space:=$(empty) $(empty)

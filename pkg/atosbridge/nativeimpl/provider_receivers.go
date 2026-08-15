@@ -9,6 +9,7 @@ import (
 	"github.com/tosnetwork/tos-ai/pkg/agentpacketadapter"
 	"github.com/tosnetwork/tos-ai/pkg/artifactstore"
 	"github.com/tosnetwork/tos-ai/pkg/mcpadapter"
+	"github.com/tosnetwork/tos-ai/pkg/softwarework"
 	"github.com/tosnetwork/tos-protocol/pkg/executiongate"
 )
 
@@ -18,6 +19,14 @@ import (
 // instance back every transport.
 type ProviderGate interface {
 	ClaimExecution(context.Context, executiongate.Request) (executiongate.Evidence, error)
+}
+
+// ProviderSettler releases escrow after a completed execution. One settler
+// backs every transport, so a purchase settles through the same canonical
+// release path no matter which transport delivered it. An *EscrowReleaseSettler
+// satisfies it.
+type ProviderSettler interface {
+	Settle(context.Context, executiongate.Evidence, softwarework.Outcome) error
 }
 
 // ProviderArtifactLocator resolves a content-addressed artifact descriptor to
@@ -59,22 +68,22 @@ func (s mcpLocatorShim) URL(d artifactstore.Descriptor) (string, error) {
 }
 
 // NewProviderReceivers builds all three receiver adapters over the same Gate,
-// runner, and artifact locator. The runner is typically a *SettlingRunner, so
-// every admitted task — regardless of transport — executes once and settles
-// through the single canonical Receipt path.
-func NewProviderReceivers(gate ProviderGate, runner softwareRunner, locator ProviderArtifactLocator) (*ProviderReceivers, error) {
-	if gate == nil || runner == nil || locator == nil {
-		return nil, errors.New("nativeimpl: provider receivers need a gate, a runner, and an artifact locator")
+// runner, artifact locator, and settler. Because all four are shared, every
+// admitted task — regardless of transport — executes at most once behind the
+// one Gate and settles through the one canonical release path.
+func NewProviderReceivers(gate ProviderGate, runner softwareRunner, locator ProviderArtifactLocator, settler ProviderSettler) (*ProviderReceivers, error) {
+	if gate == nil || runner == nil || locator == nil || settler == nil {
+		return nil, errors.New("nativeimpl: provider receivers need a gate, a runner, an artifact locator, and a settler")
 	}
-	a2aAdapter, err := a2aadapter.New(gate, runner, a2aLocatorShim{inner: locator})
+	a2aAdapter, err := a2aadapter.NewSettling(gate, runner, a2aLocatorShim{inner: locator}, settler)
 	if err != nil {
 		return nil, err
 	}
-	mcpAdapter, err := mcpadapter.New(gate, runner, mcpLocatorShim{inner: locator})
+	mcpAdapter, err := mcpadapter.NewSettling(gate, runner, mcpLocatorShim{inner: locator}, settler)
 	if err != nil {
 		return nil, err
 	}
-	packetAdapter, err := agentpacketadapter.New(gate, runner)
+	packetAdapter, err := agentpacketadapter.NewSettling(gate, runner, settler)
 	if err != nil {
 		return nil, err
 	}

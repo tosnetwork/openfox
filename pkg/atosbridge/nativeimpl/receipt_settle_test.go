@@ -2,13 +2,12 @@ package nativeimpl
 
 import (
 	"context"
-	"errors"
-	"math/big"
-	"strings"
 	"testing"
 
 	"github.com/tosnetwork/tos-ai/pkg/artifactstore"
 	"github.com/tosnetwork/tos-ai/pkg/softwarework"
+	"github.com/tosnetwork/tos-protocol/pkg/executiongate"
+	"github.com/tosnetwork/tos-protocol/pkg/nativecore"
 	"github.com/xssnick/tonutils-go/tvm/cell"
 )
 
@@ -30,14 +29,24 @@ func sampleOutcome() softwarework.Outcome {
 	}
 }
 
-func sampleContext() SettlementContext {
-	return SettlementContext{
-		QuoteCell:         cell.BeginCell().MustStoreUInt(1, 8).EndCell(),
-		EscrowAddress:     "0:" + hex64,
-		ProviderAgentID:   "agent_" + hex64,
-		ChargedAtomic:     big.NewInt(25_000_000),
-		SettlementQueryID: 1786740001,
+func sampleEvidence() executiongate.Evidence {
+	return executiongate.Evidence{
+		EscrowAddress:   "0:" + hex64,
+		ProviderAgentID: "agent_" + hex64,
+		QuoteCommitment: "tvm-cell-sha256:" + hex64,
 	}
+}
+
+// fundedEscrow returns a fake finalized reader holding a funded escrow bound to
+// the sample quote, with an accepted-quote cell.
+func fundedEscrow(status uint8, quoteCommitment, funded string, withQuote bool) fakeFinalized {
+	state := &nativecore.EscrowStateV1{
+		Status: status, QuoteCommitment: quoteCommitment, FundedAtomicAmount: funded, SettledAtomicAmount: "0",
+	}
+	if withQuote {
+		state.AcceptedQuote = cell.BeginCell().MustStoreUInt(1, 8).EndCell()
+	}
+	return fakeFinalized{found: true, cp: 100, state: state}
 }
 
 type fakeExecSigner struct {
@@ -69,22 +78,20 @@ func (f *fakeSubmitter) SubmitRelease(_ context.Context, _ string, body *cell.Ce
 	return f.err
 }
 
-func TestReceiptSettlerBuildsSignsAndSubmits(t *testing.T) {
-	signer := &fakeExecSigner{}
-	sub := &fakeSubmitter{}
-	settler, err := NewReceiptSettler(sampleContext(), signer, sub)
+func newSettler(t *testing.T, reader fakeFinalized) (*EscrowReleaseSettler, *fakeExecSigner, *fakeSubmitter) {
+	t.Helper()
+	signer, sub := &fakeExecSigner{}, &fakeSubmitter{}
+	s, err := NewEscrowReleaseSettler(reader, signer, sub)
 	if err != nil {
 		t.Fatalf("new settler: %v", err)
 	}
-	rec, err := settler.Settle(context.Background(), sampleOutcome())
-	if err != nil {
+	return s, signer, sub
+}
+
+func TestSettlerReleasesFromFinalizedEscrow(t *testing.T) {
+	s, signer, sub := newSettler(t, fundedEscrow(nativecore.EscrowStatusFunded, "tvm-cell-sha256:"+hex64, "25000000", true))
+	if err := s.Settle(context.Background(), sampleEvidence(), sampleOutcome()); err != nil {
 		t.Fatalf("settle: %v", err)
-	}
-	if !strings.HasPrefix(rec.Commitment, "tvm-cell-sha256:") {
-		t.Fatalf("receipt commitment not canonical: %q", rec.Commitment)
-	}
-	if rec.ReleaseQueryID != 1786740001 || rec.ChargedAtomic != 25_000_000 {
-		t.Fatalf("receipt not bound to settlement context: %+v", rec)
 	}
 	if len(signer.gotHash) != 32 {
 		t.Fatalf("execution signer must sign the 32-byte settlement-intent hash, got %d", len(signer.gotHash))
@@ -94,43 +101,55 @@ func TestReceiptSettlerBuildsSignsAndSubmits(t *testing.T) {
 	}
 }
 
-func TestReceiptSettlerRejectsBadConfig(t *testing.T) {
-	sc := sampleContext()
-	sc.ChargedAtomic = big.NewInt(0)
-	if _, err := NewReceiptSettler(sc, &fakeExecSigner{}, &fakeSubmitter{}); err == nil {
-		t.Fatalf("must reject non-positive charged amount")
-	}
-}
-
-func TestSettlingRunnerClosesLoop(t *testing.T) {
-	sub := &fakeSubmitter{}
-	settler, err := NewReceiptSettler(sampleContext(), &fakeExecSigner{}, sub)
-	if err != nil {
-		t.Fatalf("settler: %v", err)
-	}
-	inner := &fakeRunner{outcome: sampleOutcome()}
-	runner, err := NewSettlingRunner(inner, settler)
-	if err != nil {
-		t.Fatalf("settling runner: %v", err)
-	}
-	out, err := runner.Execute(context.Background(), softwarework.Request{QuoteCommitment: "tvm-cell-sha256:" + hex64})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	if out.ExecutionID == "" || sub.calls != 1 {
-		t.Fatalf("settling runner must execute then settle once, calls=%d", sub.calls)
-	}
-}
-
-func TestSettlingRunnerDoesNotSettleFailedExecution(t *testing.T) {
-	sub := &fakeSubmitter{}
-	settler, _ := NewReceiptSettler(sampleContext(), &fakeExecSigner{}, sub)
-	inner := &fakeRunner{err: errors.New("bounded execution failed")}
-	runner, _ := NewSettlingRunner(inner, settler)
-	if _, err := runner.Execute(context.Background(), softwarework.Request{}); err == nil {
-		t.Fatalf("failed execution must propagate")
+func TestSettlerRejectsQuoteMismatch(t *testing.T) {
+	s, _, sub := newSettler(t, fundedEscrow(nativecore.EscrowStatusFunded, "tvm-cell-sha256:"+hex64, "25000000", true))
+	evidence := sampleEvidence()
+	evidence.QuoteCommitment = "tvm-cell-sha256:" + "b" + hex64[1:]
+	if err := s.Settle(context.Background(), evidence, sampleOutcome()); err == nil {
+		t.Fatalf("evidence bound to a different quote must not release")
 	}
 	if sub.calls != 0 {
-		t.Fatalf("no release on failed execution, got %d submits", sub.calls)
+		t.Fatalf("no release on a mismatched quote")
+	}
+}
+
+func TestSettlerRefusesUnfundedEscrow(t *testing.T) {
+	s, _, sub := newSettler(t, fundedEscrow(nativecore.EscrowStatusReleasePending, "tvm-cell-sha256:"+hex64, "25000000", true))
+	if err := s.Settle(context.Background(), sampleEvidence(), sampleOutcome()); err == nil {
+		t.Fatalf("an already-released escrow must not be released again")
+	}
+	if sub.calls != 0 {
+		t.Fatalf("no release when the escrow is not funded")
+	}
+}
+
+func TestSettlerRefusesEscrowBoundToAnotherQuote(t *testing.T) {
+	s, _, sub := newSettler(t, fundedEscrow(nativecore.EscrowStatusFunded, "tvm-cell-sha256:"+"c"+hex64[1:], "25000000", true))
+	if err := s.Settle(context.Background(), sampleEvidence(), sampleOutcome()); err == nil {
+		t.Fatalf("finalized escrow bound to a different quote must not release")
+	}
+	if sub.calls != 0 {
+		t.Fatalf("no release when the finalized escrow quote differs")
+	}
+}
+
+func TestSettlerRequiresAcceptedQuoteCell(t *testing.T) {
+	s, _, _ := newSettler(t, fundedEscrow(nativecore.EscrowStatusFunded, "tvm-cell-sha256:"+hex64, "25000000", false))
+	if err := s.Settle(context.Background(), sampleEvidence(), sampleOutcome()); err == nil {
+		t.Fatalf("a funded escrow without an accepted quote cell cannot be settled")
+	}
+}
+
+func TestSettlerRejectsNonReleasableCharge(t *testing.T) {
+	s, _, _ := newSettler(t, fundedEscrow(nativecore.EscrowStatusFunded, "tvm-cell-sha256:"+hex64, "0", true))
+	if err := s.Settle(context.Background(), sampleEvidence(), sampleOutcome()); err == nil {
+		t.Fatalf("a zero funded amount is not a releasable charge")
+	}
+}
+
+func TestSettlerRejectsMissingEvidence(t *testing.T) {
+	s, _, _ := newSettler(t, fundedEscrow(nativecore.EscrowStatusFunded, "tvm-cell-sha256:"+hex64, "25000000", true))
+	if err := s.Settle(context.Background(), executiongate.Evidence{}, sampleOutcome()); err == nil {
+		t.Fatalf("settlement without escrow/provider evidence must fail closed")
 	}
 }

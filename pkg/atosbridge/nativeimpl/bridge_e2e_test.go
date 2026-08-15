@@ -38,6 +38,7 @@ func (l *memLedger) fund(addr, commitment string, amount uint64) {
 	l.escrows[addr] = &nativecore.EscrowStateV1{
 		Status: nativecore.EscrowStatusFunded, QuoteCommitment: commitment,
 		FundedAtomicAmount: new(big.Int).SetUint64(amount).String(), SettledAtomicAmount: "0",
+		AcceptedQuote: cell.BeginCell().MustStoreUInt(1, 8).EndCell(),
 	}
 }
 
@@ -114,7 +115,7 @@ func (g *atMostOnceGate) ClaimExecution(_ context.Context, r executiongate.Reque
 		return executiongate.Evidence{}, errors.New("gate: purchase slot already claimed")
 	}
 	g.claimed[key] = true
-	return executiongate.Evidence{QuoteCommitment: r.QuoteCommitment, EscrowAddress: r.EscrowAddress}, nil
+	return executiongate.Evidence{QuoteCommitment: r.QuoteCommitment, EscrowAddress: r.EscrowAddress, ProviderAgentID: "agent_" + hex64}, nil
 }
 
 var _ ProviderGate = (*atMostOnceGate)(nil)
@@ -170,27 +171,26 @@ func repeatHex(pair string) string {
 	return out
 }
 
-// providerHandler builds the real provider execution path for one task: shared
-// Gate claim, then the SettlingRunner (execute -> Receipt -> escrow release).
-func providerHandler(t *testing.T, gate *atMostOnceGate, sub ledgerReleaseSubmitter) func(context.Context, atosbridge.Task) error {
+// providerHandler builds the real provider execution path for one task exactly
+// as the receiver adapters do: shared Gate claim (Evidence) -> runner execute
+// (Outcome) -> post-execution Settler (Receipt -> escrow release).
+func providerHandler(t *testing.T, gate *atMostOnceGate, ledger *memLedger, sub ledgerReleaseSubmitter) func(context.Context, atosbridge.Task) error {
 	t.Helper()
+	settler, err := NewEscrowReleaseSettler(ledger, &fakeExecSigner{}, sub)
+	if err != nil {
+		t.Fatalf("settler: %v", err)
+	}
+	runner := &fakeRunner{outcome: sampleOutcome()}
 	return func(ctx context.Context, task atosbridge.Task) error {
-		if _, err := gate.ClaimExecution(ctx, executiongate.Request{QuoteCommitment: task.QuoteCommitment, EscrowAddress: task.EscrowAddress}); err != nil {
-			return err
-		}
-		settler, err := NewReceiptSettler(SettlementContext{
-			QuoteCell: cell.BeginCell().MustStoreUInt(1, 8).EndCell(), EscrowAddress: task.EscrowAddress,
-			ProviderAgentID: "agent_" + hex64, ChargedAtomic: big.NewInt(25_000_000), SettlementQueryID: 99,
-		}, &fakeExecSigner{}, sub)
+		evidence, err := gate.ClaimExecution(ctx, executiongate.Request{QuoteCommitment: task.QuoteCommitment, EscrowAddress: task.EscrowAddress})
 		if err != nil {
 			return err
 		}
-		runner, err := NewSettlingRunner(&fakeRunner{outcome: sampleOutcome()}, settler)
+		outcome, err := runner.Execute(ctx, softwarework.Request{QuoteCommitment: task.QuoteCommitment, ExecutionID: task.ExecutionID})
 		if err != nil {
 			return err
 		}
-		_, err = runner.Execute(ctx, softwarework.Request{QuoteCommitment: task.QuoteCommitment, ExecutionID: task.ExecutionID})
-		return err
+		return settler.Settle(ctx, evidence, outcome)
 	}
 }
 
@@ -207,7 +207,7 @@ func TestBridgeClosesTheFullPaidLoop(t *testing.T) {
 	}
 	gate := newGate()
 	sub := ledgerReleaseSubmitter{ledger: ledger}
-	transport := inProcessTransport{handle: providerHandler(t, gate, sub)}
+	transport := inProcessTransport{handle: providerHandler(t, gate, ledger, sub)}
 
 	buyer := &atosbridge.Buyer{
 		Policy:    e2ePolicy(),

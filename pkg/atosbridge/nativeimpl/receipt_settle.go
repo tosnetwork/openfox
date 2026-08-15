@@ -2,25 +2,16 @@ package nativeimpl
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"math/big"
 
-	"github.com/tosnetwork/openfox/pkg/atosbridge"
 	"github.com/tosnetwork/tos-ai/pkg/softwarework"
+	"github.com/tosnetwork/tos-protocol/pkg/executiongate"
 	"github.com/tosnetwork/tos-protocol/pkg/nativecore"
 	"github.com/xssnick/tonutils-go/tvm/cell"
 )
-
-// SettlementContext is the provider-held canonical context needed to settle one
-// admitted purchase: the exact Accepted Quote cell, escrow account, provider
-// Agent, charged amount, and the settlement query ID.
-type SettlementContext struct {
-	QuoteCell         *cell.Cell
-	EscrowAddress     string
-	ProviderAgentID   string
-	ChargedAtomic     *big.Int
-	SettlementQueryID uint64
-}
 
 // ExecutionSigner signs the settlement-intent hash with the execution signer key
 // held in the custody boundary; it never returns raw key material.
@@ -33,95 +24,94 @@ type ReleaseSubmitter interface {
 	SubmitRelease(ctx context.Context, escrowAddress string, releaseBody *cell.Cell) error
 }
 
-// ReceiptSettler closes the provider loop that the A2A/MCP/Agent Packet receiver
-// adapters leave open: given a software-work Outcome it builds the canonical
-// Receipt, builds and signs the settlement intent, and submits the escrow
-// release. It uses only the frozen nativecore encoders and never invents a
-// second Receipt or settlement path.
-type ReceiptSettler struct {
-	ctx    SettlementContext
+// EscrowReleaseSettler closes the provider loop the receiver adapters leave
+// open. It implements the adapters' post-execution Settler hook: given the
+// finalized Gate Evidence and the validated Outcome, it reads the finalized
+// escrow for the authoritative Accepted Quote cell and funded amount, builds the
+// canonical Receipt, signs the settlement intent, and submits the escrow
+// release. Every value that determines the charge comes from finalized state or
+// the Gate's evidence — never from the transport — so the same execution always
+// settles to the same release, and a re-submit is idempotent by query ID.
+type EscrowReleaseSettler struct {
+	escrow finalizedEscrowReader
 	signer ExecutionSigner
 	submit ReleaseSubmitter
 }
 
-// NewReceiptSettler validates the settlement context and returns a settler.
-func NewReceiptSettler(sc SettlementContext, signer ExecutionSigner, submit ReleaseSubmitter) (*ReceiptSettler, error) {
-	if sc.QuoteCell == nil || sc.EscrowAddress == "" || sc.ProviderAgentID == "" ||
-		sc.ChargedAtomic == nil || sc.ChargedAtomic.Sign() <= 0 || sc.SettlementQueryID == 0 ||
-		signer == nil || submit == nil {
-		return nil, errors.New("nativeimpl: incomplete receipt settler configuration")
+// NewEscrowReleaseSettler validates its collaborators and returns a settler.
+func NewEscrowReleaseSettler(escrow finalizedEscrowReader, signer ExecutionSigner, submit ReleaseSubmitter) (*EscrowReleaseSettler, error) {
+	if escrow == nil || signer == nil || submit == nil {
+		return nil, errors.New("nativeimpl: escrow release settler needs an escrow reader, a signer, and a submitter")
 	}
-	return &ReceiptSettler{ctx: sc, signer: signer, submit: submit}, nil
+	return &EscrowReleaseSettler{escrow: escrow, signer: signer, submit: submit}, nil
 }
 
-// Settle builds the Receipt, signs the settlement intent, and submits the
-// release. It returns the canonical Receipt for the caller to persist. A failed
-// build/sign/submit returns an error and no successful Receipt.
-func (s *ReceiptSettler) Settle(ctx context.Context, out softwarework.Outcome) (atosbridge.Receipt, error) {
-	if out.QuoteCommitment == "" || out.ExecutionID == "" {
-		return atosbridge.Receipt{}, errors.New("nativeimpl: outcome is missing its quote/execution binding")
+// Settle releases escrow for one completed execution. It fails closed on any
+// mismatch between the outcome, the Gate evidence, and the finalized escrow, so
+// a release is only ever built for a funded escrow bound to exactly this quote.
+func (s *EscrowReleaseSettler) Settle(ctx context.Context, evidence executiongate.Evidence, outcome softwarework.Outcome) error {
+	if evidence.EscrowAddress == "" || evidence.ProviderAgentID == "" {
+		return errors.New("nativeimpl: settlement evidence is missing escrow or provider identity")
 	}
-	receipt, commitment, err := nativecore.BuildSoftwareWorkReceiptCellV1(nativecore.SoftwareWorkReceiptV1{
-		QuoteCommitment: out.QuoteCommitment, ExecutionID: out.ExecutionID, InputDigest: out.InputDigest,
-		ResultDigest: out.ResultDigest, ArtifactDigest: out.Artifact.Digest, ReportDigest: out.Report.Digest,
-		SourceDigest: out.SourceDigest, ToolchainDigest: out.ToolchainDigest, SandboxDigest: out.SandboxDigest,
-		ChargedAtomicAmount: s.ctx.ChargedAtomic.String(), ProviderAgentID: s.ctx.ProviderAgentID,
-		CompletedAt: out.CompletedAtUnix, ExitCode: int32(out.ExitCode),
+	if outcome.QuoteCommitment == "" || outcome.QuoteCommitment != evidence.QuoteCommitment {
+		return errors.New("nativeimpl: outcome does not match the authorized quote")
+	}
+	resolved, found, err := s.escrow.ResolveFinalized(ctx, evidence.EscrowAddress)
+	if err != nil {
+		return err
+	}
+	if !found || resolved == nil || resolved.State == nil {
+		return errors.New("nativeimpl: escrow is not finalized; cannot release")
+	}
+	state := resolved.State
+	if state.Status != nativecore.EscrowStatusFunded {
+		return errors.New("nativeimpl: escrow is not in the funded state; refusing to release")
+	}
+	if state.QuoteCommitment != outcome.QuoteCommitment {
+		return errors.New("nativeimpl: finalized escrow is bound to a different quote")
+	}
+	if state.AcceptedQuote == nil {
+		return errors.New("nativeimpl: finalized escrow has no accepted quote cell")
+	}
+	charged, ok := new(big.Int).SetString(state.FundedAtomicAmount, 10)
+	if !ok || charged.Sign() <= 0 || charged.BitLen() > 120 {
+		return errors.New("nativeimpl: escrow funded amount is not a releasable charge")
+	}
+	queryID := deterministicQueryID(outcome.ExecutionID)
+
+	receipt, _, err := nativecore.BuildSoftwareWorkReceiptCellV1(nativecore.SoftwareWorkReceiptV1{
+		QuoteCommitment: outcome.QuoteCommitment, ExecutionID: outcome.ExecutionID, InputDigest: outcome.InputDigest,
+		ResultDigest: outcome.ResultDigest, ArtifactDigest: outcome.Artifact.Digest, ReportDigest: outcome.Report.Digest,
+		SourceDigest: outcome.SourceDigest, ToolchainDigest: outcome.ToolchainDigest, SandboxDigest: outcome.SandboxDigest,
+		ChargedAtomicAmount: charged.String(), ProviderAgentID: evidence.ProviderAgentID,
+		CompletedAt: outcome.CompletedAtUnix, ExitCode: int32(outcome.ExitCode),
 	})
 	if err != nil {
-		return atosbridge.Receipt{}, err
+		return err
 	}
-	intent, err := nativecore.BuildEscrowSettlementIntentV1(s.ctx.EscrowAddress, s.ctx.QuoteCell, receipt, s.ctx.ChargedAtomic, s.ctx.SettlementQueryID)
+	intent, err := nativecore.BuildEscrowSettlementIntentV1(evidence.EscrowAddress, state.AcceptedQuote, receipt, charged, queryID)
 	if err != nil {
-		return atosbridge.Receipt{}, err
+		return err
 	}
 	signature, err := s.signer.SignSettlementIntent(ctx, intent.Hash())
 	if err != nil {
-		return atosbridge.Receipt{}, err
+		return err
 	}
-	body, err := nativecore.BuildEscrowReleaseBodyV1(s.ctx.SettlementQueryID, receipt, signature)
+	body, err := nativecore.BuildEscrowReleaseBodyV1(queryID, receipt, signature)
 	if err != nil {
-		return atosbridge.Receipt{}, err
+		return err
 	}
-	if err := s.submit.SubmitRelease(ctx, s.ctx.EscrowAddress, body); err != nil {
-		return atosbridge.Receipt{}, err
-	}
-	return atosbridge.Receipt{
-		Commitment:      commitment,
-		QuoteCommitment: out.QuoteCommitment,
-		ExecutionID:     out.ExecutionID,
-		ChargedAtomic:   s.ctx.ChargedAtomic.Uint64(),
-		ReleaseQueryID:  s.ctx.SettlementQueryID,
-	}, nil
+	return s.submit.SubmitRelease(ctx, evidence.EscrowAddress, body)
 }
 
-// SettlingRunner wraps a bound software-work runner so that, after a successful
-// execution, the provider loop is closed: outcome -> Receipt -> release. It
-// satisfies the tos-ai adapter Runner interface, so it drops directly into the
-// A2A, MCP, and Agent Packet receiver adapters behind the shared execution Gate.
-type SettlingRunner struct {
-	inner   softwareRunner
-	settler *ReceiptSettler
-}
-
-// NewSettlingRunner composes an inner runner with a receipt settler.
-func NewSettlingRunner(inner softwareRunner, settler *ReceiptSettler) (*SettlingRunner, error) {
-	if inner == nil || settler == nil {
-		return nil, errors.New("nativeimpl: settling runner needs an inner runner and a settler")
+// deterministicQueryID derives a stable, non-zero release query ID from the
+// execution ID, so re-submitting the release for the same execution produces the
+// identical message the escrow already saw.
+func deterministicQueryID(executionID string) uint64 {
+	sum := sha256.Sum256([]byte(executionID))
+	q := binary.BigEndian.Uint64(sum[:8])
+	if q == 0 {
+		q = 1
 	}
-	return &SettlingRunner{inner: inner, settler: settler}, nil
-}
-
-// Execute runs the bounded execution and then settles it. A settlement failure
-// after a successful execution is surfaced as an error so the caller does not
-// treat an unsettled outcome as complete.
-func (r *SettlingRunner) Execute(ctx context.Context, req softwarework.Request) (softwarework.Outcome, error) {
-	out, err := r.inner.Execute(ctx, req)
-	if err != nil {
-		return softwarework.Outcome{}, err
-	}
-	if _, err := r.settler.Settle(ctx, out); err != nil {
-		return softwarework.Outcome{}, err
-	}
-	return out, nil
+	return q
 }

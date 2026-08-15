@@ -25,19 +25,21 @@ func (l staticLocator) ArtifactURL(artifactstore.Descriptor) (string, error) {
 	return l.url, l.err
 }
 
-func TestNewProviderReceiversMountsAllThreeOnOneGate(t *testing.T) {
-	gate := &countingGate{}
-	inner := &fakeRunner{outcome: sampleOutcome()}
-	settler, err := NewReceiptSettler(sampleContext(), &fakeExecSigner{}, &fakeSubmitter{})
+func newTestSettler(t *testing.T) *EscrowReleaseSettler {
+	t.Helper()
+	s, err := NewEscrowReleaseSettler(
+		fundedEscrow(1, "tvm-cell-sha256:"+hex64, "25000000", true), &fakeExecSigner{}, &fakeSubmitter{})
 	if err != nil {
 		t.Fatalf("settler: %v", err)
 	}
-	runner, err := NewSettlingRunner(inner, settler)
-	if err != nil {
-		t.Fatalf("runner: %v", err)
-	}
+	return s
+}
 
-	recv, err := NewProviderReceivers(gate, runner, staticLocator{url: "https://cdn.example/artifact"})
+func TestNewProviderReceiversMountsAllThreeOnOneGate(t *testing.T) {
+	gate := &countingGate{}
+	runner := &fakeRunner{outcome: sampleOutcome()}
+
+	recv, err := NewProviderReceivers(gate, runner, staticLocator{url: "https://cdn.example/artifact"}, newTestSettler(t))
 	if err != nil {
 		t.Fatalf("new receivers: %v", err)
 	}
@@ -50,19 +52,22 @@ func TestNewProviderReceiversRejectsIncompleteWiring(t *testing.T) {
 	gate := &countingGate{}
 	runner := &fakeRunner{}
 	loc := staticLocator{url: "https://cdn.example/a"}
+	settler := newTestSettler(t)
 
 	cases := []struct {
 		name    string
 		gate    ProviderGate
 		runner  softwareRunner
 		locator ProviderArtifactLocator
+		settler ProviderSettler
 	}{
-		{"no gate", nil, runner, loc},
-		{"no runner", gate, nil, loc},
-		{"no locator", gate, runner, nil},
+		{"no gate", nil, runner, loc, settler},
+		{"no runner", gate, nil, loc, settler},
+		{"no locator", gate, runner, nil, settler},
+		{"no settler", gate, runner, loc, nil},
 	}
 	for _, c := range cases {
-		if _, err := NewProviderReceivers(c.gate, c.runner, c.locator); err == nil {
+		if _, err := NewProviderReceivers(c.gate, c.runner, c.locator, c.settler); err == nil {
 			t.Fatalf("%s: must fail closed", c.name)
 		}
 	}

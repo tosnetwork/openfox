@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/a2aproject/a2a-go/v2 v2.4.0
+	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/tosnetwork/openfox v0.0.0
 	github.com/tosnetwork/tos-ai v0.0.0
 	github.com/tosnetwork/tos-protocol v0.0.0
@@ -14,7 +15,6 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/modelcontextprotocol/go-sdk v1.7.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/x448/float16 v0.8.4 // indirect

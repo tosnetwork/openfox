@@ -26,6 +26,7 @@ func sampleTask() atosbridge.Task {
 		EscrowAddress:   "0:" + hex64,
 		QuoteCommitment: "tvm-cell-sha256:" + hex64,
 		ExecutionID:     "sha256:" + hex64,
+		InputDigest:     "sha256:" + hex64,
 		SourceDigest:    "sha256:" + hex64,
 		SourceArchive:   []byte("bounded source archive"),
 	}

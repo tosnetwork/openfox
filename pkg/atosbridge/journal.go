@@ -32,6 +32,79 @@ func (p Phase) valid() bool {
 	return false
 }
 
+// Order is the strict forward position of a phase, or -1 if the phase is
+// unknown. A purchase only ever advances forward; the journal never moves a
+// purchase backward.
+func (p Phase) Order() int {
+	switch p {
+	case PhaseIntent:
+		return 0
+	case PhasePrepared:
+		return 1
+	case PhaseFundingLease:
+		return 2
+	case PhaseFunded:
+		return 3
+	case PhaseExecution:
+		return 4
+	case PhaseReceipt:
+		return 5
+	case PhaseRelease:
+		return 6
+	case PhaseResolved:
+		return 7
+	}
+	return -1
+}
+
+// CanAdvance reports whether a purchase may move from one phase to another. Only
+// strictly-forward transitions between valid phases are legal, so a purchase
+// never regresses or repeats a phase.
+func CanAdvance(from, to Phase) bool {
+	return from.valid() && to.valid() && to.Order() > from.Order()
+}
+
+// CanAcquireFundingLease reports whether the single funding lease may be taken
+// from this phase. Only Prepared may cross into FundingLease, so a funded
+// purchase is funded at most once.
+func CanAcquireFundingLease(p Phase) bool {
+	return p == PhasePrepared
+}
+
+// ResumeAction is the crash-recovery decision for a persisted purchase phase.
+type ResumeAction string
+
+const (
+	// ResumeInvalid marks an unrecognised phase; recovery must not proceed.
+	ResumeInvalid ResumeAction = "invalid"
+	// ResumeMayFund means the purchase crashed before the funding lease and may
+	// still fund.
+	ResumeMayFund ResumeAction = "may_fund"
+	// ResumeReconcileNeverRefund means the purchase crashed at or after the
+	// funding lease: recovery is read-only, must resolve finalized state, and can
+	// NEVER trigger a second payment.
+	ResumeReconcileNeverRefund ResumeAction = "reconcile_never_refund"
+	// ResumeComplete means the purchase already resolved.
+	ResumeComplete ResumeAction = "complete"
+)
+
+// ResumeActionFor decides how to safely resume a purchase after process death.
+// It is the single authority for the at-most-once payment invariant across
+// crashes: before the funding lease the purchase may still fund; at or after the
+// lease recovery is read-only and never re-pays; once resolved it is complete.
+func ResumeActionFor(p Phase) ResumeAction {
+	switch {
+	case !p.valid():
+		return ResumeInvalid
+	case p.Order() < PhaseFundingLease.Order():
+		return ResumeMayFund
+	case p == PhaseResolved:
+		return ResumeComplete
+	default:
+		return ResumeReconcileNeverRefund
+	}
+}
+
 // PurchaseKey is the durable slot key. It is the same (quote_commitment,
 // escrow_address) pair the shared execution Gate uses; request/idempotency keys
 // are retry aliases and never define the payment identity.
@@ -114,17 +187,12 @@ func (j *InMemoryJournal) AcquireFundingLease(key PurchaseKey) (bool, PurchaseRe
 	if !ok {
 		return false, PurchaseRecord{}, ErrJournalMissing
 	}
-	if rec.Phase != PhasePrepared {
+	if !CanAcquireFundingLease(rec.Phase) {
 		return false, rec, nil
 	}
 	rec.Phase = PhaseFundingLease
 	j.records[key] = rec
 	return true, rec, nil
-}
-
-var phaseOrder = map[Phase]int{
-	PhaseIntent: 0, PhasePrepared: 1, PhaseFundingLease: 2, PhaseFunded: 3,
-	PhaseExecution: 4, PhaseReceipt: 5, PhaseRelease: 6, PhaseResolved: 7,
 }
 
 func (j *InMemoryJournal) Advance(key PurchaseKey, next Phase) error {
@@ -137,7 +205,7 @@ func (j *InMemoryJournal) Advance(key PurchaseKey, next Phase) error {
 	if !ok {
 		return ErrJournalMissing
 	}
-	if phaseOrder[next] <= phaseOrder[rec.Phase] {
+	if !CanAdvance(rec.Phase, next) {
 		return ErrJournalPhase
 	}
 	rec.Phase = next

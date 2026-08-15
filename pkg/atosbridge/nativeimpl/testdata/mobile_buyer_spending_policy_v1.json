@@ -1,0 +1,39 @@
+{
+  "schema": "atos.native.mobile-buyer-spending-policy.v1",
+  "note": "Owner spending-policy authorization, enforced locally before every purchase, shared by the iOS and Android owner-controlled clients. Checks run in a fixed order for a deterministic reason. Verified against the Go atosbridge.PolicyEngine. Amounts are decimal atomic strings; the manual mode defers to explicit owner confirmation rather than auto-approving.",
+  "now_unix": 1786800000,
+  "policy_base": {
+    "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "max_atomic_purchase": "50000000",
+    "daily_budget_atomic": "100000000",
+    "window_seconds": 3600,
+    "expiry_unix": 2000000000,
+    "capability_allow": ["cap_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "confirmation_mode": "auto",
+    "has_owner_signature": true
+  },
+  "proposal_base": {
+    "asset_master": "0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "asset_wallet_code_hash": "tvm-cell-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "max_atomic_amount": "25000000",
+    "capability_id": "cap_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "cases": [
+    { "name": "ok_auto", "spent_in_window_atomic": "0", "expect": "ok" },
+    { "name": "at_purchase_limit", "proposal": { "max_atomic_amount": "50000000" }, "spent_in_window_atomic": "0", "expect": "ok" },
+    { "name": "manual_confirmation", "policy": { "confirmation_mode": "manual" }, "spent_in_window_atomic": "0", "expect": "manual_confirmation" },
+    { "name": "policy_unsigned", "policy": { "has_owner_signature": false }, "spent_in_window_atomic": "0", "expect": "policy_invalid" },
+    { "name": "policy_window_too_short", "policy": { "window_seconds": 30 }, "spent_in_window_atomic": "0", "expect": "policy_invalid" },
+    { "name": "policy_empty_allow_list", "policy": { "capability_allow": [] }, "spent_in_window_atomic": "0", "expect": "policy_invalid" },
+    { "name": "policy_budget_below_purchase", "policy": { "daily_budget_atomic": "40000000" }, "spent_in_window_atomic": "0", "expect": "policy_invalid" },
+    { "name": "policy_expired", "policy": { "expiry_unix": 1000000000 }, "spent_in_window_atomic": "0", "expect": "policy_expired" },
+    { "name": "asset_master_mismatch", "proposal": { "asset_master": "0:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }, "spent_in_window_atomic": "0", "expect": "asset_not_allowed" },
+    { "name": "asset_wallet_mismatch", "proposal": { "asset_wallet_code_hash": "tvm-cell-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }, "spent_in_window_atomic": "0", "expect": "asset_not_allowed" },
+    { "name": "capability_not_allowed", "proposal": { "capability_id": "cap_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }, "spent_in_window_atomic": "0", "expect": "capability_not_allowed" },
+    { "name": "amount_zero", "proposal": { "max_atomic_amount": "0" }, "spent_in_window_atomic": "0", "expect": "over_purchase_limit" },
+    { "name": "over_purchase_limit", "proposal": { "max_atomic_amount": "50000001" }, "spent_in_window_atomic": "0", "expect": "over_purchase_limit" },
+    { "name": "over_daily_budget", "proposal": { "max_atomic_amount": "50000000" }, "spent_in_window_atomic": "60000000", "expect": "over_daily_budget" },
+    { "name": "budget_exactly_consumed_ok", "proposal": { "max_atomic_amount": "40000000" }, "spent_in_window_atomic": "60000000", "expect": "ok" }
+  ]
+}

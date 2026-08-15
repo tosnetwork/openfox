@@ -131,6 +131,8 @@ func (s *BuyerSession) SignSettlementIntent(context.Context, string) ([]byte, er
 var (
 	_ atosbridge.QuoteClient   = (*BuyerSession)(nil)
 	_ atosbridge.CustodySigner = (*BuyerSession)(nil)
+	// The production preparer is a *buyersdk.Buyer: it already has both methods.
+	_ purchasePreparer = (*buyersdk.Buyer)(nil)
 )
 
 // contractAddress formats a TOS contract identity as the canonical

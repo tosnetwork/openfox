@@ -83,7 +83,7 @@ func NewProviderReceivers(gate ProviderGate, runner softwareRunner, locator Prov
 	if err != nil {
 		return nil, err
 	}
-	packetAdapter, err := agentpacketadapter.NewSettling(gate, runner, settler)
+	packetAdapter, err := agentpacketadapter.NewPublishingSettling(gate, runner, locator, settler)
 	if err != nil {
 		return nil, err
 	}

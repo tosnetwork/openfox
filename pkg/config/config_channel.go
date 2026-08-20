@@ -39,6 +39,9 @@ const (
 	ChannelTeamsWebHook   = "teams_webhook"
 	ChannelMQTT           = "mqtt"
 	ChannelSlackWebHook   = "slack_webhook"
+	// ChannelTOSMessenger consumes authenticated, admitted events from the
+	// production Messenger daemon runtime socket.
+	ChannelTOSMessenger = "tos_messenger"
 	// ChannelTOSMessengerLab is a local Unix-socket acceptance carrier. It is
 	// intentionally not the eventual production TOS Messenger route.
 	ChannelTOSMessengerLab = "tos_messenger_lab"

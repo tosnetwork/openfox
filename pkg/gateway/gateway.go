@@ -34,6 +34,7 @@ import (
 	_ "github.com/tosnetwork/openfox/pkg/channels/slack_webhook"
 	_ "github.com/tosnetwork/openfox/pkg/channels/teams_webhook"
 	_ "github.com/tosnetwork/openfox/pkg/channels/telegram"
+	_ "github.com/tosnetwork/openfox/pkg/channels/tosmessenger"
 	_ "github.com/tosnetwork/openfox/pkg/channels/tosmessengerlab"
 	_ "github.com/tosnetwork/openfox/pkg/channels/vk"
 	_ "github.com/tosnetwork/openfox/pkg/channels/wecom"

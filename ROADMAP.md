@@ -22,7 +22,7 @@
 * **Input Defense & Permission Control**
   * **Prompt Injection Defense**: Harden JSON extraction logic to prevent LLM manipulation.
   * **Tool Abuse Prevention**: Strict parameter validation to ensure generated commands stay within safe boundaries.
-  * **TOS Messenger Context Firewall**: Runtime-derived durable provenance, classified tool effects, exact spend terms, and one-shot Messenger grants are implemented. Production authenticated-event channel ingestion remains in progress.
+  * **TOS Messenger Context Firewall**: Runtime-derived durable provenance, classified tool effects, exact spend terms, mandatory native-buyer custody wrapping, and one-shot Messenger grants are implemented. The production `tos_messenger` inbox now claims authenticated/admitted daemon events, independently validates Event IDs and canonical text, and supplies typed provenance; outbound production messaging remains gated.
   * **SSRF Protection**: Built-in blocklists for network tools to prevent accessing internal IPs (LAN/Metadata services).
 
 

@@ -711,6 +711,15 @@ type TOSMessengerLabSettings struct {
 	Rooms          []TOSMessengerLabRoom `json:"rooms,omitempty"  yaml:"-"`
 }
 
+// TOSMessengerSettings connects OpenFox to the authenticated daemon inbox.
+// Outbound construction remains disabled until Messenger owns a production
+// route and group driver; this channel must never fall back to the lab carrier.
+type TOSMessengerSettings struct {
+	SocketPath     string `json:"socket_path"      yaml:"-"`
+	PollIntervalMS int    `json:"poll_interval_ms" yaml:"-"`
+	LeaseSeconds   int    `json:"lease_seconds"    yaml:"-"`
+}
+
 type IRCSettings struct {
 	Server           string              `json:"server"                     yaml:"-"                           env:"OPENFOX_CHANNELS_IRC_SERVER"`
 	TLS              bool                `json:"tls"                        yaml:"-"                           env:"OPENFOX_CHANNELS_IRC_TLS"`

@@ -141,6 +141,12 @@ same-host three-OpenFox group-chat acceptance loop while the production TOS
 Messenger route and MLS profile remain gated. Its name and runtime metadata
 explicitly identify the plaintext local boundary.
 
+The receive-only [`tos_messenger` production inbox](docs/guides/tos-messenger.md)
+now drains authenticated and admitted daemon events, independently checks their
+Event IDs and canonical text bodies, and supplies typed action provenance. It
+fails closed on outbound traffic until Messenger's route and group-driver gates
+are accepted.
+
 OpenFox can also put every classified tool and custody operation behind the
 [`tos-messengerd` action-authorization boundary](docs/guides/tos-messenger-action-authorization.md),
 including runtime-derived provenance, mandatory native-buyer custody wrapping,

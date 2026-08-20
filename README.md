@@ -143,4 +143,5 @@ explicitly identify the plaintext local boundary.
 
 OpenFox can also put every classified tool and custody operation behind the
 [`tos-messengerd` action-authorization boundary](docs/guides/tos-messenger-action-authorization.md),
-including runtime-derived provenance and one-shot tool/spend grants.
+including runtime-derived provenance, mandatory native-buyer custody wrapping,
+and one-shot tool/spend grants.

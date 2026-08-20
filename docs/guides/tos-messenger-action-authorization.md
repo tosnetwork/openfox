@@ -66,3 +66,8 @@ capability/version/class, manifest, transport binding, network and asset code
 identity, decimal atomic amount, escrow/dispute digests, expiry, and mandate—to
 Messenger as a `spend`. Settlement signing separately requests `key-use`.
 Refusal or incomplete lineage leaves the wrapped signer unreachable.
+`nativeimpl.NewNativeBuyer` requires both the Messenger authorizer and a
+mandate ID and installs this wrapper itself; production callers cannot inject a
+bare custody session into the assembled buyer. Lower-level `servicebridge.Buyer`
+remains available for isolated tests and alternate compositions, which must
+apply an equivalent authority boundary explicitly.

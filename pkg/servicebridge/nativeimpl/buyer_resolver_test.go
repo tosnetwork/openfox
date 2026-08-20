@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
@@ -21,6 +22,10 @@ func (f *fakeCapValidator) ValidateCapability(_ context.Context, capabilityID, _
 }
 
 type fakeTaskTransport struct{}
+
+type allowActionAuthorizer struct{}
+
+func (allowActionAuthorizer) Authorize(context.Context, actionauth.Action) error { return nil }
 
 func (fakeTaskTransport) Dispatch(context.Context, servicebridge.Transport, servicebridge.Task) error {
 	return nil
@@ -41,7 +46,12 @@ func TestNativeBuyerResolverDelegatesCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolver: %v", err)
 	}
-	ref := servicebridge.CapabilityRef{CapabilityID: "cap_" + hex64, AgentID: "agent_" + hex64, Version: "1.0.0", ManifestDigest: "sha256:" + hex64}
+	ref := servicebridge.CapabilityRef{
+		CapabilityID:   "cap_" + hex64,
+		AgentID:        "agent_" + hex64,
+		Version:        "1.0.0",
+		ManifestDigest: "sha256:" + hex64,
+	}
 	if err := resolver.ResolveCapability(context.Background(), ref); err != nil {
 		t.Fatalf("resolve capability: %v", err)
 	}
@@ -58,7 +68,10 @@ func TestNativeBuyerResolverDelegatesCapability(t *testing.T) {
 func TestNativeBuyerResolverPropagatesCapabilityRejection(t *testing.T) {
 	cap := &fakeCapValidator{err: errors.New("capability revoked")}
 	resolver, _ := NewNativeBuyerResolver(cap, testEscrowReader(t))
-	if err := resolver.ResolveCapability(context.Background(), servicebridge.CapabilityRef{CapabilityID: "cap_x"}); err == nil {
+	if err := resolver.ResolveCapability(
+		context.Background(),
+		servicebridge.CapabilityRef{CapabilityID: "cap_x"},
+	); err == nil {
 		t.Fatalf("a rejected capability must fail closed")
 	}
 }
@@ -68,7 +81,11 @@ func TestBuyerReceiptVerifierNeverBuildsReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verifier: %v", err)
 	}
-	if _, err := v.BuildReceipt(context.Background(), servicebridge.AcceptedQuote{}, servicebridge.Outcome{}); err == nil {
+	if _, err := v.BuildReceipt(
+		context.Background(),
+		servicebridge.AcceptedQuote{},
+		servicebridge.Outcome{},
+	); err == nil {
 		t.Fatalf("the buyer must never build a receipt")
 	}
 	s, err := v.VerifySettlement(context.Background(), servicebridge.AcceptedQuote{EscrowAddress: "0:" + hex64})
@@ -90,17 +107,45 @@ func TestNewNativeBuyerAssembles(t *testing.T) {
 		Session:    session,
 		Transport:  fakeTaskTransport{},
 		Journal:    servicebridge.NewInMemoryJournal(),
+		Authorizer: allowActionAuthorizer{},
+		MandateID:  "mdt_" + hex64,
 	})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
-	if buyer.Resolver == nil || buyer.Quotes == nil || buyer.Signer == nil || buyer.Receipts == nil || buyer.Transport == nil {
+	if buyer.Resolver == nil || buyer.Quotes == nil || buyer.Signer == nil || buyer.Receipts == nil ||
+		buyer.Transport == nil {
 		t.Fatalf("assembled buyer is missing a component: %+v", buyer)
+	}
+	if _, ok := buyer.Signer.(servicebridge.AuthorizedCustodySigner); !ok {
+		t.Fatalf("native buyer exposed custody without Messenger authority: %T", buyer.Signer)
 	}
 }
 
 func TestNewNativeBuyerRejectsIncompleteConfig(t *testing.T) {
 	if _, err := NewNativeBuyer(NativeBuyerConfig{}); err == nil {
 		t.Fatalf("an empty native buyer config must fail closed")
+	}
+}
+
+func TestNewNativeBuyerCannotOmitMessengerAuthority(t *testing.T) {
+	session, err := NewBuyerSession(&fakePreparer{prepared: samplePrepared()}, sampleInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := NativeBuyerConfig{
+		Policy: e2ePolicy(), Escrow: testEscrowReader(t), Capability: &fakeCapValidator{},
+		Session: session, Transport: fakeTaskTransport{}, Journal: servicebridge.NewInMemoryJournal(),
+		Authorizer: allowActionAuthorizer{}, MandateID: "mdt_" + hex64,
+	}
+	withoutAuthorizer := base
+	withoutAuthorizer.Authorizer = nil
+	if _, err := NewNativeBuyer(withoutAuthorizer); err == nil {
+		t.Fatal("native buyer accepted no Messenger authorizer")
+	}
+	withoutMandate := base
+	withoutMandate.MandateID = ""
+	if _, err := NewNativeBuyer(withoutMandate); err == nil {
+		t.Fatal("native buyer accepted no mandate")
 	}
 }

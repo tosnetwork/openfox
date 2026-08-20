@@ -3,9 +3,12 @@ package nativeimpl
 import (
 	"context"
 	"errors"
+	"strings"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
+
+	"github.com/tosnetwork/openfox/pkg/actionauth"
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 // The production capability validator is a *buyersdk.Buyer, which exposes
@@ -31,7 +34,10 @@ type NativeBuyerResolver struct {
 }
 
 // NewNativeBuyerResolver composes the capability validator with the escrow read.
-func NewNativeBuyerResolver(capability CapabilityValidator, escrow *EscrowSettlementReader) (*NativeBuyerResolver, error) {
+func NewNativeBuyerResolver(
+	capability CapabilityValidator,
+	escrow *EscrowSettlementReader,
+) (*NativeBuyerResolver, error) {
 	if capability == nil || escrow == nil {
 		return nil, errors.New("nativeimpl: native buyer resolver needs a capability validator and an escrow reader")
 	}
@@ -66,12 +72,19 @@ func NewBuyerReceiptVerifier(escrow *EscrowSettlementReader) (*BuyerReceiptVerif
 }
 
 // BuildReceipt refuses: the buyer never builds a Receipt.
-func (v *BuyerReceiptVerifier) BuildReceipt(context.Context, servicebridge.AcceptedQuote, servicebridge.Outcome) (servicebridge.Receipt, error) {
+func (v *BuyerReceiptVerifier) BuildReceipt(
+	context.Context,
+	servicebridge.AcceptedQuote,
+	servicebridge.Outcome,
+) (servicebridge.Receipt, error) {
 	return servicebridge.Receipt{}, errors.New("nativeimpl: the buyer does not build receipts; the provider does")
 }
 
 // VerifySettlement reads the finalized settlement outcome.
-func (v *BuyerReceiptVerifier) VerifySettlement(ctx context.Context, aq servicebridge.AcceptedQuote) (servicebridge.Settlement, error) {
+func (v *BuyerReceiptVerifier) VerifySettlement(
+	ctx context.Context,
+	aq servicebridge.AcceptedQuote,
+) (servicebridge.Settlement, error) {
 	return v.escrow.VerifySettlement(ctx, aq)
 }
 
@@ -89,6 +102,10 @@ type NativeBuyerConfig struct {
 	Transport  servicebridge.TaskTransport
 	Journal    servicebridge.PurchaseJournal
 	Confirm    servicebridge.Confirmer
+	// Authorizer and MandateID are mandatory: production composition must not
+	// expose the custody session directly to the Buyer.
+	Authorizer actionauth.Authorizer
+	MandateID  string
 }
 
 // NewNativeBuyer assembles a bridge Buyer from the chain-backed components. The
@@ -96,8 +113,11 @@ type NativeBuyerConfig struct {
 // the buyer's authority is one finalized source; quote and funding delegate to
 // buyersdk through the session; the journal keeps funding at-most-once.
 func NewNativeBuyer(c NativeBuyerConfig) (*servicebridge.Buyer, error) {
-	if c.Escrow == nil || c.Capability == nil || c.Session == nil || c.Transport == nil || c.Journal == nil {
-		return nil, errors.New("nativeimpl: native buyer needs an escrow reader, capability validator, session, transport, and journal")
+	if c.Escrow == nil || c.Capability == nil || c.Session == nil || c.Transport == nil || c.Journal == nil ||
+		c.Authorizer == nil || strings.TrimSpace(c.MandateID) == "" {
+		return nil, errors.New(
+			"nativeimpl: native buyer needs escrow, capability, session, transport, journal, Messenger authority, and a mandate",
+		)
 	}
 	resolver, err := NewNativeBuyerResolver(c.Capability, c.Escrow)
 	if err != nil {
@@ -108,11 +128,13 @@ func NewNativeBuyer(c NativeBuyerConfig) (*servicebridge.Buyer, error) {
 		return nil, err
 	}
 	return &servicebridge.Buyer{
-		Policy:    c.Policy,
-		Resolver:  resolver,
-		Quotes:    c.Session,
-		Journal:   c.Journal,
-		Signer:    c.Session,
+		Policy:   c.Policy,
+		Resolver: resolver,
+		Quotes:   c.Session,
+		Journal:  c.Journal,
+		Signer: servicebridge.AuthorizedCustodySigner{
+			Signer: c.Session, Authorizer: c.Authorizer, MandateID: c.MandateID,
+		},
 		Transport: c.Transport,
 		Receipts:  receipts,
 		Confirm:   c.Confirm,

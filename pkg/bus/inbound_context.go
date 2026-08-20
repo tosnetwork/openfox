@@ -44,7 +44,8 @@ func (ctx InboundContext) isZero() bool {
 		ctx.ReplyToMessageID == "" &&
 		ctx.ReplyToSenderID == "" &&
 		len(ctx.ReplyHandles) == 0 &&
-		len(ctx.Raw) == 0
+		len(ctx.Raw) == 0 &&
+		ctx.AuthenticatedMessagingOrigin == nil
 }
 
 func normalizeInboundContext(ctx InboundContext) InboundContext {
@@ -61,6 +62,10 @@ func normalizeInboundContext(ctx InboundContext) InboundContext {
 	ctx.ReplyToSenderID = strings.TrimSpace(ctx.ReplyToSenderID)
 	ctx.ReplyHandles = cloneStringMap(ctx.ReplyHandles)
 	ctx.Raw = cloneStringMap(ctx.Raw)
+	if ctx.AuthenticatedMessagingOrigin != nil {
+		origin := *ctx.AuthenticatedMessagingOrigin
+		ctx.AuthenticatedMessagingOrigin = &origin
+	}
 	return ctx
 }
 

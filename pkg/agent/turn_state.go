@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/bus"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/logger"
@@ -119,6 +120,8 @@ type turnExecution struct {
 	history          []providers.Message // from ContextManager.Assemble
 	summary          string
 	currentTurnStart int
+	actionOrigins    []actionauth.Origin
+	actionLineageOK  bool
 
 	// Turn output
 	finalContent string

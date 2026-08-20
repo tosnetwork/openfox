@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/media"
 	"github.com/tosnetwork/openfox/pkg/providers"
 )
@@ -65,6 +66,19 @@ func (m *mockAsyncRegistryTool) ExecuteAsync(
 type mockMediaStoreAwareTool struct {
 	mockRegistryTool
 	store media.MediaStore
+}
+
+type recordingAuthorizer struct {
+	mu      sync.Mutex
+	actions []actionauth.Action
+	err     error
+}
+
+func (a *recordingAuthorizer) Authorize(_ context.Context, action actionauth.Action) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.actions = append(a.actions, action)
+	return a.err
 }
 
 func (m *mockMediaStoreAwareTool) SetMediaStore(store media.MediaStore) {
@@ -903,4 +917,72 @@ func TestToolRegistry_ExecuteWithContext_SanitizesInlineMediaWithoutStore(t *tes
 	if !strings.Contains(result.ForLLM, inlineMediaOmittedMessage) {
 		t.Fatalf("expected inline media omission note, got %q", result.ForLLM)
 	}
+}
+
+func TestToolRegistryAuthorizationFailsClosedAndRunsBeforeTool(t *testing.T) {
+	t.Run("unclassified", func(t *testing.T) {
+		registry := NewToolRegistry()
+		authorizer := &recordingAuthorizer{}
+		registry.SetAuthorizer(authorizer)
+		tool := &mockContextAwareTool{mockRegistryTool: *newMockTool("scan", "scan")}
+		registry.Register(tool)
+		result := registry.Execute(context.Background(), "scan", nil)
+		if !result.IsError || tool.lastCtx != nil || len(authorizer.actions) != 0 {
+			t.Fatalf("result=%+v executed=%v actions=%v", result, tool.lastCtx != nil, authorizer.actions)
+		}
+	})
+
+	t.Run("classified", func(t *testing.T) {
+		registry := NewToolRegistry()
+		authorizer := &recordingAuthorizer{}
+		registry.SetAuthorizer(authorizer)
+		tool := &mockContextAwareTool{mockRegistryTool: *newMockTool("scan", "scan")}
+		registry.RegisterWithEffect(tool, actionauth.EffectToolCall)
+		ctx := actionauth.WithInvocation(context.Background(), actionauth.Invocation{
+			IdempotencyKey:  "idem_" + strings.Repeat("a", 64),
+			Summary:         "scan the checkout",
+			DerivedFrom:     []actionauth.Origin{{EventID: "event"}},
+			LineageComplete: true,
+		})
+		result := registry.Execute(ctx, "scan", nil)
+		if result.IsError || tool.lastCtx == nil || len(authorizer.actions) != 1 {
+			t.Fatalf("result=%+v executed=%v actions=%v", result, tool.lastCtx != nil, authorizer.actions)
+		}
+		got := authorizer.actions[0]
+		if got.Effect != actionauth.EffectToolCall || got.Summary != "scan the checkout" ||
+			got.IdempotencyKey == "" || len(got.DerivedFrom) != 1 {
+			t.Fatalf("action = %+v", got)
+		}
+	})
+
+	t.Run("refused", func(t *testing.T) {
+		registry := NewToolRegistry()
+		authorizer := &recordingAuthorizer{err: errors.New("owner approval required")}
+		registry.SetAuthorizer(authorizer)
+		tool := &mockContextAwareTool{mockRegistryTool: *newMockTool("scan", "scan")}
+		registry.RegisterWithEffect(tool, actionauth.EffectToolCall)
+		ctx := actionauth.WithInvocation(context.Background(), actionauth.Invocation{
+			IdempotencyKey:  "idem_" + strings.Repeat("b", 64),
+			LineageComplete: true,
+		})
+		result := registry.Execute(ctx, "scan", nil)
+		if !result.IsError || tool.lastCtx != nil || len(authorizer.actions) != 1 {
+			t.Fatalf("result=%+v executed=%v actions=%v", result, tool.lastCtx != nil, authorizer.actions)
+		}
+	})
+
+	t.Run("incomplete provenance", func(t *testing.T) {
+		registry := NewToolRegistry()
+		authorizer := &recordingAuthorizer{}
+		registry.SetAuthorizer(authorizer)
+		tool := &mockContextAwareTool{mockRegistryTool: *newMockTool("scan", "scan")}
+		registry.RegisterWithEffect(tool, actionauth.EffectToolCall)
+		ctx := actionauth.WithInvocation(context.Background(), actionauth.Invocation{
+			IdempotencyKey: "idem_" + strings.Repeat("c", 64),
+		})
+		result := registry.Execute(ctx, "scan", nil)
+		if !result.IsError || tool.lastCtx != nil || len(authorizer.actions) != 0 {
+			t.Fatalf("result=%+v executed=%v actions=%v", result, tool.lastCtx != nil, authorizer.actions)
+		}
+	})
 }

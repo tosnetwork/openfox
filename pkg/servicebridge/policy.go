@@ -57,15 +57,19 @@ type PolicyEngine struct{}
 // state; budget accounting is the caller's crash-safe journal responsibility.
 // When the policy is in ConfirmManual mode it returns ErrManualConfirmation so
 // the caller can route the proposal through a Confirmer before proceeding.
-func (PolicyEngine) Authorize(policy SpendingPolicy, proposal QuoteProposal, spentInWindowAtomic uint64, now time.Time) error {
+func (PolicyEngine) Authorize(
+	policy SpendingPolicy,
+	proposal QuoteProposal,
+	spentInWindowAtomic uint64,
+	now time.Time,
+) error {
 	if !policy.valid() {
 		return ErrPolicyInvalid
 	}
 	if !now.Before(policy.Expiry) {
 		return ErrPolicyExpired
 	}
-	if proposal.Asset.Master != policy.Asset.Master ||
-		proposal.Asset.WalletCodeHash != policy.Asset.WalletCodeHash {
+	if !proposal.Asset.Equal(policy.Asset) {
 		return ErrAssetNotAllowed
 	}
 	if !policy.CapabilityAllow[proposal.Capability.CapabilityID] {

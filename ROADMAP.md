@@ -22,6 +22,7 @@
 * **Input Defense & Permission Control**
   * **Prompt Injection Defense**: Harden JSON extraction logic to prevent LLM manipulation.
   * **Tool Abuse Prevention**: Strict parameter validation to ensure generated commands stay within safe boundaries.
+  * **TOS Messenger Context Firewall**: Runtime-derived durable provenance, classified tool effects, exact spend terms, and one-shot Messenger grants are implemented. Production authenticated-event channel ingestion remains in progress.
   * **SSRF Protection**: Built-in blocklists for network tools to prevent accessing internal IPs (LAN/Metadata services).
 
 
@@ -51,6 +52,7 @@
   * **IM Matrix**: QQ, WeChat (Work), DingTalk, Feishu (Lark), Telegram, Discord, WhatsApp, LINE, Slack, Email, KOOK, Signal, ...
   * **Standards**: Support for the **OneBot** protocol.
   * [**attachment**](https://github.com/tosnetwork/openfox/issues/348): Native handling of images, audio, and video attachments.
+  * **TOS Messenger**: Same-host three-Agent group acceptance is implemented through `tos_messenger_lab`; the production daemon/E2EE/MLS channel remains gated on the Messenger transport work.
 
 
 * **Skill Marketplace**

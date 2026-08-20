@@ -37,6 +37,19 @@ See [Sensitive Data Filtering](../security/sensitive_data_filtering.md) for full
 | `filter_sensitive_data` | bool | `true` | Enable/disable filtering |
 | `filter_min_length` | int | `8` | Minimum content length to trigger filtering |
 
+## TOS Messenger action authorization
+
+`tools.action_authorization` places tool and custody side effects behind the
+local Messenger policy/owner boundary. See
+[TOS Messenger action authorization](../guides/tos-messenger-action-authorization.md)
+for provenance, one-shot claim, and fail-closed behavior.
+
+| Config | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Messenger enforcement for classified tools |
+| `socket_path` | string | empty | Clean absolute `tos-messengerd` runtime socket path |
+| `timeout_seconds` | int | `30` | Per-call and owner-wait bound; maximum 60 seconds |
+
 ## Web Tools
 
 Web tools are used for web search and fetching.

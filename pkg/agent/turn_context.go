@@ -47,6 +47,10 @@ func cloneInboundContext(ctx *bus.InboundContext) *bus.InboundContext {
 	cloned := *ctx
 	cloned.ReplyHandles = cloneStringMap(ctx.ReplyHandles)
 	cloned.Raw = cloneStringMap(ctx.Raw)
+	if ctx.AuthenticatedMessagingOrigin != nil {
+		origin := *ctx.AuthenticatedMessagingOrigin
+		cloned.AuthenticatedMessagingOrigin = &origin
+	}
 	return &cloned
 }
 

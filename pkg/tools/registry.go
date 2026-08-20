@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/media"
 	"github.com/tosnetwork/openfox/pkg/providers"
@@ -18,6 +19,7 @@ type ToolEntry struct {
 	Tool   Tool
 	IsCore bool
 	TTL    int
+	Effect actionauth.Effect
 }
 
 type ToolRegistry struct {
@@ -26,6 +28,7 @@ type ToolRegistry struct {
 	version    atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
 	mediaStore media.MediaStore
 	allowlist  map[string]struct{}
+	authorizer actionauth.Authorizer
 }
 
 type mediaStoreAware interface {
@@ -61,6 +64,17 @@ func (r *ToolRegistry) SetAllowlist(names []string) {
 }
 
 func (r *ToolRegistry) Register(tool Tool) {
+	r.register(tool, "", true)
+}
+
+// RegisterWithEffect classifies a core tool at registration time. When an
+// authorizer is configured, tools registered through the legacy unclassified
+// method fail closed before their Execute method is reached.
+func (r *ToolRegistry) RegisterWithEffect(tool Tool, effect actionauth.Effect) {
+	r.register(tool, effect, true)
+}
+
+func (r *ToolRegistry) register(tool Tool, effect actionauth.Effect, core bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	name := tool.Name()
@@ -78,8 +92,9 @@ func (r *ToolRegistry) Register(tool Tool) {
 	}
 	r.tools[name] = &ToolEntry{
 		Tool:   tool,
-		IsCore: true,
+		IsCore: core,
 		TTL:    0, // Core tools do not use TTL
+		Effect: effect,
 	}
 	if aware, ok := tool.(mediaStoreAware); ok && r.mediaStore != nil {
 		aware.SetMediaStore(r.mediaStore)
@@ -90,6 +105,16 @@ func (r *ToolRegistry) Register(tool Tool) {
 
 // RegisterHidden saves hidden tools (visible only via TTL)
 func (r *ToolRegistry) RegisterHidden(tool Tool) {
+	r.registerHidden(tool, "")
+}
+
+// RegisterHiddenWithEffect classifies a deferred tool before it can be
+// promoted and called.
+func (r *ToolRegistry) RegisterHiddenWithEffect(tool Tool, effect actionauth.Effect) {
+	r.registerHidden(tool, effect)
+}
+
+func (r *ToolRegistry) registerHidden(tool Tool, effect actionauth.Effect) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	name := tool.Name()
@@ -109,12 +134,21 @@ func (r *ToolRegistry) RegisterHidden(tool Tool) {
 		Tool:   tool,
 		IsCore: false,
 		TTL:    0,
+		Effect: effect,
 	}
 	if aware, ok := tool.(mediaStoreAware); ok && r.mediaStore != nil {
 		aware.SetMediaStore(r.mediaStore)
 	}
 	r.version.Add(1)
 	logger.DebugCF("tools", "Registered hidden tool", map[string]any{"name": name})
+}
+
+// SetAuthorizer enables side-effect enforcement for this registry. Passing
+// nil disables it for legacy/non-Messenger deployments.
+func (r *ToolRegistry) SetAuthorizer(authorizer actionauth.Authorizer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.authorizer = authorizer
 }
 
 // SetMediaStore injects a MediaStore into all registered tools that can
@@ -261,7 +295,19 @@ func (r *ToolRegistry) ExecuteWithContext(
 			"args": args,
 		})
 
-	tool, ok := r.Get(name)
+	r.mu.RLock()
+	entry, ok := r.tools[name]
+	if ok && !entry.IsCore && entry.TTL <= 0 {
+		ok = false
+	}
+	var tool Tool
+	var effect actionauth.Effect
+	if ok {
+		tool = entry.Tool
+		effect = entry.Effect
+	}
+	authorizer := r.authorizer
+	r.mu.RUnlock()
 	if !ok {
 		logger.ErrorCF("tool", "Tool not found",
 			map[string]any{
@@ -283,6 +329,31 @@ func (r *ToolRegistry) ExecuteWithContext(
 	// Inject channel/chatID into ctx so tools read them via ToolChannel(ctx)/ToolChatID(ctx).
 	// Always inject — tools validate what they require.
 	ctx = WithToolContext(ctx, channel, chatID)
+
+	if authorizer != nil {
+		if !effect.Known() {
+			return ErrorResult(fmt.Sprintf("tool %q has no side-effect classification", name)).
+				WithError(fmt.Errorf("unclassified tool refused"))
+		}
+		invocation, _ := actionauth.InvocationFrom(ctx)
+		if !invocation.LineageComplete {
+			return ErrorResult(fmt.Sprintf("tool %q has incomplete action provenance", name)).
+				WithError(fmt.Errorf("incomplete action provenance refused"))
+		}
+		summary := strings.TrimSpace(invocation.Summary)
+		if summary == "" {
+			summary = "invoke OpenFox tool " + name
+		}
+		action := actionauth.Action{
+			Effect: effect, Summary: summary, IdempotencyKey: invocation.IdempotencyKey,
+			DerivedFrom: invocation.DerivedFrom,
+		}
+		if err := authorizer.Authorize(ctx, action); err != nil {
+			logger.WarnCF("tool", "Tool authorization refused",
+				map[string]any{"tool": name, "effect": effect, "error": err.Error()})
+			return ErrorResult(fmt.Sprintf("tool %q was not authorized: %s", name, err)).WithError(err)
+		}
+	}
 
 	// If tool implements AsyncExecutor and callback is provided, use ExecuteAsync.
 	// The callback is a call parameter, not mutable state on the tool instance.
@@ -476,6 +547,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	clone := &ToolRegistry{
 		tools:      make(map[string]*ToolEntry, len(r.tools)),
 		mediaStore: r.mediaStore,
+		authorizer: r.authorizer,
 	}
 	if r.allowlist != nil {
 		clone.allowlist = make(map[string]struct{}, len(r.allowlist))
@@ -488,6 +560,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 			Tool:   entry.Tool,
 			IsCore: entry.IsCore,
 			TTL:    entry.TTL,
+			Effect: entry.Effect,
 		}
 	}
 	return clone

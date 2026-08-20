@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/providers"
 	"github.com/tosnetwork/openfox/pkg/providers/protocoltypes"
@@ -53,8 +54,8 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 
 	// Register seahorse tools with the agent's tool registry
 	retrieval := mgr.engine.GetRetrieval()
-	al.RegisterTool(seahorse.NewGrepTool(retrieval))
-	al.RegisterTool(seahorse.NewExpandTool(retrieval))
+	al.RegisterToolWithEffect(seahorse.NewGrepTool(retrieval), actionauth.EffectLocalRead)
+	al.RegisterToolWithEffect(seahorse.NewExpandTool(retrieval), actionauth.EffectLocalRead)
 
 	// Bootstrap all existing sessions at startup
 	if agent.Sessions != nil {

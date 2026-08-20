@@ -1,5 +1,7 @@
 package bus
 
+import "github.com/tosnetwork/openfox/pkg/actionauth"
+
 // SenderInfo provides structured sender identity information.
 type SenderInfo struct {
 	Platform    string `json:"platform,omitempty"`     // "telegram", "discord", "slack", ...
@@ -33,6 +35,12 @@ type InboundContext struct {
 
 	ReplyHandles map[string]string `json:"reply_handles,omitempty"`
 	Raw          map[string]string `json:"raw,omitempty"`
+
+	// AuthenticatedMessagingOrigin is set only by an adapter after TOS
+	// Messenger has authenticated and admitted the corresponding event. It is
+	// deliberately typed and separate from Raw: model-visible text and channel
+	// metadata must not be able to manufacture action provenance.
+	AuthenticatedMessagingOrigin *actionauth.Origin `json:"authenticated_messaging_origin,omitempty"`
 }
 
 type InboundMessage struct {

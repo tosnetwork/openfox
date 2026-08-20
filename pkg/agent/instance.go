@@ -2,16 +2,20 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/isolation"
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/media"
 	"github.com/tosnetwork/openfox/pkg/memory"
+	"github.com/tosnetwork/openfox/pkg/messengerauth"
 	"github.com/tosnetwork/openfox/pkg/providers"
 	"github.com/tosnetwork/openfox/pkg/routing"
 	"github.com/tosnetwork/openfox/pkg/session"
@@ -93,21 +97,46 @@ func NewAgentInstance(
 
 	toolsRegistry := tools.NewToolRegistry()
 	toolsRegistry.SetAllowlist(agentToolAllowlist)
+	if cfg.Tools.ActionAuthorization.Enabled {
+		timeout := time.Duration(cfg.Tools.ActionAuthorization.TimeoutSeconds) * time.Second
+		authorizer, err := messengerauth.NewClient(cfg.Tools.ActionAuthorization.SocketPath, timeout)
+		if err != nil {
+			// Enabling enforcement is a fail-closed choice. A bad socket setting
+			// must not silently restore unrestricted tool execution.
+			toolsRegistry.SetAuthorizer(actionauth.AuthorizerFunc(func(context.Context, actionauth.Action) error {
+				return fmt.Errorf("invalid Messenger action authorization configuration: %w", err)
+			}))
+		} else {
+			toolsRegistry.SetAuthorizer(authorizer)
+		}
+	}
 
 	if cfg.Tools.IsToolEnabled("read_file") {
 		maxReadFileSize := cfg.Tools.ReadFile.MaxReadFileSize
 		switch cfg.Tools.ReadFile.EffectiveMode() {
 		case config.ReadFileModeLines:
-			toolsRegistry.Register(tools.NewReadFileLinesTool(workspace, readRestrict, maxReadFileSize, allowReadPaths))
+			toolsRegistry.RegisterWithEffect(
+				tools.NewReadFileLinesTool(workspace, readRestrict, maxReadFileSize, allowReadPaths),
+				actionauth.EffectLocalRead,
+			)
 		default:
-			toolsRegistry.Register(tools.NewReadFileBytesTool(workspace, readRestrict, maxReadFileSize, allowReadPaths))
+			toolsRegistry.RegisterWithEffect(
+				tools.NewReadFileBytesTool(workspace, readRestrict, maxReadFileSize, allowReadPaths),
+				actionauth.EffectLocalRead,
+			)
 		}
 	}
 	if cfg.Tools.IsToolEnabled("edit_file") {
-		toolsRegistry.Register(tools.NewEditFileTool(workspace, restrict, allowWritePaths))
+		toolsRegistry.RegisterWithEffect(
+			tools.NewEditFileTool(workspace, restrict, allowWritePaths),
+			actionauth.EffectLocalWrite,
+		)
 	}
 	if cfg.Tools.IsToolEnabled("append_file") {
-		toolsRegistry.Register(tools.NewAppendFileTool(workspace, restrict, allowWritePaths))
+		toolsRegistry.RegisterWithEffect(
+			tools.NewAppendFileTool(workspace, restrict, allowWritePaths),
+			actionauth.EffectLocalWrite,
+		)
 	}
 	// Build write_file's copy from the registered editors so it steers the agent
 	// to edit_file/append_file only when those tools are actually available.
@@ -121,10 +150,13 @@ func NewAgentInstance(
 			altTools = append(altTools, "edit_file")
 		}
 		writeTool.SetAlternativeTools(altTools)
-		toolsRegistry.Register(writeTool)
+		toolsRegistry.RegisterWithEffect(writeTool, actionauth.EffectLocalWrite)
 	}
 	if cfg.Tools.IsToolEnabled("list_dir") {
-		toolsRegistry.Register(tools.NewListDirTool(workspace, readRestrict, allowReadPaths))
+		toolsRegistry.RegisterWithEffect(
+			tools.NewListDirTool(workspace, readRestrict, allowReadPaths),
+			actionauth.EffectLocalRead,
+		)
 	}
 	if cfg.Tools.IsToolEnabled("exec") {
 		execTool, err := tools.NewExecToolWithConfig(workspace, restrict, cfg, allowReadPaths)
@@ -132,7 +164,7 @@ func NewAgentInstance(
 			logger.ErrorCF("agent", "Failed to initialize exec tool; continuing without exec",
 				map[string]any{"error": err.Error()})
 		} else {
-			toolsRegistry.Register(execTool)
+			toolsRegistry.RegisterWithEffect(execTool, actionauth.EffectToolCall)
 		}
 	}
 

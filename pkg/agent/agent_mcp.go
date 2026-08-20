@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/mcp"
@@ -169,9 +170,9 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 					mcpTool.SetEventPublisher(al.runtimeEvents)
 
 					if registerAsHidden {
-						agent.Tools.RegisterHidden(mcpTool)
+						agent.Tools.RegisterHiddenWithEffect(mcpTool, actionauth.EffectToolCall)
 					} else {
-						agent.Tools.Register(mcpTool)
+						agent.Tools.RegisterWithEffect(mcpTool, actionauth.EffectToolCall)
 					}
 					if !toolRegistryIncludes(agent.Tools, toolName) {
 						continue
@@ -255,10 +256,16 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 				}
 
 				if useRegex {
-					agent.Tools.Register(tools.NewRegexSearchTool(agent.Tools, ttl, maxSearchResults))
+					agent.Tools.RegisterWithEffect(
+						tools.NewRegexSearchTool(agent.Tools, ttl, maxSearchResults),
+						actionauth.EffectLocalRead,
+					)
 				}
 				if useBM25 {
-					agent.Tools.Register(tools.NewBM25SearchTool(agent.Tools, ttl, maxSearchResults))
+					agent.Tools.RegisterWithEffect(
+						tools.NewBM25SearchTool(agent.Tools, ttl, maxSearchResults),
+						actionauth.EffectLocalRead,
+					)
 				}
 			}
 		}

@@ -1109,6 +1109,14 @@ type ReadFileToolConfig struct {
 	MaxReadFileSize int    `json:"max_read_file_size"`
 }
 
+// ActionAuthorizationConfig sends side-effect decisions to the Messenger
+// runtime socket. The daemon remains the policy and one-shot grant authority.
+type ActionAuthorizationConfig struct {
+	Enabled        bool   `json:"enabled"         yaml:"-" env:"OPENFOX_TOOLS_ACTION_AUTHORIZATION_ENABLED"`
+	SocketPath     string `json:"socket_path"     yaml:"-" env:"OPENFOX_TOOLS_ACTION_AUTHORIZATION_SOCKET_PATH"`
+	TimeoutSeconds int    `json:"timeout_seconds" yaml:"-" env:"OPENFOX_TOOLS_ACTION_AUTHORIZATION_TIMEOUT_SECONDS"`
+}
+
 const (
 	ReadFileModeBytes = "bytes"
 	ReadFileModeLines = "lines"
@@ -1126,8 +1134,9 @@ func (c ReadFileToolConfig) EffectiveMode() string {
 }
 
 type ToolsConfig struct {
-	AllowReadPaths  []string `json:"allow_read_paths"  yaml:"-" env:"OPENFOX_TOOLS_ALLOW_READ_PATHS"`
-	AllowWritePaths []string `json:"allow_write_paths" yaml:"-" env:"OPENFOX_TOOLS_ALLOW_WRITE_PATHS"`
+	ActionAuthorization ActionAuthorizationConfig `json:"action_authorization" yaml:"-" envPrefix:"OPENFOX_TOOLS_ACTION_AUTHORIZATION_"`
+	AllowReadPaths      []string                  `json:"allow_read_paths"  yaml:"-" env:"OPENFOX_TOOLS_ALLOW_READ_PATHS"`
+	AllowWritePaths     []string                  `json:"allow_write_paths" yaml:"-" env:"OPENFOX_TOOLS_ALLOW_WRITE_PATHS"`
 	// FilterSensitiveData controls whether to filter sensitive values (API keys,
 	// tokens, secrets) from tool results before sending to the LLM.
 	// Default: true (enabled)

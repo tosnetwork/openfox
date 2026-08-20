@@ -140,3 +140,7 @@ The [`tos_messenger_lab` channel](docs/guides/tos-messenger-lab.md) provides a
 same-host three-OpenFox group-chat acceptance loop while the production TOS
 Messenger route and MLS profile remain gated. Its name and runtime metadata
 explicitly identify the plaintext local boundary.
+
+OpenFox can also put every classified tool and custody operation behind the
+[`tos-messengerd` action-authorization boundary](docs/guides/tos-messenger-action-authorization.md),
+including runtime-derived provenance and one-shot tool/spend grants.

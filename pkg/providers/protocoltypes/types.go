@@ -1,6 +1,10 @@
 package protocoltypes
 
-import "time"
+import (
+	"time"
+
+	"github.com/tosnetwork/openfox/pkg/actionauth"
+)
 
 type ToolCall struct {
 	ID               string         `json:"id"`
@@ -96,6 +100,13 @@ type Message struct {
 	SystemParts      []ContentBlock `json:"system_parts,omitempty"` // structured system blocks for cache-aware adapters
 	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
+
+	// ActionOrigins and ActionProvenanceState are runtime-owned metadata. They
+	// are persisted with session history but provider adapters intentionally do
+	// not serialize them onto model APIs. A model therefore cannot add or remove
+	// its own authority lineage.
+	ActionOrigins         []actionauth.Origin `json:"action_origins,omitempty"`
+	ActionProvenanceState string              `json:"action_provenance_state,omitempty"`
 
 	// Prompt metadata is internal to the agent runtime. It records where a
 	// message or system part came from without changing provider/session JSON.

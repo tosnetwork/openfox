@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/bus"
 	"github.com/tosnetwork/openfox/pkg/constants"
 	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
@@ -567,6 +568,22 @@ toolLoop:
 			ts.sessionKey,
 			ts.opts.Dispatch.SessionScope,
 		)
+		idempotencyKey, keyErr := actionauth.ToolInvocationKey(
+			ts.agent.ID,
+			ts.sessionKey,
+			ts.opts.Dispatch.MessageID(),
+			toolCallID,
+			toolName,
+			toolArgs,
+		)
+		if keyErr == nil {
+			execCtx = actionauth.WithInvocation(execCtx, actionauth.Invocation{
+				IdempotencyKey:  idempotencyKey,
+				Summary:         "invoke OpenFox tool " + toolName,
+				DerivedFrom:     exec.actionOrigins,
+				LineageComplete: exec.actionLineageOK,
+			})
+		}
 		toolResult := ts.agent.Tools.ExecuteWithContext(
 			execCtx,
 			toolName,

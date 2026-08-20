@@ -45,6 +45,10 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	}
 
 	messages = resolveMediaRefs(messages, p.MediaStore, maxMediaSize, currentTurnStart)
+	if currentTurnStart >= 0 && currentTurnStart < len(messages) &&
+		(strings.TrimSpace(ts.userMessage) != "" || len(ts.media) > 0) {
+		markUserMessageProvenance(&messages[currentTurnStart], ts.opts.Dispatch.InboundContext)
+	}
 
 	if !ts.opts.NoHistory {
 		toolDefs := filterToolsByTurnProfile(ts.agent.Tools.ToProviderDefs(), ts.profile)
@@ -118,7 +122,8 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 
 	if !ts.opts.NoHistory && (strings.TrimSpace(ts.userMessage) != "" || len(ts.media) > 0) {
 		rootMsg := userPromptMessage(ts.userMessage, ts.media)
-		if len(rootMsg.Media) > 0 {
+		markUserMessageProvenance(&rootMsg, ts.opts.Dispatch.InboundContext)
+		if len(rootMsg.Media) > 0 || rootMsg.ActionProvenanceState != "" {
 			ts.agent.Sessions.AddFullMessage(ts.sessionKey, rootMsg)
 		} else {
 			ts.agent.Sessions.AddMessage(ts.sessionKey, rootMsg.Role, rootMsg.Content)
@@ -145,6 +150,15 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		summary,
 		messages,
 	)
+	lineageMessages := messages
+	if !ts.opts.NoHistory && ts.agent.Sessions != nil {
+		// The durable session store preserves runtime-only provenance metadata;
+		// context engines and provider adapters intentionally do not. Retaining
+		// more history is conservative: it can require a new session, never grant
+		// authority by forgetting an input after restart or compaction.
+		lineageMessages = ts.agent.Sessions.GetHistory(ts.sessionKey)
+	}
+	exec.actionOrigins, exec.actionLineageOK = actionLineage(lineageMessages, summary)
 	exec.currentTurnStart = currentTurnStart
 	exec.activeCandidates = activeCandidates
 	exec.activeModel = activeModel

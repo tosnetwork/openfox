@@ -25,8 +25,18 @@ type Network struct {
 // Gateway balance view is never sufficient; both the master and the wallet code
 // hash must match.
 type AssetIdentity struct {
-	Master         string // stablecoin master contract address
+	Master         string // stablecoin master contract account ID
 	WalletCodeHash string // jetton wallet code hash
+	Network        Network
+	Workchain      int32
+	MasterCodeHash string
+	Decimals       uint32
+}
+
+func (a AssetIdentity) Equal(other AssetIdentity) bool {
+	return a.Master == other.Master && a.WalletCodeHash == other.WalletCodeHash &&
+		a.Network == other.Network && a.Workchain == other.Workchain &&
+		a.MasterCodeHash == other.MasterCodeHash && a.Decimals == other.Decimals
 }
 
 // CapabilityRef identifies a Capability and the invariants that must match
@@ -38,18 +48,22 @@ type CapabilityRef struct {
 	ManifestDigest   string
 	RegistryCodeHash string
 	Network          Network
+	CapabilityClass  string
 }
 
 // QuoteProposal is discovery input and is NEVER canonical. It becomes canonical
 // only through the on-chain Accepted Quote commitment.
 type QuoteProposal struct {
-	Capability      CapabilityRef
-	Asset           AssetIdentity
-	MaxAtomicAmount uint64
-	Expiry          time.Time
-	ExecutionSigner string // execution-signer public key committed by the quote
-	EndpointCommit  string // endpoint commitment digest
-	DisputeTerms    string // dispute-terms digest
+	Capability             CapabilityRef
+	Asset                  AssetIdentity
+	MaxAtomicAmount        uint64
+	Expiry                 time.Time
+	ExecutionSigner        string // execution-signer public key committed by the quote
+	EndpointCommit         string // endpoint commitment digest
+	DisputeTerms           string // dispute-terms digest
+	TransportBindingDigest string
+	EscrowTermsDigest      string
+	AtomicAmount           string // canonical decimal; preferred over the legacy uint64 field
 }
 
 // AcceptedQuote is the canonical acceptance: its commitment and the derived

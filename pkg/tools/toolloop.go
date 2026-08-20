@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/providers"
 	"github.com/tosnetwork/openfox/pkg/utils"
@@ -188,7 +189,19 @@ func RunToolLoop(
 
 				var toolResult *ToolResult
 				if config.Tools != nil {
-					toolResult = config.Tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, channel, chatID, nil)
+					executionCtx := ctx
+					idempotencyKey, keyErr := actionauth.ToolInvocationKey(
+						"", channel+":"+chatID, "", tc.ID, tc.Name, tc.Arguments,
+					)
+					if keyErr == nil {
+						invocation, _ := actionauth.InvocationFrom(ctx)
+						invocation.IdempotencyKey = idempotencyKey
+						invocation.Summary = "invoke OpenFox tool " + tc.Name
+						executionCtx = actionauth.WithInvocation(executionCtx, invocation)
+					}
+					toolResult = config.Tools.ExecuteWithContext(
+						executionCtx, tc.Name, tc.Arguments, channel, chatID, nil,
+					)
 				} else {
 					toolResult = ErrorResult("No tools available")
 				}

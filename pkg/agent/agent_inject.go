@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/audio/asr"
 	"github.com/tosnetwork/openfox/pkg/channels"
 	"github.com/tosnetwork/openfox/pkg/config"
@@ -15,6 +16,15 @@ func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 	for _, agentID := range registry.ListAgentIDs() {
 		if agent, ok := registry.GetAgent(agentID); ok {
 			agent.Tools.Register(tool)
+		}
+	}
+}
+
+func (al *AgentLoop) RegisterToolWithEffect(tool tools.Tool, effect actionauth.Effect) {
+	registry := al.GetRegistry()
+	for _, agentID := range registry.ListAgentIDs() {
+		if agent, ok := registry.GetAgent(agentID); ok {
+			agent.Tools.RegisterWithEffect(tool, effect)
 		}
 	}
 }

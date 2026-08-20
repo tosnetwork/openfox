@@ -19,11 +19,13 @@ after the daemon has authenticated, decrypted, admitted, and durably staged it.
 ```
 
 The adapter lists pending events, takes a bounded application lease, and accepts
-only the strict `text` payload profile. It independently reparses the event,
-checks daemon metadata against the document, recomputes the content-addressed
-Event ID, and decodes the domain-separated canonical text body. A Messenger-
-generated fixture cross-checks this small independent decoder. Unknown,
-substituted, or malformed events are rejected before the OpenFox bus.
+the strict `text` and `room.message` payload profiles. It independently
+reparses the event, checks daemon metadata against the document, recomputes the
+content-addressed Event ID, and decodes the domain-separated canonical body.
+For `room.message` it additionally binds the body Room ID to the Event Room ID
+and requires a non-zero membership epoch, then publishes it as an OpenFox
+`group`/`room` input. Unknown, substituted, cross-room, or malformed events are
+rejected before the OpenFox bus.
 
 For accepted input it sets `AuthenticatedMessagingOrigin` from the verified
 Agent, Endpoint, Device, Event, conversation, kind, and daemon receive time.

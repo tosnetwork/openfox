@@ -145,7 +145,8 @@ Messenger boundary is implemented by `tos-messenger` `9219ddb`.
 
 The receive-only [`tos_messenger` production inbox](docs/guides/tos-messenger.md)
 now drains authenticated and admitted daemon events, independently checks their
-Event IDs and canonical text bodies, and supplies typed action provenance. It
+Event IDs and canonical one-to-one or room-message bodies, publishes rooms as
+group chats, and supplies typed action provenance. It
 fails closed on outbound traffic until Messenger's route and group-driver gates
 are accepted.
 

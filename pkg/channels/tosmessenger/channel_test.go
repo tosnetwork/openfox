@@ -48,6 +48,38 @@ func TestChannelPublishesOnlyClaimedAuthenticatedEventWithTypedOrigin(t *testing
 	}
 }
 
+func TestChannelPublishesCanonicalRoomMessageAsAuthenticatedGroupChat(t *testing.T) {
+	pending := testRoomPending(t, "hello private room")
+	path, operations, stop := serveInbox(t, pending)
+	defer stop()
+	messageBus := bus.NewMessageBus()
+	channel, err := New(
+		&config.Channel{AllowFrom: []string{"*"}},
+		&config.TOSMessengerSettings{SocketPath: path},
+		messageBus,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := channel.pollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-messageBus.InboundChan():
+		origin := message.Context.AuthenticatedMessagingOrigin
+		if message.Content != "hello private room" || message.Context.ChatType != "group" ||
+			message.Context.SpaceType != "room" || message.Context.ChatID != "room_"+strings.Repeat("9", 64) ||
+			origin == nil || origin.Kind != "room.message" {
+			t.Fatalf("unexpected room inbound: %+v", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("authenticated room message was not published")
+	}
+	if got := <-operations; got != "inbox.pending,inbox.claim,inbox.complete" {
+		t.Fatalf("operations = %s", got)
+	}
+}
+
 func TestEventSubstitutionIsRejectedBeforeBus(t *testing.T) {
 	pending := testPending(t, "do not trust rendering")
 	var event wireEvent
@@ -113,6 +145,44 @@ func testPending(t *testing.T, body string) pendingEvent {
 	return pendingEvent{
 		EventID: event.EventID, SenderEndpointID: event.SenderEndpointID,
 		ConversationID: event.ConversationID, ReceivedAtUnix: 1_800_000_100, Event: raw,
+	}
+}
+
+func testRoomPending(t *testing.T, body string) pendingEvent {
+	t.Helper()
+	roomID := "room_" + strings.Repeat("9", 64)
+	content := bytes.NewBufferString(roomMessageDomain)
+	writeText(content, roomID)
+	writeUint64(content, 3)
+	writeText(content, "text/plain; charset=utf-8")
+	writeText(content, body)
+	event := wireEvent{
+		Schema:           eventSchema,
+		NetworkID:        "tos-local",
+		GenesisRootHash:  strings.Repeat("1", 64),
+		GenesisFileHash:  strings.Repeat("2", 64),
+		ConversationID:   "conv_" + strings.Repeat("3", 64),
+		SenderAgentID:    "agent_" + strings.Repeat("a", 64),
+		SenderEndpointID: "mep_" + strings.Repeat("b", 64),
+		SenderDeviceID:   "dev_" + strings.Repeat("c", 64),
+		RoomID:           roomID,
+		CreatedAtUnix:    1_800_000_000,
+		ExpiresAtUnix:    1_800_003_600,
+		Kind:             "room.message",
+		PayloadSchema:    roomMessageSchema,
+		ContentBase64:    base64.StdEncoding.EncodeToString(content.Bytes()),
+	}
+	event.EventID = deriveEventID(event, content.Bytes())
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pendingEvent{
+		EventID:          event.EventID,
+		SenderEndpointID: event.SenderEndpointID,
+		ConversationID:   event.ConversationID,
+		ReceivedAtUnix:   1_800_000_100,
+		Event:            raw,
 	}
 }
 

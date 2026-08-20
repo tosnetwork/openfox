@@ -15,10 +15,12 @@ import (
 )
 
 const (
-	eventSchema = "tos.messaging.event.v1"
-	eventDomain = "tos.messaging.event-id.v1\x00"
-	textSchema  = "tos.messaging.payload.text.v1"
-	textDomain  = "tos.messaging.payload.v1\x00" + textSchema + "\x00"
+	eventSchema       = "tos.messaging.event.v1"
+	eventDomain       = "tos.messaging.event-id.v1\x00"
+	textSchema        = "tos.messaging.payload.text.v1"
+	textDomain        = "tos.messaging.payload.v1\x00" + textSchema + "\x00"
+	roomMessageSchema = "tos.messaging.payload.room-message.v1"
+	roomMessageDomain = "tos.messaging.payload.v1\x00" + roomMessageSchema + "\x00"
 )
 
 var (
@@ -66,8 +68,10 @@ func decodeAdmittedText(pending pendingEvent) (wireEvent, string, error) {
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return wireEvent{}, "", errors.New("admitted Messaging Event has trailing JSON")
 	}
-	if event.Schema != eventSchema || event.Kind != "text" || event.PayloadSchema != textSchema {
-		return wireEvent{}, "", errors.New("production OpenFox channel accepts only text events")
+	if event.Schema != eventSchema || event.Kind != "text" && event.Kind != "room.message" ||
+		event.Kind == "text" && event.PayloadSchema != textSchema ||
+		event.Kind == "room.message" && event.PayloadSchema != roomMessageSchema {
+		return wireEvent{}, "", errors.New("production OpenFox channel accepts only typed text and room.message events")
 	}
 	if event.EventID != pending.EventID || event.SenderEndpointID != pending.SenderEndpointID ||
 		event.ConversationID != pending.ConversationID || pending.ReceivedAtUnix == 0 {
@@ -94,11 +98,34 @@ func decodeAdmittedText(pending pendingEvent) (wireEvent, string, error) {
 	if deriveEventID(event, content) != event.EventID {
 		return wireEvent{}, "", errors.New("admitted Messaging Event ID does not match its content")
 	}
-	body, err := decodeTextPayload(content)
+	var body string
+	if event.Kind == "text" {
+		body, err = decodeTextPayload(content)
+	} else {
+		body, err = decodeRoomMessagePayload(content, event.RoomID)
+	}
 	if err != nil {
 		return wireEvent{}, "", err
 	}
 	return event, body, nil
+}
+
+func decodeRoomMessagePayload(content []byte, eventRoomID string) (string, error) {
+	reader := &canonicalReader{raw: content}
+	if string(reader.take(len(roomMessageDomain))) != roomMessageDomain {
+		return "", errors.New("room message payload is outside its canonical domain")
+	}
+	roomID := reader.text(512)
+	epoch := reader.uint64()
+	mediaType := reader.text(512)
+	body := reader.text(128 << 10)
+	if reader.err != nil || reader.offset != len(content) || !roomPattern.MatchString(roomID) ||
+		roomID != eventRoomID || epoch == 0 ||
+		mediaType != "text/plain; charset=utf-8" && mediaType != "text/markdown" ||
+		body == "" || strings.ContainsAny(body, "\x00\r") {
+		return "", errors.New("invalid canonical room message payload")
+	}
+	return body, nil
 }
 
 func deriveEventID(event wireEvent, content []byte) string {
@@ -178,6 +205,14 @@ func (r *canonicalReader) text(maximum int) string {
 		return ""
 	}
 	return string(raw)
+}
+
+func (r *canonicalReader) uint64() uint64 {
+	raw := r.take(8)
+	if raw == nil {
+		return 0
+	}
+	return binary.BigEndian.Uint64(raw)
 }
 
 func writeText(buffer *bytes.Buffer, value string) {

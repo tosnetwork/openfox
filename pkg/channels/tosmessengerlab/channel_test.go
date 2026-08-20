@@ -159,6 +159,25 @@ func TestChannelCarriesGroupMessagesAndPersistsCursor(t *testing.T) {
 	}
 }
 
+func TestChannelMarksOpenMLSProxyTransport(t *testing.T) {
+	settings := &config.TOSMessengerLabSettings{
+		SocketPath: "/unused", CursorPath: filepath.Join(t.TempDir(), "cursor.json"),
+		AgentID: testBob, Token: *config.NewSecureString("bob-token-0000002"), Encryption: "openmls-proxy",
+	}
+	messageBus := bus.NewMessageBus()
+	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, settings, messageBus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel.transportName() != "local-unix-openmls-ciphertext-relay" {
+		t.Fatal("encrypted transport metadata missing")
+	}
+	settings.Encryption = "invented"
+	if _, err := New(&config.Channel{AllowFrom: []string{"*"}}, settings, messageBus); err == nil {
+		t.Fatal("unknown encryption mode accepted")
+	}
+}
+
 func newTestChannel(t *testing.T, server *httptest.Server, messageBus *bus.MessageBus, cursorPath string) *Channel {
 	t.Helper()
 	settings := &config.TOSMessengerLabSettings{

@@ -31,20 +31,24 @@ type (
 
 func main() {
 	var raw credentialFlags
+	var proxies credentialFlags
 	socket := flag.String("socket", "", "Messenger lab Unix socket")
 	stateDir := flag.String("state-dir", "", "directory for OpenFox durable cursors")
 	label := flag.String("label", "openfox-builders", "deterministic room label")
 	message := flag.String("message", "hello from OpenFox A", "opening group message")
+	encrypted := flag.Bool("encrypted", false, "connect each Agent to its private OpenMLS proxy")
 	flag.Var(&raw, "agent", "agent_id=token (repeat exactly three times)")
+	flag.Var(&proxies, "proxy", "agent_id=unix_socket (repeat in encrypted mode)")
 	flag.Parse()
-	if err := run(*socket, *stateDir, *label, *message, raw); err != nil {
+	if err := runWithProxies(*socket, *stateDir, *label, *message, raw, proxies, *encrypted); err != nil {
 		fmt.Fprintln(os.Stderr, "openfox-messenger-lab-demo:", err)
 		os.Exit(1)
 	}
 }
 
-func run(socket, stateDir, label, opening string, raw []string) error {
-	if socket == "" || stateDir == "" || strings.TrimSpace(label) == "" || strings.TrimSpace(opening) == "" {
+func runWithProxies(socket, stateDir, label, opening string, raw, proxyFlags []string, encrypted bool) error {
+	if (!encrypted && socket == "") || stateDir == "" || strings.TrimSpace(label) == "" ||
+		strings.TrimSpace(opening) == "" {
 		return errors.New("socket, state-dir, label, and message are required")
 	}
 	if len(raw) != 3 {
@@ -52,6 +56,14 @@ func run(socket, stateDir, label, opening string, raw []string) error {
 	}
 	credentials := make([]credential, 0, 3)
 	memberIDs := make([]string, 0, 3)
+	proxySockets := map[string]string{}
+	for _, value := range proxyFlags {
+		id, path, ok := strings.Cut(value, "=")
+		if !ok || id == "" || path == "" || proxySockets[id] != "" {
+			return errors.New("each -proxy must be a unique agent_id=unix_socket")
+		}
+		proxySockets[id] = path
+	}
 	for _, value := range raw {
 		id, token, ok := strings.Cut(value, "=")
 		if !ok {
@@ -59,6 +71,9 @@ func run(socket, stateDir, label, opening string, raw []string) error {
 		}
 		credentials = append(credentials, credential{id: id, token: token})
 		memberIDs = append(memberIDs, id)
+	}
+	if encrypted && len(proxySockets) != len(credentials) {
+		return errors.New("encrypted mode requires one -proxy for each Agent")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -69,12 +84,19 @@ func run(socket, stateDir, label, opening string, raw []string) error {
 	}
 	agents := make([]running, 0, 3)
 	for index, identity := range credentials {
+		agentSocket := socket
+		if encrypted {
+			agentSocket = proxySockets[identity.id]
+		}
 		settings := &config.TOSMessengerLabSettings{
-			SocketPath:     socket,
+			SocketPath:     agentSocket,
 			AgentID:        identity.id,
 			Token:          *config.NewSecureString(identity.token),
 			CursorPath:     filepath.Join(stateDir, identity.id+".json"),
 			PollIntervalMS: 50,
+		}
+		if encrypted {
+			settings.Encryption = "openmls-proxy"
 		}
 		if index == 0 {
 			settings.Rooms = []config.TOSMessengerLabRoom{{Label: label, Members: memberIDs}}
@@ -135,9 +157,13 @@ func run(socket, stateDir, label, opening string, raw []string) error {
 			return errors.New("creator did not receive both group replies")
 		}
 	}
+	mode := "local-unix-plaintext-lab"
+	if encrypted {
+		mode = "local-unix-openmls-ciphertext-relay"
+	}
 	result := map[string]any{
 		"ok":         true,
-		"mode":       "local-unix-plaintext-lab",
+		"mode":       mode,
 		"room_id":    roomID,
 		"members":    memberIDs,
 		"transcript": transcript,

@@ -699,9 +699,10 @@ type TOSMessengerLabRoom struct {
 	Members []string `json:"members" yaml:"-"`
 }
 
-// TOSMessengerLabSettings connects OpenFox to the Messenger local group-chat
-// acceptance carrier. The carrier is plaintext over an owner-private Unix
-// socket and must never be presented as the production Messenger transport.
+// TOSMessengerLabSettings connects OpenFox to a local Messenger acceptance
+// boundary. Encryption may be empty for the legacy plaintext Hub, or
+// "openmls-proxy" when the socket is one Agent's private OpenMLS proxy and the
+// shared Hub is only an opaque ciphertext Relay.
 type TOSMessengerLabSettings struct {
 	SocketPath     string                `json:"socket_path"      yaml:"-"`
 	AgentID        string                `json:"agent_id"         yaml:"-"`
@@ -709,6 +710,7 @@ type TOSMessengerLabSettings struct {
 	CursorPath     string                `json:"cursor_path"      yaml:"-"`
 	PollIntervalMS int                   `json:"poll_interval_ms" yaml:"-"`
 	Rooms          []TOSMessengerLabRoom `json:"rooms,omitempty"  yaml:"-"`
+	Encryption     string                `json:"encryption,omitempty" yaml:"-"`
 }
 
 // TOSMessengerSettings connects OpenFox to the authenticated daemon inbox.

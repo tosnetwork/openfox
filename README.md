@@ -138,8 +138,10 @@ _*Recent builds may use 10-20MB RAM due to rapid feature development; language/R
 
 The [`tos_messenger_lab` channel](docs/guides/tos-messenger-lab.md) provides a
 same-host three-OpenFox group-chat acceptance loop while the production TOS
-Messenger route and MLS profile remain gated. Its name and runtime metadata
-explicitly identify the plaintext local boundary.
+Messenger route remains gated. In `openmls-proxy` mode every Agent has its own
+private MLS state owner and the shared Relay persists only ciphertext; runtime
+metadata distinguishes that mode from the legacy plaintext fixture. The
+Messenger boundary is implemented by `tos-messenger` `9219ddb`.
 
 The receive-only [`tos_messenger` production inbox](docs/guides/tos-messenger.md)
 now drains authenticated and admitted daemon events, independently checks their

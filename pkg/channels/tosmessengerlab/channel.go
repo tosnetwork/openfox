@@ -1,7 +1,7 @@
 // Package tosmessengerlab adapts the local-only Messenger group-chat
 // acceptance carrier to OpenFox's native channel bus. It intentionally says
-// "lab" in its public name: the carrier is plaintext over an owner-private
-// Unix socket and is not a production routing or MLS implementation.
+// "lab" in its public name: the socket is same-host and not a production route.
+// In openmls-proxy mode the private proxy encrypts before the shared carrier.
 package tosmessengerlab
 
 import (
@@ -96,6 +96,9 @@ func New(bc *config.Channel, settings *config.TOSMessengerLabSettings, messageBu
 	}
 	if interval < 50*time.Millisecond || interval > time.Minute {
 		return nil, errors.New("tos_messenger_lab poll interval is outside 50ms..1m")
+	}
+	if settings.Encryption != "" && settings.Encryption != "openmls-proxy" {
+		return nil, errors.New("tos_messenger_lab encryption must be empty or openmls-proxy")
 	}
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", settings.SocketPath)
@@ -297,7 +300,7 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 					SenderID:  sender.CanonicalID,
 					MessageID: inbound.MessageID,
 					Raw: map[string]string{
-						"transport":    "local-unix-plaintext",
+						"transport":    c.transportName(),
 						"tos_agent_id": inbound.SenderAgentID,
 					},
 				}
@@ -316,6 +319,13 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (c *Channel) transportName() string {
+	if c.settings.Encryption == "openmls-proxy" {
+		return "local-unix-openmls-ciphertext-relay"
+	}
+	return "local-unix-plaintext"
 }
 
 func (c *Channel) createRoom(ctx context.Context, configured config.TOSMessengerLabRoom) (room, error) {

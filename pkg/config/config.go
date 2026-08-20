@@ -713,13 +713,26 @@ type TOSMessengerLabSettings struct {
 	Encryption     string                `json:"encryption,omitempty" yaml:"-"`
 }
 
-// TOSMessengerSettings connects OpenFox to the authenticated daemon inbox.
-// Outbound construction remains disabled until Messenger owns a production
-// route and group driver; this channel must never fall back to the lab carrier.
+// TOSMessengerRoute binds one OpenFox chat to an operator-selected Messenger
+// delivery route. OpenFox never discovers or substitutes these authority
+// bearing identifiers from model output.
+type TOSMessengerRoute struct {
+	ChatID              string `json:"chat_id" yaml:"-"`
+	ConversationID      string `json:"conversation_id" yaml:"-"`
+	RoomID              string `json:"room_id,omitempty" yaml:"-"`
+	MembershipEpoch     uint64 `json:"membership_epoch,omitempty" yaml:"-"`
+	SessionID           string `json:"session_id" yaml:"-"`
+	RecipientEndpointID string `json:"recipient_endpoint_id" yaml:"-"`
+	LifetimeSeconds     uint64 `json:"lifetime_seconds,omitempty" yaml:"-"`
+}
+
+// TOSMessengerSettings connects OpenFox to the authenticated daemon runtime
+// boundary for inbound delivery and daemon-owned outbound construction.
 type TOSMessengerSettings struct {
 	SocketPath     string `json:"socket_path"      yaml:"-"`
 	PollIntervalMS int    `json:"poll_interval_ms" yaml:"-"`
 	LeaseSeconds   int    `json:"lease_seconds"    yaml:"-"`
+	Routes         []TOSMessengerRoute `json:"routes,omitempty" yaml:"-"`
 }
 
 type IRCSettings struct {

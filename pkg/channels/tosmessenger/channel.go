@@ -1,14 +1,16 @@
-// Package tosmessenger adapts the authenticated production daemon inbox to
-// OpenFox. It does not select a network route or construct outbound events;
-// those remain daemon/transport responsibilities gated by Messenger M0-R.
+// Package tosmessenger adapts the authenticated production daemon boundary to
+// OpenFox. Outbound calls submit semantics under an operator-bound route; the
+// daemon alone constructs canonical events and the transport remains separate.
 package tosmessenger
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -21,8 +23,10 @@ import (
 const defaultPollInterval = 250 * time.Millisecond
 
 var ErrOutboundUnavailable = errors.New(
-	"production Messenger outbound is unavailable until its route and group driver are accepted",
+	"production Messenger outbound needs an authenticated origin and configured route",
 )
+
+var sessionPattern = regexp.MustCompile(`^ses_[0-9a-f]{64}$`)
 
 type Channel struct {
 	*channels.BaseChannel
@@ -30,6 +34,7 @@ type Channel struct {
 	interval time.Duration
 	lease    uint64
 	timeout  time.Duration
+	routes   map[string]config.TOSMessengerRoute
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 }
@@ -54,9 +59,34 @@ func New(bc *config.Channel, settings *config.TOSMessengerSettings, messageBus *
 	if lease < 5 || lease > 300 {
 		return nil, errors.New("tos_messenger lease is outside 5..300 seconds")
 	}
+	routes := make(map[string]config.TOSMessengerRoute, len(settings.Routes))
+	for _, route := range settings.Routes {
+		if route.ChatID == "" || !conversationPattern.MatchString(route.ConversationID) ||
+			!sessionPattern.MatchString(route.SessionID) || !endpointPattern.MatchString(route.RecipientEndpointID) {
+			return nil, errors.New("tos_messenger route has invalid chat, conversation, session, or recipient")
+		}
+		if route.RoomID == "" {
+			if route.ChatID != route.ConversationID || route.MembershipEpoch != 0 {
+				return nil, errors.New("tos_messenger direct route must use its conversation as chat_id")
+			}
+		} else if !roomPattern.MatchString(route.RoomID) || route.ChatID != route.RoomID || route.MembershipEpoch == 0 {
+			return nil, errors.New("tos_messenger room route must bind chat_id, room_id, and membership_epoch")
+		}
+		if route.LifetimeSeconds == 0 {
+			route.LifetimeSeconds = 24 * 60 * 60
+		}
+		if route.LifetimeSeconds < 60 || route.LifetimeSeconds > 7*24*60*60 {
+			return nil, errors.New("tos_messenger route lifetime is outside 1m..7d")
+		}
+		if _, duplicate := routes[route.ChatID]; duplicate {
+			return nil, errors.New("tos_messenger has duplicate chat route")
+		}
+		routes[route.ChatID] = route
+	}
 	return &Channel{
 		BaseChannel: channels.NewBaseChannel(config.ChannelTOSMessenger, settings, messageBus, bc.AllowFrom),
 		settings:    settings, interval: interval, lease: uint64(lease), timeout: 10 * time.Second,
+		routes: routes,
 	}, nil
 }
 
@@ -81,11 +111,38 @@ func (c *Channel) Stop(context.Context) error {
 	return nil
 }
 
-func (c *Channel) Send(context.Context, bus.OutboundMessage) ([]string, error) {
+func (c *Channel) Send(ctx context.Context, message bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}
-	return nil, ErrOutboundUnavailable
+	route, known := c.routes[message.ChatID]
+	origin := message.Context.AuthenticatedMessagingOrigin
+	if !known || origin == nil || origin.EventID != message.Context.MessageID ||
+		!eventPattern.MatchString(origin.EventID) || origin.ReceivedAtUnix == 0 || message.Content == "" {
+		return nil, ErrOutboundUnavailable
+	}
+	// One model result for one authenticated input has one retry identity. The
+	// hash contains the exact output and fixed route, so substitution conflicts
+	// at the daemon even if a caller reuses it incorrectly.
+	preimage := route.ChatID + "\x00" + route.ConversationID + "\x00" + route.RoomID + "\x00" +
+		route.SessionID + "\x00" + route.RecipientEndpointID + "\x00" + origin.EventID + "\x00" +
+		message.ReplyToMessageID + "\x00" + message.Content
+	digest := sha256.Sum256([]byte(preimage))
+	response, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
+		Op: "outbox.compose", ConversationID: route.ConversationID, RoomID: route.RoomID,
+		MembershipEpoch: route.MembershipEpoch, ReplyToEventID: message.ReplyToMessageID,
+		MediaType: "text/plain; charset=utf-8", Body: message.Content,
+		IdempotencyKey: "idem_" + hex.EncodeToString(digest[:]), SessionID: route.SessionID,
+		RecipientEndpointID: route.RecipientEndpointID,
+		ExpiresAtUnix:       origin.ReceivedAtUnix + route.LifetimeSeconds,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !eventPattern.MatchString(response.EventID) {
+		return nil, errors.New("Messenger compose returned no canonical Event ID")
+	}
+	return []string{response.EventID}, nil
 }
 
 func (c *Channel) poll(ctx context.Context) {

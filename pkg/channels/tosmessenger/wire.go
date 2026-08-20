@@ -13,19 +13,29 @@ import (
 )
 
 const (
-	requestSchema  = "tos.messaging.local-request.v2"
+	requestSchema  = "tos.messaging.local-request.v3"
 	responseSchema = "tos.messaging.local-response.v1"
 	maxFrameBytes  = 512 << 10
 )
 
 type localRequest struct {
-	Schema       string `json:"schema"`
-	Op           string `json:"op"`
-	EventID      string `json:"event_id,omitempty"`
-	LeaseID      string `json:"lease_id,omitempty"`
-	LeaseSeconds uint64 `json:"lease_seconds,omitempty"`
-	Code         string `json:"code,omitempty"`
-	Limit        int    `json:"limit,omitempty"`
+	Schema              string `json:"schema"`
+	Op                  string `json:"op"`
+	EventID             string `json:"event_id,omitempty"`
+	LeaseID             string `json:"lease_id,omitempty"`
+	LeaseSeconds        uint64 `json:"lease_seconds,omitempty"`
+	Code                string `json:"code,omitempty"`
+	Limit               int    `json:"limit,omitempty"`
+	ConversationID      string `json:"conversation_id,omitempty"`
+	RoomID              string `json:"room_id,omitempty"`
+	ReplyToEventID      string `json:"reply_to_event_id,omitempty"`
+	MembershipEpoch     uint64 `json:"membership_epoch,omitempty"`
+	MediaType           string `json:"media_type,omitempty"`
+	Body                string `json:"body,omitempty"`
+	IdempotencyKey      string `json:"idempotency_key,omitempty"`
+	SessionID           string `json:"session_id,omitempty"`
+	RecipientEndpointID string `json:"recipient_endpoint_id,omitempty"`
+	ExpiresAtUnix       uint64 `json:"expires_at_unix,omitempty"`
 }
 
 type pendingEvent struct {
@@ -37,12 +47,14 @@ type pendingEvent struct {
 }
 
 type localResponse struct {
-	Schema string         `json:"schema"`
-	OK     bool           `json:"ok"`
-	Code   string         `json:"code,omitempty"`
-	Detail string         `json:"detail,omitempty"`
-	Events []pendingEvent `json:"events,omitempty"`
-	Event  *pendingEvent  `json:"claimed,omitempty"`
+	Schema  string         `json:"schema"`
+	OK      bool           `json:"ok"`
+	Code    string         `json:"code,omitempty"`
+	Detail  string         `json:"detail,omitempty"`
+	Events  []pendingEvent `json:"events,omitempty"`
+	Event   *pendingEvent  `json:"claimed,omitempty"`
+	Fresh   bool           `json:"fresh,omitempty"`
+	EventID string         `json:"event_id,omitempty"`
 }
 
 func callLocal(ctx context.Context, socket string, timeout time.Duration, request localRequest) (localResponse, error) {

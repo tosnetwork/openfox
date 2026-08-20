@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/bus"
 	"github.com/tosnetwork/openfox/pkg/config"
 )
@@ -106,6 +108,83 @@ func TestEventSubstitutionIsRejectedBeforeBus(t *testing.T) {
 	}
 	if got := <-operations; got != "inbox.pending,inbox.claim,inbox.reject" {
 		t.Fatalf("operations = %s", got)
+	}
+}
+
+func TestSendUsesDaemonCompositionAndStableAuthenticatedOrigin(t *testing.T) {
+	path, requests, stop := serveCompose(t, 2)
+	defer stop()
+	roomID := "room_" + strings.Repeat("9", 64)
+	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
+		SocketPath: path,
+		Routes: []config.TOSMessengerRoute{{
+			ChatID: roomID, ConversationID: "conv_" + strings.Repeat("3", 64),
+			RoomID: roomID, MembershipEpoch: 3, SessionID: "ses_" + strings.Repeat("8", 64),
+			RecipientEndpointID: "mep_" + strings.Repeat("6", 64), LifetimeSeconds: 3600,
+		}},
+	}, bus.NewMessageBus())
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel.SetRunning(true)
+	originEvent := "evt_" + strings.Repeat("a", 64)
+	message := bus.OutboundMessage{
+		ChatID: roomID, Content: "reply from OpenFox",
+		ReplyToMessageID: originEvent, Context: bus.InboundContext{
+			MessageID:                    originEvent,
+			AuthenticatedMessagingOrigin: &actionauth.Origin{EventID: originEvent, ReceivedAtUnix: 1_800_000_100},
+		},
+	}
+	first, err := channel.Send(context.Background(), message)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first send: ids=%v err=%v", first, err)
+	}
+	retry, err := channel.Send(context.Background(), message)
+	if err != nil || len(retry) != 1 || retry[0] != first[0] {
+		t.Fatalf("retry send: ids=%v err=%v", retry, err)
+	}
+	one, two := <-requests, <-requests
+	if one.Op != "outbox.compose" || one.IdempotencyKey != two.IdempotencyKey ||
+		one.ExpiresAtUnix != 1_800_003_700 || one.RoomID != roomID || one.MembershipEpoch != 3 ||
+		one.Body != message.Content || one.SessionID == "" || one.RecipientEndpointID == "" {
+		t.Fatalf("unexpected compose requests: one=%+v two=%+v", one, two)
+	}
+}
+
+func TestSendRefusesUntrustedOrUnroutedOutput(t *testing.T) {
+	roomID := "room_" + strings.Repeat("9", 64)
+	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
+		SocketPath: filepath.Join(t.TempDir(), "absent.sock"),
+		Routes: []config.TOSMessengerRoute{{
+			ChatID: roomID, ConversationID: "conv_" + strings.Repeat("3", 64),
+			RoomID: roomID, MembershipEpoch: 1, SessionID: "ses_" + strings.Repeat("8", 64),
+			RecipientEndpointID: "mep_" + strings.Repeat("6", 64),
+		}},
+	}, bus.NewMessageBus())
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel.SetRunning(true)
+	if _, err := channel.Send(
+		context.Background(),
+		bus.OutboundMessage{ChatID: roomID, Content: "model only"},
+	); !errors.Is(
+		err,
+		ErrOutboundUnavailable,
+	) {
+		t.Fatalf("untrusted output was not refused: %v", err)
+	}
+	if _, err := channel.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "room_" + strings.Repeat("7", 64),
+		Content: "unrouted", Context: bus.InboundContext{
+			MessageID: "evt_" + strings.Repeat("a", 64),
+			AuthenticatedMessagingOrigin: &actionauth.Origin{
+				EventID:        "evt_" + strings.Repeat("a", 64),
+				ReceivedAtUnix: 1,
+			},
+		},
+	}); !errors.Is(err, ErrOutboundUnavailable) {
+		t.Fatalf("unrouted output was not refused: %v", err)
 	}
 }
 
@@ -229,4 +308,41 @@ func serveInbox(t *testing.T, pending pendingEvent) (string, <-chan string, func
 		_ = listener.Close()
 		<-done
 	}
+}
+
+func serveCompose(t *testing.T, count int) (string, <-chan localRequest, func()) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "runtime.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan localRequest, count)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for index := 0; index < count; index++ {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			var header [4]byte
+			_, _ = io.ReadFull(connection, header[:])
+			raw := make([]byte, binary.BigEndian.Uint32(header[:]))
+			_, _ = io.ReadFull(connection, raw)
+			var request localRequest
+			_ = json.Unmarshal(raw, &request)
+			requests <- request
+			response := localResponse{
+				Schema: responseSchema, OK: true,
+				Fresh: index == 0, EventID: "evt_" + strings.Repeat("d", 64),
+			}
+			body, _ := json.Marshal(response)
+			binary.BigEndian.PutUint32(header[:], uint32(len(body)))
+			_, _ = connection.Write(header[:])
+			_, _ = connection.Write(body)
+			_ = connection.Close()
+		}
+	}()
+	return path, requests, func() { _ = listener.Close(); <-done }
 }

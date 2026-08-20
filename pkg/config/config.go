@@ -692,6 +692,25 @@ type PicoClientSettings struct {
 	ReadTimeout  int          `json:"read_timeout,omitempty"  yaml:"-"`
 }
 
+// TOSMessengerLabRoom declares a deterministic local acceptance room. Every
+// member uses the canonical TOS Agent identifier form.
+type TOSMessengerLabRoom struct {
+	Label   string   `json:"label"   yaml:"-"`
+	Members []string `json:"members" yaml:"-"`
+}
+
+// TOSMessengerLabSettings connects OpenFox to the Messenger local group-chat
+// acceptance carrier. The carrier is plaintext over an owner-private Unix
+// socket and must never be presented as the production Messenger transport.
+type TOSMessengerLabSettings struct {
+	SocketPath     string                `json:"socket_path"      yaml:"-"`
+	AgentID        string                `json:"agent_id"         yaml:"-"`
+	Token          SecureString          `json:"token,omitzero"   yaml:"token,omitempty"`
+	CursorPath     string                `json:"cursor_path"      yaml:"-"`
+	PollIntervalMS int                   `json:"poll_interval_ms" yaml:"-"`
+	Rooms          []TOSMessengerLabRoom `json:"rooms,omitempty"  yaml:"-"`
+}
+
 type IRCSettings struct {
 	Server           string              `json:"server"                     yaml:"-"                           env:"OPENFOX_CHANNELS_IRC_SERVER"`
 	TLS              bool                `json:"tls"                        yaml:"-"                           env:"OPENFOX_CHANNELS_IRC_TLS"`

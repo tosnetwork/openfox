@@ -135,3 +135,8 @@ OpenFox reimplements the OpenClaw concept from scratch in Go, aiming for the sam
 | **License**                  | Varies by project                  | MIT                                                          |
 
 _*Recent builds may use 10-20MB RAM due to rapid feature development; language/RAM/boot time/cost figures are OpenFox's own benchmark claims (0.8GHz single-core), the rest reflects the current feature set in this repository — check each project's latest docs for authoritative details._
+
+The [`tos_messenger_lab` channel](docs/guides/tos-messenger-lab.md) provides a
+same-host three-OpenFox group-chat acceptance loop while the production TOS
+Messenger route and MLS profile remain gated. Its name and runtime metadata
+explicitly identify the plaintext local boundary.

@@ -109,6 +109,33 @@ func TestChannelReusesClientIDAfterAmbiguousSendFailure(t *testing.T) {
 	}
 }
 
+func TestChannelUsesCallerOwnedStableClientID(t *testing.T) {
+	hub := &fakeHub{}
+	server := httptest.NewServer(hub)
+	defer server.Close()
+	channel := newTestChannel(t, server, bus.NewMessageBus(), filepath.Join(t.TempDir(), "cursor.json"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := channel.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer channel.Stop(context.Background())
+	outbound := bus.OutboundMessage{ChatID: testRoom, Content: "stable across process restart"}
+	for range 2 {
+		if _, err := channel.SendWithClientID(ctx, outbound, "request-stable-1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := channel.SendWithClientID(ctx, outbound, "not valid/client"); err == nil {
+		t.Fatal("invalid caller client ID accepted")
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(hub.clientIDs) != 2 || hub.clientIDs[0] != "request-stable-1" || hub.clientIDs[1] != hub.clientIDs[0] {
+		t.Fatalf("client IDs=%v", hub.clientIDs)
+	}
+}
+
 func TestChannelCarriesGroupMessagesAndPersistsCursor(t *testing.T) {
 	hub := &fakeHub{}
 	server := httptest.NewServer(hub)

@@ -70,3 +70,37 @@ advancing durable state, and that conversation continues after every proxy is
 restarted. This executable deliberately does not instantiate a model provider. It tests
 the messaging/channel boundary deterministically; model choice and tool policy
 belong to the normal OpenFox runtime and are tested separately.
+
+## Independent long-running Agent processes
+
+`cmd/openfox-messenger-lab-agent` runs exactly one channel in one OS process.
+Give each process its own Agent ID, token, OpenMLS proxy socket, cursor,
+transcript state and private control socket. The founder alone uses
+`-create-room`; every process names the same label and exact member
+set. A typical peer also uses:
+
+```text
+-trigger-prefix process-probe: -reply-prefix ack-from-
+```
+
+The trigger is important when a new process first catches up old room history:
+the peer records that history but replies only to explicitly marked acceptance
+probes, so startup cannot create an ACK storm for earlier conversations.
+Replies include the opening Event ID and use a client ID derived from Agent,
+target Event and exact reply. Thus a replay after process restart is stable.
+
+The control socket is mode `0600` and exposes:
+
+- `GET /v1/health` for the exact Agent/Room binding;
+- `POST /v1/send` with `{"request_id":"stable-id","content":"..."}`;
+- `GET /v1/transcript` for the bounded durable local transcript.
+
+After an operating-system service restart, wait until `/v1/health` succeeds;
+an `active` supervisor state can briefly precede control-socket readiness.
+
+`request_id` is passed through to the proxy/Relay client-ID claim. Reusing it
+with identical content returns the same message; content substitution is
+refused. The transcript is mode `0600`, atomically replaced, bounded to 4096
+records and rejects Event-ID substitution. These processes remain deterministic
+acceptance Agents without a model provider; they exercise process separation,
+encrypted channel ownership, durable restart, and operator-visible control.

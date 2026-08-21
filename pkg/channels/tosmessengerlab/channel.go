@@ -37,7 +37,10 @@ const (
 	maxResponseBytes    = 256 << 10
 )
 
-var roomIDPattern = regexp.MustCompile(`^room_[0-9a-f]{64}$`)
+var (
+	roomIDPattern   = regexp.MustCompile(`^room_[0-9a-f]{64}$`)
+	clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,128}$`)
+)
 
 type room struct {
 	RoomID        string   `json:"room_id"`
@@ -153,6 +156,43 @@ func (c *Channel) Stop(context.Context) error {
 }
 
 func (c *Channel) Send(ctx context.Context, outbound bus.OutboundMessage) ([]string, error) {
+	fingerprint, err := json.Marshal(outbound)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint Messenger lab outbound: %w", err)
+	}
+	pendingKey := sha256.Sum256(fingerprint)
+	clientID := c.pendingClientID(pendingKey)
+	ids, err := c.sendWithClientID(ctx, outbound, clientID)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if current, ok := c.pending[pendingKey]; ok && current.clientID == clientID {
+		delete(c.pending, pendingKey)
+	}
+	c.mu.Unlock()
+	return ids, nil
+}
+
+// SendWithClientID supplies a caller-owned stable retry identifier. It exists
+// for durable multi-process acceptance drivers; ordinary Agent sends use Send.
+// The proxy/Hub binds one client ID to exact content and refuses substitution.
+func (c *Channel) SendWithClientID(
+	ctx context.Context,
+	outbound bus.OutboundMessage,
+	clientID string,
+) ([]string, error) {
+	if !clientIDPattern.MatchString(clientID) {
+		return nil, errors.New("invalid Messenger lab client ID")
+	}
+	return c.sendWithClientID(ctx, outbound, clientID)
+}
+
+func (c *Channel) sendWithClientID(
+	ctx context.Context,
+	outbound bus.OutboundMessage,
+	clientID string,
+) ([]string, error) {
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}
@@ -166,14 +206,8 @@ func (c *Channel) Send(ctx context.Context, outbound bus.OutboundMessage) ([]str
 	if !known {
 		return nil, errors.New("unknown Messenger lab room")
 	}
-	fingerprint, err := json.Marshal(outbound)
-	if err != nil {
-		return nil, fmt.Errorf("fingerprint Messenger lab outbound: %w", err)
-	}
-	pendingKey := sha256.Sum256(fingerprint)
-	clientID := c.pendingClientID(pendingKey)
 	var result message
-	err = c.call(
+	err := c.call(
 		ctx,
 		http.MethodPost,
 		"/v1/messages",
@@ -183,11 +217,6 @@ func (c *Channel) Send(ctx context.Context, outbound bus.OutboundMessage) ([]str
 	if err != nil {
 		return nil, err
 	}
-	c.mu.Lock()
-	if current, ok := c.pending[pendingKey]; ok && current.clientID == clientID {
-		delete(c.pending, pendingKey)
-	}
-	c.mu.Unlock()
 	return []string{result.MessageID}, nil
 }
 

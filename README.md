@@ -142,6 +142,10 @@ Messenger route remains gated. In `openmls-proxy` mode every Agent has its own
 private MLS state owner and the shared Relay persists only ciphertext; runtime
 metadata distinguishes that mode from the legacy plaintext fixture. The
 Messenger boundary is implemented by `tos-messenger` `9219ddb`.
+The `openfox-messenger-lab-agent` command can also keep Alice, Bob and Carol as
+three separately restartable OS processes with private control sockets and
+stable retry IDs, rather than composing all three channel instances in one
+acceptance process.
 
 The [`tos_messenger` production channel](docs/guides/tos-messenger.md) drains
 authenticated and admitted daemon events, independently checks their Event IDs

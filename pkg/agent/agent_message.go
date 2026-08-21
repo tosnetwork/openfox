@@ -27,9 +27,10 @@ func (al *AgentLoop) buildContinuationTarget(msg bus.InboundMessage) (*continuat
 	allocation := al.allocateRouteSession(route, msg)
 
 	return &continuationTarget{
-		SessionKey: resolveScopeKey(allocation.SessionKey, msg.SessionKey),
-		Channel:    msg.Channel,
-		ChatID:     msg.ChatID,
+		SessionKey:     resolveScopeKey(allocation.SessionKey, msg.SessionKey),
+		Channel:        msg.Channel,
+		ChatID:         msg.ChatID,
+		InboundContext: cloneInboundContext(&msg.Context),
 	}, nil
 }
 

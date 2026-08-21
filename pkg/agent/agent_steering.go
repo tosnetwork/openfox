@@ -62,7 +62,9 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 
 	// Publish final response
 	if finalResponse != "" {
-		al.PublishResponseIfNeeded(ctx, target.Channel, target.ChatID, target.SessionKey, finalResponse)
+		al.PublishResponseForInboundIfNeeded(
+			ctx, target.Channel, target.ChatID, target.SessionKey, finalResponse, target.InboundContext,
+		)
 	}
 }
 

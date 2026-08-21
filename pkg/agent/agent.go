@@ -115,9 +115,10 @@ type processOptions struct {
 }
 
 type continuationTarget struct {
-	SessionKey string
-	Channel    string
-	ChatID     string
+	SessionKey     string
+	Channel        string
+	ChatID         string
+	InboundContext *bus.InboundContext
 }
 
 const (
@@ -620,13 +621,14 @@ func (al *AgentLoop) runAgentLoop(
 				opts.Dispatch.InboundContext,
 				opts.Dispatch.Channel(),
 				opts.Dispatch.ChatID(),
-				opts.Dispatch.ReplyToMessageID(),
+				opts.Dispatch.MessageID(),
 			),
-			AgentID:      agentID,
-			SessionKey:   sessionKey,
-			Scope:        scope,
-			Content:      result.finalContent,
-			ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
+			AgentID:          agentID,
+			SessionKey:       sessionKey,
+			Scope:            scope,
+			Content:          result.finalContent,
+			ReplyToMessageID: opts.Dispatch.MessageID(),
+			ContextUsage:     computeContextUsage(agent, opts.Dispatch.SessionKey),
 		}
 		if modelName := strings.TrimSpace(result.modelName); modelName != "" {
 			if msg.Context.Raw == nil {

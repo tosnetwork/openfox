@@ -40,6 +40,17 @@ func (al *AgentLoop) publishResponseOrError(
 }
 
 func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) {
+	al.PublishResponseForInboundIfNeeded(ctx, channel, chatID, sessionKey, response, nil)
+}
+
+// PublishResponseForInboundIfNeeded preserves the runtime-owned inbound
+// context needed by authenticated channels while keeping the legacy wrapper
+// for best-effort channels and internal callers.
+func (al *AgentLoop) PublishResponseForInboundIfNeeded(
+	ctx context.Context,
+	channel, chatID, sessionKey, response string,
+	inbound *bus.InboundContext,
+) {
 	if response == "" {
 		return
 	}
@@ -73,10 +84,19 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 		return
 	}
 
+	replyToMessageID := ""
+	if inbound != nil {
+		replyToMessageID = inbound.MessageID
+	}
 	msg := bus.OutboundMessage{
-		Context:    bus.NewOutboundContext(channel, chatID, ""),
+		Channel:    channel,
+		ChatID:     chatID,
+		Context:    outboundContextFromInbound(inbound, channel, chatID, replyToMessageID),
 		SessionKey: sessionKey,
 		Content:    response,
+	}
+	if inbound != nil {
+		msg.ReplyToMessageID = replyToMessageID
 	}
 	if sessionKey != "" {
 		msg.ContextUsage = computeContextUsage(al.agentForSession(sessionKey), sessionKey)

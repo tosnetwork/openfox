@@ -232,6 +232,14 @@ func (p *failOnceLLMProvider) GetDefaultModel() string {
 // =============================================================================
 
 func newTurnCoordTestLoop(t *testing.T, provider providers.LLMProvider) (*AgentLoop, *AgentInstance, func()) {
+	al, agent, _, cleanup := newTurnCoordTestLoopWithBus(t, provider)
+	return al, agent, cleanup
+}
+
+func newTurnCoordTestLoopWithBus(
+	t *testing.T,
+	provider providers.LLMProvider,
+) (*AgentLoop, *AgentInstance, *bus.MessageBus, func()) {
 	t.Helper()
 	tmpDir := t.TempDir()
 
@@ -253,7 +261,7 @@ func newTurnCoordTestLoop(t *testing.T, provider providers.LLMProvider) (*AgentL
 		t.Fatal("expected default agent")
 	}
 
-	return al, agent, func() {
+	return al, agent, msgBus, func() {
 		al.Close()
 	}
 }
@@ -439,6 +447,40 @@ func TestAgentLoopBusyAuthenticatedSessionRetriesWithoutVolatileSteering(t *test
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestAgentLoopReplyPreservesAuthenticatedMessengerOrigin(t *testing.T) {
+	al, _, msgBus, cleanup := newTurnCoordTestLoopWithBus(t, &simpleConvProvider{})
+	defer cleanup()
+	eventID := "evt_" + strings.Repeat("1", 64)
+	conversationID := "conv_" + strings.Repeat("2", 64)
+	result := make(chan error, 1)
+	msg := bus.InboundMessage{Context: bus.InboundContext{
+		Channel: "tos_messenger", ChatID: conversationID, ChatType: "direct", MessageID: eventID,
+		SenderID: "tos_messenger:agent-peer", AuthenticatedMessagingOrigin: &actionauth.Origin{
+			AgentID: "agent_" + strings.Repeat("3", 64), EndpointID: "mep_" + strings.Repeat("4", 64),
+			DeviceID: "dev_" + strings.Repeat("5", 64), EventID: eventID,
+			ConversationID: conversationID, Kind: "text", ReceivedAtUnix: 1_800_000_000,
+		},
+	}, Content: "authenticated question", ApplicationResult: result}
+	msg = bus.NormalizeInboundMessage(msg)
+	done := make(chan struct{})
+	go func() { al.runTurnWithSteering(context.Background(), msg); close(done) }()
+	if err := <-result; err != nil {
+		t.Fatalf("application result=%v", err)
+	}
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		origin := outbound.Context.AuthenticatedMessagingOrigin
+		if outbound.Content == "" || outbound.Channel != "tos_messenger" || outbound.ChatID != conversationID ||
+			outbound.ReplyToMessageID != eventID || outbound.Context.MessageID != eventID ||
+			outbound.Context.ReplyToMessageID != eventID || origin == nil || origin.EventID != eventID {
+			t.Fatalf("outbound=%+v", outbound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("authenticated reply was not published")
+	}
+	<-done
 }
 
 // =============================================================================

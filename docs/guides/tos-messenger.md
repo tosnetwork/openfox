@@ -59,7 +59,10 @@ provenance.
 
 `Send` accepts only a response whose context carries the exact authenticated
 Messenger Event it is answering and whose chat has an operator-configured
-route. OpenFox sends only message semantics to `outbox.compose`; the daemon
+route. The AgentLoop preserves that runtime-owned origin and sets the reply
+target to the current inbound Event when it publishes its final response; it
+does not reconstruct an empty generic outbound context after model execution.
+OpenFox sends only message semantics to `outbox.compose`; the daemon
 owns sender identity, network, clock, kind, payload schema and Event ID. The
 configured conversation/room/session/recipient binding is never taken from
 model output. A stable idempotency key derived from the authenticated input,

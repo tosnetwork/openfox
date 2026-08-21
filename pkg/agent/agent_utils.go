@@ -78,12 +78,13 @@ func outboundMessageForTurn(ts *turnState, content string) bus.OutboundMessage {
 			ts.opts.Dispatch.InboundContext,
 			ts.channel,
 			ts.chatID,
-			ts.opts.Dispatch.ReplyToMessageID(),
+			ts.opts.Dispatch.MessageID(),
 		),
-		AgentID:    agentID,
-		SessionKey: sessionKey,
-		Scope:      scope,
-		Content:    content,
+		AgentID:          agentID,
+		SessionKey:       sessionKey,
+		Scope:            scope,
+		Content:          content,
+		ReplyToMessageID: ts.opts.Dispatch.MessageID(),
 	}
 }
 

@@ -53,7 +53,8 @@ idempotent for the exact label and sorted member set.
 The cursor file is mode `0600`, atomically replaced and directory-fsynced. A
 message is checkpointed only after it enters the OpenFox bus. This yields
 at-least-once processing across a crash: the last message may reappear, but a
-message is not checkpointed before the Agent can observe it.
+message is not checkpointed before the Agent can observe it. The long-running
+Agent command strengthens this boundary as described below.
 
 ## Three-Agent executable acceptance
 
@@ -102,5 +103,29 @@ an `active` supervisor state can briefly precede control-socket readiness.
 with identical content returns the same message; content substitution is
 refused. The transcript is mode `0600`, atomically replaced, bounded to 4096
 records and rejects Event-ID substitution. These processes remain deterministic
-acceptance Agents without a model provider; they exercise process separation,
-encrypted channel ownership, durable restart, and operator-visible control.
+acceptance Agents without a model provider in the default `static` reply mode;
+they exercise process separation, encrypted channel ownership, durable restart,
+and operator-visible control.
+
+For a stronger runtime acceptance, add both:
+
+```text
+-reply-mode agent-loop \
+-agent-workspace /absolute/private/path/for/this-agent
+```
+
+This starts the real OpenFox `AgentLoop.Run` and gives it a local deterministic
+provider, so no external model credential or network call is involved. Inbound
+events are durably transcribed before entering the Agent bus; trigger filtering
+still prevents catch-up loops. The AgentLoop performs its normal room/session
+routing, durable history application and response publication. A separate
+outbound worker requires the response to target the exact room and current
+inbound Event, derives a stable send claim from Agent, target and content, and
+records `runtime: openfox-agent-loop` plus `reply_to_event_id` in the private
+transcript. The channel does not advance its cursor until this complete path is
+durable. A crash before completion retries the input; a crash after completion
+but before cursor fsync recognizes the durable reply and skips a second Agent
+turn. Each process must use a different mode-`0700` Agent workspace, whose
+session history survives process restart. This proves local OpenFox runtime
+composition only; it is not evidence for a production model, public route or
+independent operator.

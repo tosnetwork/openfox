@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -183,6 +184,56 @@ func TestChannelCarriesGroupMessagesAndPersistsCursor(t *testing.T) {
 	defer hub.mu.Unlock()
 	if len(hub.after) == 0 || hub.after[len(hub.after)-1] != 1 || hub.sends != 1 {
 		t.Fatalf("hub observations: after=%v sends=%d", hub.after, hub.sends)
+	}
+}
+
+func TestDurableApplicationDefersCursorAndRetriesFailure(t *testing.T) {
+	hub := &fakeHub{}
+	server := httptest.NewServer(hub)
+	defer server.Close()
+	cursorPath := filepath.Join(t.TempDir(), "cursor.json")
+	messageBus := bus.NewMessageBus()
+	channel := newTestChannel(t, server, messageBus, cursorPath)
+	if err := channel.EnableDurableApplication(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := channel.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer channel.Stop(context.Background())
+	first := <-messageBus.InboundChan()
+	if first.ApplicationResult == nil {
+		t.Fatal("durable application result channel missing")
+	}
+	first.ApplicationResult <- context.Canceled
+	var retry bus.InboundMessage
+	select {
+	case retry = <-messageBus.InboundChan():
+	case <-time.After(2 * time.Second):
+		t.Fatal("failed application was not retried")
+	}
+	if retry.MessageID != first.MessageID || retry.ApplicationResult == nil {
+		t.Fatalf("retry=%+v", retry)
+	}
+	if _, err := os.Stat(cursorPath); !os.IsNotExist(err) {
+		t.Fatalf("cursor advanced before durable application: %v", err)
+	}
+	retry.ApplicationResult <- nil
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		raw, err := os.ReadFile(cursorPath)
+		if err == nil {
+			var state cursorState
+			if json.Unmarshal(raw, &state) == nil && state.Cursors[testRoom] == 1 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cursor did not advance after durable application")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

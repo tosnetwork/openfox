@@ -133,6 +133,96 @@ func TestConsumePersistsInboundAndRepliesWithoutLooping(t *testing.T) {
 	}
 }
 
+func TestAgentLoopModeRunsRealTurnAndBindsReply(t *testing.T) {
+	service, channel := newTestService(t)
+	service.replyMode = replyModeAgentLoop
+	transportBus := bus.NewMessageBus()
+	agentBus := bus.NewMessageBus()
+	loop, err := newLabAgentLoop(
+		service.agentID,
+		filepath.Join(t.TempDir(), "agent-workspace"),
+		service.replyPrefix,
+		agentBus,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loop.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errorsCh := make(chan error, 3)
+	go func() { errorsCh <- loop.Run(ctx) }()
+	go func() { errorsCh <- service.consumeAgentLoop(ctx, transportBus.InboundChan(), agentBus) }()
+	go func() { errorsCh <- service.sendAgentLoop(ctx, agentBus.OutboundChan()) }()
+	application := make(chan error, 1)
+	inbound := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel: "tos_messenger_lab", ChatID: service.roomID, ChatType: "group",
+			SenderID: "tos_messenger_lab:agent-founder", MessageID: "event-agentloop-1",
+		},
+		Sender:            bus.SenderInfo{PlatformID: "agent-founder"},
+		Content:           "probe: actual AgentLoop turn",
+		ApplicationResult: application,
+	}
+	if err := transportBus.PublishInbound(ctx, inbound); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-application:
+		if err != nil {
+			t.Fatalf("durable AgentLoop application: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("durable AgentLoop application timed out")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		channel.mu.Lock()
+		sent := append([]bus.OutboundMessage(nil), channel.sent...)
+		channel.mu.Unlock()
+		if len(sent) == 1 {
+			if sent[0].ReplyToMessageID != "event-agentloop-1" ||
+				!strings.HasPrefix(sent[0].Content, "ack:agent-a-agentloop-") {
+				t.Fatalf("reply=%+v", sent[0])
+			}
+			break
+		}
+		select {
+		case err := <-errorsCh:
+			t.Fatalf("AgentLoop pipeline stopped: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("AgentLoop reply timed out")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	service.mu.Lock()
+	if len(service.state.Transcript) != 2 || service.state.Transcript[1].Runtime != agentLoopRuntime ||
+		service.state.Transcript[1].ReplyToEventID != "event-agentloop-1" {
+		t.Fatalf("transcript=%+v", service.state.Transcript)
+	}
+	service.mu.Unlock()
+	replayResult := make(chan error, 1)
+	inbound.ApplicationResult = replayResult
+	if err := transportBus.PublishInbound(ctx, inbound); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-replayResult:
+		if err != nil {
+			t.Fatalf("exact replay application: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("exact replay was not recognized")
+	}
+	channel.mu.Lock()
+	defer channel.mu.Unlock()
+	if len(channel.sent) != 1 {
+		t.Fatalf("exact replay ran a second AgentLoop send: %+v", channel.sent)
+	}
+}
+
 func TestRecordIsIdempotentAndRejectsEventIDSubstitution(t *testing.T) {
 	service, _ := newTestService(t)
 	line := transcriptLine{Direction: "inbound", AgentID: "agent-peer", EventID: "event-1", Content: "hello"}

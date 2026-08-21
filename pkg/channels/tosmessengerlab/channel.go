@@ -76,12 +76,13 @@ type Channel struct {
 	client   *http.Client
 	endpoint string
 
-	mu      sync.Mutex
-	cursors map[string]uint64
-	rooms   map[string]room
-	pending map[[sha256.Size]byte]pendingSend
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	mu                 sync.Mutex
+	cursors            map[string]uint64
+	rooms              map[string]room
+	pending            map[[sha256.Size]byte]pendingSend
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
+	applicationTimeout time.Duration
 }
 
 func New(bc *config.Channel, settings *config.TOSMessengerLabSettings, messageBus *bus.MessageBus) (*Channel, error) {
@@ -114,6 +115,18 @@ func New(bc *config.Channel, settings *config.TOSMessengerLabSettings, messageBu
 		cursors:     map[string]uint64{}, rooms: map[string]room{}, pending: map[[sha256.Size]byte]pendingSend{},
 	}
 	return c, nil
+}
+
+// EnableDurableApplication makes cursor advancement wait until the consumer
+// confirms that the input is durably applied. It is intended for long-running
+// process acceptance; ordinary channel fixtures retain the legacy bus-publication
+// boundary when the timeout is zero.
+func (c *Channel) EnableDurableApplication(timeout time.Duration) error {
+	if timeout <= 0 || timeout > time.Minute {
+		return errors.New("durable application timeout must be within 1ns..1m")
+	}
+	c.applicationTimeout = timeout
+	return nil
 }
 
 func (c *Channel) Start(ctx context.Context) error {
@@ -333,7 +346,24 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 						"tos_agent_id": inbound.SenderAgentID,
 					},
 				}
-				if err := c.HandleInboundContext(ctx, roomID, inbound.Content, nil, inboundCtx, sender); err != nil {
+				if c.applicationTimeout > 0 {
+					result := make(chan error, 1)
+					if err := c.HandleInboundContextWithApplicationResult(
+						ctx, roomID, inbound.Content, nil, inboundCtx, result, sender,
+					); err != nil {
+						return err
+					}
+					select {
+					case err := <-result:
+						if err != nil {
+							return fmt.Errorf("Messenger lab input application failed: %w", err)
+						}
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(c.applicationTimeout):
+						return errors.New("Messenger lab input application timed out")
+					}
+				} else if err := c.HandleInboundContext(ctx, roomID, inbound.Content, nil, inboundCtx, sender); err != nil {
 					return err
 				}
 			}

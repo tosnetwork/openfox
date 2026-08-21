@@ -30,13 +30,14 @@ var sessionPattern = regexp.MustCompile(`^ses_[0-9a-f]{64}$`)
 
 type Channel struct {
 	*channels.BaseChannel
-	settings *config.TOSMessengerSettings
-	interval time.Duration
-	lease    uint64
-	timeout  time.Duration
-	routes   map[string]config.TOSMessengerRoute
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	settings    *config.TOSMessengerSettings
+	interval    time.Duration
+	lease       uint64
+	timeout     time.Duration
+	routes      map[string]config.TOSMessengerRoute
+	attachments bool
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 func New(bc *config.Channel, settings *config.TOSMessengerSettings, messageBus *bus.MessageBus) (*Channel, error) {
@@ -86,7 +87,7 @@ func New(bc *config.Channel, settings *config.TOSMessengerSettings, messageBus *
 	return &Channel{
 		BaseChannel: channels.NewBaseChannel(config.ChannelTOSMessenger, settings, messageBus, bc.AllowFrom),
 		settings:    settings, interval: interval, lease: uint64(lease), timeout: 10 * time.Second,
-		routes: routes,
+		routes: routes, attachments: settings.EnableAttachments,
 	}, nil
 }
 
@@ -206,7 +207,80 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 			return err
 		}
 	}
+	if c.attachments {
+		return c.pollAttachments(ctx)
+	}
 	return nil
+}
+
+func (c *Channel) pollAttachments(ctx context.Context) error {
+	response, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "attachments.pending", Limit: 64})
+	if err != nil {
+		return err
+	}
+	for _, offered := range response.Attachments {
+		if !validPendingAttachment(offered) {
+			return errors.New("Messenger returned invalid attachment inbox metadata")
+		}
+		leaseID, err := newLeaseID()
+		if err != nil {
+			return err
+		}
+		claimed, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "attachments.claim",
+			EventID: offered.EventID, LeaseID: leaseID, LeaseSeconds: c.lease})
+		if err != nil {
+			continue
+		}
+		if claimed.Attachment == nil || claimed.Attachment.EventID != offered.EventID ||
+			claimed.Attachment.SenderEndpointID != offered.SenderEndpointID ||
+			claimed.Attachment.ConversationID != offered.ConversationID ||
+			claimed.Attachment.ReceivedAtUnix != offered.ReceivedAtUnix || !validAdmittedAttachment(*claimed.Attachment) {
+			if _, rejectErr := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "inbox.reject",
+				EventID: offered.EventID, LeaseID: leaseID, Code: "not-authentic"}); rejectErr != nil {
+				return rejectErr
+			}
+			continue
+		}
+		if err := c.publishAttachment(ctx, *claimed.Attachment); err != nil {
+			return err
+		}
+		if _, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "inbox.complete",
+			EventID: offered.EventID, LeaseID: leaseID}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Channel) publishAttachment(ctx context.Context, attachment admittedAttachment) error {
+	chatID, chatType, spaceType := attachment.ConversationID, "direct", ""
+	if attachment.RoomID != "" {
+		chatID, chatType, spaceType = attachment.RoomID, "group", "room"
+	}
+	senderID := config.ChannelTOSMessenger + ":" + attachment.SenderAgentID
+	origin := actionauth.Origin{AgentID: attachment.SenderAgentID, EndpointID: attachment.SenderEndpointID,
+		DeviceID: attachment.SenderDeviceID, EventID: attachment.EventID, ConversationID: attachment.ConversationID,
+		Kind: "artifact.encrypted", ReceivedAtUnix: attachment.ReceivedAtUnix}
+	inbound := bus.InboundContext{Channel: c.Name(), ChatID: chatID, ChatType: chatType,
+		SpaceID: attachment.RoomID, SpaceType: spaceType, SenderID: senderID, MessageID: attachment.EventID,
+		ReplyToMessageID: attachment.ReplyToEventID,
+		Raw: map[string]string{"transport": "tos-messengerd-authenticated-admission", "attachment_filename": attachment.Filename,
+			"attachment_media_type": attachment.MediaType, "attachment_plaintext_digest": attachment.PlaintextDigest},
+		AuthenticatedMessagingOrigin: &origin}
+	result := make(chan error, 1)
+	sender := bus.SenderInfo{Platform: config.ChannelTOSMessenger, PlatformID: attachment.SenderAgentID,
+		CanonicalID: senderID}
+	if err := c.HandleInboundContextWithApplicationResult(ctx, chatID, attachment.Body, nil, inbound, result, sender); err != nil {
+		return err
+	}
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(c.timeout):
+		return errors.New("OpenFox attachment application persistence timed out")
+	}
 }
 
 func (c *Channel) publishModeration(

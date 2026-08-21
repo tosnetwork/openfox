@@ -13,6 +13,7 @@ after the daemon has authenticated, decrypted, admitted, and durably staged it.
       "socket_path": "/run/user/1000/tos-messengerd/runtime.sock",
       "poll_interval_ms": 250,
       "lease_seconds": 30,
+      "enable_attachments": true,
       "routes": [{
         "chat_id": "room_<64 lowercase hex>",
         "conversation_id": "conv_<64 lowercase hex>",
@@ -35,6 +36,24 @@ For `room.message` it additionally binds the body Room ID to the Event Room ID
 and requires a non-zero membership epoch, then publishes it as an OpenFox
 `group`/`room` input. Unknown, substituted, cross-room, or malformed events are
 rejected before the OpenFox bus.
+
+With `enable_attachments`, the adapter also drains the daemon's reserved
+`attachments.pending`/`attachments.claim` boundary. The general runtime inbox
+cannot list or claim an `artifact.encrypted` Event and OpenFox never receives
+its Reference, fetch grant, capability private key, ciphertext, or scanner
+stderr. The daemon first fetches the manifest-bound chunks, authenticates and
+opens them, and runs every SHA-256-pinned scanner in its fail-closed Linux
+sandbox. It releases only bounded non-empty UTF-8 `text/plain` plus the exact
+plaintext digest and scanner identities.
+
+OpenFox independently checks all returned identifiers, filename, media type,
+size, UTF-8 shape, scanner ordering and canonical digests, and recomputes the
+SHA-256 of the returned body. It publishes the body with an authenticated
+`artifact.encrypted` origin and completes the lease only after the Agent
+session has durably persisted that exact Event/content/provenance tuple. A
+fetch, AEAD, scan, validation, or persistence failure releases no content and
+leaves the durable lease retryable. This is an inbound admitted-text path; it
+does not claim that OpenFox composes or uploads outbound attachments.
 
 `room.moderation` is never published as user text. The adapter independently
 decodes its canonical Room ID, authority revisions, target Event ID, action and

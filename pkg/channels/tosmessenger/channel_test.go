@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/bus"
 	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/media"
 )
 
 func TestChannelPublishesOnlyDaemonAdmittedAttachmentAndCompletesLease(t *testing.T) {
@@ -322,6 +324,64 @@ func TestSendRefusesUntrustedOrUnroutedOutput(t *testing.T) {
 	}
 }
 
+func TestSendMediaStreamsOnlyPlaintextSemanticsAndStableRetry(t *testing.T) {
+	body := bytes.Repeat([]byte("x"), outboundAttachmentChunk+17)
+	path := filepath.Join(t.TempDir(), "evidence.txt")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socket, requests, stop := serveAttachmentOutbox(t)
+	defer stop()
+	roomID := "room_" + strings.Repeat("9", 64)
+	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
+		SocketPath: socket, EnableAttachments: true,
+		Routes: []config.TOSMessengerRoute{{ChatID: roomID, ConversationID: "conv_" + strings.Repeat("3", 64),
+			RoomID: roomID, MembershipEpoch: 3, SessionID: "ses_" + strings.Repeat("8", 64),
+			RecipientEndpointID: "mep_" + strings.Repeat("6", 64), LifetimeSeconds: 3600}},
+	}, bus.NewMessageBus())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := media.NewFileMediaStore()
+	ref, err := store.Store(path, media.MediaMeta{Filename: "evidence.txt", ContentType: "text/plain",
+		CleanupPolicy: media.CleanupPolicyForgetOnly}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel.SetMediaStore(store)
+	channel.SetRunning(true)
+	originEvent := "evt_" + strings.Repeat("a", 64)
+	message := bus.OutboundMediaMessage{ChatID: roomID, Context: bus.InboundContext{MessageID: originEvent,
+		AuthenticatedMessagingOrigin: &actionauth.Origin{EventID: originEvent, ReceivedAtUnix: 1_800_000_100}},
+		Parts: []bus.MediaPart{{Type: "file", Ref: ref, Filename: "evidence.txt", ContentType: "text/plain"}}}
+	first, err := channel.SendMedia(context.Background(), message)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first media send ids=%v err=%v", first, err)
+	}
+	retry, err := channel.SendMedia(context.Background(), message)
+	if err != nil || len(retry) != 1 || retry[0] != first[0] {
+		t.Fatalf("retry media send ids=%v err=%v", retry, err)
+	}
+	begin, chunkOne, chunkTwo, commitOne, commitTwo, retryBegin := <-requests, <-requests, <-requests, <-requests, <-requests, <-requests
+	digest := sha256.Sum256(body)
+	if begin.Op != "attachments.outbound.begin" || begin.Filename != "evidence.txt" || begin.MediaType != "text/plain" ||
+		begin.PlaintextDigest != "sha256:"+hex.EncodeToString(digest[:]) || begin.PlaintextBytes != uint64(len(body)) ||
+		begin.RoomID != roomID || begin.MembershipEpoch != 3 || begin.ReplyToEventID != originEvent {
+		t.Fatalf("unexpected attachment begin: %+v", begin)
+	}
+	if chunkOne.Op != "attachments.outbound.chunk" || chunkOne.UploadID == "" || chunkOne.ChunkIndex != 0 ||
+		!bytes.Equal(chunkOne.Chunk, body[:outboundAttachmentChunk]) || chunkTwo.Op != "attachments.outbound.chunk" ||
+		chunkTwo.UploadID != chunkOne.UploadID || chunkTwo.ChunkIndex != 1 || !bytes.Equal(chunkTwo.Chunk, body[outboundAttachmentChunk:]) {
+		t.Fatalf("unexpected attachment chunks: one=%s/%d/%d two=%s/%d/%d", chunkOne.UploadID, chunkOne.ChunkIndex,
+			len(chunkOne.Chunk), chunkTwo.UploadID, chunkTwo.ChunkIndex, len(chunkTwo.Chunk))
+	}
+	if commitOne.Op != "attachments.outbound.commit" || commitOne.UploadID != chunkOne.UploadID ||
+		commitTwo.Op != "attachments.outbound.commit" || commitTwo.UploadID != chunkOne.UploadID ||
+		retryBegin.Op != "attachments.outbound.begin" || retryBegin.IdempotencyKey != begin.IdempotencyKey {
+		t.Fatalf("unexpected attachment commit/retry: first=%+v second=%+v retry=%+v", commitOne, commitTwo, retryBegin)
+	}
+}
+
 func TestDecoderRefusesHistoricalMessengerV1AsCurrentInput(t *testing.T) {
 	const eventID = "evt_642815c3395336130bae8968b9861001d96da9d670cf08485066bb9f8a69c19c"
 	const raw = `{"schema":"tos.messaging.event.v1","network_id":"tos-local","genesis_root_hash":"1111111111111111111111111111111111111111111111111111111111111111","genesis_file_hash":"2222222222222222222222222222222222222222222222222222222222222222","conversation_id":"conv_3333333333333333333333333333333333333333333333333333333333333333","event_id":"evt_642815c3395336130bae8968b9861001d96da9d670cf08485066bb9f8a69c19c","sender_agent_id":"agent_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sender_messaging_endpoint_id":"mep_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","sender_device_id":"dev_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","created_at_unix":1800000000,"expires_at_unix":1800003600,"event_kind":"text","payload_schema":"tos.messaging.payload.text.v1","content_base64":"dG9zLm1lc3NhZ2luZy5wYXlsb2FkLnYxAHRvcy5tZXNzYWdpbmcucGF5bG9hZC50ZXh0LnYxAAAAABl0ZXh0L3BsYWluOyBjaGFyc2V0PXV0Zi04AAAAHGNyb3NzIGltcGxlbWVudGF0aW9uIGZpeHR1cmUAAAAA"}`
@@ -604,6 +664,53 @@ func serveCompose(t *testing.T, count int) (string, <-chan localRequest, func())
 			response := localResponse{
 				Schema: responseSchema, OK: true,
 				Fresh: index == 0, EventID: "evt_" + strings.Repeat("d", 64),
+			}
+			body, _ := json.Marshal(response)
+			binary.BigEndian.PutUint32(header[:], uint32(len(body)))
+			_, _ = connection.Write(header[:])
+			_, _ = connection.Write(body)
+			_ = connection.Close()
+		}
+	}()
+	return path, requests, func() { _ = listener.Close(); <-done }
+}
+
+func serveAttachmentOutbox(t *testing.T) (string, <-chan localRequest, func()) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "runtime.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan localRequest, 6)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for index := 0; index < 6; index++ {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			var header [4]byte
+			_, _ = io.ReadFull(connection, header[:])
+			raw := make([]byte, binary.BigEndian.Uint32(header[:]))
+			_, _ = io.ReadFull(connection, raw)
+			var request localRequest
+			_ = json.Unmarshal(raw, &request)
+			requests <- request
+			response := localResponse{Schema: responseSchema, OK: true}
+			switch index {
+			case 0:
+				response.UploadID = "attup_" + strings.Repeat("b", 64)
+			case 1, 2:
+				response.UploadID = "attup_" + strings.Repeat("b", 64)
+				response.NextChunk = uint32(index)
+			case 3:
+				response.UploadID = "attup_" + strings.Repeat("b", 64)
+				response.NextChunk = 1
+			case 4, 5:
+				response.Complete = true
+				response.EventID = "evt_" + strings.Repeat("d", 64)
 			}
 			body, _ := json.Marshal(response)
 			binary.BigEndian.PutUint32(header[:], uint32(len(body)))

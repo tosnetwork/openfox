@@ -34,6 +34,17 @@ func NewEscrowSettlementReader(reader finalizedEscrowReader) (*EscrowSettlementR
 	return &EscrowSettlementReader{reader: reader}, nil
 }
 
+// ResolveFinalizedExact exposes the same single authoritative observation for
+// staged recovery evidence without introducing another chain reader.
+func (r *EscrowSettlementReader) ResolveFinalizedExact(
+	ctx context.Context, escrowAddress string,
+) (*toschain.FinalizedEscrowV1, bool, error) {
+	if r == nil || r.reader == nil {
+		return nil, false, errors.New("nativeimpl: escrow settlement reader is unavailable")
+	}
+	return r.reader.ResolveFinalized(ctx, escrowAddress)
+}
+
 // ResolveEscrow maps the finalized escrow into the bridge's funding view. A
 // not-found escrow is reported as not found (never as funded), and any amount
 // that is negative or does not fit an atomic uint64 fails closed rather than

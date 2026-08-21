@@ -184,8 +184,49 @@ func TestBuyerAtMostOnceFundingAcrossRetries(t *testing.T) {
 	if sig.fundCalls != 1 {
 		t.Fatalf("three retries must fund exactly once, got %d", sig.fundCalls)
 	}
-	if len(tr.dispatched) != 3 {
-		t.Fatalf("each retry may re-dispatch (Gate enforces at-most-once execution), got %d", len(tr.dispatched))
+	if len(tr.dispatched) != 1 {
+		t.Fatalf("resolved retries must not re-dispatch, got %d", len(tr.dispatched))
+	}
+}
+
+func TestBuyerSettlementRecoveryDoesNotRedispatch(t *testing.T) {
+	b, _, _, transport := happyBuyer()
+	receipts := b.Receipts.(*fakeReceipts)
+	receipts.settlement = Settlement{}
+	if _, err := b.Purchase(context.Background(), ref(), TransportAgentPacket, buildTask); !errors.Is(err, ErrSettlementPending) {
+		t.Fatalf("pending settlement = %v", err)
+	}
+	if len(transport.dispatched) != 1 {
+		t.Fatalf("initial dispatches = %d", len(transport.dispatched))
+	}
+	receipts.settlement = Settlement{Released: true, ProviderCreditAtomic: baseProposal().MaxAtomicAmount}
+	if _, err := b.Purchase(context.Background(), ref(), TransportAgentPacket, buildTask); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.dispatched) != 1 {
+		t.Fatalf("settlement recovery re-dispatched %d times", len(transport.dispatched))
+	}
+}
+
+func TestBuyerStagedFundingReservationIsNotDoubleCounted(t *testing.T) {
+	b, _, signer, _ := happyBuyer()
+	b.Policy.DailyBudgetAtomic = b.Policy.MaxAtomicPurchase
+	key := PurchaseKey{QuoteCommitment: qc, EscrowAddress: esc}
+	if _, err := b.Journal.Begin(PurchaseRecord{Key: key, AssetMaster: b.Policy.Asset.Master,
+		AtomicAmount: b.Policy.MaxAtomicPurchase}, b.now()); err != nil {
+		t.Fatal(err)
+	}
+	if acquired, _, err := b.Journal.AcquireFundingLease(key); err != nil || !acquired {
+		t.Fatalf("lease = %t, %v", acquired, err)
+	}
+	if err := b.Journal.Advance(key, PhaseFunded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Purchase(context.Background(), ref(), TransportA2A, buildTask); err != nil {
+		t.Fatal(err)
+	}
+	if signer.fundCalls != 0 {
+		t.Fatalf("staged funded retry called custody %d times", signer.fundCalls)
 	}
 }
 

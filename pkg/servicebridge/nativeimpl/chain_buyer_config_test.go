@@ -20,6 +20,9 @@ func writeChainBuyerConfig(t *testing.T) string {
 	if err := os.Mkdir(filepath.Join(state, "budget"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(state, "purchases"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	base := testChainBuyerStackConfig(t)
 	writeCode := func(name string, value *cell.Cell) string {
 		path := filepath.Join(directory, name)

@@ -109,18 +109,18 @@ func ResumeActionFor(p Phase) ResumeAction {
 // escrow_address) pair the shared execution Gate uses; request/idempotency keys
 // are retry aliases and never define the payment identity.
 type PurchaseKey struct {
-	QuoteCommitment string
-	EscrowAddress   string
+	QuoteCommitment string `json:"quote_commitment"`
+	EscrowAddress   string `json:"escrow_address"`
 }
 
 // PurchaseRecord is one atomic slot: it reserves budget and records the full
 // intent in a single claim.
 type PurchaseRecord struct {
-	Key          PurchaseKey
-	Phase        Phase
-	AssetMaster  string
-	AtomicAmount uint64
-	ClaimedUnix  int64
+	Key          PurchaseKey `json:"key"`
+	Phase        Phase       `json:"phase"`
+	AssetMaster  string      `json:"asset_master"`
+	AtomicAmount uint64      `json:"atomic_amount"`
+	ClaimedUnix  int64       `json:"claimed_unix"`
 }
 
 var (

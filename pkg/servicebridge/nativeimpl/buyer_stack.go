@@ -2,8 +2,10 @@ package nativeimpl
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tosnetwork/openfox/pkg/actionauth"
@@ -40,10 +42,13 @@ type ChainBuyerStackConfig struct {
 // the OpenFox buyer. SDK and Capability are the same buyersdk instance; Escrow
 // backs both funding reconciliation and servicebridge settlement reads.
 type ChainBuyerStack struct {
-	SDK        *buyersdk.Buyer
-	Capability CapabilityValidator
-	Escrow     *EscrowSettlementReader
-	Deployer   EscrowDeployer
+	SDK              *buyersdk.Buyer
+	Capability       CapabilityValidator
+	Escrow           *EscrowSettlementReader
+	Deployer         EscrowDeployer
+	Journal          servicebridge.PurchaseJournal
+	Network          servicebridge.Network
+	RegistryCodeHash string
 }
 
 // EscrowDeployer preserves the owner-review boundary between custody signing
@@ -57,30 +62,40 @@ type EscrowDeployer interface {
 // reviewed chain stack. Input remains one negotiation, while the stack's
 // checkpoints and budget journal persist across purchases.
 type ChainNativeBuyerConfig struct {
-	Stack         *ChainBuyerStack
-	Input         buyersdk.PurchaseInput
-	Policy        servicebridge.SpendingPolicy
-	Transport     servicebridge.TaskTransport
-	Journal       servicebridge.PurchaseJournal
-	Confirm       servicebridge.Confirmer
-	Authorizer    actionauth.Authorizer
-	QuoteVerifier servicebridge.FinalizedQuoteVerifier
-	MandateID     string
+	Stack          *ChainBuyerStack
+	Input          buyersdk.PurchaseInput
+	Policy         servicebridge.SpendingPolicy
+	OwnerPublicKey ed25519.PublicKey
+	Transport      servicebridge.TaskTransport
+	Confirm        servicebridge.Confirmer
+	Authorizer     actionauth.Authorizer
+	QuoteVerifier  servicebridge.FinalizedQuoteVerifier
+	MandateID      string
 }
 
 // NewChainNativeBuyer connects the concrete finalized chain stack to the
 // mandatory Messenger-authorized OpenFox buyer lifecycle for one negotiation.
 func NewChainNativeBuyer(c ChainNativeBuyerConfig) (*servicebridge.Buyer, error) {
-	if c.Stack == nil || c.Stack.SDK == nil || c.Stack.Capability == nil || c.Stack.Escrow == nil || c.Stack.Deployer == nil {
+	if c.Stack == nil || c.Stack.SDK == nil || c.Stack.Capability == nil || c.Stack.Escrow == nil ||
+		c.Stack.Deployer == nil || c.Stack.Journal == nil {
 		return nil, errors.New("nativeimpl: chain-native buyer needs an assembled chain stack")
+	}
+	if err := servicebridge.VerifySpendingPolicySignature(c.Policy, c.OwnerPublicKey); err != nil {
+		return nil, err
+	}
+	policy := c.Policy
+	policy.OwnerSignature = append([]byte(nil), c.Policy.OwnerSignature...)
+	policy.CapabilityAllow = make(map[string]bool, len(c.Policy.CapabilityAllow))
+	for capability, allowed := range c.Policy.CapabilityAllow {
+		policy.CapabilityAllow[capability] = allowed
 	}
 	session, err := NewBuyerSession(c.Stack.SDK, c.Input)
 	if err != nil {
 		return nil, err
 	}
 	return NewNativeBuyer(NativeBuyerConfig{
-		Policy: c.Policy, Escrow: c.Stack.Escrow, Capability: c.Stack.Capability,
-		Session: session, Transport: c.Transport, Journal: c.Journal, Confirm: c.Confirm,
+		Policy: policy, Escrow: c.Stack.Escrow, Capability: c.Stack.Capability,
+		Session: session, Transport: c.Transport, Journal: c.Stack.Journal, Confirm: c.Confirm,
 		Authorizer: c.Authorizer, QuoteVerifier: c.QuoteVerifier, MandateID: c.MandateID,
 	})
 }
@@ -142,5 +157,14 @@ func NewChainBuyerStack(c ChainBuyerStackConfig) (*ChainBuyerStack, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ChainBuyerStack{SDK: sdk, Capability: sdk, Escrow: escrow, Deployer: c.EscrowDeployer}, nil
+	purchaseJournal, err := servicebridge.NewFilePurchaseJournal(filepath.Join(c.StateDir, "purchases"))
+	if err != nil {
+		return nil, err
+	}
+	return &ChainBuyerStack{SDK: sdk, Capability: sdk, Escrow: escrow,
+		Deployer: c.EscrowDeployer, Journal: purchaseJournal,
+		Network: servicebridge.Network{ID: c.Network.GetNetworkId(),
+			GenesisRootHash: strings.TrimPrefix(c.Network.GetGenesisRootHash(), "sha256:"),
+			GenesisFileHash: strings.TrimPrefix(c.Network.GetGenesisFileHash(), "sha256:")},
+		RegistryCodeHash: c.RegistryCodeHash}, nil
 }

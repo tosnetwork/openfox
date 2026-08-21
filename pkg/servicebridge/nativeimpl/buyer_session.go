@@ -12,6 +12,7 @@ import (
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+	"google.golang.org/protobuf/proto"
 )
 
 // purchasePreparer is the narrow behaviour of *buyersdk.Buyer the session
@@ -44,7 +45,12 @@ func NewBuyerSession(preparer purchasePreparer, input buyersdk.PurchaseInput) (*
 		input.Proposal.GetMaximumPrice() == nil {
 		return nil, errors.New("nativeimpl: buyer session needs a preparer and a complete quote proposal")
 	}
-	return &BuyerSession{preparer: preparer, input: input, prepared: map[string]*buyersdk.PreparedPurchase{}}, nil
+	owned := input
+	owned.Proposal = proto.Clone(input.Proposal).(*nativev1.QuoteProposalV1)
+	owned.ManifestJSON = append([]byte(nil), input.ManifestJSON...)
+	owned.ManifestCBOR = append([]byte(nil), input.ManifestCBOR...)
+	owned.ExecutionSignerEd25519 = append([]byte(nil), input.ExecutionSignerEd25519...)
+	return &BuyerSession{preparer: preparer, input: owned, prepared: map[string]*buyersdk.PreparedPurchase{}}, nil
 }
 
 // RequestQuote returns the non-canonical proposal projected from the negotiated

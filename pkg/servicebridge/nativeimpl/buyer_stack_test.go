@@ -1,7 +1,9 @@
 package nativeimpl
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
 	"os"
@@ -55,6 +57,9 @@ func testChainBuyerStackConfig(t *testing.T) ChainBuyerStackConfig {
 	if err := os.Mkdir(filepath.Join(state, "budget"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(state, "purchases"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	registryCode := cell.BeginCell().MustStoreUInt(0xdeadbeef, 32).EndCell()
 	escrowCode := cell.BeginCell().MustStoreUInt(0xeeeeeeee, 32).EndCell()
 	walletCode := cell.BeginCell().MustStoreUInt(0xaaaaaaaa, 32).EndCell()
@@ -84,7 +89,7 @@ func TestNewChainBuyerStackAssemblesOneAuthorityGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stack.SDK == nil || stack.Capability != stack.SDK || stack.Escrow == nil || stack.Deployer == nil {
+	if stack.SDK == nil || stack.Capability != stack.SDK || stack.Escrow == nil || stack.Deployer == nil || stack.Journal == nil {
 		t.Fatalf("stack = %+v", stack)
 	}
 }
@@ -110,9 +115,16 @@ func TestNewChainNativeBuyerConnectsReviewedStack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	policy := e2ePolicy()
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x42}, ed25519.SeedSize))
+	message, err := servicebridge.CanonicalSpendingPolicy(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.OwnerSignature = ed25519.Sign(privateKey, message)
 	buyer, err := NewChainNativeBuyer(ChainNativeBuyerConfig{
-		Stack: stack, Input: sampleInput(), Policy: e2ePolicy(),
-		Transport: fakeTaskTransport{}, Journal: servicebridge.NewInMemoryJournal(),
+		Stack: stack, Input: sampleInput(), Policy: policy, OwnerPublicKey: privateKey.Public().(ed25519.PublicKey),
+		Transport:  fakeTaskTransport{},
 		Authorizer: allowActionAuthorizer{}, QuoteVerifier: allowQuoteVerifier{},
 		MandateID: "mdt_" + strings.Repeat("5", 64),
 	})
@@ -122,10 +134,26 @@ func TestNewChainNativeBuyerConnectsReviewedStack(t *testing.T) {
 	if buyer == nil || buyer.QuoteVerifier == nil {
 		t.Fatalf("buyer = %+v", buyer)
 	}
+	policy.CapabilityAllow["cap_"+hex64] = false
+	policy.OwnerSignature[0] ^= 0xff
+	if !buyer.Policy.CapabilityAllow["cap_"+hex64] || bytes.Equal(buyer.Policy.OwnerSignature, policy.OwnerSignature) {
+		t.Fatal("production buyer retained mutable aliases to the signed policy")
+	}
 }
 
 func TestNewChainNativeBuyerRequiresReviewedStack(t *testing.T) {
 	if _, err := NewChainNativeBuyer(ChainNativeBuyerConfig{}); err == nil {
 		t.Fatal("chain-native buyer accepted a missing stack")
+	}
+}
+
+func TestNewChainNativeBuyerRejectsPlaceholderPolicySignature(t *testing.T) {
+	stack, err := NewChainBuyerStack(testChainBuyerStackConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewChainNativeBuyer(ChainNativeBuyerConfig{Stack: stack, Input: sampleInput(),
+		Policy: e2ePolicy(), OwnerPublicKey: bytes.Repeat([]byte{1}, ed25519.PublicKeySize)}); err == nil {
+		t.Fatal("production buyer accepted a non-empty placeholder owner signature")
 	}
 }

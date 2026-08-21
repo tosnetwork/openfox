@@ -123,6 +123,23 @@ func TestBuyerSessionRefusesMismatchedCapability(t *testing.T) {
 	}
 }
 
+func TestBuyerSessionOwnsNegotiatedInput(t *testing.T) {
+	input := sampleInput()
+	session, err := NewBuyerSession(&fakePreparer{prepared: samplePrepared()}, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Proposal.CapabilityId = "cap_mutated"
+	input.ExecutionSignerEd25519[0] ^= 0xff
+	proposal, err := session.RequestQuote(context.Background(), sampleRef())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Capability.CapabilityID != "cap_"+hex64 || session.input.ExecutionSignerEd25519[0] != 1 {
+		t.Fatalf("session input changed through caller alias: %+v", proposal)
+	}
+}
+
 func TestBuyerSessionRefusesProposalSubstitutionBeforePreparing(t *testing.T) {
 	fp := &fakePreparer{prepared: samplePrepared()}
 	session, _ := NewBuyerSession(fp, sampleInput())

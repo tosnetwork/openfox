@@ -113,17 +113,38 @@ tos-service-purchase prepare          --config BUYER.json --input INPUT.json --o
 tos-service-purchase inspect          --purchase PURCHASE.json
 tos-service-purchase deploy-prepare   --config BUYER.json --purchase PURCHASE.json --output DEPLOYMENT.json
 tos-service-purchase deploy-broadcast --config BUYER.json --deployment DEPLOYMENT.json
-tos-service-purchase fund             --config BUYER.json --purchase PURCHASE.json --request-key KEY --evidence FUNDING.json
+tos-service-purchase fund             --config BUYER.json --purchase PURCHASE.json --request-key KEY --evidence FUNDING.json \
+  --messenger-socket RUNTIME.sock --mandate-id MANDATE --capability-class CLASS
+tos-service-purchase dispatch         --config BUYER.json --policy POLICY.json --purchase PURCHASE.json \
+  --funding-evidence FUNDING.json --task TASK.json --evidence SETTLEMENT.json \
+  --messenger-socket RUNTIME.sock --mandate-id MANDATE --capability-class CLASS \
+  --transport agent_packet --endpoint ENDPOINT --ca CA.pem --bearer-token-file TOKEN \
+  --sender-agent-id BUYER --recipient-agent-id PROVIDER --capability-id CAPABILITY \
+  --agent-signing-seed SEED
 ```
 
 `prepare` performs finalized Capability and stablecoin resolution and writes a
 review artifact. `inspect` is read-only. `deploy-prepare` asks `tosctl` custody
 to sign the exact StateInit-bearing message with `--build-only`, while
-`deploy-broadcast` submits only that reviewed message. `fund` first requires the
-exact deployed escrow to be quorum-finalized in `awaiting_funding`, then uses
-the durable budget/idempotency journal and returns only after exact funding is
-finalized. A deployment or funding broadcast with an uncertain result fails as
-ambiguous and is never rebuilt or automatically rebroadcast.
+`deploy-broadcast` submits only that reviewed message. `fund` first takes a
+durable production funding lease, maps the exact Proposal through the same
+`PurchaseTermsForProposal` function as `AuthorizedCustodySigner`, and consumes
+a Messenger `spend` authorization under the named mandate. Only then may it
+require the exact escrow to be quorum-finalized in `awaiting_funding` and reach
+custody. It returns only after exact funding is finalized. A deployment or
+funding broadcast with an uncertain result fails as ambiguous and is never
+rebuilt or automatically rebroadcast; restart recovery reads finalized state
+under the persisted lease and cannot ask custody to pay again.
+
+`dispatch` accepts A2A, MCP, or Agent Packet and requires the endpoint to equal
+the Quote's decoded transport binding. Remote plaintext is refused; HTTPS uses
+TLS 1.3, an explicitly reviewed CA and no environment proxy, while loopback
+HTTP remains available only for the frozen local profile. The command verifies
+the signed policy, prepared purchase, exact finalized-funding handoff, task
+binding and source-archive digest, re-runs finalized Capability/escrow checks,
+and calls Messenger `quotes.verify` before transport dispatch. A non-terminal
+settlement returns `ErrSettlementPending`; the durable `execution` phase makes
+the next invocation read settlement without dispatching the task again.
 
 The chain config has schema `tos.openfox.chain-buyer-config.v1` and is a strict
 owner-only JSON file. It names the private state directory, complete network
@@ -135,8 +156,22 @@ absolute reviewed canonical-manifest path, exact escrow terms, the public
 execution signer, and transport binding. Workflow output directories must
 already be mode `0700`; artifacts are newly linked at mode `0600` and an
 existing path is never overwritten.
+One OpenFox process is the sole writer for each configured state directory;
+separate agents and concurrent operators use separate directories. The Buyer
+SDK's funding journal additionally takes an OS file lock around budget and
+broadcast-lease transitions, while the shared provider Gate remains the final
+cross-transport at-most-once execution authority.
 
-This command intentionally stops after finalized funding. Production task
-dispatch still goes through `NewChainNativeBuyer`, the Messenger spend/key-use
-authorizer and `quotes.verify`; the lower-level funded-task transport command
-is local acceptance tooling, not a substitute for those gates.
+The `dispatch` stage itself goes through `NewChainNativeBuyer`, the Messenger
+authority client and `quotes.verify`. The older lower-level
+`tos-service-buyer` funded-task transport command remains local acceptance
+tooling and is not a substitute for those gates.
+
+`NewChainNativeBuyer` also verifies the owner Ed25519 signature over the
+domain-separated canonical spending policy before accepting production
+composition. The canonical form binds full network and stablecoin identities,
+purchase/window ceilings, expiry, sorted Capability allow-list, and confirmation
+mode; false allow-list entries and sub-second/oversized windows have no alternate
+encoding. Lower-level policy vectors retain their isolated presence checks, but
+the production chain constructor cannot accept a non-empty placeholder as an
+owner signature.

@@ -28,7 +28,7 @@ func (s AuthorizedCustodySigner) SignAndFundEscrow(ctx context.Context, quote Ac
 	if !ok || !invocation.LineageComplete {
 		return ErrIncompletePurchaseAuthority
 	}
-	terms, err := messengerPurchaseTerms(quote.Proposal)
+	terms, err := PurchaseTermsForProposal(quote.Proposal)
 	if err != nil {
 		return err
 	}
@@ -62,7 +62,11 @@ func (s AuthorizedCustodySigner) SignSettlementIntent(ctx context.Context, inten
 	return s.Signer.SignSettlementIntent(ctx, intentHash)
 }
 
-func messengerPurchaseTerms(proposal QuoteProposal) (actionauth.PurchaseTerms, error) {
+// PurchaseTermsForProposal maps the complete reviewed Quote Proposal to the
+// exact Messenger spend/verification surface. Owner-control commands use the
+// same mapping as AuthorizedCustodySigner rather than maintaining a second
+// policy preimage.
+func PurchaseTermsForProposal(proposal QuoteProposal) (actionauth.PurchaseTerms, error) {
 	atomic := strings.TrimSpace(proposal.AtomicAmount)
 	if atomic == "" && proposal.MaxAtomicAmount > 0 {
 		atomic = strconv.FormatUint(proposal.MaxAtomicAmount, 10)

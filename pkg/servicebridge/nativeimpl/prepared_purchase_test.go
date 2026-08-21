@@ -92,6 +92,23 @@ func TestPreparedPurchaseArtifactRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPurchaseInputFromPreparedPurchaseUsesTypedEscrowPreimage(t *testing.T) {
+	purchase := artifactPreparedPurchase(t)
+	input, err := PurchaseInputFromPreparedPurchase(purchase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := nativecore.DecodeEscrowDataV1(purchase.Escrow.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(input.Proposal, purchase.Proposal) || !bytes.Equal(input.ManifestCBOR, purchase.ManifestCBOR) ||
+		input.EscrowTerms.BuyerAddress != state.BuyerAddress || input.EscrowTerms.ProviderAddress != state.ProviderAddress ||
+		!bytes.Equal(input.ExecutionSignerEd25519, state.ExecutionSignerEd25519) || input.TransportBinding != state.TransportBinding {
+		t.Fatalf("input = %+v", input)
+	}
+}
+
 func TestPreparedPurchaseArtifactRejectsIntegrityAndLinkedSubstitution(t *testing.T) {
 	encoded, err := MarshalPreparedPurchase(artifactPreparedPurchase(t))
 	if err != nil {

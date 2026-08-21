@@ -16,6 +16,7 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 const preparedPurchaseSchema = "tos.openfox.prepared-purchase.v1"
@@ -112,6 +113,25 @@ func UnmarshalPreparedPurchase(encoded []byte) (*buyersdk.PreparedPurchase, erro
 		return nil, errors.New("nativeimpl: prepared-purchase integrity mismatch")
 	}
 	return decodePreparedPurchasePayload(envelope.Payload)
+}
+
+// PurchaseInputFromPreparedPurchase reconstructs the complete negotiated input
+// from the strict artifact and its embedded typed escrow data. A later Buyer
+// SDK call still re-derives every commitment against fresh finalized state.
+func PurchaseInputFromPreparedPurchase(purchase *buyersdk.PreparedPurchase) (buyersdk.PurchaseInput, error) {
+	if purchase == nil || purchase.Proposal == nil || purchase.Escrow.Data == nil || len(purchase.ManifestCBOR) == 0 {
+		return buyersdk.PurchaseInput{}, errors.New("nativeimpl: incomplete prepared purchase")
+	}
+	state, err := nativecore.DecodeEscrowDataV1(purchase.Escrow.Data)
+	if err != nil || state.QuoteCommitment != purchase.QuoteCommitment || state.AcceptedQuote == nil {
+		return buyersdk.PurchaseInput{}, errors.New("nativeimpl: prepared purchase escrow data changed")
+	}
+	return buyersdk.PurchaseInput{Proposal: proto.Clone(purchase.Proposal).(*nativev1.QuoteProposalV1),
+		ManifestCBOR: append([]byte(nil), purchase.ManifestCBOR...), EscrowTerms: nativecore.EscrowTermsV1{
+			BuyerAddress: state.BuyerAddress, ProviderAddress: state.ProviderAddress,
+			FundingDeadline: state.FundingDeadline, RefundAvailableAt: state.RefundAvailableAt,
+		}, ExecutionSignerEd25519: append([]byte(nil), state.ExecutionSignerEd25519...),
+		TransportBinding: state.TransportBinding}, nil
 }
 
 // MarshalPreparedEscrowDeployment persists the exact custody-signed deploy

@@ -10,7 +10,7 @@ import (
 	"github.com/tosnetwork/tos-ai/pkg/softwarework"
 	"github.com/tosnetwork/tos-service-protocol/pkg/executiongate"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
-	"github.com/xssnick/tonutils-go/tvm/cell"
+	"github.com/tosnetwork/tosutils-go/tvm/cell"
 )
 
 // ExecutionSigner signs the settlement-intent hash with the execution signer key

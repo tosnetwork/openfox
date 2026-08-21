@@ -1,6 +1,7 @@
 package nativeimpl
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"time"
@@ -11,7 +12,7 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
-	"github.com/xssnick/tonutils-go/tvm/cell"
+	"github.com/tosnetwork/tosutils-go/tvm/cell"
 )
 
 // ChainBuyerStackConfig is the reviewed, route-independent production buyer
@@ -29,6 +30,7 @@ type ChainBuyerStackConfig struct {
 	EscrowCode       *cell.Cell
 	AssetWalletCode  *cell.Cell
 	FundingSender    buyersdk.FundingSender
+	EscrowDeployer   EscrowDeployer
 	BudgetLimits     buyersdk.BudgetLimits
 	PollInterval     time.Duration
 	FinalityTimeout  time.Duration
@@ -41,6 +43,14 @@ type ChainBuyerStack struct {
 	SDK        *buyersdk.Buyer
 	Capability CapabilityValidator
 	Escrow     *EscrowSettlementReader
+	Deployer   EscrowDeployer
+}
+
+// EscrowDeployer preserves the owner-review boundary between custody signing
+// and one-way submission of the deterministic escrow deployment message.
+type EscrowDeployer interface {
+	PrepareEscrowDeployment(context.Context, *buyersdk.PreparedPurchase) (*buyersdk.PreparedEscrowDeployment, error)
+	BroadcastEscrowDeployment(context.Context, *buyersdk.PreparedEscrowDeployment) error
 }
 
 // ChainNativeBuyerConfig supplies the per-purchase OpenFox components around a
@@ -61,7 +71,7 @@ type ChainNativeBuyerConfig struct {
 // NewChainNativeBuyer connects the concrete finalized chain stack to the
 // mandatory Messenger-authorized OpenFox buyer lifecycle for one negotiation.
 func NewChainNativeBuyer(c ChainNativeBuyerConfig) (*servicebridge.Buyer, error) {
-	if c.Stack == nil || c.Stack.SDK == nil || c.Stack.Capability == nil || c.Stack.Escrow == nil {
+	if c.Stack == nil || c.Stack.SDK == nil || c.Stack.Capability == nil || c.Stack.Escrow == nil || c.Stack.Deployer == nil {
 		return nil, errors.New("nativeimpl: chain-native buyer needs an assembled chain stack")
 	}
 	session, err := NewBuyerSession(c.Stack.SDK, c.Input)
@@ -83,7 +93,8 @@ func NewChainBuyerStack(c ChainBuyerStackConfig) (*ChainBuyerStack, error) {
 	if !filepath.IsAbs(c.StateDir) || filepath.Clean(c.StateDir) != c.StateDir ||
 		c.Network == nil || len(c.Endpoints) != 3 || c.RegistryCodeBOC == "" ||
 		c.RegistryCodeHash == "" || c.EscrowCodeHash == "" || c.BuyerAddress == "" ||
-		c.BuyerAgentID == "" || c.EscrowCode == nil || c.AssetWalletCode == nil || c.FundingSender == nil {
+		c.BuyerAgentID == "" || c.EscrowCode == nil || c.AssetWalletCode == nil || c.FundingSender == nil ||
+		c.EscrowDeployer == nil {
 		return nil, errors.New("nativeimpl: chain buyer stack configuration is incomplete")
 	}
 	chain, err := toschain.New(toschain.Config{Network: c.Network.GetNetworkId(), Endpoints: c.Endpoints, Quorum: 2})
@@ -131,5 +142,5 @@ func NewChainBuyerStack(c ChainBuyerStackConfig) (*ChainBuyerStack, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ChainBuyerStack{SDK: sdk, Capability: sdk, Escrow: escrow}, nil
+	return &ChainBuyerStack{SDK: sdk, Capability: sdk, Escrow: escrow, Deployer: c.EscrowDeployer}, nil
 }

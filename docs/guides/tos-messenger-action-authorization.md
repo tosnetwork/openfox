@@ -103,3 +103,40 @@ non-canonical Base64/BOCs, an invalid integrity digest, and re-digested linked
 field substitutions are rejected. Loading the artifact does not authorize a
 deployment or payment; the Buyer SDK reconstructs and revalidates it against
 fresh finalized state before funding.
+
+## Staged production purchase command
+
+`tos-service-purchase` exposes one effect per invocation:
+
+```text
+tos-service-purchase prepare          --config BUYER.json --input INPUT.json --output PURCHASE.json
+tos-service-purchase inspect          --purchase PURCHASE.json
+tos-service-purchase deploy-prepare   --config BUYER.json --purchase PURCHASE.json --output DEPLOYMENT.json
+tos-service-purchase deploy-broadcast --config BUYER.json --deployment DEPLOYMENT.json
+tos-service-purchase fund             --config BUYER.json --purchase PURCHASE.json --request-key KEY --evidence FUNDING.json
+```
+
+`prepare` performs finalized Capability and stablecoin resolution and writes a
+review artifact. `inspect` is read-only. `deploy-prepare` asks `tosctl` custody
+to sign the exact StateInit-bearing message with `--build-only`, while
+`deploy-broadcast` submits only that reviewed message. `fund` first requires the
+exact deployed escrow to be quorum-finalized in `awaiting_funding`, then uses
+the durable budget/idempotency journal and returns only after exact funding is
+finalized. A deployment or funding broadcast with an uncertain result fails as
+ambiguous and is never rebuilt or automatically rebroadcast.
+
+The chain config has schema `tos.openfox.chain-buyer-config.v1` and is a strict
+owner-only JSON file. It names the private state directory, complete network
+domain, exactly three endpoints, reviewed Registry/escrow/asset-wallet code BOC
+files and hashes, buyer identities, bounded budget/finality policy, and pinned
+`tosctl` executable/config/wallet settings. The purchase input has schema
+`tos.openfox.purchase-input.v1` and contains the strict protobuf Proposal, an
+absolute reviewed canonical-manifest path, exact escrow terms, the public
+execution signer, and transport binding. Workflow output directories must
+already be mode `0700`; artifacts are newly linked at mode `0600` and an
+existing path is never overwritten.
+
+This command intentionally stops after finalized funding. Production task
+dispatch still goes through `NewChainNativeBuyer`, the Messenger spend/key-use
+authorizer and `quotes.verify`; the lower-level funded-task transport command
+is local acceptance tooling, not a substitute for those gates.

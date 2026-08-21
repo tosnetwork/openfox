@@ -13,7 +13,7 @@ import (
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
-	"github.com/xssnick/tonutils-go/tvm/cell"
+	"github.com/tosnetwork/tosutils-go/tvm/cell"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -127,5 +127,28 @@ func TestPreparedPurchaseArtifactRejectsUnknownEnvelopeField(t *testing.T) {
 	encoded = bytes.Replace(encoded, []byte("{\n"), []byte("{\n  \"authority\": true,\n"), 1)
 	if _, err := UnmarshalPreparedPurchase(encoded); err == nil {
 		t.Fatal("artifact accepted an unknown authority field")
+	}
+}
+
+func TestPreparedEscrowDeploymentArtifactRoundTripAndIntegrity(t *testing.T) {
+	deployment := &buyersdk.PreparedEscrowDeployment{Schema: "tos.service.escrow-deployment.v1",
+		EscrowAddress: "0:" + strings.Repeat("1", 64), QuoteCommitment: "tvm-cell-sha256:" + strings.Repeat("2", 64),
+		StateInitBOCBase64: "te6ccgEBAQEAAgAAAA==", StateInitHash: "tvm-cell-sha256:" + strings.Repeat("3", 64),
+		AttachedNanoTOS: 100_000_000, MessageBOCBase64: "te6ccgEBAQEAAgAAAA==",
+		MessageHash: "tvm-cell-sha256:" + strings.Repeat("4", 64)}
+	encoded, err := MarshalPreparedEscrowDeployment(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalPreparedEscrowDeployment(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *got != *deployment {
+		t.Fatalf("deployment = %+v", got)
+	}
+	changed := bytes.Replace(encoded, []byte("100000000"), []byte("100000001"), 1)
+	if _, err := UnmarshalPreparedEscrowDeployment(changed); err == nil {
+		t.Fatal("deployment artifact accepted changed attached value")
 	}
 }

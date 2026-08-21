@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xssnick/tonutils-go/tvm/cell"
+	"github.com/tosnetwork/tosutils-go/tvm/cell"
 )
 
 type fakeReleaseRunner struct {

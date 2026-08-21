@@ -8,7 +8,8 @@ require (
 	github.com/tosnetwork/openfox v0.0.0
 	github.com/tosnetwork/tos-ai v0.0.0
 	github.com/tosnetwork/tos-service-protocol v0.0.0
-	github.com/xssnick/tonutils-go v1.16.0
+	github.com/tosnetwork/tosutils-go v1.18.1
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -53,6 +54,7 @@ require (
 	github.com/opencontainers/runtime-spec v1.2.0 // indirect
 	github.com/opencontainers/runtime-tools v0.9.1-0.20221107090550-2e043c6bd626 // indirect
 	github.com/opencontainers/selinux v1.13.1 // indirect
+	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
@@ -75,7 +77,6 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4 // indirect
 	google.golang.org/grpc v1.82.1 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 	tags.cncf.io/container-device-interface v1.0.0 // indirect

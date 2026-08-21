@@ -14,15 +14,23 @@ import (
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
-	"github.com/xssnick/tonutils-go/tvm/cell"
+	"github.com/tosnetwork/tosutils-go/tvm/cell"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
 const preparedPurchaseSchema = "tos.openfox.prepared-purchase.v1"
 
+const preparedDeploymentSchema = "tos.openfox.prepared-escrow-deployment.v1"
+
 type preparedPurchaseEnvelope struct {
 	Schema          string          `json:"schema"`
 	Payload         json.RawMessage `json:"payload"`
+	IntegrityDigest string          `json:"integrity_digest"`
+}
+
+type preparedDeploymentEnvelope struct {
+	Schema          string          `json:"schema"`
+	Deployment      json.RawMessage `json:"deployment"`
 	IntegrityDigest string          `json:"integrity_digest"`
 }
 
@@ -106,12 +114,70 @@ func UnmarshalPreparedPurchase(encoded []byte) (*buyersdk.PreparedPurchase, erro
 	return decodePreparedPurchasePayload(envelope.Payload)
 }
 
+// MarshalPreparedEscrowDeployment persists the exact custody-signed deploy
+// message for a later, explicit broadcast command.
+func MarshalPreparedEscrowDeployment(deployment *buyersdk.PreparedEscrowDeployment) ([]byte, error) {
+	if deployment == nil {
+		return nil, errors.New("nativeimpl: invalid prepared escrow deployment")
+	}
+	payload, err := json.Marshal(deployment)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := decodePreparedEscrowDeployment(payload); err != nil {
+		return nil, err
+	}
+	digest, err := preparedDocumentDigest("tos.openfox.prepared-escrow-deployment.v1\x00", payload)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.MarshalIndent(preparedDeploymentEnvelope{Schema: preparedDeploymentSchema,
+		Deployment: payload, IntegrityDigest: digest}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(encoded, '\n'), nil
+}
+
+// UnmarshalPreparedEscrowDeployment rejects accidental or injected changes
+// before the deployer independently rechecks StateInit and message identities.
+func UnmarshalPreparedEscrowDeployment(encoded []byte) (*buyersdk.PreparedEscrowDeployment, error) {
+	if len(encoded) == 0 || len(encoded) > 4<<20 {
+		return nil, errors.New("nativeimpl: invalid prepared deployment artifact size")
+	}
+	var envelope preparedDeploymentEnvelope
+	if err := decodeStrictJSON(encoded, &envelope); err != nil || envelope.Schema != preparedDeploymentSchema ||
+		len(envelope.Deployment) == 0 {
+		return nil, errors.New("nativeimpl: invalid prepared deployment envelope")
+	}
+	digest, err := preparedDocumentDigest("tos.openfox.prepared-escrow-deployment.v1\x00", envelope.Deployment)
+	if err != nil || envelope.IntegrityDigest != digest {
+		return nil, errors.New("nativeimpl: prepared deployment integrity mismatch")
+	}
+	return decodePreparedEscrowDeployment(envelope.Deployment)
+}
+
+func decodePreparedEscrowDeployment(encoded []byte) (*buyersdk.PreparedEscrowDeployment, error) {
+	var deployment buyersdk.PreparedEscrowDeployment
+	if err := decodeStrictJSON(encoded, &deployment); err != nil || deployment.Schema != "tos.service.escrow-deployment.v1" ||
+		deployment.EscrowAddress == "" || deployment.QuoteCommitment == "" || deployment.StateInitBOCBase64 == "" ||
+		deployment.StateInitHash == "" || deployment.AttachedNanoTOS == 0 || deployment.MessageBOCBase64 == "" ||
+		deployment.MessageHash == "" {
+		return nil, errors.New("nativeimpl: invalid prepared escrow deployment")
+	}
+	return &deployment, nil
+}
+
 func preparedPayloadDigest(encoded []byte) (string, error) {
+	return preparedDocumentDigest("tos.openfox.prepared-purchase.v1\x00", encoded)
+}
+
+func preparedDocumentDigest(domain string, encoded []byte) (string, error) {
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, encoded); err != nil {
 		return "", err
 	}
-	digest := sha256.Sum256(append([]byte("tos.openfox.prepared-purchase.v1\x00"), compact.Bytes()...))
+	digest := sha256.Sum256(append([]byte(domain), compact.Bytes()...))
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 

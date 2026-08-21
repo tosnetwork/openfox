@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	eventSchema          = "tos.messaging.event.v1"
-	eventDomain          = "tos.messaging.event-id.v1\x00"
+	eventSchema          = "tos.messaging.event.v2"
+	eventDomain          = "tos.messaging.event-id.v2\x00"
 	textSchema           = "tos.messaging.payload.text.v1"
 	textDomain           = "tos.messaging.payload.v1\x00" + textSchema + "\x00"
 	roomMessageSchema    = "tos.messaging.payload.room-message.v1"
@@ -35,6 +35,8 @@ var (
 	conversationPattern = regexp.MustCompile(`^conv_[0-9a-f]{64}$`)
 	roomPattern         = regexp.MustCompile(`^room_[0-9a-f]{64}$`)
 	hashPattern         = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	digestPattern       = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	scannerIDPattern    = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,63}$`)
 )
 
 type wireEvent struct {
@@ -179,8 +181,17 @@ func decodeRoomMessagePayload(content []byte, eventRoomID string) (string, error
 
 func deriveEventID(event wireEvent, content []byte) string {
 	buffer := bytes.NewBufferString(eventDomain)
+	for _, value := range []string{eventSchema, event.NetworkID} {
+		writeText(buffer, value)
+	}
+	root, rootErr := hex.DecodeString(event.GenesisRootHash)
+	file, fileErr := hex.DecodeString(event.GenesisFileHash)
+	if rootErr != nil || fileErr != nil || len(root) != 32 || len(file) != 32 {
+		return ""
+	}
+	writeBytes(buffer, root)
+	writeBytes(buffer, file)
 	for _, value := range []string{
-		eventSchema, event.NetworkID, event.GenesisRootHash, event.GenesisFileHash,
 		event.ConversationID, event.SenderAgentID, event.SenderEndpointID, event.SenderDeviceID,
 		event.RoomID, event.ThreadID, event.ReplyToEventID,
 	} {

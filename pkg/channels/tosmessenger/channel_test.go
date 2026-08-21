@@ -3,8 +3,10 @@ package tosmessenger
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -18,6 +20,62 @@ import (
 	"github.com/tosnetwork/openfox/pkg/bus"
 	"github.com/tosnetwork/openfox/pkg/config"
 )
+
+func TestChannelPublishesOnlyDaemonAdmittedAttachmentAndCompletesLease(t *testing.T) {
+	body := "hello from a scanned encrypted attachment\n"
+	digest := sha256.Sum256([]byte(body))
+	attachment := admittedAttachment{EventID: "evt_" + strings.Repeat("1", 64),
+		SenderAgentID: "agent_" + strings.Repeat("a", 64), SenderEndpointID: "mep_" + strings.Repeat("b", 64),
+		SenderDeviceID: "dev_" + strings.Repeat("c", 64), ConversationID: "conv_" + strings.Repeat("d", 64),
+		ReceivedAtUnix: 1_800_000_100, Filename: "note.txt", MediaType: "text/plain",
+		PlaintextDigest: "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: uint64(len(body)), Body: body,
+		Scans: []attachmentScan{{ScannerID: "reference-text", ScannerDigest: "sha256:" + strings.Repeat("e", 64)}}}
+	path, operations, stop := serveAttachmentInbox(t, attachment)
+	defer stop()
+	messageBus := bus.NewMessageBus()
+	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
+		SocketPath: path, LeaseSeconds: 30, EnableAttachments: true,
+	}, messageBus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pollErr := make(chan error, 1)
+	go func() { pollErr <- channel.pollOnce(context.Background()) }()
+	select {
+	case message := <-messageBus.InboundChan():
+		origin := message.Context.AuthenticatedMessagingOrigin
+		if message.Content != body || origin == nil || origin.Kind != "artifact.encrypted" ||
+			origin.EventID != attachment.EventID || message.Context.Raw["attachment_filename"] != "note.txt" ||
+			message.Context.Raw["attachment_plaintext_digest"] != attachment.PlaintextDigest {
+			t.Fatalf("unexpected admitted attachment: %+v", message)
+		}
+		message.ApplicationResult <- nil
+	case <-time.After(time.Second):
+		t.Fatal("admitted attachment was not published")
+	}
+	if err := <-pollErr; err != nil {
+		t.Fatal(err)
+	}
+	if got := <-operations; got != "inbox.pending,attachments.pending,attachments.claim,inbox.complete" {
+		t.Fatalf("operations = %s", got)
+	}
+
+	// The daemon is a separate process boundary. OpenFox must not rely on its
+	// claim that these bytes match the digest or that scanner evidence is
+	// canonical before admitting the body to the bus.
+	substituted := attachment
+	substituted.Body = "same-size substituted attachment text!\n"
+	substituted.SizeBytes = uint64(len(substituted.Body))
+	if validAdmittedAttachment(substituted) {
+		t.Fatal("attachment body substitution passed the independent digest check")
+	}
+	malformedScan := attachment
+	malformedScan.Scans = append([]attachmentScan(nil), attachment.Scans...)
+	malformedScan.Scans[0].ScannerDigest = "sha256:" + strings.Repeat("E", 64)
+	if validAdmittedAttachment(malformedScan) {
+		t.Fatal("non-canonical scanner digest was accepted")
+	}
+}
 
 func TestChannelPublishesOnlyClaimedAuthenticatedEventWithTypedOrigin(t *testing.T) {
 	pending := testPending(t, "hello from authenticated Messenger")
@@ -50,6 +108,17 @@ func TestChannelPublishesOnlyClaimedAuthenticatedEventWithTypedOrigin(t *testing
 	}
 	if got := <-operations; got != "inbox.pending,inbox.claim,inbox.complete" {
 		t.Fatalf("operations = %s", got)
+	}
+}
+
+func TestIndependentDecoderConsumesMessengerEventV2Vector(t *testing.T) {
+	raw := []byte(`{"schema":"tos.messaging.event.v2","network_id":"tos-local","genesis_root_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","genesis_file_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","conversation_id":"conv_1111111111111111111111111111111111111111111111111111111111111111","event_id":"evt_907a3ee25f59981718c2021d8dedd81451f45159878e7fc97b95201d216e0614","sender_agent_id":"agent_2222222222222222222222222222222222222222222222222222222222222222","sender_messaging_endpoint_id":"mep_7e03fe8741547ed3530ae38dbc690a42273db8dce07edda055f309d26f24f46a","sender_device_id":"dev_4444444444444444444444444444444444444444444444444444444444444444","created_at_unix":1800000010,"event_kind":"text","payload_schema":"tos.messaging.payload.text.v1","content_base64":"dG9zLm1lc3NhZ2luZy5wYXlsb2FkLnYxAHRvcy5tZXNzYWdpbmcucGF5bG9hZC50ZXh0LnYxAAAAABl0ZXh0L3BsYWluOyBjaGFyc2V0PXV0Zi04AAAABWhlbGxvAAAAAA==","rendering":"hello"}`)
+	pending := pendingEvent{EventID: "evt_907a3ee25f59981718c2021d8dedd81451f45159878e7fc97b95201d216e0614",
+		SenderEndpointID: "mep_7e03fe8741547ed3530ae38dbc690a42273db8dce07edda055f309d26f24f46a",
+		ConversationID:   "conv_" + strings.Repeat("1", 64), ReceivedAtUnix: 1_800_000_011, Event: raw}
+	event, body, err := decodeAdmittedText(pending)
+	if err != nil || body != "hello" || event.EventID != pending.EventID {
+		t.Fatalf("consume Messenger v2 vector: event=%+v body=%q err=%v", event, body, err)
 	}
 }
 
@@ -253,7 +322,7 @@ func TestSendRefusesUntrustedOrUnroutedOutput(t *testing.T) {
 	}
 }
 
-func TestDecoderConsumesMessengerGeneratedFixture(t *testing.T) {
+func TestDecoderRefusesHistoricalMessengerV1AsCurrentInput(t *testing.T) {
 	const eventID = "evt_642815c3395336130bae8968b9861001d96da9d670cf08485066bb9f8a69c19c"
 	const raw = `{"schema":"tos.messaging.event.v1","network_id":"tos-local","genesis_root_hash":"1111111111111111111111111111111111111111111111111111111111111111","genesis_file_hash":"2222222222222222222222222222222222222222222222222222222222222222","conversation_id":"conv_3333333333333333333333333333333333333333333333333333333333333333","event_id":"evt_642815c3395336130bae8968b9861001d96da9d670cf08485066bb9f8a69c19c","sender_agent_id":"agent_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sender_messaging_endpoint_id":"mep_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","sender_device_id":"dev_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","created_at_unix":1800000000,"expires_at_unix":1800003600,"event_kind":"text","payload_schema":"tos.messaging.payload.text.v1","content_base64":"dG9zLm1lc3NhZ2luZy5wYXlsb2FkLnYxAHRvcy5tZXNzYWdpbmcucGF5bG9hZC50ZXh0LnYxAAAAABl0ZXh0L3BsYWluOyBjaGFyc2V0PXV0Zi04AAAAHGNyb3NzIGltcGxlbWVudGF0aW9uIGZpeHR1cmUAAAAA"}`
 	pending := pendingEvent{
@@ -261,9 +330,8 @@ func TestDecoderConsumesMessengerGeneratedFixture(t *testing.T) {
 		ConversationID: "conv_" + strings.Repeat("3", 64), ReceivedAtUnix: 1_800_000_100,
 		Event: json.RawMessage(raw),
 	}
-	event, body, err := decodeAdmittedText(pending)
-	if err != nil || event.EventID != eventID || body != "cross implementation fixture" {
-		t.Fatalf("Messenger fixture: event=%s body=%q err=%v", event.EventID, body, err)
+	if _, _, err := decodeAdmittedText(pending); err == nil {
+		t.Fatal("historical Event v1 was accepted as current production input")
 	}
 }
 
@@ -421,6 +489,50 @@ func serveInbox(t *testing.T, pending pendingEvent) (string, <-chan string, func
 		_ = listener.Close()
 		<-done
 	}
+}
+
+func serveAttachmentInbox(t *testing.T, attachment admittedAttachment) (string, <-chan string, func()) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "attachment-runtime.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations := make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		seen := make([]string, 0, 4)
+		for len(seen) < 4 {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			var header [4]byte
+			_, _ = io.ReadFull(connection, header[:])
+			raw := make([]byte, binary.BigEndian.Uint32(header[:]))
+			_, _ = io.ReadFull(connection, raw)
+			var request localRequest
+			_ = json.Unmarshal(raw, &request)
+			seen = append(seen, request.Op)
+			response := localResponse{Schema: responseSchema, OK: true}
+			switch request.Op {
+			case "attachments.pending":
+				response.Attachments = []pendingAttachment{{EventID: attachment.EventID,
+					SenderEndpointID: attachment.SenderEndpointID, ConversationID: attachment.ConversationID,
+					ReceivedAtUnix: attachment.ReceivedAtUnix}}
+			case "attachments.claim":
+				response.Attachment = &attachment
+			}
+			encoded, _ := json.Marshal(response)
+			binary.BigEndian.PutUint32(header[:], uint32(len(encoded)))
+			_, _ = connection.Write(header[:])
+			_, _ = connection.Write(encoded)
+			_ = connection.Close()
+		}
+		operations <- strings.Join(seen, ",")
+	}()
+	return path, operations, func() { _ = listener.Close(); <-done }
 }
 
 func serveInboxRequests(t *testing.T, pending pendingEvent) (string, <-chan string, func()) {

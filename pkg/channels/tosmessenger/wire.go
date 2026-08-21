@@ -3,18 +3,22 @@ package tosmessenger
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
-	requestSchema  = "tos.messaging.local-request.v3"
-	responseSchema = "tos.messaging.local-response.v1"
+	requestSchema  = "tos.messaging.local-request.v4"
+	responseSchema = "tos.messaging.local-response.v2"
 	maxFrameBytes  = 512 << 10
 )
 
@@ -46,15 +50,78 @@ type pendingEvent struct {
 	Event            json.RawMessage `json:"event"`
 }
 
+type pendingAttachment struct {
+	EventID          string `json:"event_id"`
+	SenderEndpointID string `json:"sender_messaging_endpoint_id"`
+	ConversationID   string `json:"conversation_id"`
+	ReceivedAtUnix   uint64 `json:"received_at_unix"`
+}
+
+type attachmentScan struct {
+	ScannerID     string `json:"scanner_id"`
+	ScannerDigest string `json:"scanner_digest"`
+}
+
+type admittedAttachment struct {
+	EventID          string           `json:"event_id"`
+	SenderAgentID    string           `json:"sender_agent_id"`
+	SenderEndpointID string           `json:"sender_messaging_endpoint_id"`
+	SenderDeviceID   string           `json:"sender_device_id"`
+	ConversationID   string           `json:"conversation_id"`
+	RoomID           string           `json:"room_id,omitempty"`
+	ReplyToEventID   string           `json:"reply_to_event_id,omitempty"`
+	ReceivedAtUnix   uint64           `json:"received_at_unix"`
+	Filename         string           `json:"filename"`
+	MediaType        string           `json:"media_type"`
+	PlaintextDigest  string           `json:"plaintext_digest"`
+	SizeBytes        uint64           `json:"size_bytes"`
+	Body             string           `json:"body"`
+	Scans            []attachmentScan `json:"scans"`
+}
+
 type localResponse struct {
-	Schema  string         `json:"schema"`
-	OK      bool           `json:"ok"`
-	Code    string         `json:"code,omitempty"`
-	Detail  string         `json:"detail,omitempty"`
-	Events  []pendingEvent `json:"events,omitempty"`
-	Event   *pendingEvent  `json:"claimed,omitempty"`
-	Fresh   bool           `json:"fresh,omitempty"`
-	EventID string         `json:"event_id,omitempty"`
+	Schema      string              `json:"schema"`
+	OK          bool                `json:"ok"`
+	Code        string              `json:"code,omitempty"`
+	Detail      string              `json:"detail,omitempty"`
+	Events      []pendingEvent      `json:"events,omitempty"`
+	Event       *pendingEvent       `json:"claimed,omitempty"`
+	Attachments []pendingAttachment `json:"attachments,omitempty"`
+	Attachment  *admittedAttachment `json:"attachment,omitempty"`
+	Fresh       bool                `json:"fresh,omitempty"`
+	EventID     string              `json:"event_id,omitempty"`
+}
+
+func validPendingAttachment(value pendingAttachment) bool {
+	return eventPattern.MatchString(value.EventID) && endpointPattern.MatchString(value.SenderEndpointID) &&
+		conversationPattern.MatchString(value.ConversationID) && value.ReceivedAtUnix != 0
+}
+
+func validAdmittedAttachment(value admittedAttachment) bool {
+	digest := sha256.Sum256([]byte(value.Body))
+	exactDigest := "sha256:" + hex.EncodeToString(digest[:])
+	if !eventPattern.MatchString(value.EventID) || !agentPattern.MatchString(value.SenderAgentID) ||
+		!endpointPattern.MatchString(value.SenderEndpointID) || !devicePattern.MatchString(value.SenderDeviceID) ||
+		!conversationPattern.MatchString(value.ConversationID) || value.ReceivedAtUnix == 0 ||
+		value.RoomID != "" && !roomPattern.MatchString(value.RoomID) ||
+		value.ReplyToEventID != "" && !eventPattern.MatchString(value.ReplyToEventID) ||
+		value.Filename == "" || len(value.Filename) > 255 || strings.TrimSpace(value.Filename) != value.Filename ||
+		strings.ContainsAny(value.Filename, "/\\\x00\r\n") || value.MediaType != "text/plain" ||
+		!digestPattern.MatchString(value.PlaintextDigest) || value.PlaintextDigest != exactDigest ||
+		value.SizeBytes == 0 || uint64(len(value.Body)) != value.SizeBytes ||
+		value.Body == "" || !utf8.ValidString(value.Body) || strings.ContainsAny(value.Body, "\x00\r") ||
+		len(value.Scans) == 0 || len(value.Scans) > 4 {
+		return false
+	}
+	previous := ""
+	for _, scan := range value.Scans {
+		if !scannerIDPattern.MatchString(scan.ScannerID) || scan.ScannerID <= previous ||
+			!digestPattern.MatchString(scan.ScannerDigest) {
+			return false
+		}
+		previous = scan.ScannerID
+	}
+	return true
 }
 
 func callLocal(ctx context.Context, socket string, timeout time.Duration, request localRequest) (localResponse, error) {

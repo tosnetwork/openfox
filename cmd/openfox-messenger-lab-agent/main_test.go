@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -274,5 +276,54 @@ func TestListenControlRefusesRegularFile(t *testing.T) {
 	if listener, err := listenControl(path); err == nil {
 		listener.Close()
 		t.Fatal("regular control path was replaced")
+	}
+}
+
+func TestWaitForUnixListenerWaitsForReadiness(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy.sock")
+	listenerReady := make(chan net.Listener, 1)
+	go func() {
+		time.Sleep(2 * startupProbePeriod)
+		listener, err := net.Listen("unix", path)
+		if err != nil {
+			listenerReady <- nil
+			return
+		}
+		listenerReady <- listener
+	}()
+	if err := waitForUnixListener(context.Background(), path, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	listener := <-listenerReady
+	if listener == nil {
+		t.Fatal("test proxy listener failed")
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWaitForUnixListenerRefusesNonSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy.sock")
+	if err := os.WriteFile(path, []byte("not a socket"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := waitForUnixListener(context.Background(), path, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "not a socket") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestWaitForUnixListenerIsBoundedAndCancelable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.sock")
+	err := waitForUnixListener(context.Background(), path, 2*startupProbePeriod)
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout error=%v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = waitForUnixListener(ctx, path, time.Second)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel error=%v", err)
 	}
 }

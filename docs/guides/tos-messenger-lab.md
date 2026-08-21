@@ -98,6 +98,12 @@ The control socket is mode `0600` and exposes:
 
 After an operating-system service restart, wait until `/v1/health` succeeds;
 an `active` supervisor state can briefly precede control-socket readiness.
+The process itself waits up to the bounded `-startup-timeout` (30 seconds by
+default, at most five minutes) for its configured Messenger proxy Unix listener.
+This prevents a systemd `After=` process-ordering edge from becoming a failed
+Agent start, while the subsequent authenticated room request remains the real
+readiness and identity check. A non-socket path and an expired or cancelled
+wait fail closed.
 
 `request_id` is passed through to the proxy/Relay client-ID claim. Reusing it
 with identical content returns the same message; content substitution is

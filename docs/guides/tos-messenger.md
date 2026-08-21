@@ -92,3 +92,22 @@ The JSONL session directory is mode `0700`; message, metadata and moderation
 files are mode `0600`. Opening the store also tightens recognized legacy session
 files, preventing decrypted Messenger history from remaining group/world
 readable on the OpenFox host.
+
+## Typed Agent Packet provider handoff
+
+The native `tos-service-provider` may expose its existing Agent Packet verifier
+and shared A2A/MCP/Agent Packet Execution Gate on an owner-private local socket:
+
+```text
+-messenger-agent-packet-socket /run/user/1000/openfox-provider/agent-packet.sock
+```
+
+The parent directory must already exist with no group/world permissions. The
+provider refuses a relative path, symlink, ordinary-file replacement or public
+directory, creates the socket as mode `0600`, and removes it on shutdown. Unix
+socket possession is only a delivery boundary: the received canonical Packet
+still passes the protocol's finalized sender/controller verification and replay
+guard before the purchase-bound adapter reaches the one shared Execution Gate.
+Packet bytes never become AgentLoop/model text. `tos-messenger` supplies the
+matching bounded Unix receiver; production daemon assembly remains separate
+from this channel until an admitted `agent.packet` route exists.

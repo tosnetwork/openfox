@@ -58,6 +58,7 @@ type options struct {
 	tosctlBinary, tosctlConfig, tosctlWallet             string
 	certificate, privateKey, bearerPath                  string
 	a2aAddress, mcpAddress, packetAddress, artifactAddr  string
+	messengerPacketSocket                                string
 	artifactOrigin                                       string
 	endpoints                                            endpointsFlag
 }
@@ -98,6 +99,7 @@ func parseFlags() options {
 	flag.StringVar(&value.a2aAddress, "a2a-address", "127.0.0.1:8443", "A2A listen address")
 	flag.StringVar(&value.mcpAddress, "mcp-address", "127.0.0.1:8444", "MCP listen address")
 	flag.StringVar(&value.packetAddress, "agent-packet-address", "127.0.0.1:8445", "Agent Packet listen address")
+	flag.StringVar(&value.messengerPacketSocket, "messenger-agent-packet-socket", "", "owner-private Unix socket for tos-messengerd Agent Packet delivery")
 	flag.StringVar(&value.artifactAddr, "artifact-address", "127.0.0.1:8446", "artifact listen address")
 	flag.StringVar(&value.artifactOrigin, "artifact-origin", "https://127.0.0.1:8446", "buyer-visible artifact HTTPS origin")
 	flag.Parse()
@@ -255,8 +257,15 @@ func run(value options) error {
 	if err != nil {
 		return err
 	}
+	var messengerPacketServer *nativeimpl.AgentPacketUnixServer
+	if value.messengerPacketSocket != "" {
+		messengerPacketServer, err = nativeimpl.OpenAgentPacketUnixServer(value.messengerPacketSocket, packetHandler)
+		if err != nil {
+			return err
+		}
+	}
 	servers := []*http.Server{a2aServer, mcpServer, packetServer, artifactServer}
-	errChannel := make(chan error, len(servers))
+	errChannel := make(chan error, len(servers)+1)
 	for _, server := range servers {
 		go func(server *http.Server) {
 			err := adapterhttp.ListenAndServe(server)
@@ -265,7 +274,16 @@ func run(value options) error {
 			}
 		}(server)
 	}
-	fmt.Printf("READY a2a=%s mcp=%s agent_packet=%s artifact=%s\n", value.a2aAddress, value.mcpAddress, value.packetAddress, value.artifactAddr)
+	if messengerPacketServer != nil {
+		go func() {
+			serveErr := messengerPacketServer.Serve()
+			if !errors.Is(serveErr, http.ErrServerClosed) {
+				errChannel <- serveErr
+			}
+		}()
+	}
+	fmt.Printf("READY a2a=%s mcp=%s agent_packet=%s messenger_agent_packet=%s artifact=%s\n",
+		value.a2aAddress, value.mcpAddress, value.packetAddress, value.messengerPacketSocket, value.artifactAddr)
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
 	select {
@@ -279,6 +297,9 @@ func run(value options) error {
 	var combined error
 	for _, server := range servers {
 		combined = errors.Join(combined, server.Shutdown(ctx))
+	}
+	if messengerPacketServer != nil {
+		combined = errors.Join(combined, messengerPacketServer.Shutdown(ctx))
 	}
 	return combined
 }

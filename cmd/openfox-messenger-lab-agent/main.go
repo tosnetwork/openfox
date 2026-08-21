@@ -40,6 +40,8 @@ const (
 	replyModeStatic    = "static"
 	replyModeAgentLoop = "agent-loop"
 	agentLoopRuntime   = "openfox-agent-loop"
+	startupProbePeriod = 50 * time.Millisecond
+	maxStartupTimeout  = 5 * time.Minute
 )
 
 type stringFlags []string
@@ -90,18 +92,21 @@ func main() {
 	replyPrefix := flag.String("reply-prefix", "", "reply once to non-reply inbound messages")
 	replyMode := flag.String("reply-mode", replyModeStatic, "static or agent-loop")
 	agentWorkspace := flag.String("agent-workspace", "", "private durable OpenFox Agent workspace (agent-loop mode)")
+	startupTimeout := flag.Duration("startup-timeout", 30*time.Second, "bounded wait for the Messenger proxy Unix listener")
 	triggerPrefix := flag.String("trigger-prefix", "", "reply only to inbound messages with this prefix")
 	flag.Var(&members, "member", "room member Agent ID (repeat)")
 	flag.Parse()
 	if err := run(*agentID, *token, *socket, *cursor, *state, *control, *label,
-		*encryption, *triggerPrefix, *replyPrefix, *replyMode, *agentWorkspace, members, *creator); err != nil {
+		*encryption, *triggerPrefix, *replyPrefix, *replyMode, *agentWorkspace,
+		*startupTimeout, members, *creator); err != nil {
 		fmt.Fprintln(os.Stderr, "openfox-messenger-lab-agent:", err)
 		os.Exit(1)
 	}
 }
 
 func run(agentID, token, socket, cursor, statePath, controlPath, label, encryption,
-	triggerPrefix, replyPrefix, replyMode, agentWorkspace string, members []string, creator bool,
+	triggerPrefix, replyPrefix, replyMode, agentWorkspace string, startupTimeout time.Duration,
+	members []string, creator bool,
 ) error {
 	for _, path := range []string{socket, cursor, statePath, controlPath} {
 		if !filepath.IsAbs(path) || filepath.Clean(path) != path {
@@ -121,6 +126,14 @@ func run(agentID, token, socket, cursor, statePath, controlPath, label, encrypti
 	if replyMode == replyModeAgentLoop && replyPrefix == "" {
 		return errors.New("reply-prefix is required in agent-loop mode")
 	}
+	if startupTimeout <= 0 || startupTimeout > maxStartupTimeout {
+		return errors.New("startup-timeout must be within 1ns..5m")
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	if err := waitForUnixListener(ctx, socket, startupTimeout); err != nil {
+		return fmt.Errorf("wait for Messenger proxy: %w", err)
+	}
 	settings := &config.TOSMessengerLabSettings{
 		SocketPath: socket, AgentID: agentID,
 		Token: *config.NewSecureString(token), CursorPath: cursor, PollIntervalMS: 50, Encryption: encryption,
@@ -136,8 +149,6 @@ func run(agentID, token, socket, cursor, statePath, controlPath, label, encrypti
 	if err := channel.EnableDurableApplication(30 * time.Second); err != nil {
 		return err
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 	if err := channel.Start(ctx); err != nil {
 		return err
 	}
@@ -191,6 +202,39 @@ func run(agentID, token, socket, cursor, statePath, controlPath, label, encrypti
 		return err
 	case err := <-pipelineErr:
 		return err
+	}
+}
+
+// waitForUnixListener closes the systemd process-readiness gap without
+// weakening application authentication: it proves only that the configured
+// local socket accepts connections; Channel.Start still authenticates and
+// validates the exact Agent/room response before the control API is exposed.
+func waitForUnixListener(ctx context.Context, path string, timeout time.Duration) error {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(startupProbePeriod)
+	defer ticker.Stop()
+	for {
+		info, err := os.Lstat(path)
+		switch {
+		case err == nil && info.Mode()&os.ModeSocket == 0:
+			return errors.New("configured proxy path exists and is not a socket")
+		case err != nil && !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("inspect proxy socket: %w", err)
+		case err == nil:
+			connection, dialErr := (&net.Dialer{Timeout: startupProbePeriod}).DialContext(waitCtx, "unix", path)
+			if dialErr == nil {
+				if closeErr := connection.Close(); closeErr != nil {
+					return fmt.Errorf("close proxy readiness connection: %w", closeErr)
+				}
+				return nil
+			}
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("proxy socket not ready within %s: %w", timeout, waitCtx.Err())
+		case <-ticker.C:
+		}
 	}
 }
 

@@ -93,3 +93,13 @@ that stack with the mandatory Messenger authorization and Quote-verification
 boundaries for one negotiation. Construction is deliberately read-only: it
 does not claim endpoints are live, deploy an escrow, fund it, or dispatch a
 task. Those remain separate, reviewable command stages.
+
+The handoff between those stages uses
+`nativeimpl.MarshalPreparedPurchase`/`UnmarshalPreparedPurchase`. Its strict
+`tos.openfox.prepared-purchase.v1` artifact binds the protobuf Proposal,
+canonical manifest, Accepted Quote, escrow Data and StateInit, stablecoin route,
+buyer wallet, and exact atomic amount. Unknown fields, trailing JSON,
+non-canonical Base64/BOCs, an invalid integrity digest, and re-digested linked
+field substitutions are rejected. Loading the artifact does not authorize a
+deployment or payment; the Buyer SDK reconstructs and revalidates it against
+fresh finalized state before funding.

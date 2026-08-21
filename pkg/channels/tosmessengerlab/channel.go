@@ -72,6 +72,32 @@ type pendingSend struct {
 	expiresAt time.Time
 }
 
+// MembershipStatus is the private MLS proxy's durable view of this Agent's
+// membership. A removed Agent retains the room identity and final epoch for
+// operator-visible terminal health, but cannot list, poll, or send to the room.
+type MembershipStatus struct {
+	RoomID       string
+	RoomLabel    string
+	Members      []string
+	ActiveMember bool
+	MLSEpoch     uint64
+}
+
+type messengerLabHTTPError struct {
+	statusCode int
+	status     string
+	detail     string
+}
+
+func (e *messengerLabHTTPError) Error() string {
+	return fmt.Sprintf("Messenger lab returned %s: %s", e.status, e.detail)
+}
+
+func removedFromRoom(err error) bool {
+	var response *messengerLabHTTPError
+	return errors.As(err, &response) && response.statusCode == http.StatusGone
+}
+
 type Channel struct {
 	*channels.BaseChannel
 	settings *config.TOSMessengerLabSettings
@@ -141,6 +167,9 @@ func (c *Channel) Start(ctx context.Context) error {
 	for _, configured := range c.settings.Rooms {
 		created, err := c.createRoom(ctx, configured)
 		if err != nil {
+			if removedFromRoom(err) {
+				continue
+			}
 			return fmt.Errorf("create Messenger lab room %q: %w", configured.Label, err)
 		}
 		c.rooms[created.RoomID] = created
@@ -290,6 +319,32 @@ func (c *Channel) RoomID(label string, members []string) (string, bool) {
 	return "", false
 }
 
+// MembershipStatus returns the durable identity and membership state owned by
+// this Agent's private OpenMLS proxy, including after removal from the room.
+func (c *Channel) MembershipStatus(ctx context.Context) (MembershipStatus, error) {
+	var response struct {
+		OK           bool     `json:"ok"`
+		ActiveMember bool     `json:"active_member"`
+		RoomID       string   `json:"room_id"`
+		RoomLabel    string   `json:"room_label"`
+		Members      []string `json:"members"`
+		MLSEpoch     uint64   `json:"mls_epoch"`
+		Encryption   string   `json:"encryption"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/livez", nil, &response); err != nil {
+		return MembershipStatus{}, fmt.Errorf("read Messenger MLS membership: %w", err)
+	}
+	if !response.OK || !roomIDPattern.MatchString(response.RoomID) || strings.TrimSpace(response.RoomLabel) == "" ||
+		len(response.Members) < 2 || response.MLSEpoch == 0 ||
+		response.Encryption != "openmls-0.8.1-suite-0x0001" {
+		return MembershipStatus{}, errors.New("Messenger MLS membership response is invalid")
+	}
+	return MembershipStatus{
+		RoomID: response.RoomID, RoomLabel: response.RoomLabel, Members: append([]string(nil), response.Members...),
+		ActiveMember: response.ActiveMember, MLSEpoch: response.MLSEpoch,
+	}, nil
+}
+
 func (c *Channel) poll(ctx context.Context) {
 	defer c.wg.Done()
 	defer c.SetRunning(false)
@@ -327,6 +382,17 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 		}
 		path := "/v1/messages?room_id=" + url.QueryEscape(roomID) + "&after=" + strconv.FormatUint(after, 10)
 		if err := c.call(ctx, http.MethodGet, path, nil, &response); err != nil {
+			if removedFromRoom(err) {
+				c.mu.Lock()
+				delete(c.rooms, roomID)
+				delete(c.cursors, roomID)
+				persistErr := c.persistCursors()
+				c.mu.Unlock()
+				if persistErr != nil {
+					return fmt.Errorf("persist removed Messenger lab room: %w", persistErr)
+				}
+				continue
+			}
 			return err
 		}
 		for _, inbound := range response.Messages {
@@ -447,7 +513,8 @@ func (c *Channel) call(ctx context.Context, method, path string, requestBody, re
 		return errors.New("Messenger lab response exceeds its bound")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("Messenger lab returned %s: %s", response.Status, strings.TrimSpace(string(raw)))
+		return &messengerLabHTTPError{statusCode: response.StatusCode, status: response.Status,
+			detail: strings.TrimSpace(string(raw))}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()

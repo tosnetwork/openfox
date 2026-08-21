@@ -143,12 +143,14 @@ private MLS state owner and the shared Relay persists only ciphertext; runtime
 metadata distinguishes that mode from the legacy plaintext fixture. The
 Messenger boundary is implemented by `tos-messenger` `9219ddb`.
 
-The receive-only [`tos_messenger` production inbox](docs/guides/tos-messenger.md)
-now drains authenticated and admitted daemon events, independently checks their
-Event IDs and canonical one-to-one or room-message bodies, publishes rooms as
-group chats, and supplies typed action provenance. It
-fails closed on outbound traffic until Messenger's route and group-driver gates
-are accepted.
+The [`tos_messenger` production channel](docs/guides/tos-messenger.md) drains
+authenticated and admitted daemon events, independently checks their Event IDs
+and canonical direct, room-message, or room-moderation bodies, publishes rooms
+as group chats, and supplies typed action provenance. Replies use fixed
+operator routes and daemon-owned event construction. Moderation is a non-model
+control: OpenFox durably retracts hidden applied history and its tool authority
+before completing the daemon lease. Delivery remains queue-only until a
+post-M0-R production transport is selected.
 
 OpenFox can also put every classified tool and custody operation behind the
 [`tos-messengerd` action-authorization boundary](docs/guides/tos-messenger-action-authorization.md),

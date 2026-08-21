@@ -1,4 +1,4 @@
-# Authenticated TOS Messenger inbox
+# Authenticated TOS Messenger channel
 
 The `tos_messenger` channel drains events from `tos-messengerd`'s production
 runtime socket. It is deliberately separate from `tos_messenger_lab`: the lab
@@ -28,13 +28,28 @@ after the daemon has authenticated, decrypted, admitted, and durably staged it.
 ```
 
 The adapter lists pending events, takes a bounded application lease, and accepts
-the strict `text` and `room.message` payload profiles. It independently
+the strict `text`, `room.message`, and `room.moderation` payload profiles. It independently
 reparses the event, checks daemon metadata against the document, recomputes the
 content-addressed Event ID, and decodes the domain-separated canonical body.
 For `room.message` it additionally binds the body Room ID to the Event Room ID
 and requires a non-zero membership epoch, then publishes it as an OpenFox
 `group`/`room` input. Unknown, substituted, cross-room, or malformed events are
 rejected before the OpenFox bus.
+
+`room.moderation` is never published as user text. The adapter independently
+decodes its canonical Room ID, authority revisions, target Event ID, action and
+reason, then publishes a typed runtime control. OpenFox completes the daemon
+lease only after a gap-free per-target decision is durable in the session
+store. An exact replay is idempotent; a revision gap, an untrusted control, or
+damaged overlay state fails closed and leaves the lease available for retry.
+
+On `hide`, already-applied history is projected as
+`[message hidden by room moderation]`; the stored immutable original is not
+placed in the provider-facing `Message`, and the target contributes no action
+provenance. A running turn for that room is conservatively aborted so it cannot
+schedule further model/tool work from withdrawn input. `restore` recovers the
+stored original. If the target has not reached this OpenFox instance, a durable
+tombstone prevents a later/out-of-order copy from becoming model-visible.
 
 For accepted input it sets `AuthenticatedMessagingOrigin` from the verified
 Agent, Endpoint, Device, Event, conversation, kind, and daemon receive time.

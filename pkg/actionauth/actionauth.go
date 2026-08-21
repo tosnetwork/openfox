@@ -10,9 +10,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"regexp"
 )
 
 const MaxProvenance = 32
+const MaxPhysicalArgumentsBytes = 8 << 10
 
 type Effect string
 
@@ -22,6 +24,7 @@ const (
 	EffectLocalWrite    Effect = "local-write"
 	EffectMessage       Effect = "message"
 	EffectToolCall      Effect = "tool-call"
+	EffectPhysicalIO    Effect = "physical-io"
 	EffectSpend         Effect = "spend"
 	EffectKeyUse        Effect = "key-use"
 	EffectConfiguration Effect = "configuration"
@@ -30,7 +33,7 @@ const (
 func (e Effect) Known() bool {
 	switch e {
 	case EffectNone, EffectLocalRead, EffectLocalWrite, EffectMessage,
-		EffectToolCall, EffectSpend, EffectKeyUse, EffectConfiguration:
+		EffectToolCall, EffectPhysicalIO, EffectSpend, EffectKeyUse, EffectConfiguration:
 		return true
 	default:
 		return false
@@ -75,12 +78,48 @@ type PurchaseTerms struct {
 }
 
 type Action struct {
-	Effect         Effect         `json:"effect"`
-	Summary        string         `json:"summary"`
-	IdempotencyKey string         `json:"idempotency_key,omitempty"`
-	DerivedFrom    []Origin       `json:"derived_from,omitempty"`
-	MandateID      string         `json:"mandate_id,omitempty"`
-	Terms          *PurchaseTerms `json:"terms,omitempty"`
+	Effect         Effect             `json:"effect"`
+	Summary        string             `json:"summary"`
+	IdempotencyKey string             `json:"idempotency_key,omitempty"`
+	DerivedFrom    []Origin           `json:"derived_from,omitempty"`
+	MandateID      string             `json:"mandate_id,omitempty"`
+	Terms          *PurchaseTerms     `json:"terms,omitempty"`
+	Physical       *PhysicalOperation `json:"physical,omitempty"`
+}
+
+// PhysicalOperation identifies the separately configured local Capability
+// and exact hardware invocation for which Messenger must obtain a one-shot
+// owner decision. The digest is over encoding/json's canonical map encoding;
+// raw device arguments do not cross the policy socket.
+type PhysicalOperation struct {
+	CapabilityID    string `json:"capability_id"`
+	Tool            string `json:"tool"`
+	Operation       string `json:"operation"`
+	ArgumentsDigest string `json:"arguments_digest"`
+	ArgumentsJSON   string `json:"arguments_json"`
+}
+
+var physicalCapabilityPattern = regexp.MustCompile(`^cap_[0-9a-f]{64}$`)
+var physicalNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+var physicalDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+func (p PhysicalOperation) Valid() bool {
+	if !physicalCapabilityPattern.MatchString(p.CapabilityID) ||
+		!physicalNamePattern.MatchString(p.Tool) || !physicalNamePattern.MatchString(p.Operation) ||
+		!physicalDigestPattern.MatchString(p.ArgumentsDigest) || len(p.ArgumentsJSON) == 0 ||
+		len(p.ArgumentsJSON) > MaxPhysicalArgumentsBytes {
+		return false
+	}
+	var arguments map[string]any
+	if err := json.Unmarshal([]byte(p.ArgumentsJSON), &arguments); err != nil {
+		return false
+	}
+	canonical, err := json.Marshal(arguments)
+	if err != nil || string(canonical) != p.ArgumentsJSON || arguments["action"] != p.Operation {
+		return false
+	}
+	digest := sha256.Sum256(canonical)
+	return p.ArgumentsDigest == "sha256:"+hex.EncodeToString(digest[:])
 }
 
 type Authorizer interface {

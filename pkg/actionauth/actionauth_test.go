@@ -2,6 +2,7 @@ package actionauth
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +31,24 @@ func TestInvocationContextCopiesProvenance(t *testing.T) {
 	got, ok := InvocationFrom(ctx)
 	if !ok || got.DerivedFrom[0].EventID != "evt" {
 		t.Fatalf("invocation = %+v, %v", got, ok)
+	}
+}
+
+func TestPhysicalOperationRequiresReviewableCanonicalArguments(t *testing.T) {
+	valid := PhysicalOperation{CapabilityID: "cap_" + strings.Repeat("a", 64), Tool: "i2c", Operation: "read",
+		ArgumentsDigest: "sha256:16384135fc236bb03583cf3024b9fb573cc1ae45f908a98d0601d2ab45f8cfbe",
+		ArgumentsJSON:   `{"action":"read"}`}
+	if !valid.Valid() {
+		t.Fatal("valid physical operation was refused")
+	}
+	cases := []PhysicalOperation{valid, valid, valid, valid}
+	cases[0].ArgumentsDigest = "sha256:" + strings.Repeat("b", 64)
+	cases[1].ArgumentsJSON = `{ "action": "read" }`
+	cases[2].ArgumentsJSON = `{"action":"write"}`
+	cases[3].ArgumentsJSON = strings.Repeat("x", MaxPhysicalArgumentsBytes+1)
+	for _, candidate := range cases {
+		if candidate.Valid() {
+			t.Fatalf("accepted malformed physical operation: %+v", candidate)
+		}
 	}
 }

@@ -24,7 +24,13 @@ failure tests.
     "action_authorization": {
       "enabled": true,
       "socket_path": "/run/user/1000/tos-messengerd/runtime.sock",
-      "timeout_seconds": 30
+      "timeout_seconds": 30,
+      "physical_capabilities": {
+        "i2c": {
+          "capability_id": "cap_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "operations": ["detect", "scan", "read"]
+        }
+      }
     }
   }
 }
@@ -35,6 +41,19 @@ and also bounds how long a tool waits while an owner decides. A missing daemon,
 bad response, invalid configuration, unknown effect, or unclassified injected
 tool fails closed before the tool's `Execute` method runs. Disabling the option
 preserves legacy deployments.
+
+Physical I/O is the deliberate exception to legacy behavior. The built-in
+`i2c`, `spi`, and `serial` tools are unavailable unless action authorization is
+enabled and their exact tool name has a local `physical_capabilities` entry.
+Capability IDs use `cap_` plus 64 lowercase hexadecimal characters. Operations
+are an explicit allow-list (`detect`/`scan`/`read`/`write` for I2C,
+`list`/`read`/`transfer` for SPI, and `list`/`read`/`write` for serial).
+Each invocation is classified as `physical-io`, commits the Capability, tool,
+operation, at most 8 KiB of owner-reviewable canonical JSON arguments, their
+digest, provenance, and retry key, and always
+waits for a one-shot Messenger owner decision—even when the configured effect
+ceiling would otherwise allow it. Enabling a hardware tool alone grants no
+sensor or actuator authority.
 
 ## Provenance and replay behavior
 

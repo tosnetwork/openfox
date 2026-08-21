@@ -2,6 +2,9 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -983,6 +986,73 @@ func TestToolRegistryAuthorizationFailsClosedAndRunsBeforeTool(t *testing.T) {
 		result := registry.Execute(ctx, "scan", nil)
 		if !result.IsError || tool.lastCtx != nil || len(authorizer.actions) != 0 {
 			t.Fatalf("result=%+v executed=%v actions=%v", result, tool.lastCtx != nil, authorizer.actions)
+		}
+	})
+}
+
+func TestToolRegistryPhysicalCapabilityGate(t *testing.T) {
+	capabilityID := "cap_" + strings.Repeat("a", 64)
+	invocation := actionauth.WithInvocation(context.Background(), actionauth.Invocation{
+		IdempotencyKey: "idem_" + strings.Repeat("b", 64), LineageComplete: true,
+	})
+
+	t.Run("missing capability", func(t *testing.T) {
+		registry := NewToolRegistry()
+		authorizer := &recordingAuthorizer{}
+		registry.SetAuthorizer(authorizer)
+		tool := &mockContextAwareTool{mockRegistryTool: *newMockTool("i2c", "raw bus")}
+		registry.RegisterPhysicalTool(tool, "", []string{"read"})
+		result := registry.Execute(invocation, "i2c", map[string]any{"action": "read"})
+		if !result.IsError || tool.lastCtx != nil || len(authorizer.actions) != 0 {
+			t.Fatalf("result=%+v executed=%v actions=%v", result, tool.lastCtx != nil, authorizer.actions)
+		}
+	})
+
+	t.Run("missing independent authorizer", func(t *testing.T) {
+		registry := NewToolRegistry()
+		tool := &mockContextAwareTool{mockRegistryTool: *newMockTool("i2c", "raw bus")}
+		registry.RegisterPhysicalTool(tool, capabilityID, []string{"read"})
+		result := registry.Execute(invocation, "i2c", map[string]any{"action": "read"})
+		if !result.IsError || tool.lastCtx != nil {
+			t.Fatalf("result=%+v executed=%v", result, tool.lastCtx != nil)
+		}
+	})
+
+	t.Run("operation outside capability", func(t *testing.T) {
+		registry := NewToolRegistry()
+		authorizer := &recordingAuthorizer{}
+		registry.SetAuthorizer(authorizer)
+		tool := &mockContextAwareTool{mockRegistryTool: *newMockTool("i2c", "raw bus")}
+		registry.RegisterPhysicalTool(tool, capabilityID, []string{"read"})
+		result := registry.Execute(invocation, "i2c", map[string]any{"action": "write"})
+		if !result.IsError || tool.lastCtx != nil || len(authorizer.actions) != 0 {
+			t.Fatalf("result=%+v executed=%v actions=%v", result, tool.lastCtx != nil, authorizer.actions)
+		}
+	})
+
+	t.Run("exact invocation", func(t *testing.T) {
+		registry := NewToolRegistry()
+		authorizer := &recordingAuthorizer{}
+		registry.SetAuthorizer(authorizer)
+		tool := &mockContextAwareTool{mockRegistryTool: *newMockTool("i2c", "raw bus")}
+		registry.RegisterPhysicalTool(tool, capabilityID, []string{"read"})
+		args := map[string]any{"action": "read", "address": float64(56), "length": float64(2)}
+		result := registry.Execute(invocation, "i2c", args)
+		if result.IsError || tool.lastCtx == nil || len(authorizer.actions) != 1 {
+			t.Fatalf("result=%+v executed=%v actions=%v", result, tool.lastCtx != nil, authorizer.actions)
+		}
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(encoded)
+		wantDigest := "sha256:" + hex.EncodeToString(digest[:])
+		got := authorizer.actions[0]
+		if got.Effect != actionauth.EffectPhysicalIO || got.Physical == nil ||
+			got.Physical.CapabilityID != capabilityID || got.Physical.Tool != "i2c" ||
+			got.Physical.Operation != "read" || got.Physical.ArgumentsDigest != wantDigest ||
+			got.Physical.ArgumentsJSON != string(encoded) {
+			t.Fatalf("action = %+v", got)
 		}
 	})
 }

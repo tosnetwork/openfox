@@ -61,6 +61,61 @@ func TestClientRequestsAndClaimsOneShotToolGrant(t *testing.T) {
 	}
 }
 
+func TestClientCarriesPhysicalCapabilityAndClaimsOneShotGrant(t *testing.T) {
+	want := &actionauth.PhysicalOperation{
+		CapabilityID: "cap_" + repeat("c", 64), Tool: "i2c", Operation: "read",
+		ArgumentsDigest: "sha256:16384135fc236bb03583cf3024b9fb573cc1ae45f908a98d0601d2ab45f8cfbe",
+		ArgumentsJSON:   `{"action":"read"}`,
+	}
+	var calls atomic.Int32
+	server := newFakeServer(t, func(raw []byte) []byte {
+		var req request
+		if err := json.Unmarshal(raw, &req); err != nil {
+			t.Fatal(err)
+		}
+		calls.Add(1)
+		if req.Op == "actions.request" {
+			if req.Action == nil || req.Action.Effect != string(actionauth.EffectPhysicalIO) ||
+				req.Action.Physical == nil || *req.Action.Physical != *want {
+				t.Fatalf("request = %+v", req)
+			}
+			return encodeResponse(t, response{OK: true, ActionID: "act_" + repeat("e", 64), State: "granted"})
+		}
+		return encodeResponse(t, response{OK: true, Authorized: true, State: "spent"})
+	})
+	client, err := NewClient(server, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Authorize(context.Background(), actionauth.Action{
+		Effect: actionauth.EffectPhysicalIO, Summary: "read local temperature sensor",
+		IdempotencyKey: "idem_" + repeat("f", 64), Physical: want,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d", calls.Load())
+	}
+}
+
+func TestClientRefusesMalformedPhysicalActionBeforeIPC(t *testing.T) {
+	server := newFakeServer(t, func([]byte) []byte {
+		t.Fatal("malformed physical action reached Messenger")
+		return nil
+	})
+	client, err := NewClient(server, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.Authorize(context.Background(), actionauth.Action{
+		Effect: actionauth.EffectPhysicalIO, Summary: "raw I/O",
+		IdempotencyKey: "idem_" + repeat("f", 64),
+	})
+	if !errors.Is(err, ErrRefused) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestClientWaitsForOwnerThenClaims(t *testing.T) {
 	var statusCalls atomic.Int32
 	server := newFakeServer(t, func(raw []byte) []byte {

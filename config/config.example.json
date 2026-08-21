@@ -316,6 +316,12 @@
     }
   },
   "tools": {
+    "action_authorization": {
+      "enabled": false,
+      "socket_path": "",
+      "timeout_seconds": 30,
+      "physical_capabilities": {}
+    },
     "allow_read_paths": null,
     "allow_write_paths": null,
     "web": {

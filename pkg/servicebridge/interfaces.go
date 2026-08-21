@@ -42,7 +42,8 @@ type CustodySigner interface {
 // finalized TOS state and match every purchase term plus the complete network
 // identity. It is read-only and grants no spending or custody authority.
 type FinalizedQuoteVerifier interface {
-	VerifyAcceptedQuote(ctx context.Context, commitment string, expected actionauth.PurchaseTerms) error
+	VerifyAcceptedQuote(ctx context.Context, commitment, escrowAddress string,
+		expected actionauth.PurchaseTerms) error
 }
 
 // TaskTransport dispatches the bound task over one transport. All transports

@@ -150,17 +150,19 @@ func TestClientCarriesExactSpendTermsAndMandate(t *testing.T) {
 
 func TestClientVerifiesFinalizedQuoteWithExactExpectedTerms(t *testing.T) {
 	commitment := "tvm-cell-sha256:" + repeat("a", 64)
+	escrowAddress := "0:" + repeat("b", 64)
 	server := newFakeServer(t, func(raw []byte) []byte {
 		var req request
 		if err := json.Unmarshal(raw, &req); err != nil {
 			t.Fatal(err)
 		}
-		if req.Op != "quotes.verify" || req.QuoteCommitment != commitment ||
-			req.ExpectedQuoteTerms == nil || req.ExpectedQuoteTerms.PriceAtomic != "42" {
+		if req.Op != "quotes.verify" || req.QuoteCommitment != commitment || req.EscrowAddress != escrowAddress ||
+			req.CapabilityClass != "compute.inference" || req.ExpectedQuoteTerms == nil ||
+			req.ExpectedQuoteTerms.PriceAtomic != "42" {
 			t.Fatalf("request = %+v", req)
 		}
 		return encodeResponse(t, response{OK: true, FinalizedQuote: &finalizedQuoteEvidence{
-			Commitment: commitment, EscrowAccount: "0:" + repeat("b", 64),
+			Commitment: commitment, EscrowAccount: escrowAddress,
 			TransactionHash:     "sha256:" + repeat("c", 64),
 			ContractCodeHash:    "tvm-cell-sha256:" + repeat("d", 64),
 			FinalizedCheckpoint: 19, FinalizedAtUnix: 2_000_000_000,
@@ -171,7 +173,8 @@ func TestClientVerifiesFinalizedQuoteWithExactExpectedTerms(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := client.VerifyAcceptedQuote(
-		context.Background(), commitment, actionauth.PurchaseTerms{PriceAtomic: "42"},
+		context.Background(), commitment, escrowAddress,
+		actionauth.PurchaseTerms{PriceAtomic: "42", CapabilityClass: "compute.inference"},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +182,7 @@ func TestClientVerifiesFinalizedQuoteWithExactExpectedTerms(t *testing.T) {
 
 func TestClientRejectsIncompleteFinalizedQuoteEvidence(t *testing.T) {
 	commitment := "tvm-cell-sha256:" + repeat("a", 64)
+	escrowAddress := "0:" + repeat("b", 64)
 	server := newFakeServer(t, func([]byte) []byte {
 		return encodeResponse(t, response{OK: true, FinalizedQuote: &finalizedQuoteEvidence{
 			Commitment: commitment,
@@ -189,7 +193,7 @@ func TestClientRejectsIncompleteFinalizedQuoteEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := client.VerifyAcceptedQuote(
-		context.Background(), commitment, actionauth.PurchaseTerms{PriceAtomic: "42"},
+		context.Background(), commitment, escrowAddress, actionauth.PurchaseTerms{PriceAtomic: "42"},
 	); !errors.Is(err, ErrQuoteUnverified) {
 		t.Fatalf("error = %v", err)
 	}

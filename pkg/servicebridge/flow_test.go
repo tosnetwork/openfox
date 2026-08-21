@@ -59,17 +59,20 @@ type fakeTransport struct {
 }
 
 type fakeQuoteVerifier struct {
-	calls int
-	err   error
-	terms actionauth.PurchaseTerms
+	calls         int
+	escrowAddress string
+	err           error
+	terms         actionauth.PurchaseTerms
 }
 
 func (f *fakeQuoteVerifier) VerifyAcceptedQuote(
 	_ context.Context,
 	_ string,
+	escrowAddress string,
 	terms actionauth.PurchaseTerms,
 ) error {
 	f.calls++
+	f.escrowAddress = escrowAddress
 	f.terms = terms
 	return f.err
 }
@@ -160,6 +163,10 @@ func TestBuyerHappyPath(t *testing.T) {
 	}
 	if len(tr.dispatched) != 1 || tr.dispatched[0] != TransportA2A {
 		t.Fatalf("want one A2A dispatch, got %v", tr.dispatched)
+	}
+	verifier := b.QuoteVerifier.(*fakeQuoteVerifier)
+	if verifier.calls != 1 || verifier.escrowAddress != esc || verifier.terms.PriceAtomic != "25000000" {
+		t.Fatalf("finalized Quote verification = %+v", verifier)
 	}
 	rec, _ := b.Journal.Get(PurchaseKey{QuoteCommitment: qc, EscrowAddress: esc})
 	if rec.Phase != PhaseResolved {

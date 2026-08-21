@@ -32,6 +32,7 @@ type allowQuoteVerifier struct{}
 func (allowQuoteVerifier) VerifyAcceptedQuote(
 	context.Context,
 	string,
+	string,
 	actionauth.PurchaseTerms,
 ) error {
 	return nil

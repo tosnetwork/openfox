@@ -68,7 +68,10 @@ Messenger as a `spend`. Settlement signing separately requests `key-use`.
 Refusal or incomplete lineage leaves the wrapped signer unreachable.
 After the single funding lease, the buyer first resolves exact finalized
 funding and then calls the same Messenger client through `quotes.verify` with
-the commitment and those complete terms. Task construction/dispatch remains
+the commitment, deterministic escrow address, and those complete terms. The
+address is only a candidate locator: Messenger independently checks the exact
+finalized account's contract, canonical StateInit and held commitment, and does
+not persist a locator supplied by OpenFox. Task construction/dispatch remains
 blocked until Messenger independently matches the finalized Accepted Quote and
 its full network identity. This check runs again on crash recovery while the
 funding lease prevents a second payment.

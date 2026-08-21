@@ -129,7 +129,9 @@ func (b *Buyer) Purchase(ctx context.Context, ref CapabilityRef, transport Trans
 	if err != nil {
 		return Settlement{}, err
 	}
-	if err := b.QuoteVerifier.VerifyAcceptedQuote(ctx, aq.QuoteCommitment, expectedTerms); err != nil {
+	if err := b.QuoteVerifier.VerifyAcceptedQuote(
+		ctx, aq.QuoteCommitment, aq.EscrowAddress, expectedTerms,
+	); err != nil {
 		return Settlement{}, err
 	}
 	if err := b.Journal.Advance(key, PhaseFunded); err != nil && !errors.Is(err, ErrJournalPhase) {

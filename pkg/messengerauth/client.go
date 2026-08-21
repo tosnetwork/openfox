@@ -56,6 +56,8 @@ type request struct {
 	ActionID           string                    `json:"action_id,omitempty"`
 	MandateID          string                    `json:"mandate_id,omitempty"`
 	QuoteCommitment    string                    `json:"quote_commitment,omitempty"`
+	EscrowAddress      string                    `json:"escrow_address,omitempty"`
+	CapabilityClass    string                    `json:"capability_class,omitempty"`
 	ExpectedQuoteTerms *actionauth.PurchaseTerms `json:"expected_quote_terms,omitempty"`
 }
 
@@ -93,17 +95,18 @@ type finalizedQuoteEvidence struct {
 // it proves only that the finalized Accepted Quote exactly matches expected.
 func (c *Client) VerifyAcceptedQuote(
 	ctx context.Context,
-	commitment string,
+	commitment, escrowAddress string,
 	expected actionauth.PurchaseTerms,
 ) error {
 	verified, err := c.call(ctx, request{
-		Op: "quotes.verify", QuoteCommitment: commitment, ExpectedQuoteTerms: &expected,
+		Op: "quotes.verify", QuoteCommitment: commitment, EscrowAddress: escrowAddress,
+		CapabilityClass: expected.CapabilityClass, ExpectedQuoteTerms: &expected,
 	})
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrQuoteUnverified, err)
 	}
 	evidence := verified.FinalizedQuote
-	if evidence == nil || evidence.Commitment != commitment || evidence.EscrowAccount == "" ||
+	if evidence == nil || evidence.Commitment != commitment || evidence.EscrowAccount != escrowAddress ||
 		evidence.TransactionHash == "" || evidence.ContractCodeHash == "" ||
 		evidence.FinalizedCheckpoint == 0 || evidence.FinalizedAtUnix == 0 {
 		return fmt.Errorf("%w: Messenger returned incomplete evidence", ErrQuoteUnverified)

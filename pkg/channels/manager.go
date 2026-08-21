@@ -1387,21 +1387,14 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		m.dispatchTask = nil
 	}
 
-	// Close all worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.queue)
-		}
-	}
+	// Workers and dispatchers share dispatchCtx. Do not close their queues:
+	// a dispatcher that observed a bus item just before cancellation may still
+	// be selecting a queue send, and send racing close is both unsafe and a
+	// panic. Cancellation releases every worker/retry path; the unreachable
+	// bounded queues are then reclaimed with the workers.
 	for _, w := range m.workers {
 		if w != nil {
 			<-w.done
-		}
-	}
-	// Close all media worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.mediaQueue)
 		}
 	}
 	for _, w := range m.workers {

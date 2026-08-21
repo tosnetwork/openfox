@@ -1177,6 +1177,8 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 		firstResp:    "stale direct response",
 		finalResp:    "fresh response after steering",
 	}
+	firstStarted := provider.firstStarted
+	releaseFirst := provider.releaseFirst
 
 	msgBus := bus.NewMessageBus()
 	al := NewAgentLoop(cfg, msgBus, provider)
@@ -1200,7 +1202,7 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 	}()
 
 	select {
-	case <-provider.firstStarted:
+	case <-firstStarted:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for first LLM call to start")
 	}
@@ -1208,7 +1210,7 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 	if err := al.Steer(providers.Message{Role: "user", Content: "follow-up instruction"}); err != nil {
 		t.Fatalf("Steer failed: %v", err)
 	}
-	close(provider.releaseFirst)
+	close(releaseFirst)
 
 	select {
 	case result := <-resultCh:

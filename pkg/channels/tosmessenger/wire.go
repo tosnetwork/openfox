@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	requestSchema  = "tos.messaging.local-request.v4"
-	responseSchema = "tos.messaging.local-response.v2"
-	maxFrameBytes  = 512 << 10
+	requestSchema  = "tos.messaging.local-request.v5"
+	responseSchema = "tos.messaging.local-response.v3"
+	maxFrameBytes  = 2 << 20
 )
 
 type localRequest struct {
@@ -40,6 +40,12 @@ type localRequest struct {
 	SessionID           string `json:"session_id,omitempty"`
 	RecipientEndpointID string `json:"recipient_endpoint_id,omitempty"`
 	ExpiresAtUnix       uint64 `json:"expires_at_unix,omitempty"`
+	Filename            string `json:"filename,omitempty"`
+	PlaintextDigest     string `json:"plaintext_digest,omitempty"`
+	PlaintextBytes      uint64 `json:"plaintext_bytes,omitempty"`
+	UploadID            string `json:"upload_id,omitempty"`
+	ChunkIndex          uint32 `json:"chunk_index,omitempty"`
+	Chunk               []byte `json:"chunk_base64,omitempty"`
 }
 
 type pendingEvent struct {
@@ -90,6 +96,9 @@ type localResponse struct {
 	Attachment  *admittedAttachment `json:"attachment,omitempty"`
 	Fresh       bool                `json:"fresh,omitempty"`
 	EventID     string              `json:"event_id,omitempty"`
+	UploadID    string              `json:"upload_id,omitempty"`
+	NextChunk   uint32              `json:"next_chunk,omitempty"`
+	Complete    bool                `json:"complete,omitempty"`
 }
 
 func validPendingAttachment(value pendingAttachment) bool {

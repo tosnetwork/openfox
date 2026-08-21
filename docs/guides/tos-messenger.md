@@ -52,8 +52,22 @@ SHA-256 of the returned body. It publishes the body with an authenticated
 `artifact.encrypted` origin and completes the lease only after the Agent
 session has durably persisted that exact Event/content/provenance tuple. A
 fetch, AEAD, scan, validation, or persistence failure releases no content and
-leaves the durable lease retryable. This is an inbound admitted-text path; it
-does not claim that OpenFox composes or uploads outbound attachments.
+leaves the durable lease retryable.
+
+The same option also enables outbound `SendMedia`. OpenFox resolves only a
+registered `media://` reference, opens the exact regular file without following
+a symlink, hashes at most 512 MiB, and sends filename, canonical media type,
+size, digest and sequential 1 MiB plaintext chunks over local API v5. The
+daemon immediately AEAD-encrypts each chunk and persists only ciphertext. It
+owns fresh encryption/upload/fetch keys, the fixed operator storage origin and
+key, retention, external Endpoint signatures, locator, sender/network/clock,
+and Event ID. A complete signed StoredAck must verify before the Event enters
+the delivery journal. Interrupted plaintext ingestion, storage upload, daemon
+restart and exact OpenFox retry resume the same durable transaction; a changed
+digest or route conflicts. One shared media caption is first emitted as a
+canonical text Event and attachments reply to it; divergent per-part captions
+are refused rather than discarded. Neither the model nor OpenFox receives the
+Endpoint or upload-capability private key.
 
 `room.moderation` is never published as user text. The adapter independently
 decodes its canonical Room ID, authority revisions, target Event ID, action and

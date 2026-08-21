@@ -153,7 +153,10 @@ The [`tos_messenger` production channel](docs/guides/tos-messenger.md) drains
 authenticated and admitted daemon events, independently checks their Event IDs
 and canonical direct, room-message, or room-moderation bodies, publishes rooms
 as group chats, and supplies typed action provenance. Replies use fixed
-operator routes and daemon-owned event construction. Moderation is a non-model
+operator routes and daemon-owned event construction. Media replies stream
+through daemon-owned AEAD, distinct Endpoint-signed upload/fetch capabilities,
+an operator-pinned storage service, verified StoredAck ordering and restart-safe
+exact retries without exposing storage or key authority to the model. Moderation is a non-model
 control: OpenFox durably retracts hidden applied history and its tool authority
 before completing the daemon lease. Delivery remains queue-only until a
 post-M0-R production transport is selected.

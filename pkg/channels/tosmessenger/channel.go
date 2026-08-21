@@ -9,8 +9,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
+	"mime"
+	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,13 +25,20 @@ import (
 	"github.com/tosnetwork/openfox/pkg/config"
 )
 
-const defaultPollInterval = 250 * time.Millisecond
+const (
+	defaultPollInterval        = 250 * time.Millisecond
+	maxOutboundAttachmentBytes = 512 << 20
+	outboundAttachmentChunk    = 1 << 20
+)
 
 var ErrOutboundUnavailable = errors.New(
 	"production Messenger outbound needs an authenticated origin and configured route",
 )
 
-var sessionPattern = regexp.MustCompile(`^ses_[0-9a-f]{64}$`)
+var (
+	sessionPattern = regexp.MustCompile(`^ses_[0-9a-f]{64}$`)
+	uploadPattern  = regexp.MustCompile(`^attup_[0-9a-f]{64}$`)
+)
 
 type Channel struct {
 	*channels.BaseChannel
@@ -144,6 +156,193 @@ func (c *Channel) Send(ctx context.Context, message bus.OutboundMessage) ([]stri
 		return nil, errors.New("Messenger compose returned no canonical Event ID")
 	}
 	return []string{response.EventID}, nil
+}
+
+// SendMedia streams OpenFox MediaStore files through the daemon-owned
+// attachment transaction. OpenFox chooses bounded presentation semantics and
+// supplies exact plaintext evidence; it never receives or chooses encryption
+// keys, capability grants, storage authority, retention, locator, sender
+// identity, network, clock, or Event ID.
+func (c *Channel) SendMedia(ctx context.Context, message bus.OutboundMediaMessage) ([]string, error) {
+	if !c.IsRunning() {
+		return nil, channels.ErrNotRunning
+	}
+	if !c.attachments || len(message.Parts) == 0 || len(message.Parts) > 16 {
+		return nil, ErrOutboundUnavailable
+	}
+	route, known := c.routes[message.ChatID]
+	origin := message.Context.AuthenticatedMessagingOrigin
+	if !known || origin == nil || origin.EventID != message.Context.MessageID ||
+		!eventPattern.MatchString(origin.EventID) || origin.ReceivedAtUnix == 0 {
+		return nil, ErrOutboundUnavailable
+	}
+	store := c.GetMediaStore()
+	if store == nil {
+		return nil, errors.New("tos_messenger outbound attachments need a MediaStore")
+	}
+
+	// The v3 attachment payload has no unauthenticated caption field. Preserve
+	// one shared caption as an ordinary canonical text Event and make every
+	// attachment reply to it. Divergent per-part captions are refused rather
+	// than silently discarded or ambiguously reordered.
+	caption := ""
+	for _, part := range message.Parts {
+		if part.Caption == "" {
+			continue
+		}
+		if caption != "" && part.Caption != caption {
+			return nil, errors.New("tos_messenger media parts need one shared caption")
+		}
+		caption = part.Caption
+	}
+	replyTo := origin.EventID
+	var eventIDs []string
+	if caption != "" {
+		captionIDs, err := c.Send(ctx, bus.OutboundMessage{Channel: message.Channel, ChatID: message.ChatID,
+			Context: message.Context, AgentID: message.AgentID, SessionKey: message.SessionKey,
+			Scope: message.Scope, Content: caption, ReplyToMessageID: origin.EventID})
+		if err != nil {
+			return nil, err
+		}
+		replyTo = captionIDs[0]
+		eventIDs = append(eventIDs, replyTo)
+	}
+
+	for index, part := range message.Parts {
+		if part.Type != "image" && part.Type != "audio" && part.Type != "video" && part.Type != "file" {
+			return eventIDs, errors.New("tos_messenger media part has an unsupported type")
+		}
+		path, metadata, err := store.ResolveWithMeta(part.Ref)
+		if err != nil {
+			return eventIDs, err
+		}
+		filename := part.Filename
+		if filename == "" {
+			filename = metadata.Filename
+		}
+		if filename == "" {
+			filename = filepath.Base(path)
+		}
+		mediaType := part.ContentType
+		if mediaType == "" {
+			mediaType = metadata.ContentType
+		}
+		parsedType, params, parseErr := mime.ParseMediaType(mediaType)
+		if parseErr != nil || parsedType != mediaType || len(params) != 0 || filename == "" || len(filename) > 255 ||
+			strings.TrimSpace(filename) != filename || strings.ContainsAny(filename, "/\\\x00\r\n") {
+			return eventIDs, errors.New("tos_messenger media metadata is not canonical")
+		}
+		file, size, digest, err := openAndDigestMedia(path)
+		if err != nil {
+			return eventIDs, err
+		}
+		partIDs, err := c.streamAttachment(ctx, route, origin.EventID, replyTo, index, part.Type,
+			filename, mediaType, size, digest, file)
+		_ = file.Close()
+		if err != nil {
+			return eventIDs, err
+		}
+		eventIDs = append(eventIDs, partIDs...)
+	}
+	return eventIDs, nil
+}
+
+func (c *Channel) streamAttachment(ctx context.Context, route config.TOSMessengerRoute, originEventID,
+	replyTo string, partIndex int, partType, filename, mediaType string, size uint64, digest string, file *os.File) ([]string, error) {
+	preimage := route.ChatID + "\x00" + route.ConversationID + "\x00" + route.RoomID + "\x00" +
+		route.SessionID + "\x00" + route.RecipientEndpointID + "\x00" + originEventID + "\x00" + replyTo + "\x00" +
+		partType + "\x00" + filename + "\x00" + mediaType + "\x00" + digest + "\x00" + strconv.Itoa(partIndex)
+	idempotency := sha256.Sum256([]byte(preimage))
+	response, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "attachments.outbound.begin",
+		ConversationID: route.ConversationID, RoomID: route.RoomID, ReplyToEventID: replyTo,
+		MembershipEpoch: route.MembershipEpoch, IdempotencyKey: "idem_" + hex.EncodeToString(idempotency[:]),
+		SessionID: route.SessionID, RecipientEndpointID: route.RecipientEndpointID,
+		Filename: filename, MediaType: mediaType, PlaintextDigest: digest, PlaintextBytes: size})
+	if err != nil {
+		return nil, err
+	}
+	if response.Complete {
+		if !eventPattern.MatchString(response.EventID) || response.UploadID != "" {
+			return nil, errors.New("Messenger returned an invalid completed attachment retry")
+		}
+		return []string{response.EventID}, nil
+	}
+	if !uploadPattern.MatchString(response.UploadID) {
+		return nil, errors.New("Messenger returned no canonical attachment upload")
+	}
+	count := uint32((size + outboundAttachmentChunk - 1) / outboundAttachmentChunk)
+	if response.NextChunk > count {
+		return nil, errors.New("Messenger attachment progress exceeds the source")
+	}
+	offset := int64(response.NextChunk) * outboundAttachmentChunk
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return nil, errors.New("seek Messenger attachment retry source")
+	}
+	for chunkIndex := response.NextChunk; chunkIndex < count; chunkIndex++ {
+		remaining := int64(size) - int64(chunkIndex)*outboundAttachmentChunk
+		length := int64(outboundAttachmentChunk)
+		if remaining < length {
+			length = remaining
+		}
+		chunk := make([]byte, int(length))
+		if _, err := io.ReadFull(file, chunk); err != nil {
+			clear(chunk)
+			return nil, errors.New("read exact Messenger attachment source chunk")
+		}
+		appended, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "attachments.outbound.chunk",
+			UploadID: response.UploadID, ChunkIndex: chunkIndex, Chunk: chunk})
+		clear(chunk)
+		if err != nil {
+			return nil, err
+		}
+		if appended.UploadID != response.UploadID || appended.NextChunk != chunkIndex+1 {
+			return nil, errors.New("Messenger attachment progress did not advance exactly once")
+		}
+	}
+	uploaded := uint32(0)
+	for {
+		committed, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "attachments.outbound.commit", UploadID: response.UploadID})
+		if err != nil {
+			return nil, err
+		}
+		if committed.Complete {
+			if !eventPattern.MatchString(committed.EventID) || committed.UploadID != "" {
+				return nil, errors.New("Messenger attachment commit returned no canonical Event ID")
+			}
+			return []string{committed.EventID}, nil
+		}
+		if committed.UploadID != response.UploadID || committed.EventID != "" || committed.NextChunk <= uploaded || committed.NextChunk >= count {
+			return nil, errors.New("Messenger attachment storage progress did not advance")
+		}
+		uploaded = committed.NextChunk
+	}
+}
+
+func openAndDigestMedia(path string) (*os.File, uint64, string, error) {
+	pathInfo, err := os.Lstat(path)
+	if err != nil || !pathInfo.Mode().IsRegular() || pathInfo.Mode()&os.ModeSymlink != 0 || pathInfo.Size() <= 0 || pathInfo.Size() > maxOutboundAttachmentBytes {
+		return nil, 0, "", errors.New("tos_messenger media source must be a bounded regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, "", errors.New("open tos_messenger media source")
+	}
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(pathInfo, opened) {
+		_ = file.Close()
+		return nil, 0, "", errors.New("tos_messenger media source changed while opened")
+	}
+	hasher := sha256.New()
+	written, err := io.Copy(hasher, io.LimitReader(file, maxOutboundAttachmentBytes+1))
+	if err != nil || written != pathInfo.Size() || written > maxOutboundAttachmentBytes {
+		_ = file.Close()
+		return nil, 0, "", errors.New("hash bounded tos_messenger media source")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		_ = file.Close()
+		return nil, 0, "", errors.New("rewind tos_messenger media source")
+	}
+	return file, uint64(written), "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func (c *Channel) poll(ctx context.Context) {

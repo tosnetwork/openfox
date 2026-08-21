@@ -82,3 +82,14 @@ callers cannot inject a bare custody session or omit post-funding verification
 from the assembled buyer. Lower-level `servicebridge.Buyer` remains available
 for isolated tests and alternate compositions, but its required verifier still
 fails a purchase closed before dispatch.
+
+`nativeimpl.NewChainBuyerStack` is the production chain assembly boundary. It
+requires exactly three RPC authorities and fixes a strict 2-of-3 quorum, then
+shares one Native Registry locator and finalized Native, stablecoin, and escrow
+resolvers between the Buyer SDK, capability validation, and settlement reads.
+Each resolver has its own durable checkpoint, and the budget journal must
+already exist in an owner-private state directory. `NewChainNativeBuyer` wraps
+that stack with the mandatory Messenger authorization and Quote-verification
+boundaries for one negotiation. Construction is deliberately read-only: it
+does not claim endpoints are live, deploy an escrow, fund it, or dispatch a
+task. Those remain separate, reviewable command stages.

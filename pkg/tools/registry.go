@@ -2,6 +2,9 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,10 +19,31 @@ import (
 )
 
 type ToolEntry struct {
-	Tool   Tool
-	IsCore bool
-	TTL    int
-	Effect actionauth.Effect
+	Tool               Tool
+	IsCore             bool
+	TTL                int
+	Effect             actionauth.Effect
+	PhysicalCapability string
+	PhysicalOperations map[string]struct{}
+}
+
+// RegisterPhysicalTool binds a raw hardware tool to a separately configured
+// local Capability and a closed operation set. Invalid or absent configuration
+// is retained as fail-closed metadata so merely enabling a tool never grants
+// physical authority.
+func (r *ToolRegistry) RegisterPhysicalTool(tool Tool, capabilityID string, operations []string) {
+	r.register(tool, actionauth.EffectPhysicalIO, true)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.tools[tool.Name()]
+	if !ok {
+		return
+	}
+	entry.PhysicalCapability = capabilityID
+	entry.PhysicalOperations = make(map[string]struct{}, len(operations))
+	for _, operation := range operations {
+		entry.PhysicalOperations[strings.TrimSpace(operation)] = struct{}{}
+	}
 }
 
 type ToolRegistry struct {
@@ -302,9 +326,16 @@ func (r *ToolRegistry) ExecuteWithContext(
 	}
 	var tool Tool
 	var effect actionauth.Effect
+	var physicalCapability string
+	var physicalOperations map[string]struct{}
 	if ok {
 		tool = entry.Tool
 		effect = entry.Effect
+		physicalCapability = entry.PhysicalCapability
+		physicalOperations = make(map[string]struct{}, len(entry.PhysicalOperations))
+		for operation := range entry.PhysicalOperations {
+			physicalOperations[operation] = struct{}{}
+		}
 	}
 	authorizer := r.authorizer
 	r.mu.RUnlock()
@@ -329,6 +360,38 @@ func (r *ToolRegistry) ExecuteWithContext(
 	// Inject channel/chatID into ctx so tools read them via ToolChannel(ctx)/ToolChatID(ctx).
 	// Always inject — tools validate what they require.
 	ctx = WithToolContext(ctx, channel, chatID)
+	var physical *actionauth.PhysicalOperation
+	if effect == actionauth.EffectPhysicalIO {
+		// A raw hardware tool is unavailable unless both halves of the boundary
+		// exist: local Capability configuration and the independent Messenger
+		// owner-authorizer. Disabling generic action authorization must never
+		// silently restore physical access.
+		if authorizer == nil {
+			return ErrorResult(fmt.Sprintf("physical tool %q requires Messenger action authorization", name)).
+				WithError(fmt.Errorf("physical authorization boundary unavailable"))
+		}
+		operation, ok := args["action"].(string)
+		if !ok || operation == "" {
+			return ErrorResult(fmt.Sprintf("physical tool %q has no explicit operation", name)).
+				WithError(fmt.Errorf("physical operation refused"))
+		}
+		if _, allowed := physicalOperations[operation]; !allowed || physicalCapability == "" {
+			return ErrorResult(fmt.Sprintf("physical tool %q operation %q has no local Capability", name, operation)).
+				WithError(fmt.Errorf("physical Capability refused"))
+		}
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			return ErrorResult(fmt.Sprintf("physical tool %q arguments are not canonical", name)).WithError(err)
+		}
+		digest := sha256.Sum256(encoded)
+		physical = &actionauth.PhysicalOperation{CapabilityID: physicalCapability, Tool: name,
+			Operation: operation, ArgumentsDigest: "sha256:" + hex.EncodeToString(digest[:]),
+			ArgumentsJSON: string(encoded)}
+		if !physical.Valid() {
+			return ErrorResult(fmt.Sprintf("physical tool %q has malformed local Capability configuration", name)).
+				WithError(fmt.Errorf("physical Capability refused"))
+		}
+	}
 
 	if authorizer != nil {
 		if !effect.Known() {
@@ -346,7 +409,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 		}
 		action := actionauth.Action{
 			Effect: effect, Summary: summary, IdempotencyKey: invocation.IdempotencyKey,
-			DerivedFrom: invocation.DerivedFrom,
+			DerivedFrom: invocation.DerivedFrom, Physical: physical,
 		}
 		if err := authorizer.Authorize(ctx, action); err != nil {
 			logger.WarnCF("tool", "Tool authorization refused",

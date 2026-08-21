@@ -49,6 +49,7 @@ for provenance, one-shot claim, and fail-closed behavior.
 | `enabled` | bool | `false` | Enable Messenger enforcement for classified tools |
 | `socket_path` | string | empty | Clean absolute `tos-messengerd` runtime socket path |
 | `timeout_seconds` | int | `30` | Per-call and owner-wait bound; maximum 60 seconds |
+| `physical_capabilities` | object | `{}` | Exact local Capability ID and allowed operation set for each built-in hardware tool; physical I/O also requires a one-shot owner decision |
 
 ## Web Tools
 

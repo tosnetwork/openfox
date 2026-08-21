@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	requestSchema  = "tos.messaging.local-request.v5"
-	responseSchema = "tos.messaging.local-response.v3"
+	requestSchema  = "tos.messaging.local-request.v6"
+	responseSchema = "tos.messaging.local-response.v4"
 	maxFrameBytes  = 2 << 20
 	defaultTimeout = 30 * time.Second
 )
@@ -62,11 +62,12 @@ type request struct {
 }
 
 type proposedAction struct {
-	Effect         string                    `json:"effect"`
-	Summary        string                    `json:"summary"`
-	IdempotencyKey string                    `json:"idempotency_key,omitempty"`
-	Derived        []actionauth.Origin       `json:"derived_from,omitempty"`
-	Terms          *actionauth.PurchaseTerms `json:"terms,omitempty"`
+	Effect         string                        `json:"effect"`
+	Summary        string                        `json:"summary"`
+	IdempotencyKey string                        `json:"idempotency_key,omitempty"`
+	Derived        []actionauth.Origin           `json:"derived_from,omitempty"`
+	Terms          *actionauth.PurchaseTerms     `json:"terms,omitempty"`
+	Physical       *actionauth.PhysicalOperation `json:"physical,omitempty"`
 }
 
 type response struct {
@@ -119,8 +120,14 @@ func (c *Client) Authorize(ctx context.Context, action actionauth.Action) error 
 		len(action.DerivedFrom) > actionauth.MaxProvenance {
 		return fmt.Errorf("%w: malformed OpenFox action", ErrRefused)
 	}
-	if action.Effect == actionauth.EffectToolCall && len(action.IdempotencyKey) != len("idem_")+64 {
+	if (action.Effect == actionauth.EffectToolCall || action.Effect == actionauth.EffectPhysicalIO) && len(action.IdempotencyKey) != len("idem_")+64 {
 		return fmt.Errorf("%w: tool call has no canonical invocation key", ErrRefused)
+	}
+	if action.Effect == actionauth.EffectPhysicalIO && (action.Physical == nil || !action.Physical.Valid()) {
+		return fmt.Errorf("%w: physical I/O has no local Capability binding", ErrRefused)
+	}
+	if action.Effect != actionauth.EffectPhysicalIO && action.Physical != nil {
+		return fmt.Errorf("%w: only physical I/O carries a physical operation", ErrRefused)
 	}
 	if action.Effect == actionauth.EffectSpend && (action.Terms == nil || action.MandateID == "") {
 		return fmt.Errorf("%w: spend has no exact terms or mandate", ErrRefused)
@@ -131,6 +138,7 @@ func (c *Client) Authorize(ctx context.Context, action actionauth.Action) error 
 	asked, err := c.call(ctx, request{Op: "actions.request", Action: &proposedAction{
 		Effect: string(action.Effect), Summary: action.Summary,
 		IdempotencyKey: action.IdempotencyKey, Derived: action.DerivedFrom, Terms: action.Terms,
+		Physical: action.Physical,
 	}, MandateID: action.MandateID})
 	if err != nil {
 		return err
@@ -139,7 +147,7 @@ func (c *Client) Authorize(ctx context.Context, action actionauth.Action) error 
 		return fmt.Errorf("%w: %s", ErrRefused, asked.Detail)
 	}
 	if asked.Authorized {
-		if action.Effect == actionauth.EffectToolCall || action.Effect == actionauth.EffectSpend ||
+		if action.Effect == actionauth.EffectToolCall || action.Effect == actionauth.EffectPhysicalIO || action.Effect == actionauth.EffectSpend ||
 			action.Effect == actionauth.EffectKeyUse || action.Effect == actionauth.EffectConfiguration {
 			return fmt.Errorf("%w: Messenger returned an inline authorization for a one-shot effect", ErrRefused)
 		}

@@ -152,13 +152,16 @@ func registerSharedTools(
 
 		// Hardware tools (I2C, SPI) - Linux only, returns error on other platforms
 		if cfg.Tools.IsToolEnabled("i2c") {
-			agent.Tools.RegisterWithEffect(tools.NewI2CTool(), actionauth.EffectToolCall)
+			capability := cfg.Tools.ActionAuthorization.PhysicalCapabilities["i2c"]
+			agent.Tools.RegisterPhysicalTool(tools.NewI2CTool(), capability.CapabilityID, capability.Operations)
 		}
 		if cfg.Tools.IsToolEnabled("spi") {
-			agent.Tools.RegisterWithEffect(tools.NewSPITool(), actionauth.EffectToolCall)
+			capability := cfg.Tools.ActionAuthorization.PhysicalCapabilities["spi"]
+			agent.Tools.RegisterPhysicalTool(tools.NewSPITool(), capability.CapabilityID, capability.Operations)
 		}
 		if cfg.Tools.IsToolEnabled("serial") {
-			agent.Tools.RegisterWithEffect(tools.NewSerialTool(), actionauth.EffectToolCall)
+			capability := cfg.Tools.ActionAuthorization.PhysicalCapabilities["serial"]
+			agent.Tools.RegisterPhysicalTool(tools.NewSerialTool(), capability.CapabilityID, capability.Operations)
 		}
 
 		// Message tool

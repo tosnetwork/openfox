@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	requestSchema  = "tos.messaging.local-request.v5"
-	responseSchema = "tos.messaging.local-response.v3"
+	requestSchema  = "tos.messaging.local-request.v6"
+	responseSchema = "tos.messaging.local-response.v4"
 	maxFrameBytes  = 2 << 20
 )
 

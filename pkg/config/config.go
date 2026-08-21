@@ -1140,6 +1140,15 @@ type ActionAuthorizationConfig struct {
 	Enabled        bool   `json:"enabled"         yaml:"-" env:"OPENFOX_TOOLS_ACTION_AUTHORIZATION_ENABLED"`
 	SocketPath     string `json:"socket_path"     yaml:"-" env:"OPENFOX_TOOLS_ACTION_AUTHORIZATION_SOCKET_PATH"`
 	TimeoutSeconds int    `json:"timeout_seconds" yaml:"-" env:"OPENFOX_TOOLS_ACTION_AUTHORIZATION_TIMEOUT_SECONDS"`
+	// PhysicalCapabilities are local owner configuration, keyed by the exact
+	// built-in hardware tool name. Enabling a hardware tool without a valid
+	// entry leaves it registered but fail-closed at invocation time.
+	PhysicalCapabilities map[string]PhysicalCapabilityConfig `json:"physical_capabilities,omitempty" yaml:"-"`
+}
+
+type PhysicalCapabilityConfig struct {
+	CapabilityID string   `json:"capability_id"`
+	Operations   []string `json:"operations"`
 }
 
 const (

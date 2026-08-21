@@ -12,15 +12,19 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tosnetwork/openfox/pkg/bus"
 )
 
 const (
-	eventSchema       = "tos.messaging.event.v1"
-	eventDomain       = "tos.messaging.event-id.v1\x00"
-	textSchema        = "tos.messaging.payload.text.v1"
-	textDomain        = "tos.messaging.payload.v1\x00" + textSchema + "\x00"
-	roomMessageSchema = "tos.messaging.payload.room-message.v1"
-	roomMessageDomain = "tos.messaging.payload.v1\x00" + roomMessageSchema + "\x00"
+	eventSchema          = "tos.messaging.event.v1"
+	eventDomain          = "tos.messaging.event-id.v1\x00"
+	textSchema           = "tos.messaging.payload.text.v1"
+	textDomain           = "tos.messaging.payload.v1\x00" + textSchema + "\x00"
+	roomMessageSchema    = "tos.messaging.payload.room-message.v1"
+	roomMessageDomain    = "tos.messaging.payload.v1\x00" + roomMessageSchema + "\x00"
+	roomModerationSchema = "tos.messaging.payload.room-moderation.v1"
+	roomModerationDomain = "tos.messaging.payload.v1\x00" + roomModerationSchema + "\x00"
 )
 
 var (
@@ -59,23 +63,35 @@ type wireEvent struct {
 }
 
 func decodeAdmittedText(pending pendingEvent) (wireEvent, string, error) {
+	event, body, moderation, err := decodeAdmitted(pending)
+	if err == nil && moderation != nil {
+		return wireEvent{}, "", errors.New("admitted event is a moderation control")
+	}
+	return event, body, err
+}
+
+func decodeAdmitted(pending pendingEvent) (wireEvent, string, *bus.RoomModerationControl, error) {
 	decoder := json.NewDecoder(bytes.NewReader(pending.Event))
 	decoder.DisallowUnknownFields()
 	var event wireEvent
 	if err := decoder.Decode(&event); err != nil {
-		return wireEvent{}, "", errors.New("decode admitted Messaging Event")
+		return wireEvent{}, "", nil, errors.New("decode admitted Messaging Event")
 	}
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return wireEvent{}, "", errors.New("admitted Messaging Event has trailing JSON")
+		return wireEvent{}, "", nil, errors.New("admitted Messaging Event has trailing JSON")
 	}
-	if event.Schema != eventSchema || event.Kind != "text" && event.Kind != "room.message" ||
+	if event.Schema != eventSchema ||
+		event.Kind != "text" && event.Kind != "room.message" && event.Kind != "room.moderation" ||
 		event.Kind == "text" && event.PayloadSchema != textSchema ||
-		event.Kind == "room.message" && event.PayloadSchema != roomMessageSchema {
-		return wireEvent{}, "", errors.New("production OpenFox channel accepts only typed text and room.message events")
+		event.Kind == "room.message" && event.PayloadSchema != roomMessageSchema ||
+		event.Kind == "room.moderation" && event.PayloadSchema != roomModerationSchema {
+		return wireEvent{}, "", nil, errors.New(
+			"production OpenFox channel accepts only typed text, room.message, and room.moderation events",
+		)
 	}
 	if event.EventID != pending.EventID || event.SenderEndpointID != pending.SenderEndpointID ||
 		event.ConversationID != pending.ConversationID || pending.ReceivedAtUnix == 0 {
-		return wireEvent{}, "", errors.New("daemon inbox metadata does not match its Messaging Event")
+		return wireEvent{}, "", nil, errors.New("daemon inbox metadata does not match its Messaging Event")
 	}
 	if !eventPattern.MatchString(event.EventID) || !agentPattern.MatchString(event.SenderAgentID) ||
 		!endpointPattern.MatchString(event.SenderEndpointID) || !devicePattern.MatchString(event.SenderDeviceID) ||
@@ -84,30 +100,63 @@ func decodeAdmittedText(pending pendingEvent) (wireEvent, string, error) {
 		event.CreatedAtUnix == 0 || event.ExpiresAtUnix != 0 && event.ExpiresAtUnix <= event.CreatedAtUnix ||
 		event.RoomID != "" && !roomPattern.MatchString(event.RoomID) || len(event.CausalParents) > 32 ||
 		len(event.AttachmentReferences) > 32 {
-		return wireEvent{}, "", errors.New("invalid admitted Messaging Event fields")
+		return wireEvent{}, "", nil, errors.New("invalid admitted Messaging Event fields")
 	}
 	for _, parent := range event.CausalParents {
 		if !eventPattern.MatchString(parent) {
-			return wireEvent{}, "", errors.New("invalid admitted Messaging Event parent")
+			return wireEvent{}, "", nil, errors.New("invalid admitted Messaging Event parent")
 		}
 	}
 	content, err := base64.StdEncoding.Strict().DecodeString(event.ContentBase64)
 	if err != nil || len(content) == 0 || len(content) > 128<<10 {
-		return wireEvent{}, "", errors.New("invalid admitted Messaging Event content")
+		return wireEvent{}, "", nil, errors.New("invalid admitted Messaging Event content")
 	}
 	if deriveEventID(event, content) != event.EventID {
-		return wireEvent{}, "", errors.New("admitted Messaging Event ID does not match its content")
+		return wireEvent{}, "", nil, errors.New("admitted Messaging Event ID does not match its content")
 	}
 	var body string
 	if event.Kind == "text" {
 		body, err = decodeTextPayload(content)
-	} else {
+	} else if event.Kind == "room.message" {
 		body, err = decodeRoomMessagePayload(content, event.RoomID)
+	} else {
+		var moderation bus.RoomModerationControl
+		moderation, err = decodeRoomModerationPayload(content, event.RoomID, event.EventID)
+		if err != nil {
+			return wireEvent{}, "", nil, err
+		}
+		return event, "", &moderation, nil
 	}
 	if err != nil {
-		return wireEvent{}, "", err
+		return wireEvent{}, "", nil, err
 	}
-	return event, body, nil
+	return event, body, nil, nil
+}
+
+func decodeRoomModerationPayload(
+	content []byte,
+	eventRoomID, decisionEventID string,
+) (bus.RoomModerationControl, error) {
+	reader := &canonicalReader{raw: content}
+	if string(reader.take(len(roomModerationDomain))) != roomModerationDomain {
+		return bus.RoomModerationControl{}, errors.New("room moderation payload is outside its canonical domain")
+	}
+	control := bus.RoomModerationControl{RoomID: reader.text(512)}
+	membershipEpoch := reader.uint64()
+	rolePolicyRevision := reader.uint64()
+	control.TargetEventID = reader.text(512)
+	control.DecisionRevision = reader.uint64()
+	control.Action = reader.text(512)
+	control.Reason = reader.text(512)
+	control.DecisionEventID = decisionEventID
+	if reader.err != nil || reader.offset != len(content) || control.RoomID != eventRoomID ||
+		!roomPattern.MatchString(control.RoomID) || !eventPattern.MatchString(control.TargetEventID) ||
+		membershipEpoch == 0 || rolePolicyRevision == 0 || control.DecisionRevision == 0 ||
+		control.Action != "hide" && control.Action != "restore" ||
+		control.Reason == "" || strings.ContainsAny(control.Reason, "\x00\r") {
+		return bus.RoomModerationControl{}, errors.New("invalid canonical room moderation payload")
+	}
+	return control, nil
 }
 
 func decodeRoomMessagePayload(content []byte, eventRoomID string) (string, error) {

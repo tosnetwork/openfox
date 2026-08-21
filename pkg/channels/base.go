@@ -367,6 +367,13 @@ func (c *BaseChannel) HandleInboundContext(
 	return c.HandleMessageWithContext(ctx, deliveryChatID, content, media, inboundCtx, senderOpts...)
 }
 
+// PublishInboundControl publishes a non-conversational, typed runtime control.
+// It deliberately bypasses typing/placeholders and never manufactures text.
+func (c *BaseChannel) PublishInboundControl(ctx context.Context, msg bus.InboundMessage) error {
+	msg = bus.NormalizeInboundMessage(msg)
+	return c.bus.PublishInbound(ctx, msg)
+}
+
 func (c *BaseChannel) SetRunning(running bool) {
 	c.running.Store(running)
 }

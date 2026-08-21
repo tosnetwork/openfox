@@ -1,10 +1,113 @@
 package messageutil
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/tosnetwork/openfox/pkg/providers/protocoltypes"
 )
+
+const HiddenRoomMessage = "[message hidden by room moderation]"
+
+// ProjectRoomModeration returns a presentation-safe copy. The original bytes
+// remain in runtime-only state so a later authorized restore can recover them.
+// A hide for a target absent from local history creates a tombstone, preventing
+// a later/out-of-order copy from becoming model-visible.
+func ProjectRoomModeration(
+	history []protocoltypes.Message,
+	decisions map[string]protocoltypes.RoomModerationDecision,
+) []protocoltypes.Message {
+	projected := append([]protocoltypes.Message(nil), history...)
+	seen := make(map[string]bool, len(decisions))
+	out := make([]protocoltypes.Message, 0, len(projected)+len(decisions))
+	for _, msg := range projected {
+		sourceEventID := msg.SourceEventID
+		if sourceEventID == "" && msg.Role == "user" && len(msg.ActionOrigins) == 1 {
+			// Backfill histories written by the authenticated adapter before the
+			// dedicated source fields were introduced.
+			sourceEventID = msg.ActionOrigins[0].EventID
+		}
+		decision, moderated := decisions[sourceEventID]
+		if !moderated {
+			out = append(out, msg)
+			continue
+		}
+		msg.SourceEventID = sourceEventID
+		if msg.SourceRoomID == "" {
+			msg.SourceRoomID = decision.RoomID
+		}
+		seen[decision.TargetEventID] = true
+		msg.RoomModerationAction = decision.Action
+		msg.RoomModerationRevision = decision.DecisionRevision
+		msg.RoomModerationDecisionID = decision.DecisionEventID
+		if decision.Action == "hide" {
+			msg.Content = HiddenRoomMessage
+		} else if msg.ModerationSynthetic {
+			continue
+		}
+		out = append(out, msg)
+	}
+	for target, decision := range decisions {
+		if seen[target] || decision.Action != "hide" {
+			continue
+		}
+		out = append(out, protocoltypes.Message{
+			Role: "user", Content: HiddenRoomMessage, SourceEventID: target,
+			SourceRoomID: decision.RoomID, RoomModerationAction: "hide",
+			RoomModerationRevision:   decision.DecisionRevision,
+			RoomModerationDecisionID: decision.DecisionEventID, ModerationSynthetic: true,
+		})
+	}
+	return out
+}
+
+// PreserveModeratedOriginals replaces projected tombstones with the matching
+// raw stored content before a history rewrite. Targets intentionally omitted
+// by compaction stay omitted.
+func PreserveModeratedOriginals(next, stored []protocoltypes.Message) []protocoltypes.Message {
+	originals := make(map[string]string)
+	for _, msg := range stored {
+		source := msg.SourceEventID
+		if source == "" && msg.Role == "user" && len(msg.ActionOrigins) == 1 {
+			source = msg.ActionOrigins[0].EventID
+		}
+		if source != "" && msg.Content != HiddenRoomMessage {
+			originals[source] = msg.Content
+		}
+	}
+	merged := append([]protocoltypes.Message(nil), next...)
+	for i := range merged {
+		if merged[i].RoomModerationAction == "hide" && merged[i].Content == HiddenRoomMessage {
+			if original, ok := originals[merged[i].SourceEventID]; ok {
+				merged[i].Content = original
+			}
+		}
+	}
+	return merged
+}
+
+// AdvanceRoomModeration enforces exact replay and gap-free per-target revisions.
+func AdvanceRoomModeration(
+	current map[string]protocoltypes.RoomModerationDecision,
+	next protocoltypes.RoomModerationDecision,
+) (bool, error) {
+	if next.RoomID == "" || next.TargetEventID == "" || next.DecisionEventID == "" ||
+		next.DecisionRevision == 0 || next.Action != "hide" && next.Action != "restore" {
+		return false, errors.New("invalid room moderation decision")
+	}
+	prior, exists := current[next.TargetEventID]
+	if exists && prior == next {
+		return false, nil
+	}
+	if exists && (prior.RoomID != next.RoomID || next.DecisionRevision != prior.DecisionRevision+1) {
+		return false, errors.New("room moderation revision is not the next decision")
+	}
+	if !exists && next.DecisionRevision != 1 {
+		return false, errors.New("first room moderation revision must be 1")
+	}
+	current[next.TargetEventID] = next
+	return true, nil
+}
 
 // IsTransientAssistantThoughtMessage reports whether msg is an invalid
 // reasoning-only assistant history record. These "hanging" thought messages

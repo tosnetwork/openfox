@@ -107,12 +107,33 @@ type Message struct {
 	// its own authority lineage.
 	ActionOrigins         []actionauth.Origin `json:"action_origins,omitempty"`
 	ActionProvenanceState string              `json:"action_provenance_state,omitempty"`
+	// SourceEventID/SourceRoomID and moderation fields are also runtime-owned.
+	// Hidden content is replaced before it reaches a provider; the storage layer
+	// retains the immutable original so an authorized restore can undo the
+	// presentation overlay without exposing it in this projected Message.
+	SourceEventID            string `json:"source_event_id,omitempty"`
+	SourceRoomID             string `json:"source_room_id,omitempty"`
+	RoomModerationAction     string `json:"room_moderation_action,omitempty"`
+	RoomModerationRevision   uint64 `json:"room_moderation_revision,omitempty"`
+	RoomModerationDecisionID string `json:"room_moderation_decision_id,omitempty"`
+	ModerationSynthetic      bool   `json:"moderation_synthetic,omitempty"`
 
 	// Prompt metadata is internal to the agent runtime. It records where a
 	// message or system part came from without changing provider/session JSON.
 	PromptLayer  string `json:"-"`
 	PromptSlot   string `json:"-"`
 	PromptSource string `json:"-"`
+}
+
+// RoomModerationDecision is the durable, model-invisible presentation state
+// for one authenticated Messenger Event.
+type RoomModerationDecision struct {
+	RoomID           string `json:"room_id"`
+	TargetEventID    string `json:"target_event_id"`
+	DecisionEventID  string `json:"decision_event_id"`
+	DecisionRevision uint64 `json:"decision_revision"`
+	Action           string `json:"action"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 type ToolDefinition struct {

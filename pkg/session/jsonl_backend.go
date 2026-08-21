@@ -166,6 +166,11 @@ func (b *JSONLBackend) SetHistory(key string, history []providers.Message) {
 	}
 }
 
+func (b *JSONLBackend) ApplyRoomModeration(key string, decision providers.RoomModerationDecision) (bool, error) {
+	key = b.resolveSessionKey(key)
+	return b.store.ApplyRoomModeration(context.Background(), key, decision)
+}
+
 func (b *JSONLBackend) TruncateHistory(key string, keepLast int) {
 	key = b.resolveSessionKey(key)
 	if err := b.store.TruncateHistory(context.Background(), key, keepLast); err != nil {

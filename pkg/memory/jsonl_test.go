@@ -68,6 +68,79 @@ func TestAddMessage_BasicRoundtrip(t *testing.T) {
 	}
 }
 
+func TestRoomModerationProjectsHistoryAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewJSONLStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	target := "evt_" + strings.Repeat("a", 64)
+	roomID := "room_" + strings.Repeat("b", 64)
+	if err := store.AddFullMessage(ctx, "room-session", providers.Message{
+		Role: "user", Content: "sensitive text", SourceEventID: target, SourceRoomID: roomID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hide := providers.RoomModerationDecision{
+		RoomID: roomID, TargetEventID: target,
+		DecisionEventID: "evt_" + strings.Repeat("c", 64), DecisionRevision: 1, Action: "hide", Reason: "policy",
+	}
+	if changed, err := store.ApplyRoomModeration(ctx, "room-session", hide); err != nil || !changed {
+		t.Fatalf("hide changed=%v err=%v", changed, err)
+	}
+	if changed, err := store.ApplyRoomModeration(ctx, "room-session", hide); err != nil || changed {
+		t.Fatalf("exact replay changed=%v err=%v", changed, err)
+	}
+	history, err := store.GetHistory(ctx, "room-session")
+	if err != nil || len(history) != 1 || history[0].Content == "sensitive text" {
+		t.Fatalf("hidden history=%+v err=%v", history, err)
+	}
+	if err := store.SetHistory(ctx, "room-session", history); err != nil {
+		t.Fatalf("rewrite hidden history: %v", err)
+	}
+	store, err = NewJSONLStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err = store.GetHistory(ctx, "room-session")
+	if err != nil || len(history) != 1 || history[0].RoomModerationAction != "hide" {
+		t.Fatalf("restarted history=%+v err=%v", history, err)
+	}
+	gap := hide
+	gap.DecisionEventID = "evt_" + strings.Repeat("d", 64)
+	gap.DecisionRevision = 3
+	gap.Action = "restore"
+	if _, err := store.ApplyRoomModeration(ctx, "room-session", gap); err == nil {
+		t.Fatal("revision gap accepted")
+	}
+	restore := gap
+	restore.DecisionRevision = 2
+	if changed, err := store.ApplyRoomModeration(ctx, "room-session", restore); err != nil || !changed {
+		t.Fatalf("restore changed=%v err=%v", changed, err)
+	}
+	history, err = store.GetHistory(ctx, "room-session")
+	if err != nil || len(history) != 1 || history[0].Content != "sensitive text" ||
+		history[0].RoomModerationAction != "restore" {
+		t.Fatalf("restored history=%+v err=%v", history, err)
+	}
+}
+
+func TestRoomModerationCreatesOutOfOrderTombstone(t *testing.T) {
+	store := newTestStore(t)
+	decision := providers.RoomModerationDecision{
+		RoomID: "room_" + strings.Repeat("a", 64), TargetEventID: "evt_" + strings.Repeat("b", 64),
+		DecisionEventID: "evt_" + strings.Repeat("c", 64), DecisionRevision: 1, Action: "hide", Reason: "policy",
+	}
+	if _, err := store.ApplyRoomModeration(context.Background(), "missing", decision); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.GetHistory(context.Background(), "missing")
+	if err != nil || len(history) != 1 || !history[0].ModerationSynthetic || history[0].Content == "" {
+		t.Fatalf("history=%+v err=%v", history, err)
+	}
+}
+
 func TestAddMessage_AutoCreatesSession(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

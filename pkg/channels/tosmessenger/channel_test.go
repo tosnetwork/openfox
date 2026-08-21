@@ -82,6 +82,37 @@ func TestChannelPublishesCanonicalRoomMessageAsAuthenticatedGroupChat(t *testing
 	}
 }
 
+func TestChannelWaitsForDurableRoomModerationBeforeCompletingLease(t *testing.T) {
+	pending := testModerationPending(t, "hide", 1)
+	path, operations, stop := serveInbox(t, pending)
+	defer stop()
+	messageBus := bus.NewMessageBus()
+	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
+		SocketPath: path,
+	}, messageBus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := make(chan struct{})
+	go func() {
+		message := <-messageBus.InboundChan()
+		if message.Content != "" || message.RoomModeration == nil || message.ControlResult == nil ||
+			message.Context.AuthenticatedMessagingOrigin == nil ||
+			message.Context.AuthenticatedMessagingOrigin.Kind != "room.moderation" {
+			t.Errorf("unexpected moderation control: %+v", message)
+		}
+		message.ControlResult <- nil
+		close(checked)
+	}()
+	if err := channel.pollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-checked
+	if got := <-operations; got != "inbox.pending,inbox.claim,inbox.complete" {
+		t.Fatalf("operations = %s", got)
+	}
+}
+
 func TestEventSubstitutionIsRejectedBeforeBus(t *testing.T) {
 	pending := testPending(t, "do not trust rendering")
 	var event wireEvent
@@ -202,6 +233,24 @@ func TestDecoderConsumesMessengerGeneratedFixture(t *testing.T) {
 	}
 }
 
+func TestDecoderSeparatesAuthenticatedRoomModerationFromModelText(t *testing.T) {
+	pending := testModerationPending(t, "hide", 1)
+	event, body, control, err := decodeAdmitted(pending)
+	if err != nil || body != "" || control == nil {
+		t.Fatalf("event=%+v body=%q control=%+v err=%v", event, body, control, err)
+	}
+	if control.DecisionEventID != event.EventID || control.RoomID != event.RoomID ||
+		control.TargetEventID != "evt_"+strings.Repeat(
+			"4",
+			64,
+		) || control.Action != "hide" || control.DecisionRevision != 1 {
+		t.Fatalf("control=%+v", control)
+	}
+	if _, _, err := decodeAdmittedText(pending); err == nil {
+		t.Fatal("moderation control was accepted as model text")
+	}
+}
+
 func testPending(t *testing.T, body string) pendingEvent {
 	t.Helper()
 	content := bytes.NewBufferString(textDomain)
@@ -262,6 +311,36 @@ func testRoomPending(t *testing.T, body string) pendingEvent {
 		ConversationID:   event.ConversationID,
 		ReceivedAtUnix:   1_800_000_100,
 		Event:            raw,
+	}
+}
+
+func testModerationPending(t *testing.T, action string, revision uint64) pendingEvent {
+	t.Helper()
+	roomID := "room_" + strings.Repeat("9", 64)
+	content := bytes.NewBufferString(roomModerationDomain)
+	writeText(content, roomID)
+	writeUint64(content, 3)
+	writeUint64(content, 2)
+	writeText(content, "evt_"+strings.Repeat("4", 64))
+	writeUint64(content, revision)
+	writeText(content, action)
+	writeText(content, "room policy")
+	event := wireEvent{
+		Schema: eventSchema, NetworkID: "tos-local", GenesisRootHash: strings.Repeat("1", 64),
+		GenesisFileHash: strings.Repeat("2", 64), ConversationID: "conv_" + strings.Repeat("3", 64),
+		SenderAgentID: "agent_" + strings.Repeat("a", 64), SenderEndpointID: "mep_" + strings.Repeat("b", 64),
+		SenderDeviceID: "dev_" + strings.Repeat("c", 64), RoomID: roomID, CreatedAtUnix: 1_800_000_000,
+		ExpiresAtUnix: 1_800_003_600, Kind: "room.moderation", PayloadSchema: roomModerationSchema,
+		ContentBase64: base64.StdEncoding.EncodeToString(content.Bytes()),
+	}
+	event.EventID = deriveEventID(event, content.Bytes())
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pendingEvent{
+		EventID: event.EventID, SenderEndpointID: event.SenderEndpointID,
+		ConversationID: event.ConversationID, ReceivedAtUnix: 1_800_000_100, Event: raw,
 	}
 }
 

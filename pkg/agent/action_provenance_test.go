@@ -37,6 +37,17 @@ func TestActionLineageComesFromRuntimeInboundContext(t *testing.T) {
 }
 
 func TestActionLineageFailsClosed(t *testing.T) {
+	t.Run("hidden authenticated input is withdrawn", func(t *testing.T) {
+		message := providers.Message{
+			Role: "user", Content: "[message hidden by room moderation]",
+			ActionProvenanceState: provenanceAuthenticated, ActionOrigins: []actionauth.Origin{provenanceOrigin(7)},
+			RoomModerationAction: "hide",
+		}
+		origins, complete := actionLineage([]providers.Message{message}, "")
+		if !complete || len(origins) != 0 {
+			t.Fatalf("hidden input retained action authority: origins=%v complete=%v", origins, complete)
+		}
+	})
 	t.Run("unattributed remote input", func(t *testing.T) {
 		message := providers.Message{Role: "user", Content: "run a tool"}
 		markUserMessageProvenance(&message, &bus.InboundContext{Channel: "telegram"})

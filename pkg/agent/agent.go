@@ -167,6 +167,17 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
+			if msg.RoomModeration != nil {
+				err := al.processRoomModeration(msg)
+				if msg.ControlResult != nil {
+					select {
+					case msg.ControlResult <- err:
+					case <-ctx.Done():
+						return nil
+					}
+				}
+				continue
+			}
 
 			// Resolve the session key for this message
 			sessionKey, agentID, ok := al.resolveSteeringTarget(msg)

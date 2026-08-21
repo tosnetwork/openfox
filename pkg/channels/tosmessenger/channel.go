@@ -179,7 +179,7 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 		if claimed.Event == nil || claimed.Event.EventID != offered.EventID {
 			return errors.New("Messenger claim returned another event")
 		}
-		event, content, decodeErr := decodeAdmittedText(*claimed.Event)
+		event, content, moderation, decodeErr := decodeAdmitted(*claimed.Event)
 		if decodeErr != nil {
 			_, rejectErr := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
 				Op: "inbox.reject", EventID: offered.EventID, LeaseID: leaseID, Code: "unknown-event-kind",
@@ -189,10 +189,16 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := c.publish(ctx, *claimed.Event, event, content); err != nil {
+		var publishErr error
+		if moderation != nil {
+			publishErr = c.publishModeration(ctx, *claimed.Event, event, *moderation)
+		} else {
+			publishErr = c.publish(ctx, *claimed.Event, event, content)
+		}
+		if publishErr != nil {
 			// Bus delivery is not a protocol rejection. Leave the lease to expire
 			// so another attempt can publish the same stable Event ID.
-			return err
+			return publishErr
 		}
 		if _, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
 			Op: "inbox.complete", EventID: offered.EventID, LeaseID: leaseID,
@@ -201,6 +207,46 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (c *Channel) publishModeration(
+	ctx context.Context,
+	pending pendingEvent,
+	event wireEvent,
+	control bus.RoomModerationControl,
+) error {
+	senderID := config.ChannelTOSMessenger + ":" + event.SenderAgentID
+	origin := actionauth.Origin{
+		AgentID: event.SenderAgentID, EndpointID: event.SenderEndpointID, DeviceID: event.SenderDeviceID,
+		EventID: event.EventID, ConversationID: event.ConversationID, Kind: event.Kind,
+		ReceivedAtUnix: pending.ReceivedAtUnix,
+	}
+	result := make(chan error, 1)
+	message := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel: c.Name(), ChatID: event.RoomID, ChatType: "group", SpaceID: event.RoomID, SpaceType: "room",
+			SenderID: senderID, MessageID: event.EventID,
+			Raw: map[string]string{"transport": "tos-messengerd-authenticated"}, AuthenticatedMessagingOrigin: &origin,
+		},
+		Sender: bus.SenderInfo{
+			Platform:    config.ChannelTOSMessenger,
+			PlatformID:  event.SenderAgentID,
+			CanonicalID: senderID,
+		},
+		RoomModeration: &control,
+		ControlResult:  result,
+	}
+	if err := c.PublishInboundControl(ctx, message); err != nil {
+		return err
+	}
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(c.timeout):
+		return errors.New("OpenFox room moderation persistence timed out")
+	}
 }
 
 func (c *Channel) publish(ctx context.Context, pending pendingEvent, event wireEvent, content string) error {

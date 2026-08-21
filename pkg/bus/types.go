@@ -56,6 +56,20 @@ type InboundMessage struct {
 	SenderID  string `json:"sender_id"`
 	ChatID    string `json:"chat_id"`
 	MessageID string `json:"message_id,omitempty"` // platform message ID
+
+	// RoomModeration is a daemon-authenticated control event. It is consumed by
+	// the runtime and is never presented to the model as user text.
+	RoomModeration *RoomModerationControl `json:"room_moderation,omitempty"`
+	ControlResult  chan error             `json:"-"`
+}
+
+type RoomModerationControl struct {
+	RoomID           string `json:"room_id"`
+	TargetEventID    string `json:"target_event_id"`
+	DecisionEventID  string `json:"decision_event_id"`
+	DecisionRevision uint64 `json:"decision_revision"`
+	Action           string `json:"action"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 // OutboundScope captures the structured session scope associated with an

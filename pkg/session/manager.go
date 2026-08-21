@@ -13,11 +13,12 @@ import (
 )
 
 type Session struct {
-	Key      string              `json:"key"`
-	Messages []providers.Message `json:"messages"`
-	Summary  string              `json:"summary,omitempty"`
-	Created  time.Time           `json:"created"`
-	Updated  time.Time           `json:"updated"`
+	Key        string                                      `json:"key"`
+	Messages   []providers.Message                         `json:"messages"`
+	Summary    string                                      `json:"summary,omitempty"`
+	Created    time.Time                                   `json:"created"`
+	Updated    time.Time                                   `json:"updated"`
+	Moderation map[string]providers.RoomModerationDecision `json:"room_moderation,omitempty"`
 }
 
 type SessionManager struct {
@@ -118,9 +119,28 @@ func (sm *SessionManager) GetHistory(key string) []providers.Message {
 		return []providers.Message{}
 	}
 
-	history := make([]providers.Message, len(session.Messages))
-	copy(history, session.Messages)
-	return history
+	return messageutil.ProjectRoomModeration(session.Messages, session.Moderation)
+}
+
+func (sm *SessionManager) ApplyRoomModeration(
+	sessionKey string,
+	decision providers.RoomModerationDecision,
+) (bool, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sess, ok := sm.sessions[sessionKey]
+	if !ok {
+		sess = &Session{Key: sessionKey, Messages: []providers.Message{}, Created: time.Now()}
+		sm.sessions[sessionKey] = sess
+	}
+	if sess.Moderation == nil {
+		sess.Moderation = make(map[string]providers.RoomModerationDecision)
+	}
+	changed, err := messageutil.AdvanceRoomModeration(sess.Moderation, decision)
+	if changed {
+		sess.Updated = time.Now()
+	}
+	return changed, err
 }
 
 func (sm *SessionManager) GetSummary(key string) string {
@@ -217,6 +237,12 @@ func (sm *SessionManager) Save(key string) error {
 		Summary: stored.Summary,
 		Created: stored.Created,
 		Updated: stored.Updated,
+	}
+	if len(stored.Moderation) > 0 {
+		snapshot.Moderation = make(map[string]providers.RoomModerationDecision, len(stored.Moderation))
+		for target, decision := range stored.Moderation {
+			snapshot.Moderation[target] = decision
+		}
 	}
 	if len(stored.Messages) > 0 {
 		snapshot.Messages = messageutil.FilterInvalidHistoryMessages(stored.Messages)
@@ -315,6 +341,7 @@ func (sm *SessionManager) SetHistory(key string, history []providers.Message) {
 	session, ok := sm.sessions[key]
 	if ok {
 		history = messageutil.FilterInvalidHistoryMessages(history)
+		history = messageutil.PreserveModeratedOriginals(history, session.Messages)
 		// Create a deep copy to strictly isolate internal state
 		// from the caller's slice.
 		msgs := make([]providers.Message, len(history))

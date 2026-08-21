@@ -28,6 +28,8 @@ func markUserMessageProvenance(message *providers.Message, inbound *bus.InboundC
 	if inbound.AuthenticatedMessagingOrigin != nil {
 		message.ActionProvenanceState = provenanceAuthenticated
 		message.ActionOrigins = []actionauth.Origin{*inbound.AuthenticatedMessagingOrigin}
+		message.SourceEventID = inbound.AuthenticatedMessagingOrigin.EventID
+		message.SourceRoomID = inbound.SpaceID
 		return
 	}
 	message.ActionProvenanceState = provenanceUnattributed
@@ -45,6 +47,9 @@ func actionLineage(messages []providers.Message, summary string) ([]actionauth.O
 	seen := make(map[string]actionauth.Origin)
 	for _, message := range messages {
 		if message.Role != "user" {
+			continue
+		}
+		if message.RoomModerationAction == "hide" {
 			continue
 		}
 		switch message.ActionProvenanceState {

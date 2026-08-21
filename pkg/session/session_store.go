@@ -32,3 +32,10 @@ type SessionStore interface {
 	// Close releases resources held by the store.
 	Close() error
 }
+
+// RoomModerationSessionStore is required for authenticated room-moderation
+// controls. The error return lets the channel keep its daemon lease open until
+// the presentation decision is durable.
+type RoomModerationSessionStore interface {
+	ApplyRoomModeration(sessionKey string, decision providers.RoomModerationDecision) (bool, error)
+}

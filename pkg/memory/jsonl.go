@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -67,6 +68,13 @@ type JSONLStore struct {
 	locks [numLockShards]sync.Mutex
 }
 
+type roomModerationState struct {
+	Schema    string                                      `json:"schema"`
+	Decisions map[string]providers.RoomModerationDecision `json:"decisions"`
+}
+
+const roomModerationStateSchema = "openfox.room-moderation-state.v1"
+
 // NewJSONLStore creates a new JSONL-backed store rooted at dir.
 func NewJSONLStore(dir string) (*JSONLStore, error) {
 	err := os.MkdirAll(dir, 0o755)
@@ -91,6 +99,49 @@ func (s *JSONLStore) jsonlPath(key string) string {
 
 func (s *JSONLStore) metaPath(key string) string {
 	return filepath.Join(s.dir, sanitizeKey(key)+".meta.json")
+}
+
+func (s *JSONLStore) moderationPath(key string) string {
+	return filepath.Join(s.dir, sanitizeKey(key)+".moderation.json")
+}
+
+func (s *JSONLStore) readModeration(key string) (map[string]providers.RoomModerationDecision, error) {
+	raw, err := os.ReadFile(s.moderationPath(key))
+	if errors.Is(err, os.ErrNotExist) {
+		return make(map[string]providers.RoomModerationDecision), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("memory: read room moderation: %w", err)
+	}
+	var state roomModerationState
+	if err := json.Unmarshal(
+		raw,
+		&state,
+	); err != nil || state.Schema != roomModerationStateSchema ||
+		state.Decisions == nil {
+		return nil, errors.New("memory: invalid room moderation state")
+	}
+	for target, decision := range state.Decisions {
+		probe := make(map[string]providers.RoomModerationDecision)
+		if target != decision.TargetEventID || decision.DecisionRevision == 0 {
+			return nil, errors.New("memory: invalid room moderation decision")
+		}
+		// Validate structure independent of its stored revision position.
+		copyDecision := decision
+		copyDecision.DecisionRevision = 1
+		if _, err := messageutil.AdvanceRoomModeration(probe, copyDecision); err != nil {
+			return nil, errors.New("memory: invalid room moderation decision")
+		}
+	}
+	return state.Decisions, nil
+}
+
+func (s *JSONLStore) writeModeration(key string, decisions map[string]providers.RoomModerationDecision) error {
+	raw, err := json.Marshal(roomModerationState{Schema: roomModerationStateSchema, Decisions: decisions})
+	if err != nil {
+		return fmt.Errorf("memory: encode room moderation: %w", err)
+	}
+	return fileutil.WriteFileAtomic(s.moderationPath(key), raw, 0o600)
 }
 
 // sanitizeKey converts a session key to a safe filename component.
@@ -670,7 +721,31 @@ func (s *JSONLStore) GetHistory(
 		return nil, err
 	}
 
-	return msgs, nil
+	decisions, err := s.readModeration(sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	return messageutil.ProjectRoomModeration(msgs, decisions), nil
+}
+
+func (s *JSONLStore) ApplyRoomModeration(
+	_ context.Context, sessionKey string, decision providers.RoomModerationDecision,
+) (bool, error) {
+	l := s.sessionLock(sessionKey)
+	l.Lock()
+	defer l.Unlock()
+	decisions, err := s.readModeration(sessionKey)
+	if err != nil {
+		return false, err
+	}
+	changed, err := messageutil.AdvanceRoomModeration(decisions, decision)
+	if err != nil || !changed {
+		return changed, err
+	}
+	if err := s.writeModeration(sessionKey, decisions); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *JSONLStore) GetSummary(
@@ -761,6 +836,11 @@ func (s *JSONLStore) SetHistory(
 	if err != nil {
 		return err
 	}
+	stored, err := readMessages(s.jsonlPath(sessionKey), meta.Skip)
+	if err != nil {
+		return err
+	}
+	history = messageutil.PreserveModeratedOriginals(history, stored)
 	now := time.Now()
 	if meta.CreatedAt.IsZero() {
 		meta.CreatedAt = now

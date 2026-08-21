@@ -52,10 +52,20 @@ func NewBuyerSession(preparer purchasePreparer, input buyersdk.PurchaseInput) (*
 // mismatched negotiation can never reach policy or funding.
 func (s *BuyerSession) RequestQuote(_ context.Context, ref servicebridge.CapabilityRef) (servicebridge.QuoteProposal, error) {
 	prop := s.input.Proposal
-	if prop.GetCapabilityId() != ref.CapabilityID {
-		return servicebridge.QuoteProposal{}, errors.New("nativeimpl: negotiated proposal does not match the requested capability")
+	if prop.GetCapabilityId() != ref.CapabilityID || prop.GetProviderAgentId() != ref.AgentID ||
+		prop.GetCapabilityVersion() != ref.Version || prop.GetManifestDigest() != ref.ManifestDigest ||
+		ref.CapabilityClass == "" || ref.Network.ID == "" || ref.Network.GenesisRootHash == "" ||
+		ref.Network.GenesisFileHash == "" {
+		return servicebridge.QuoteProposal{}, errors.New("nativeimpl: negotiated proposal does not match the complete requested capability")
 	}
 	money := prop.GetMaximumPrice()
+	asset := money.GetAsset()
+	master := asset.GetMaster()
+	if asset == nil || master == nil || master.GetCodeHash() == "" || asset.GetWalletCodeHash() == "" ||
+		prop.GetTransportBindingDigest() == "" || prop.GetEscrowTermsDigest() == "" ||
+		prop.GetDisputePolicyDigest() == "" || prop.GetExpiresAtUnixSeconds() == 0 {
+		return servicebridge.QuoteProposal{}, errors.New("nativeimpl: negotiated proposal lacks complete purchase terms")
+	}
 	amount, err := atomicUint64(money.GetAtomicAmount())
 	if err != nil {
 		return servicebridge.QuoteProposal{}, err
@@ -64,13 +74,17 @@ func (s *BuyerSession) RequestQuote(_ context.Context, ref servicebridge.Capabil
 		Capability: servicebridge.CapabilityRef{
 			AgentID: prop.GetProviderAgentId(), CapabilityID: prop.GetCapabilityId(),
 			Version: prop.GetCapabilityVersion(), ManifestDigest: prop.GetManifestDigest(),
+			RegistryCodeHash: ref.RegistryCodeHash, Network: ref.Network, CapabilityClass: ref.CapabilityClass,
 		},
 		Asset: servicebridge.AssetIdentity{
-			Master: contractAddress(money.GetAsset().GetMaster()), WalletCodeHash: money.GetAsset().GetWalletCodeHash(),
+			Master: contractAddress(master), WalletCodeHash: asset.GetWalletCodeHash(), Network: ref.Network,
+			Workchain: master.GetWorkchain(), MasterCodeHash: master.GetCodeHash(), Decimals: asset.GetDecimals(),
 		},
-		MaxAtomicAmount: amount,
-		Expiry:          time.Unix(int64(prop.GetExpiresAtUnixSeconds()), 0).UTC(),
-		ExecutionSigner: hex.EncodeToString(s.input.ExecutionSignerEd25519),
+		MaxAtomicAmount: amount, AtomicAmount: money.GetAtomicAmount(),
+		Expiry:                 time.Unix(int64(prop.GetExpiresAtUnixSeconds()), 0).UTC(),
+		ExecutionSigner:        hex.EncodeToString(s.input.ExecutionSignerEd25519),
+		TransportBindingDigest: prop.GetTransportBindingDigest(), EscrowTermsDigest: prop.GetEscrowTermsDigest(),
+		DisputeTerms: prop.GetDisputePolicyDigest(),
 	}, nil
 }
 
@@ -78,7 +92,11 @@ func (s *BuyerSession) RequestQuote(_ context.Context, ref servicebridge.Capabil
 // capability, asset route, and escrow derivation against finalized state and
 // returns the canonical Quote commitment and deterministic escrow. The prepared
 // purchase is remembered so funding operates on exactly it.
-func (s *BuyerSession) BuildAcceptedQuote(ctx context.Context, _ servicebridge.QuoteProposal) (servicebridge.AcceptedQuote, error) {
+func (s *BuyerSession) BuildAcceptedQuote(ctx context.Context, proposal servicebridge.QuoteProposal) (servicebridge.AcceptedQuote, error) {
+	expected, err := s.RequestQuote(ctx, proposal.Capability)
+	if err != nil || expected != proposal {
+		return servicebridge.AcceptedQuote{}, errors.New("nativeimpl: accepted Quote input differs from the negotiated proposal")
+	}
 	prepared, err := s.preparer.PreparePurchase(ctx, s.input)
 	if err != nil {
 		return servicebridge.AcceptedQuote{}, err
@@ -90,10 +108,6 @@ func (s *BuyerSession) BuildAcceptedQuote(ctx context.Context, _ servicebridge.Q
 	s.prepared[prepared.QuoteCommitment] = prepared
 	s.mu.Unlock()
 
-	proposal, err := s.RequestQuote(ctx, servicebridge.CapabilityRef{CapabilityID: s.input.Proposal.GetCapabilityId()})
-	if err != nil {
-		return servicebridge.AcceptedQuote{}, err
-	}
 	return servicebridge.AcceptedQuote{
 		Proposal:        proposal,
 		QuoteCommitment: prepared.QuoteCommitment,

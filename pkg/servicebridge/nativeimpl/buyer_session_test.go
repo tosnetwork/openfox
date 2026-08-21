@@ -39,22 +39,37 @@ func (f *fakePreparer) FundPurchase(_ context.Context, _ *buyersdk.PreparedPurch
 }
 
 func sampleInput() buyersdk.PurchaseInput {
+	digest := "sha256:" + hex64
 	return buyersdk.PurchaseInput{
 		Proposal: &nativev1.QuoteProposalV1{
-			CapabilityId:         "cap_" + hex64,
-			ProviderAgentId:      "agent_" + hex64,
-			CapabilityVersion:    "1.0.0",
-			ManifestDigest:       "sha256:" + hex64,
-			ExpiresAtUnixSeconds: 1786800000,
+			CapabilityId:           "cap_" + hex64,
+			ProviderAgentId:        "agent_" + hex64,
+			CapabilityVersion:      "1.0.0",
+			ManifestDigest:         digest,
+			TransportBindingDigest: digest,
+			EscrowTermsDigest:      digest,
+			DisputePolicyDigest:    digest,
+			ExpiresAtUnixSeconds:   1786800000,
 			MaximumPrice: &nativev1.MoneyV1{
 				AtomicAmount: "25000000",
 				Asset: &nativev1.TOSAssetIdentityV1{
-					Master:         &nativev1.TOSContractIdentityV1{Workchain: 0, AccountId: bytes.Repeat([]byte{0xAB}, 32)},
+					Master: &nativev1.TOSContractIdentityV1{Workchain: 0,
+						AccountId: bytes.Repeat([]byte{0xAB}, 32), CodeHash: "tvm-cell-sha256:" + hex64},
 					WalletCodeHash: "tvm-cell-sha256:" + hex64,
+					Decimals:       9,
 				},
 			},
 		},
 		ExecutionSignerEd25519: bytes.Repeat([]byte{0x01}, 32),
+	}
+}
+
+func sampleRef() servicebridge.CapabilityRef {
+	return servicebridge.CapabilityRef{
+		AgentID: "agent_" + hex64, CapabilityID: "cap_" + hex64, Version: "1.0.0",
+		ManifestDigest: "sha256:" + hex64, CapabilityClass: "compute.inference",
+		Network: servicebridge.Network{ID: "tos-local", GenesisRootHash: hex64,
+			GenesisFileHash: strings.Repeat("b", 64)},
 	}
 }
 
@@ -73,7 +88,7 @@ func TestBuyerSessionDelegatesPrepareAndFund(t *testing.T) {
 		t.Fatalf("new session: %v", err)
 	}
 
-	ref := servicebridge.CapabilityRef{CapabilityID: "cap_" + hex64}
+	ref := sampleRef()
 	prop, err := session.RequestQuote(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("request quote: %v", err)
@@ -101,8 +116,26 @@ func TestBuyerSessionDelegatesPrepareAndFund(t *testing.T) {
 
 func TestBuyerSessionRefusesMismatchedCapability(t *testing.T) {
 	session, _ := NewBuyerSession(&fakePreparer{prepared: samplePrepared()}, sampleInput())
-	if _, err := session.RequestQuote(context.Background(), servicebridge.CapabilityRef{CapabilityID: "cap_other"}); err == nil {
+	wrong := sampleRef()
+	wrong.CapabilityID = "cap_other"
+	if _, err := session.RequestQuote(context.Background(), wrong); err == nil {
 		t.Fatalf("a proposal for a different capability must be refused")
+	}
+}
+
+func TestBuyerSessionRefusesProposalSubstitutionBeforePreparing(t *testing.T) {
+	fp := &fakePreparer{prepared: samplePrepared()}
+	session, _ := NewBuyerSession(fp, sampleInput())
+	proposal, err := session.RequestQuote(context.Background(), sampleRef())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal.DisputeTerms = "sha256:" + strings.Repeat("c", 64)
+	if _, err := session.BuildAcceptedQuote(context.Background(), proposal); err == nil {
+		t.Fatal("a substituted proposal reached buyersdk preparation")
+	}
+	if fp.prepCalls != 0 {
+		t.Fatalf("prepare calls = %d", fp.prepCalls)
 	}
 }
 
@@ -121,7 +154,7 @@ func TestBuyerSessionFundRequiresPreparedPurchase(t *testing.T) {
 func TestBuyerSessionPrepareErrorNotStashed(t *testing.T) {
 	fp := &fakePreparer{prepErr: errors.New("capability revoked in finalized state")}
 	session, _ := NewBuyerSession(fp, sampleInput())
-	prop, _ := session.RequestQuote(context.Background(), servicebridge.CapabilityRef{CapabilityID: "cap_" + hex64})
+	prop, _ := session.RequestQuote(context.Background(), sampleRef())
 	if _, err := session.BuildAcceptedQuote(context.Background(), prop); err == nil {
 		t.Fatalf("a rejected preparation must surface the buyersdk error")
 	}

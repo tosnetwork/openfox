@@ -3,8 +3,11 @@ package servicebridge
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 )
 
 // ---- fakes -------------------------------------------------------------------
@@ -55,6 +58,22 @@ type fakeTransport struct {
 	dispatched []Transport
 }
 
+type fakeQuoteVerifier struct {
+	calls int
+	err   error
+	terms actionauth.PurchaseTerms
+}
+
+func (f *fakeQuoteVerifier) VerifyAcceptedQuote(
+	_ context.Context,
+	_ string,
+	terms actionauth.PurchaseTerms,
+) error {
+	f.calls++
+	f.terms = terms
+	return f.err
+}
+
 func (f *fakeTransport) Dispatch(_ context.Context, tr Transport, _ Task) error {
 	f.dispatched = append(f.dispatched, tr)
 	return nil
@@ -87,19 +106,31 @@ const esc = "EQescrow"
 
 func happyBuyer() (*Buyer, *fakeResolver, *fakeSigner, *fakeTransport) {
 	prop := baseProposal()
-	prop.Capability = CapabilityRef{CapabilityID: "cap_sw"}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	prop.Capability = CapabilityRef{AgentID: "agent_" + strings.Repeat("1", 64), CapabilityID: "cap_sw",
+		Version: "1", ManifestDigest: digest, CapabilityClass: "compute.inference"}
+	prop.Asset.Network = Network{ID: "tos-local", GenesisRootHash: strings.Repeat("2", 64),
+		GenesisFileHash: strings.Repeat("3", 64)}
+	prop.Asset.MasterCodeHash = "tvm-cell-sha256:" + strings.Repeat("4", 64)
+	prop.TransportBindingDigest = digest
+	prop.EscrowTermsDigest = digest
+	prop.DisputeTerms = digest
+	prop.Expiry = time.Unix(2_000_000_000, 0)
 	res := &fakeResolver{escrow: EscrowState{Address: esc, Found: true, FundedAtomic: prop.MaxAtomicAmount}}
 	sig := &fakeSigner{}
 	tr := &fakeTransport{}
+	policy := basePolicy()
+	policy.Asset = prop.Asset
 	b := &Buyer{
-		Policy:    basePolicy(),
-		Resolver:  res,
-		Quotes:    &fakeQuotes{proposal: prop, aq: AcceptedQuote{Proposal: prop, QuoteCommitment: qc, EscrowAddress: esc}},
-		Journal:   NewInMemoryJournal(),
-		Signer:    sig,
-		Transport: tr,
-		Receipts:  &fakeReceipts{settlement: Settlement{Released: true, ProviderCreditAtomic: prop.MaxAtomicAmount}},
-		Now:       func() time.Time { return time.Unix(1_700_000_000, 0) },
+		Policy:        policy,
+		Resolver:      res,
+		Quotes:        &fakeQuotes{proposal: prop, aq: AcceptedQuote{Proposal: prop, QuoteCommitment: qc, EscrowAddress: esc}},
+		Journal:       NewInMemoryJournal(),
+		Signer:        sig,
+		QuoteVerifier: &fakeQuoteVerifier{},
+		Transport:     tr,
+		Receipts:      &fakeReceipts{settlement: Settlement{Released: true, ProviderCreditAtomic: prop.MaxAtomicAmount}},
+		Now:           func() time.Time { return time.Unix(1_700_000_000, 0) },
 	}
 	return b, res, sig, tr
 }
@@ -156,6 +187,25 @@ func TestBuyerFundingAmbiguousFailsClosed(t *testing.T) {
 	res.escrow.FundedAtomic = 24_999_999 // not the exact quoted amount
 	if _, err := b.Purchase(context.Background(), ref(), TransportA2A, buildTask); !errors.Is(err, ErrFundingAmbiguous) {
 		t.Fatalf("want ErrFundingAmbiguous, got %v", err)
+	}
+}
+
+func TestBuyerRechecksFinalizedQuoteAfterFundingRecovery(t *testing.T) {
+	b, _, sig, tr := happyBuyer()
+	verifier := b.QuoteVerifier.(*fakeQuoteVerifier)
+	verifier.err = errors.New("quote is not finalized yet")
+	if _, err := b.Purchase(context.Background(), ref(), TransportA2A, buildTask); err == nil {
+		t.Fatal("unverified Quote reached task dispatch")
+	}
+	if sig.fundCalls != 1 || verifier.calls != 1 || len(tr.dispatched) != 0 {
+		t.Fatalf("first attempt: funds=%d verifies=%d dispatches=%d", sig.fundCalls, verifier.calls, len(tr.dispatched))
+	}
+	verifier.err = nil
+	if _, err := b.Purchase(context.Background(), ref(), TransportA2A, buildTask); err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+	if sig.fundCalls != 1 || verifier.calls != 2 || len(tr.dispatched) != 1 {
+		t.Fatalf("recovery: funds=%d verifies=%d dispatches=%d", sig.fundCalls, verifier.calls, len(tr.dispatched))
 	}
 }
 

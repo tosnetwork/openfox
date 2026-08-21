@@ -1,6 +1,10 @@
 package servicebridge
 
-import "context"
+import (
+	"context"
+
+	"github.com/tosnetwork/openfox/pkg/actionauth"
+)
 
 // NativeResolver reads finalized Agent/Capability/escrow/wallet state from
 // strict-majority TOS RPC. It is the ONLY source of canonical authority in the
@@ -32,6 +36,13 @@ type CustodySigner interface {
 	// SignSettlementIntent signs only the displayed settlement-intent hash for a
 	// provider release; used by the provider flow.
 	SignSettlementIntent(ctx context.Context, settlementIntentHash string) ([]byte, error)
+}
+
+// FinalizedQuoteVerifier asks Messenger to resolve the Accepted Quote from
+// finalized TOS state and match every purchase term plus the complete network
+// identity. It is read-only and grants no spending or custody authority.
+type FinalizedQuoteVerifier interface {
+	VerifyAcceptedQuote(ctx context.Context, commitment string, expected actionauth.PurchaseTerms) error
 }
 
 // TaskTransport dispatches the bound task over one transport. All transports

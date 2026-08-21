@@ -153,8 +153,13 @@ func (t inProcessTransport) Dispatch(ctx context.Context, _ servicebridge.Transp
 }
 
 func e2ePolicy() servicebridge.SpendingPolicy {
+	input := sampleInput()
+	asset := input.Proposal.GetMaximumPrice().GetAsset()
 	return servicebridge.SpendingPolicy{
-		Asset:             servicebridge.AssetIdentity{Master: "0:" + repeatHex("ab"), WalletCodeHash: "tvm-cell-sha256:" + hex64},
+		Asset: servicebridge.AssetIdentity{Master: "0:" + repeatHex("ab"),
+			WalletCodeHash: asset.GetWalletCodeHash(), Network: sampleRef().Network,
+			Workchain: asset.GetMaster().GetWorkchain(), MasterCodeHash: asset.GetMaster().GetCodeHash(),
+			Decimals: asset.GetDecimals()},
 		MaxAtomicPurchase: 100_000_000,
 		DailyBudgetAtomic: 100_000_000,
 		Window:            24 * time.Hour,
@@ -212,21 +217,22 @@ func TestBridgeClosesTheFullPaidLoop(t *testing.T) {
 	transport := inProcessTransport{handle: providerHandler(t, gate, ledger, sub)}
 
 	buyer := &servicebridge.Buyer{
-		Policy:    e2ePolicy(),
-		Resolver:  e2eResolver{reader: reader},
-		Quotes:    session,
-		Journal:   servicebridge.NewInMemoryJournal(),
-		Signer:    session,
-		Transport: transport,
-		Receipts:  e2eReceipts{reader: reader},
-		Now:       func() time.Time { return time.Unix(1786800000, 0) },
+		Policy:        e2ePolicy(),
+		Resolver:      e2eResolver{reader: reader},
+		Quotes:        session,
+		Journal:       servicebridge.NewInMemoryJournal(),
+		Signer:        session,
+		QuoteVerifier: allowQuoteVerifier{},
+		Transport:     transport,
+		Receipts:      e2eReceipts{reader: reader},
+		Now:           func() time.Time { return time.Unix(1786800000, 0) },
 	}
 
 	buildTask := func(aq servicebridge.AcceptedQuote) (servicebridge.Task, error) {
 		return servicebridge.Task{EscrowAddress: aq.EscrowAddress, QuoteCommitment: aq.QuoteCommitment, ExecutionID: "sha256:" + hex64}, nil
 	}
 
-	settlement, err := buyer.Purchase(context.Background(), servicebridge.CapabilityRef{CapabilityID: "cap_" + hex64}, servicebridge.TransportA2A, buildTask)
+	settlement, err := buyer.Purchase(context.Background(), sampleRef(), servicebridge.TransportA2A, buildTask)
 	if err != nil {
 		t.Fatalf("purchase: %v", err)
 	}

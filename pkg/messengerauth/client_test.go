@@ -148,6 +148,53 @@ func TestClientCarriesExactSpendTermsAndMandate(t *testing.T) {
 	}
 }
 
+func TestClientVerifiesFinalizedQuoteWithExactExpectedTerms(t *testing.T) {
+	commitment := "tvm-cell-sha256:" + repeat("a", 64)
+	server := newFakeServer(t, func(raw []byte) []byte {
+		var req request
+		if err := json.Unmarshal(raw, &req); err != nil {
+			t.Fatal(err)
+		}
+		if req.Op != "quotes.verify" || req.QuoteCommitment != commitment ||
+			req.ExpectedQuoteTerms == nil || req.ExpectedQuoteTerms.PriceAtomic != "42" {
+			t.Fatalf("request = %+v", req)
+		}
+		return encodeResponse(t, response{OK: true, FinalizedQuote: &finalizedQuoteEvidence{
+			Commitment: commitment, EscrowAccount: "0:" + repeat("b", 64),
+			TransactionHash:     "sha256:" + repeat("c", 64),
+			ContractCodeHash:    "tvm-cell-sha256:" + repeat("d", 64),
+			FinalizedCheckpoint: 19, FinalizedAtUnix: 2_000_000_000,
+		}})
+	})
+	client, err := NewClient(server, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.VerifyAcceptedQuote(
+		context.Background(), commitment, actionauth.PurchaseTerms{PriceAtomic: "42"},
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientRejectsIncompleteFinalizedQuoteEvidence(t *testing.T) {
+	commitment := "tvm-cell-sha256:" + repeat("a", 64)
+	server := newFakeServer(t, func([]byte) []byte {
+		return encodeResponse(t, response{OK: true, FinalizedQuote: &finalizedQuoteEvidence{
+			Commitment: commitment,
+		}})
+	})
+	client, err := NewClient(server, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.VerifyAcceptedQuote(
+		context.Background(), commitment, actionauth.PurchaseTerms{PriceAtomic: "42"},
+	); !errors.Is(err, ErrQuoteUnverified) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestClientRefusesMalformedSpendBeforeConnecting(t *testing.T) {
 	client, err := NewClient(filepath.Join(t.TempDir(), "absent.sock"), time.Second)
 	if err != nil {

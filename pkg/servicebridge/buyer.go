@@ -15,15 +15,18 @@ type TaskBuilder func(aq AcceptedQuote) (Task, error)
 // authority decision is re-derived from finalized TOS state; a Gateway or a
 // transport acknowledgement is never treated as ownership or payment.
 type Buyer struct {
-	Policy    SpendingPolicy
-	Resolver  NativeResolver
-	Quotes    QuoteClient
-	Journal   PurchaseJournal
-	Signer    CustodySigner
-	Transport TaskTransport
-	Receipts  ReceiptVerifier
-	Confirm   Confirmer // required only when Policy.ConfirmationMode == ConfirmManual
-	Now       func() time.Time
+	Policy   SpendingPolicy
+	Resolver NativeResolver
+	Quotes   QuoteClient
+	Journal  PurchaseJournal
+	Signer   CustodySigner
+	// QuoteVerifier independently matches the funded Accepted Quote in finalized
+	// state before every possible task dispatch, including crash recovery.
+	QuoteVerifier FinalizedQuoteVerifier
+	Transport     TaskTransport
+	Receipts      ReceiptVerifier
+	Confirm       Confirmer // required only when Policy.ConfirmationMode == ConfirmManual
+	Now           func() time.Time
 }
 
 var (
@@ -41,7 +44,7 @@ func (b *Buyer) now() time.Time {
 
 func (b *Buyer) ready() bool {
 	return b.Resolver != nil && b.Quotes != nil && b.Journal != nil &&
-		b.Signer != nil && b.Transport != nil && b.Receipts != nil
+		b.Signer != nil && b.QuoteVerifier != nil && b.Transport != nil && b.Receipts != nil
 }
 
 // Purchase runs the eight-step buyer flow and returns the finalized settlement.
@@ -121,6 +124,13 @@ func (b *Buyer) Purchase(ctx context.Context, ref CapabilityRef, transport Trans
 	}
 	if !escrow.Found || escrow.FundedAtomic != proposal.MaxAtomicAmount {
 		return Settlement{}, ErrFundingAmbiguous
+	}
+	expectedTerms, err := messengerPurchaseTerms(aq.Proposal)
+	if err != nil {
+		return Settlement{}, err
+	}
+	if err := b.QuoteVerifier.VerifyAcceptedQuote(ctx, aq.QuoteCommitment, expectedTerms); err != nil {
+		return Settlement{}, err
 	}
 	if err := b.Journal.Advance(key, PhaseFunded); err != nil && !errors.Is(err, ErrJournalPhase) {
 		return Settlement{}, err

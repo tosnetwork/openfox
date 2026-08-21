@@ -27,6 +27,16 @@ type allowActionAuthorizer struct{}
 
 func (allowActionAuthorizer) Authorize(context.Context, actionauth.Action) error { return nil }
 
+type allowQuoteVerifier struct{}
+
+func (allowQuoteVerifier) VerifyAcceptedQuote(
+	context.Context,
+	string,
+	actionauth.PurchaseTerms,
+) error {
+	return nil
+}
+
 func (fakeTaskTransport) Dispatch(context.Context, servicebridge.Transport, servicebridge.Task) error {
 	return nil
 }
@@ -101,14 +111,15 @@ func TestNewNativeBuyerAssembles(t *testing.T) {
 		t.Fatalf("session: %v", err)
 	}
 	buyer, err := NewNativeBuyer(NativeBuyerConfig{
-		Policy:     e2ePolicy(),
-		Escrow:     testEscrowReader(t),
-		Capability: &fakeCapValidator{},
-		Session:    session,
-		Transport:  fakeTaskTransport{},
-		Journal:    servicebridge.NewInMemoryJournal(),
-		Authorizer: allowActionAuthorizer{},
-		MandateID:  "mdt_" + hex64,
+		Policy:        e2ePolicy(),
+		Escrow:        testEscrowReader(t),
+		Capability:    &fakeCapValidator{},
+		Session:       session,
+		Transport:     fakeTaskTransport{},
+		Journal:       servicebridge.NewInMemoryJournal(),
+		Authorizer:    allowActionAuthorizer{},
+		QuoteVerifier: allowQuoteVerifier{},
+		MandateID:     "mdt_" + hex64,
 	})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
@@ -137,6 +148,7 @@ func TestNewNativeBuyerCannotOmitMessengerAuthority(t *testing.T) {
 		Policy: e2ePolicy(), Escrow: testEscrowReader(t), Capability: &fakeCapValidator{},
 		Session: session, Transport: fakeTaskTransport{}, Journal: servicebridge.NewInMemoryJournal(),
 		Authorizer: allowActionAuthorizer{}, MandateID: "mdt_" + hex64,
+		QuoteVerifier: allowQuoteVerifier{},
 	}
 	withoutAuthorizer := base
 	withoutAuthorizer.Authorizer = nil
@@ -147,5 +159,10 @@ func TestNewNativeBuyerCannotOmitMessengerAuthority(t *testing.T) {
 	withoutMandate.MandateID = ""
 	if _, err := NewNativeBuyer(withoutMandate); err == nil {
 		t.Fatal("native buyer accepted no mandate")
+	}
+	withoutVerifier := base
+	withoutVerifier.QuoteVerifier = nil
+	if _, err := NewNativeBuyer(withoutVerifier); err == nil {
+		t.Fatal("native buyer accepted no finalized Quote verifier")
 	}
 }

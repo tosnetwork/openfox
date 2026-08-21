@@ -66,8 +66,16 @@ capability/version/class, manifest, transport binding, network and asset code
 identity, decimal atomic amount, escrow/dispute digests, expiry, and mandate—to
 Messenger as a `spend`. Settlement signing separately requests `key-use`.
 Refusal or incomplete lineage leaves the wrapped signer unreachable.
-`nativeimpl.NewNativeBuyer` requires both the Messenger authorizer and a
-mandate ID and installs this wrapper itself; production callers cannot inject a
-bare custody session into the assembled buyer. Lower-level `servicebridge.Buyer`
-remains available for isolated tests and alternate compositions, which must
-apply an equivalent authority boundary explicitly.
+After the single funding lease, the buyer first resolves exact finalized
+funding and then calls the same Messenger client through `quotes.verify` with
+the commitment and those complete terms. Task construction/dispatch remains
+blocked until Messenger independently matches the finalized Accepted Quote and
+its full network identity. This check runs again on crash recovery while the
+funding lease prevents a second payment.
+
+`nativeimpl.NewNativeBuyer` requires the Messenger authorizer, finalized-Quote
+verifier, and mandate ID and installs both boundaries itself; production
+callers cannot inject a bare custody session or omit post-funding verification
+from the assembled buyer. Lower-level `servicebridge.Buyer` remains available
+for isolated tests and alternate compositions, but its required verifier still
+fails a purchase closed before dispatch.

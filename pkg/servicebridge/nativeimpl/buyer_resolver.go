@@ -105,7 +105,10 @@ type NativeBuyerConfig struct {
 	// Authorizer and MandateID are mandatory: production composition must not
 	// expose the custody session directly to the Buyer.
 	Authorizer actionauth.Authorizer
-	MandateID  string
+	// QuoteVerifier is the Messenger runtime client. It independently resolves
+	// the funded Accepted Quote before the Buyer may dispatch a task.
+	QuoteVerifier servicebridge.FinalizedQuoteVerifier
+	MandateID     string
 }
 
 // NewNativeBuyer assembles a bridge Buyer from the chain-backed components. The
@@ -114,9 +117,9 @@ type NativeBuyerConfig struct {
 // buyersdk through the session; the journal keeps funding at-most-once.
 func NewNativeBuyer(c NativeBuyerConfig) (*servicebridge.Buyer, error) {
 	if c.Escrow == nil || c.Capability == nil || c.Session == nil || c.Transport == nil || c.Journal == nil ||
-		c.Authorizer == nil || strings.TrimSpace(c.MandateID) == "" {
+		c.Authorizer == nil || c.QuoteVerifier == nil || strings.TrimSpace(c.MandateID) == "" {
 		return nil, errors.New(
-			"nativeimpl: native buyer needs escrow, capability, session, transport, journal, Messenger authority, and a mandate",
+			"nativeimpl: native buyer needs escrow, capability, session, transport, journal, Messenger authority, finalized Quote verification, and a mandate",
 		)
 	}
 	resolver, err := NewNativeBuyerResolver(c.Capability, c.Escrow)
@@ -135,8 +138,9 @@ func NewNativeBuyer(c NativeBuyerConfig) (*servicebridge.Buyer, error) {
 		Signer: servicebridge.AuthorizedCustodySigner{
 			Signer: c.Session, Authorizer: c.Authorizer, MandateID: c.MandateID,
 		},
-		Transport: c.Transport,
-		Receipts:  receipts,
-		Confirm:   c.Confirm,
+		QuoteVerifier: c.QuoteVerifier,
+		Transport:     c.Transport,
+		Receipts:      receipts,
+		Confirm:       c.Confirm,
 	}, nil
 }

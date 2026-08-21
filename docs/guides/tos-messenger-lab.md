@@ -72,6 +72,17 @@ restarted. This executable deliberately does not instantiate a model provider. I
 the messaging/channel boundary deterministically; model choice and tool policy
 belong to the normal OpenFox runtime and are tested separately.
 
+Fresh Messenger MLS proxy v2 rooms also have a terminal removed-member state.
+When a poll receives an authenticated removal, OpenFox durably deletes that
+room and cursor from its active poll set. A later `410 Gone` is not retried as a
+Relay outage, sends to the retired room fail locally, and restart ignores the
+same configured room when its proxy confirms that this Agent is no longer a
+member. The long-running Agent process remains up after that restart: its
+control health response preserves the durable room ID and reports
+`active_member: false`, while `/v1/send` returns `410 Gone` without entering the
+channel. The proxy remains healthy for operator inspection; this lifecycle does
+not grant OpenFox authority to create a membership change.
+
 ## Independent long-running Agent processes
 
 `cmd/openfox-messenger-lab-agent` runs exactly one channel in one OS process.

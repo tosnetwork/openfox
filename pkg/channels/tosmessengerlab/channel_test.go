@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,41 @@ type fakeHub struct {
 	replyToIDs     []string
 	inboundReplyTo string
 	failFirstSend  bool
+}
+
+type removedHub struct {
+	createGone   bool
+	messagesGone bool
+}
+
+func (h *removedHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/rooms":
+		if h.createGone {
+			w.WriteHeader(http.StatusGone)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Agent was removed from the MLS room"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(room{RoomID: testRoom, Label: "builders", Members: []string{testAlice, testBob}})
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/rooms":
+		rooms := []room{}
+		if !h.createGone {
+			rooms = append(rooms, room{RoomID: testRoom, Label: "builders", Members: []string{testAlice, testBob}})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"rooms": rooms})
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/messages" && h.messagesGone:
+		w.WriteHeader(http.StatusGone)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Agent was removed from the MLS room"})
+	case r.Method == http.MethodGet && r.URL.Path == "/livez":
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "active_member": false, "room_id": testRoom, "mls_epoch": 3,
+			"room_label": "builders", "members": []string{testAlice, testBob},
+			"encryption": "openmls-0.8.1-suite-0x0001",
+		})
+	default:
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}
 }
 
 func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -300,6 +336,62 @@ func TestChannelMarksOpenMLSProxyTransport(t *testing.T) {
 	settings.Encryption = "invented"
 	if _, err := New(&config.Channel{AllowFrom: []string{"*"}}, settings, messageBus); err == nil {
 		t.Fatal("unknown encryption mode accepted")
+	}
+}
+
+func TestChannelRetiresRemovedRoomWithoutRetryLoop(t *testing.T) {
+	hub := &removedHub{messagesGone: true}
+	server := httptest.NewServer(hub)
+	defer server.Close()
+	cursorPath := filepath.Join(t.TempDir(), "cursor.json")
+	channel := newTestChannel(t, server, bus.NewMessageBus(), cursorPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := channel.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer channel.Stop(context.Background())
+	deadline := time.Now().Add(2 * time.Second)
+	for len(channel.RoomIDs()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("removed room remained in the active poll set")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	raw, err := os.ReadFile(cursorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state cursorState
+	if err := json.Unmarshal(raw, &state); err != nil || len(state.Cursors) != 0 {
+		t.Fatalf("removed cursor state = %+v err=%v", state, err)
+	}
+	if _, err := channel.Send(ctx, bus.OutboundMessage{ChatID: testRoom, Content: "after removal"}); err == nil {
+		t.Fatal("removed room remained sendable")
+	}
+}
+
+func TestChannelRestartTreatsConfiguredGoneRoomAsTerminalMembership(t *testing.T) {
+	hub := &removedHub{createGone: true}
+	server := httptest.NewServer(hub)
+	defer server.Close()
+	channel := newTestChannel(t, server, bus.NewMessageBus(), filepath.Join(t.TempDir(), "cursor.json"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := channel.Start(ctx); err != nil {
+		t.Fatalf("removed room made channel startup fail: %v", err)
+	}
+	defer channel.Stop(context.Background())
+	if rooms := channel.RoomIDs(); len(rooms) != 0 {
+		t.Fatalf("configured removed room was resurrected: %v", rooms)
+	}
+	status, err := channel.MembershipStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ActiveMember || status.RoomID != testRoom || status.RoomLabel != "builders" ||
+		!slices.Equal(status.Members, []string{testAlice, testBob}) || status.MLSEpoch != 3 {
+		t.Fatalf("terminal membership = %+v", status)
 	}
 }
 

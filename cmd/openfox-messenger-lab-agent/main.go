@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -54,6 +55,8 @@ type channelAPI interface {
 	Stop(context.Context) error
 	SendWithClientID(context.Context, bus.OutboundMessage, string) ([]string, error)
 	RoomID(string, []string) (string, bool)
+	RoomIDs() []string
+	MembershipStatus(context.Context) (tosmessengerlab.MembershipStatus, error)
 }
 
 type transcriptLine struct {
@@ -153,9 +156,9 @@ func run(agentID, token, socket, cursor, statePath, controlPath, label, encrypti
 		return err
 	}
 	defer channel.Stop(context.Background())
-	roomID, ok := channel.RoomID(label, members)
-	if !ok {
-		return errors.New("configured room is not visible to this Agent")
+	roomID, err := resolveRoom(ctx, channel, label, members)
+	if err != nil {
+		return err
 	}
 	service := &agentService{
 		agentID: agentID, roomID: roomID, triggerPrefix: triggerPrefix, replyPrefix: replyPrefix,
@@ -203,6 +206,26 @@ func run(agentID, token, socket, cursor, statePath, controlPath, label, encrypti
 	case err := <-pipelineErr:
 		return err
 	}
+}
+
+func resolveRoom(ctx context.Context, channel channelAPI, label string, members []string) (string, error) {
+	roomID, ok := channel.RoomID(label, members)
+	if !ok {
+		membership, membershipErr := channel.MembershipStatus(ctx)
+		if membershipErr != nil {
+			return "", membershipErr
+		}
+		expectedMembers := append([]string(nil), members...)
+		actualMembers := append([]string(nil), membership.Members...)
+		slices.Sort(expectedMembers)
+		slices.Sort(actualMembers)
+		if membership.ActiveMember || membership.RoomLabel != strings.TrimSpace(label) ||
+			!slices.Equal(actualMembers, expectedMembers) {
+			return "", errors.New("configured room is not visible to this Agent")
+		}
+		roomID = membership.RoomID
+	}
+	return roomID, nil
 }
 
 // waitForUnixListener closes the systemd process-readiness gap without
@@ -310,7 +333,8 @@ func (s *agentService) routes() http.Handler {
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"schema": controlSchema, "ok": true,
-			"agent_id": s.agentID, "room_id": s.roomID, "reply_mode": s.replyMode,
+			"agent_id": s.agentID, "room_id": s.roomID, "active_member": s.activeMember(),
+			"reply_mode": s.replyMode,
 		})
 	})
 	mux.HandleFunc("GET /v1/transcript", func(w http.ResponseWriter, _ *http.Request) {
@@ -320,6 +344,10 @@ func (s *agentService) routes() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"schema": controlSchema, "transcript": lines})
 	})
 	mux.HandleFunc("POST /v1/send", func(w http.ResponseWriter, r *http.Request) {
+		if !s.activeMember() {
+			http.Error(w, "Agent was removed from the MLS room", http.StatusGone)
+			return
+		}
 		var request struct {
 			RequestID string `json:"request_id"`
 			Content   string `json:"content"`
@@ -345,6 +373,10 @@ func (s *agentService) routes() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"schema": controlSchema, "event_id": ids[0]})
 	})
 	return mux
+}
+
+func (s *agentService) activeMember() bool {
+	return slices.Contains(s.channel.RoomIDs(), s.roomID)
 }
 
 func (s *agentService) consume(ctx context.Context, inbound <-chan bus.InboundMessage) error {

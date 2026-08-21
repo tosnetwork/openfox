@@ -15,17 +15,32 @@ import (
 	"time"
 
 	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/channels/tosmessengerlab"
 )
 
 type fakeChannel struct {
-	mu   sync.Mutex
-	sent []bus.OutboundMessage
+	mu          sync.Mutex
+	sent        []bus.OutboundMessage
+	removed     bool
+	roomVisible bool
+	membership  tosmessengerlab.MembershipStatus
 }
 
 func (*fakeChannel) Start(context.Context) error { return nil }
 func (*fakeChannel) Stop(context.Context) error  { return nil }
-func (*fakeChannel) RoomID(string, []string) (string, bool) {
-	return "room_test", true
+func (f *fakeChannel) RoomID(string, []string) (string, bool) {
+	return "room_test", f.roomVisible
+}
+
+func (f *fakeChannel) RoomIDs() []string {
+	if f.removed {
+		return nil
+	}
+	return []string{"room-a"}
+}
+
+func (f *fakeChannel) MembershipStatus(context.Context) (tosmessengerlab.MembershipStatus, error) {
+	return f.membership, nil
 }
 
 func (f *fakeChannel) Send(_ context.Context, message bus.OutboundMessage) ([]string, error) {
@@ -41,7 +56,7 @@ func (f *fakeChannel) SendWithClientID(ctx context.Context, message bus.Outbound
 
 func newTestService(t *testing.T) (*agentService, *fakeChannel) {
 	t.Helper()
-	channel := &fakeChannel{}
+	channel := &fakeChannel{roomVisible: true}
 	service := &agentService{
 		agentID: "agent-a", roomID: "room-a", triggerPrefix: "probe:", replyPrefix: "ack:",
 		statePath: filepath.Join(t.TempDir(), "state", "agent.json"), channel: channel,
@@ -51,6 +66,21 @@ func newTestService(t *testing.T) (*agentService, *fakeChannel) {
 		t.Fatal(err)
 	}
 	return service, channel
+}
+
+func TestResolveRoomRestoresRemovedTerminalIdentity(t *testing.T) {
+	channel := &fakeChannel{membership: tosmessengerlab.MembershipStatus{
+		RoomID: "room_terminal", RoomLabel: "builders", Members: []string{"agent-b", "agent-a"},
+		ActiveMember: false, MLSEpoch: 3,
+	}}
+	roomID, err := resolveRoom(context.Background(), channel, "builders", []string{"agent-a", "agent-b"})
+	if err != nil || roomID != "room_terminal" {
+		t.Fatalf("room=%q err=%v", roomID, err)
+	}
+	channel.membership.ActiveMember = true
+	if _, err := resolveRoom(context.Background(), channel, "builders", []string{"agent-a", "agent-b"}); err == nil {
+		t.Fatal("invisible active membership was accepted as terminal removal")
+	}
 }
 
 func TestControlSendAndTranscriptAreDurable(t *testing.T) {
@@ -263,8 +293,30 @@ func TestHealthBindsAgentAndRoom(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["schema"] != controlSchema || body["agent_id"] != "agent-a" || body["room_id"] != "room-a" {
+	if body["schema"] != controlSchema || body["agent_id"] != "agent-a" || body["room_id"] != "room-a" ||
+		body["active_member"] != true {
 		t.Fatalf("health=%v", body)
+	}
+}
+
+func TestRemovedAgentStaysHealthyAndCannotSend(t *testing.T) {
+	service, channel := newTestService(t)
+	channel.removed = true
+	health := httptest.NewRecorder()
+	service.routes().ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/v1/health", nil))
+	var body map[string]any
+	if err := json.Unmarshal(health.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if health.Code != http.StatusOK || body["ok"] != true || body["active_member"] != false ||
+		body["room_id"] != "room-a" {
+		t.Fatalf("removed health status=%d body=%v", health.Code, body)
+	}
+	send := httptest.NewRecorder()
+	service.routes().ServeHTTP(send, httptest.NewRequest(http.MethodPost, "/v1/send",
+		strings.NewReader(`{"request_id":"removed-1","content":"must not send"}`)))
+	if send.Code != http.StatusGone || len(channel.sent) != 0 {
+		t.Fatalf("removed send status=%d sent=%v", send.Code, channel.sent)
 	}
 }
 

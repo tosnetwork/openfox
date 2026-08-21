@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,14 +22,18 @@ const (
 	testAlice = "agent_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	testBob   = "agent_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	testRoom  = "room_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	testMsg1  = "msg_1111111111111111111111111111111111111111111111111111111111111111"
+	testMsg2  = "msg_2222222222222222222222222222222222222222222222222222222222222222"
 )
 
 type fakeHub struct {
-	mu            sync.Mutex
-	after         []uint64
-	sends         int
-	clientIDs     []string
-	failFirstSend bool
+	mu             sync.Mutex
+	after          []uint64
+	sends          int
+	clientIDs      []string
+	replyToIDs     []string
+	inboundReplyTo string
+	failFirstSend  bool
 }
 
 func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -49,18 +54,20 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			messages = append(
 				messages,
 				message{
-					Sequence:      1,
-					MessageID:     "msg_1",
-					RoomID:        testRoom,
-					SenderAgentID: testAlice,
-					Content:       "hello Bob",
+					Sequence:       1,
+					MessageID:      testMsg1,
+					RoomID:         testRoom,
+					SenderAgentID:  testAlice,
+					ReplyToEventID: h.inboundReplyTo,
+					Content:        "hello Bob",
 				},
 			)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"messages": messages})
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/messages":
 		var request struct {
-			ClientID string `json:"client_id"`
+			ClientID       string `json:"client_id"`
+			ReplyToEventID string `json:"reply_to_event_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -69,6 +76,7 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		h.sends++
 		h.clientIDs = append(h.clientIDs, request.ClientID)
+		h.replyToIDs = append(h.replyToIDs, request.ReplyToEventID)
 		fail := h.failFirstSend && h.sends == 1
 		h.mu.Unlock()
 		if fail {
@@ -76,7 +84,7 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = json.NewEncoder(w).
-			Encode(message{Sequence: 2, MessageID: "msg_2", RoomID: testRoom, SenderAgentID: testBob, Content: "hello Alice"})
+			Encode(message{Sequence: 2, MessageID: testMsg2, RoomID: testRoom, SenderAgentID: testBob, Content: "hello Alice"})
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
@@ -137,6 +145,45 @@ func TestChannelUsesCallerOwnedStableClientID(t *testing.T) {
 	}
 }
 
+func TestChannelCarriesAuthenticatedReplyBinding(t *testing.T) {
+	replyTo := "msg_" + strings.Repeat("a", 64)
+	hub := &fakeHub{inboundReplyTo: replyTo}
+	server := httptest.NewServer(hub)
+	defer server.Close()
+	messageBus := bus.NewMessageBus()
+	channel := newTestChannel(t, server, messageBus, filepath.Join(t.TempDir(), "cursor.json"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := channel.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer channel.Stop(context.Background())
+	select {
+	case inbound := <-messageBus.InboundChan():
+		if inbound.Context.ReplyToMessageID != replyTo {
+			t.Fatalf("inbound reply binding = %q", inbound.Context.ReplyToMessageID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for bound reply")
+	}
+	ids, err := channel.SendWithClientID(ctx, bus.OutboundMessage{
+		ChatID: testRoom, Content: "bound response", ReplyToMessageID: replyTo,
+	}, "bound-reply-1")
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("send reply = %v, %v", ids, err)
+	}
+	if _, err := channel.SendWithClientID(ctx, bus.OutboundMessage{
+		ChatID: testRoom, Content: "bad response", ReplyToMessageID: "msg_bad",
+	}, "bad-reply-1"); err == nil {
+		t.Fatal("malformed reply Event ID was sent")
+	}
+	hub.mu.Lock()
+	if len(hub.replyToIDs) != 1 || hub.replyToIDs[0] != replyTo {
+		t.Fatalf("proxy requests lost reply binding: %v", hub.replyToIDs)
+	}
+	hub.mu.Unlock()
+}
+
 func TestChannelCarriesGroupMessagesAndPersistsCursor(t *testing.T) {
 	hub := &fakeHub{}
 	server := httptest.NewServer(hub)
@@ -161,7 +208,7 @@ func TestChannelCarriesGroupMessagesAndPersistsCursor(t *testing.T) {
 		t.Fatal("timed out waiting for group message")
 	}
 	ids, err := channel.Send(ctx, bus.OutboundMessage{ChatID: testRoom, Content: "hello Alice"})
-	if err != nil || len(ids) != 1 || ids[0] != "msg_2" {
+	if err != nil || len(ids) != 1 || ids[0] != testMsg2 {
 		t.Fatalf("send = %v, %v", ids, err)
 	}
 	if err := channel.Stop(context.Background()); err != nil {

@@ -38,8 +38,9 @@ const (
 )
 
 var (
-	roomIDPattern   = regexp.MustCompile(`^room_[0-9a-f]{64}$`)
-	clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,128}$`)
+	roomIDPattern    = regexp.MustCompile(`^room_[0-9a-f]{64}$`)
+	messageIDPattern = regexp.MustCompile(`^msg_[0-9a-f]{64}$`)
+	clientIDPattern  = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,128}$`)
 )
 
 type room struct {
@@ -51,13 +52,14 @@ type room struct {
 }
 
 type message struct {
-	Sequence      uint64 `json:"sequence"`
-	MessageID     string `json:"message_id"`
-	ClientID      string `json:"client_id"`
-	RoomID        string `json:"room_id"`
-	SenderAgentID string `json:"sender_agent_id"`
-	Content       string `json:"content"`
-	CreatedAtUnix uint64 `json:"created_at_unix"`
+	Sequence       uint64 `json:"sequence"`
+	MessageID      string `json:"message_id"`
+	ClientID       string `json:"client_id"`
+	RoomID         string `json:"room_id"`
+	SenderAgentID  string `json:"sender_agent_id"`
+	ReplyToEventID string `json:"reply_to_event_id,omitempty"`
+	Content        string `json:"content"`
+	CreatedAtUnix  uint64 `json:"created_at_unix"`
 }
 
 type cursorState struct {
@@ -219,12 +221,16 @@ func (c *Channel) sendWithClientID(
 	if !known {
 		return nil, errors.New("unknown Messenger lab room")
 	}
+	if outbound.ReplyToMessageID != "" && !messageIDPattern.MatchString(outbound.ReplyToMessageID) {
+		return nil, errors.New("invalid Messenger lab reply Event ID")
+	}
 	var result message
 	err := c.call(
 		ctx,
 		http.MethodPost,
 		"/v1/messages",
-		map[string]string{"room_id": roomID, "client_id": clientID, "content": outbound.Content},
+		map[string]string{"room_id": roomID, "client_id": clientID, "content": outbound.Content,
+			"reply_to_event_id": outbound.ReplyToMessageID},
 		&result,
 	)
 	if err != nil {
@@ -324,6 +330,10 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 			return err
 		}
 		for _, inbound := range response.Messages {
+			if !messageIDPattern.MatchString(inbound.MessageID) ||
+				inbound.ReplyToEventID != "" && !messageIDPattern.MatchString(inbound.ReplyToEventID) {
+				return errors.New("Messenger lab proxy returned an invalid Event binding")
+			}
 			if inbound.Sequence <= after {
 				continue
 			}
@@ -334,13 +344,14 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 					CanonicalID: config.ChannelTOSMessengerLab + ":" + inbound.SenderAgentID,
 				}
 				inboundCtx := bus.InboundContext{
-					Channel:   c.Name(),
-					ChatID:    roomID,
-					ChatType:  "group",
-					SpaceID:   roomID,
-					SpaceType: "room",
-					SenderID:  sender.CanonicalID,
-					MessageID: inbound.MessageID,
+					Channel:          c.Name(),
+					ChatID:           roomID,
+					ChatType:         "group",
+					SpaceID:          roomID,
+					SpaceType:        "room",
+					SenderID:         sender.CanonicalID,
+					MessageID:        inbound.MessageID,
+					ReplyToMessageID: inbound.ReplyToEventID,
 					Raw: map[string]string{
 						"transport":    c.transportName(),
 						"tos_agent_id": inbound.SenderAgentID,

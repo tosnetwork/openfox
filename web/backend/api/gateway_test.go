@@ -323,9 +323,10 @@ func TestStartGatewayLocked_UsesReloadedConfigForBootSignature(t *testing.T) {
 		if cmd != nil && cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
-		if cmd != nil {
-			_ = cmd.Wait()
-		}
+		// startGatewayLocked owns the sole Cmd.Wait call. A second Wait here
+		// races with its process-reaper goroutine and violates os/exec's
+		// ownership contract; killing the child is sufficient to unblock the
+		// owner.
 	})
 
 	updatedCfg, err := config.LoadConfig(configPath)

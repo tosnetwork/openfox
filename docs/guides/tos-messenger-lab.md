@@ -122,8 +122,11 @@ routing, durable history application and response publication. A separate
 outbound worker requires the response to target the exact room and current
 inbound Event, derives a stable send claim from Agent, target and content, and
 records `runtime: openfox-agent-loop` plus `reply_to_event_id` in the private
-transcript. The channel does not advance its cursor until this complete path is
-durable. A crash before completion retries the input; a crash after completion
+transcript. The channel passes that reply Event ID into the strict MLS
+plaintext frame, validates it again on receipt, and restores it into every
+recipient's inbound context; the opaque Relay never receives the field. The
+channel does not advance its cursor until this complete path is durable. A
+crash before completion retries the input; a crash after completion
 but before cursor fsync recognizes the durable reply and skips a second Agent
 turn. Each process must use a different mode-`0700` Agent workspace, whose
 session history survives process restart. This proves local OpenFox runtime

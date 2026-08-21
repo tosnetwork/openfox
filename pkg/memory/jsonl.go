@@ -77,9 +77,28 @@ const roomModerationStateSchema = "openfox.room-moderation-state.v1"
 
 // NewJSONLStore creates a new JSONL-backed store rooted at dir.
 func NewJSONLStore(dir string) (*JSONLStore, error) {
-	err := os.MkdirAll(dir, 0o755)
+	err := os.MkdirAll(dir, 0o700)
 	if err != nil {
 		return nil, fmt.Errorf("memory: create directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("memory: protect directory: %w", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("memory: inspect directory: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.Type().IsRegular() ||
+			!strings.HasSuffix(name, ".jsonl") &&
+				!strings.HasSuffix(name, ".meta.json") &&
+				!strings.HasSuffix(name, ".moderation.json") {
+			continue
+		}
+		if err := os.Chmod(filepath.Join(dir, name), 0o600); err != nil {
+			return nil, fmt.Errorf("memory: protect session file: %w", err)
+		}
 	}
 	return &JSONLStore{dir: dir}, nil
 }
@@ -187,7 +206,7 @@ func (s *JSONLStore) writeMeta(key string, meta SessionMeta) error {
 	if err != nil {
 		return fmt.Errorf("memory: encode meta: %w", err)
 	}
-	return fileutil.WriteFileAtomic(s.metaPath(key), data, 0o644)
+	return fileutil.WriteFileAtomic(s.metaPath(key), data, 0o600)
 }
 
 func cloneRawJSON(data json.RawMessage) json.RawMessage {
@@ -525,7 +544,7 @@ func (s *JSONLStore) restoreRawJSONL(sessionKey string, data []byte, existed boo
 		}
 		return nil
 	}
-	if err := fileutil.WriteFileAtomic(path, data, 0o644); err != nil {
+	if err := fileutil.WriteFileAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("memory: restore jsonl rollback: %w", err)
 	}
 	return nil
@@ -640,6 +659,42 @@ func (s *JSONLStore) AddFullMessage(
 	return s.addMsg(sessionKey, msg)
 }
 
+// ApplyAuthenticatedInbound serializes lookup and append under the session
+// lock, closing the retry race between an Event-ID check and its durable write.
+func (s *JSONLStore) ApplyAuthenticatedInbound(
+	_ context.Context,
+	sessionKey, eventID string,
+	msg providers.Message,
+) (bool, error) {
+	if err := messageutil.ValidateAuthenticatedInbound(msg, eventID); err != nil {
+		return false, fmt.Errorf("memory: %w", err)
+	}
+	l := s.sessionLock(sessionKey)
+	l.Lock()
+	defer l.Unlock()
+	meta, err := s.readMeta(sessionKey)
+	if err != nil {
+		return false, err
+	}
+	history, err := readMessages(s.jsonlPath(sessionKey), meta.Skip)
+	if err != nil {
+		return false, err
+	}
+	for _, existing := range history {
+		if existing.SourceEventID != eventID {
+			continue
+		}
+		if !messageutil.SameAuthenticatedInbound(existing, msg) {
+			return false, errors.New("memory: authenticated Event ID substitution")
+		}
+		return false, nil
+	}
+	if err := s.addMsgLocked(sessionKey, msg); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // addMsg is the shared implementation for AddMessage and AddFullMessage.
 func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 	if messageutil.IsTransientAssistantThoughtMessage(msg) {
@@ -649,7 +704,10 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 	l := s.sessionLock(sessionKey)
 	l.Lock()
 	defer l.Unlock()
+	return s.addMsgLocked(sessionKey, msg)
+}
 
+func (s *JSONLStore) addMsgLocked(sessionKey string, msg providers.Message) error {
 	now := time.Now()
 
 	if msg.CreatedAt == nil {
@@ -666,10 +724,14 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 	f, err := os.OpenFile(
 		s.jsonlPath(sessionKey),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
-		0o644,
+		0o600,
 	)
 	if err != nil {
 		return fmt.Errorf("memory: open jsonl for append: %w", err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return fmt.Errorf("memory: protect jsonl: %w", err)
 	}
 	_, writeErr := f.Write(line)
 	if writeErr != nil {
@@ -928,7 +990,7 @@ func (s *JSONLStore) rewriteJSONL(
 		buf.Write(line)
 		buf.WriteByte('\n')
 	}
-	return fileutil.WriteFileAtomic(s.jsonlPath(sessionKey), buf.Bytes(), 0o644)
+	return fileutil.WriteFileAtomic(s.jsonlPath(sessionKey), buf.Bytes(), 0o600)
 }
 
 // ListSessions returns all known session keys by reading .meta.json files.

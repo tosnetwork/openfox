@@ -132,6 +132,16 @@ func (b *JSONLBackend) AddFullMessage(sessionKey string, msg providers.Message) 
 	}
 }
 
+// ApplyAuthenticatedInbound exposes the underlying store's atomic Event-ID
+// claim and durable append to the production Messenger application handshake.
+func (b *JSONLBackend) ApplyAuthenticatedInbound(
+	sessionKey, eventID string,
+	msg providers.Message,
+) (bool, error) {
+	sessionKey = b.resolveSessionKey(sessionKey)
+	return b.store.ApplyAuthenticatedInbound(context.Background(), sessionKey, eventID, msg)
+}
+
 func (b *JSONLBackend) GetHistory(key string) []providers.Message {
 	key = b.resolveSessionKey(key)
 	msgs, err := b.store.GetHistory(context.Background(), key)

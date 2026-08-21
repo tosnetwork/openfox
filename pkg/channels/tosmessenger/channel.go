@@ -268,7 +268,20 @@ func (c *Channel) publish(ctx context.Context, pending pendingEvent, event wireE
 		SenderID: senderID, MessageID: event.EventID, ReplyToMessageID: event.ReplyToEventID,
 		Raw: map[string]string{"transport": "tos-messengerd-authenticated"}, AuthenticatedMessagingOrigin: &origin,
 	}
-	return c.HandleInboundContext(ctx, chatID, content, nil, inbound, sender)
+	result := make(chan error, 1)
+	if err := c.HandleInboundContextWithApplicationResult(
+		ctx, chatID, content, nil, inbound, result, sender,
+	); err != nil {
+		return err
+	}
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(c.timeout):
+		return errors.New("OpenFox message application persistence timed out")
+	}
 }
 
 func newLeaseID() (string, error) {

@@ -13,8 +13,10 @@ import (
 
 // Compile-time interface satisfaction checks.
 var (
-	_ session.SessionStore = (*session.SessionManager)(nil)
-	_ session.SessionStore = (*session.JSONLBackend)(nil)
+	_ session.SessionStore                     = (*session.SessionManager)(nil)
+	_ session.SessionStore                     = (*session.JSONLBackend)(nil)
+	_ session.AuthenticatedInboundSessionStore = (*session.SessionManager)(nil)
+	_ session.AuthenticatedInboundSessionStore = (*session.JSONLBackend)(nil)
 )
 
 func newBackend(t *testing.T) *session.JSONLBackend {

@@ -39,3 +39,10 @@ type SessionStore interface {
 type RoomModerationSessionStore interface {
 	ApplyRoomModeration(sessionKey string, decision providers.RoomModerationDecision) (bool, error)
 }
+
+// AuthenticatedInboundSessionStore atomically binds one authenticated source
+// Event ID to its exact durable user message. Exact retry is idempotent;
+// content or provenance substitution under the same Event ID is refused.
+type AuthenticatedInboundSessionStore interface {
+	ApplyAuthenticatedInbound(sessionKey, eventID string, msg providers.Message) (bool, error)
+}

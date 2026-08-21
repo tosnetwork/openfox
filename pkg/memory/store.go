@@ -15,6 +15,14 @@ type Store interface {
 	// AddFullMessage appends a complete message (with tool calls, etc.) to a session.
 	AddFullMessage(ctx context.Context, sessionKey string, msg providers.Message) error
 
+	// ApplyAuthenticatedInbound atomically deduplicates and appends one
+	// authenticated input by its source Event ID.
+	ApplyAuthenticatedInbound(
+		ctx context.Context,
+		sessionKey, eventID string,
+		msg providers.Message,
+	) (bool, error)
+
 	// GetHistory returns all messages for a session in insertion order.
 	// Returns an empty slice (not nil) if the session does not exist.
 	GetHistory(ctx context.Context, sessionKey string) ([]providers.Message, error)

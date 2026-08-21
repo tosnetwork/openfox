@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,7 +93,10 @@ func (sm *SessionManager) AddFullMessage(sessionKey string, msg providers.Messag
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	sm.addFullMessageLocked(sessionKey, msg)
+}
 
+func (sm *SessionManager) addFullMessageLocked(sessionKey string, msg providers.Message) {
 	session, ok := sm.sessions[sessionKey]
 	if !ok {
 		session = &Session{
@@ -108,6 +112,44 @@ func (sm *SessionManager) AddFullMessage(sessionKey string, msg providers.Messag
 
 	session.Messages = append(session.Messages, msg)
 	session.Updated = now
+}
+
+// ApplyAuthenticatedInbound binds a production Messenger Event to one exact
+// durable legacy-session record. A configured storage directory is mandatory
+// because an in-memory acknowledgement would reopen the daemon crash window.
+func (sm *SessionManager) ApplyAuthenticatedInbound(
+	sessionKey, eventID string,
+	msg providers.Message,
+) (bool, error) {
+	if sm.storage == "" {
+		return false, errors.New("invalid authenticated inbound message")
+	}
+	if err := messageutil.ValidateAuthenticatedInbound(msg, eventID); err != nil {
+		return false, err
+	}
+	sm.mu.Lock()
+	if existingSession, ok := sm.sessions[sessionKey]; ok {
+		for _, existing := range existingSession.Messages {
+			if existing.SourceEventID != eventID {
+				continue
+			}
+			if !messageutil.SameAuthenticatedInbound(existing, msg) {
+				sm.mu.Unlock()
+				return false, errors.New("authenticated Event ID substitution")
+			}
+			sm.mu.Unlock()
+			if err := sm.Save(sessionKey); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+	}
+	sm.addFullMessageLocked(sessionKey, msg)
+	sm.mu.Unlock()
+	if err := sm.Save(sessionKey); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (sm *SessionManager) GetHistory(key string) []providers.Message {

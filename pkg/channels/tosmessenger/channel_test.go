@@ -30,9 +30,8 @@ func TestChannelPublishesOnlyClaimedAuthenticatedEventWithTypedOrigin(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := channel.pollOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	pollErr := make(chan error, 1)
+	go func() { pollErr <- channel.pollOnce(context.Background()) }()
 	select {
 	case message := <-messageBus.InboundChan():
 		origin := message.Context.AuthenticatedMessagingOrigin
@@ -42,8 +41,12 @@ func TestChannelPublishesOnlyClaimedAuthenticatedEventWithTypedOrigin(t *testing
 			origin.ReceivedAtUnix != pending.ReceivedAtUnix {
 			t.Fatalf("unexpected authenticated inbound: %+v", message)
 		}
+		message.ApplicationResult <- nil
 	case <-time.After(time.Second):
 		t.Fatal("authenticated event was not published")
+	}
+	if err := <-pollErr; err != nil {
+		t.Fatal(err)
 	}
 	if got := <-operations; got != "inbox.pending,inbox.claim,inbox.complete" {
 		t.Fatalf("operations = %s", got)
@@ -63,9 +66,8 @@ func TestChannelPublishesCanonicalRoomMessageAsAuthenticatedGroupChat(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := channel.pollOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	pollErr := make(chan error, 1)
+	go func() { pollErr <- channel.pollOnce(context.Background()) }()
 	select {
 	case message := <-messageBus.InboundChan():
 		origin := message.Context.AuthenticatedMessagingOrigin
@@ -74,8 +76,12 @@ func TestChannelPublishesCanonicalRoomMessageAsAuthenticatedGroupChat(t *testing
 			origin == nil || origin.Kind != "room.message" {
 			t.Fatalf("unexpected room inbound: %+v", message)
 		}
+		message.ApplicationResult <- nil
 	case <-time.After(time.Second):
 		t.Fatal("authenticated room message was not published")
+	}
+	if err := <-pollErr; err != nil {
+		t.Fatal(err)
 	}
 	if got := <-operations; got != "inbox.pending,inbox.claim,inbox.complete" {
 		t.Fatalf("operations = %s", got)
@@ -110,6 +116,34 @@ func TestChannelWaitsForDurableRoomModerationBeforeCompletingLease(t *testing.T)
 	<-checked
 	if got := <-operations; got != "inbox.pending,inbox.claim,inbox.complete" {
 		t.Fatalf("operations = %s", got)
+	}
+}
+
+func TestChannelLeavesLeaseForRetryWhenApplicationPersistenceFails(t *testing.T) {
+	pending := testPending(t, "retry after persistence failure")
+	path, requests, stop := serveInboxRequests(t, pending)
+	defer stop()
+	messageBus := bus.NewMessageBus()
+	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
+		SocketPath: path,
+	}, messageBus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pollErr := make(chan error, 1)
+	go func() { pollErr <- channel.pollOnce(context.Background()) }()
+	message := <-messageBus.InboundChan()
+	message.ApplicationResult <- errors.New("disk unavailable")
+	if err := <-pollErr; err == nil || err.Error() != "disk unavailable" {
+		t.Fatalf("poll error=%v", err)
+	}
+	if first, second := <-requests, <-requests; first != "inbox.pending" || second != "inbox.claim" {
+		t.Fatalf("operations=%q,%q", first, second)
+	}
+	select {
+	case operation := <-requests:
+		t.Fatalf("lease was completed after persistence failure: %s", operation)
+	case <-time.After(20 * time.Millisecond):
 	}
 }
 
@@ -384,6 +418,49 @@ func serveInbox(t *testing.T, pending pendingEvent) (string, <-chan string, func
 		operations <- strings.Join(seen, ",")
 	}()
 	return path, operations, func() {
+		_ = listener.Close()
+		<-done
+	}
+}
+
+func serveInboxRequests(t *testing.T, pending pendingEvent) (string, <-chan string, func()) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "runtime-requests.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan string, 8)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			var header [4]byte
+			_, _ = io.ReadFull(connection, header[:])
+			raw := make([]byte, binary.BigEndian.Uint32(header[:]))
+			_, _ = io.ReadFull(connection, raw)
+			var request localRequest
+			_ = json.Unmarshal(raw, &request)
+			requests <- request.Op
+			response := localResponse{Schema: responseSchema, OK: true}
+			switch request.Op {
+			case "inbox.pending":
+				response.Events = []pendingEvent{pending}
+			case "inbox.claim":
+				response.Event = &pending
+			}
+			body, _ := json.Marshal(response)
+			binary.BigEndian.PutUint32(header[:], uint32(len(body)))
+			_, _ = connection.Write(header[:])
+			_, _ = connection.Write(body)
+			_ = connection.Close()
+		}
+	}()
+	return path, requests, func() {
 		_ = listener.Close()
 		<-done
 	}

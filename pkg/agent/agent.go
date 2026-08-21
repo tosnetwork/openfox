@@ -8,6 +8,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -106,6 +107,7 @@ type processOptions struct {
 	AllowInterimPicoPublish bool                   // Whether pico tool-call interim text can be published when SendResponse is false
 	SuppressToolFeedback    bool                   // Whether to suppress inline tool feedback messages
 	NoHistory               bool                   // If true, don't load session history (for heartbeat)
+	ApplicationResult       chan error             // One-shot durable application result for leased production input
 	SkipInitialSteeringPoll bool                   // If true, skip the steering poll at loop start (used by Continue)
 	InboundContext          *bus.InboundContext    // Normalized inbound facts for events/hooks
 	RouteResult             *routing.ResolvedRoute // Route decision snapshot for events/hooks
@@ -182,6 +184,13 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			// Resolve the session key for this message
 			sessionKey, agentID, ok := al.resolveSteeringTarget(msg)
 			if !ok {
+				if msg.ApplicationResult != nil {
+					reportMessageApplication(
+						msg,
+						errors.New("authenticated Messenger input has no routable Agent session"),
+					)
+					continue
+				}
 				// Non-routable message (e.g., system) — process immediately.
 				// Note: system messages are processed in the main goroutine,
 				// so they block the receive loop but guarantee session serialization.
@@ -200,6 +209,10 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				phase:  TurnPhaseSetup,
 			}
 			if _, loaded := al.activeTurnStates.LoadOrStore(sessionKey, placeholder); loaded {
+				if msg.ApplicationResult != nil {
+					reportMessageApplication(msg, errors.New("authenticated Messenger session is busy"))
+					continue
+				}
 				if al.tryHandleStopCommand(ctx, msg, sessionKey) {
 					continue
 				}
@@ -236,6 +249,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 					// Context canceled while waiting for a slot — clean up the
 					// placeholder to prevent session-level deadlock.
 					al.releaseSessionTurnState(sessionKey, nil)
+					reportMessageApplication(m, ctx.Err())
 					return
 				}
 
@@ -266,6 +280,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				defer func() {
 					if r := recover(); r != nil {
 						releaseSession = true
+						reportMessageApplication(m, fmt.Errorf("Agent worker panic: %v", r))
 						logger.RecoverPanicNoExit(r)
 						logger.ErrorCF("agent", "Worker goroutine panicked",
 							map[string]any{

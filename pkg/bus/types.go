@@ -61,6 +61,11 @@ type InboundMessage struct {
 	// the runtime and is never presented to the model as user text.
 	RoomModeration *RoomModerationControl `json:"room_moderation,omitempty"`
 	ControlResult  chan error             `json:"-"`
+
+	// ApplicationResult is set only by a channel that must keep an upstream
+	// application lease open until the user input is durably represented in
+	// the Agent session. Ordinary best-effort channels leave it nil.
+	ApplicationResult chan error `json:"-"`
 }
 
 type RoomModerationControl struct {

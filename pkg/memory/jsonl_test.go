@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/providers"
 )
 
@@ -65,6 +66,98 @@ func TestAddMessage_BasicRoundtrip(t *testing.T) {
 	}
 	if history[1].Role != "assistant" || history[1].Content != "hi there" {
 		t.Errorf("msg[1] = %+v", history[1])
+	}
+}
+
+func TestApplyAuthenticatedInboundIsDurableIdempotentAndPrivate(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewJSONLStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	eventID := "evt_" + strings.Repeat("a", 64)
+	msg := providers.Message{
+		Role: "user", Content: "private Messenger input", SourceEventID: eventID,
+		ActionProvenanceState: "authenticated-messaging", ActionOrigins: []actionauth.Origin{{EventID: eventID}},
+	}
+	if applied, err := store.ApplyAuthenticatedInbound(ctx, "session", eventID, msg); err != nil || !applied {
+		t.Fatalf("first apply=%v err=%v", applied, err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{store.jsonlPath("session"), store.metaPath("session")} {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err = NewJSONLStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := store.ApplyAuthenticatedInbound(ctx, "session", eventID, msg); err != nil || applied {
+		t.Fatalf("exact restart replay=%v err=%v", applied, err)
+	}
+	substituted := msg
+	substituted.Content = "substitution"
+	if _, err := store.ApplyAuthenticatedInbound(ctx, "session", eventID, substituted); err == nil {
+		t.Fatal("Event-ID substitution was accepted")
+	}
+	history, err := store.GetHistory(ctx, "session")
+	if err != nil || len(history) != 1 || history[0].Content != msg.Content {
+		t.Fatalf("history=%+v err=%v", history, err)
+	}
+	for _, path := range []string{dir, store.jsonlPath("session"), store.metaPath("session")} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := os.FileMode(0o600)
+		if info.IsDir() {
+			want = 0o700
+		}
+		if info.Mode().Perm() != want {
+			t.Fatalf("%s mode=%v want=%v", path, info.Mode().Perm(), want)
+		}
+	}
+}
+
+func TestApplyAuthenticatedInboundSerializesConcurrentRetry(t *testing.T) {
+	store := newTestStore(t)
+	eventID := "evt_" + strings.Repeat("d", 64)
+	msg := providers.Message{
+		Role: "user", Content: "one application", SourceEventID: eventID,
+		ActionProvenanceState: "authenticated-messaging", ActionOrigins: []actionauth.Origin{{EventID: eventID}},
+	}
+	results := make(chan bool, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			applied, err := store.ApplyAuthenticatedInbound(context.Background(), "session", eventID, msg)
+			results <- applied
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	trueCount := 0
+	for applied := range results {
+		if applied {
+			trueCount++
+		}
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if trueCount != 1 {
+		t.Fatalf("new applications=%d want=1", trueCount)
 	}
 }
 

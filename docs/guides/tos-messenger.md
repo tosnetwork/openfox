@@ -74,7 +74,18 @@ and `membership_epoch` is zero. For a room route, `chat_id` must equal
 recipient; multi-recipient fan-out remains a daemon/MLS transport concern, not
 an OpenFox authority decision.
 
-Application delivery is at-least-once across a process
-crash because publishing to the in-process bus and completing the daemon lease
-cannot be one transaction. The stable Messenger Event ID is always used as the
-OpenFox message ID so downstream session handling can deduplicate a replay.
+Ordinary message leases now use an explicit durable-application handshake. The
+adapter does not complete the daemon lease merely because an in-process bus
+publish succeeded. The Agent session store atomically binds the stable Event ID
+to the exact user content and authenticated provenance, fsyncs it, and only then
+answers the channel. Exact replay after a crash is idempotent and does not run a
+second model turn; Event-ID substitution fails closed. A production message for
+a currently busy session is not placed in the volatile steering queue: its
+lease remains retryable until that session can durably accept it. A hard turn
+abort may roll back assistant/tool work but retains an input whose lease was
+already completed.
+
+The JSONL session directory is mode `0700`; message, metadata and moderation
+files are mode `0600`. Opening the store also tightens recognized legacy session
+files, preventing decrypted Messenger history from remaining group/world
+readable on the OpenFox host.

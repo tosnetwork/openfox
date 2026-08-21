@@ -2,12 +2,39 @@ package messageutil
 
 import (
 	"errors"
+	"reflect"
+	"regexp"
 	"strings"
 
 	"github.com/tosnetwork/openfox/pkg/providers/protocoltypes"
 )
 
+// SameAuthenticatedInbound compares the durable semantic fields of two
+// inbound records. Storage-assigned timestamps and prompt-only annotations do
+// not participate in the Event-ID substitution check.
+func SameAuthenticatedInbound(a, b protocoltypes.Message) bool {
+	a.CreatedAt, b.CreatedAt = nil, nil
+	a.PromptLayer, b.PromptLayer = "", ""
+	a.PromptSlot, b.PromptSlot = "", ""
+	a.PromptSource, b.PromptSource = "", ""
+	return reflect.DeepEqual(a, b)
+}
+
 const HiddenRoomMessage = "[message hidden by room moderation]"
+
+var messengerEventIDPattern = regexp.MustCompile(`^evt_[0-9a-f]{64}$`)
+
+// ValidateAuthenticatedInbound checks the runtime-owned binding required
+// before a session store may acknowledge a production Messenger Event.
+func ValidateAuthenticatedInbound(msg protocoltypes.Message, eventID string) error {
+	if !messengerEventIDPattern.MatchString(eventID) || msg.Role != "user" ||
+		msg.SourceEventID != eventID || msg.ActionProvenanceState != "authenticated-messaging" ||
+		len(msg.ActionOrigins) != 1 || msg.ActionOrigins[0].EventID != eventID ||
+		strings.TrimSpace(msg.Content) == "" && len(msg.Media) == 0 {
+		return errors.New("invalid authenticated inbound message")
+	}
+	return nil
+}
 
 // ProjectRoomModeration returns a presentation-safe copy. The original bytes
 // remain in runtime-only state so a later authorized restore can recover them.

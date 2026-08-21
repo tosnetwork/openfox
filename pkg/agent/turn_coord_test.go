@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/bus"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/providers"
@@ -304,6 +306,138 @@ func TestPipeline_SetupTurn_BasicInitialization(t *testing.T) {
 	}
 	if exec.iteration != 0 {
 		t.Errorf("expected iteration 0, got %d", exec.iteration)
+	}
+}
+
+func TestPipeline_SetupTurnAcknowledgesOnlyDurableAuthenticatedInput(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	eventID := "evt_" + strings.Repeat("a", 64)
+	result := make(chan error, 1)
+	opts := makeTestProcessOpts("authenticated-session")
+	opts.ApplicationResult = result
+	opts.InboundContext = &bus.InboundContext{
+		Channel: "tos_messenger", ChatID: "conv_" + strings.Repeat("b", 64), MessageID: eventID,
+		AuthenticatedMessagingOrigin: &actionauth.Origin{
+			AgentID: "agent_" + strings.Repeat("c", 64), EventID: eventID,
+			ConversationID: "conv_" + strings.Repeat("b", 64), ReceivedAtUnix: 1_800_000_000,
+		},
+	}
+	opts = normalizeProcessOptions(opts)
+	pipeline := NewPipeline(al)
+	ts := newTurnState(
+		agent,
+		opts,
+		turnEventScope{turnID: "turn-auth-1", context: newTurnContext(opts.InboundContext, nil, nil)},
+	)
+	if _, err := pipeline.SetupTurn(context.Background(), ts); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("application result=%v", err)
+	}
+	if history := agent.Sessions.GetHistory(opts.Dispatch.SessionKey); len(history) != 1 ||
+		history[0].SourceEventID != eventID || history[0].Content != opts.UserMessage {
+		t.Fatalf("durable history=%+v", history)
+	}
+	if err := ts.restoreSession(agent); err != nil {
+		t.Fatal(err)
+	}
+	if history := agent.Sessions.GetHistory(opts.Dispatch.SessionKey); len(history) != 1 ||
+		history[0].SourceEventID != eventID {
+		t.Fatalf("hard-abort restore point lost acknowledged input: %+v", history)
+	}
+
+	result = make(chan error, 1)
+	opts.ApplicationResult = result
+	ts = newTurnState(
+		agent,
+		opts,
+		turnEventScope{turnID: "turn-auth-2", context: newTurnContext(opts.InboundContext, nil, nil)},
+	)
+	if _, err := pipeline.SetupTurn(context.Background(), ts); !errors.Is(err, errAuthenticatedInboundReplay) {
+		t.Fatalf("exact replay error=%v", err)
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("replay application result=%v", err)
+	}
+	if history := agent.Sessions.GetHistory(opts.Dispatch.SessionKey); len(history) != 1 {
+		t.Fatalf("replay duplicated history=%+v", history)
+	}
+
+	result = make(chan error, 1)
+	opts.ApplicationResult = result
+	opts.Dispatch.UserMessage = "substituted content"
+	ts = newTurnState(
+		agent,
+		opts,
+		turnEventScope{turnID: "turn-auth-3", context: newTurnContext(opts.InboundContext, nil, nil)},
+	)
+	if _, err := pipeline.SetupTurn(context.Background(), ts); err == nil {
+		t.Fatal("Event-ID substitution was accepted")
+	}
+	if err := <-result; err == nil {
+		t.Fatal("substitution returned a successful application result")
+	}
+}
+
+func TestPipeline_SetupTurnRefusesAuthenticatedInputWhenHistoryIsDisabled(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	eventID := "evt_" + strings.Repeat("e", 64)
+	result := make(chan error, 1)
+	opts := makeTestProcessOpts("no-history-session")
+	opts.NoHistory = true
+	opts.ApplicationResult = result
+	opts.InboundContext = &bus.InboundContext{
+		Channel: "tos_messenger", MessageID: eventID,
+		AuthenticatedMessagingOrigin: &actionauth.Origin{EventID: eventID},
+	}
+	opts = normalizeProcessOptions(opts)
+	ts := newTurnState(agent, opts, turnEventScope{turnID: "turn-no-history"})
+	if _, err := NewPipeline(al).SetupTurn(context.Background(), ts); err == nil {
+		t.Fatal("authenticated input was acknowledged without durable history")
+	}
+	if err := <-result; err == nil {
+		t.Fatal("application result succeeded without durable history")
+	}
+}
+
+func TestAgentLoopBusyAuthenticatedSessionRetriesWithoutVolatileSteering(t *testing.T) {
+	al, _, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	result := make(chan error, 1)
+	msg := bus.InboundMessage{Context: bus.InboundContext{
+		Channel: "tos_messenger", ChatID: "conv_" + strings.Repeat("b", 64), ChatType: "direct",
+		MessageID: "evt_" + strings.Repeat("f", 64), SenderID: "tos_messenger:agent-peer",
+	}, Content: "retry me", ApplicationResult: result}
+	msg = bus.NormalizeInboundMessage(msg)
+	sessionKey, _, ok := al.resolveSteeringTarget(msg)
+	if !ok {
+		t.Fatal("message did not resolve to a session")
+	}
+	al.activeTurnStates.Store(sessionKey, &turnState{turnID: "already-running", phase: TurnPhaseRunning})
+	defer al.activeTurnStates.Delete(sessionKey)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- al.Run(ctx) }()
+	if err := al.bus.PublishInbound(ctx, msg); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "session is busy") {
+			t.Fatalf("application result=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("busy application result timed out")
+	}
+	if count := al.pendingSteeringCountForScope(sessionKey); count != 0 {
+		t.Fatalf("volatile steering entries=%d", count)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

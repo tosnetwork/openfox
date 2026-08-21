@@ -3,7 +3,11 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/tosnetwork/openfox/pkg/actionauth"
+	"github.com/tosnetwork/openfox/pkg/providers"
 )
 
 func TestSanitizeFilename(t *testing.T) {
@@ -58,6 +62,31 @@ func TestSave_WithColonInKey(t *testing.T) {
 	}
 	if history[0].Content != "hello" {
 		t.Errorf("expected message content %q, got %q", "hello", history[0].Content)
+	}
+}
+
+func TestSessionManagerAppliesAuthenticatedInboundAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	eventID := "evt_" + strings.Repeat("a", 64)
+	msg := providers.Message{
+		Role: "user", Content: "durable", SourceEventID: eventID,
+		ActionProvenanceState: "authenticated-messaging", ActionOrigins: []actionauth.Origin{{EventID: eventID}},
+	}
+	manager := NewSessionManager(dir)
+	if applied, err := manager.ApplyAuthenticatedInbound("session", eventID, msg); err != nil || !applied {
+		t.Fatalf("first apply=%v err=%v", applied, err)
+	}
+	restarted := NewSessionManager(dir)
+	if applied, err := restarted.ApplyAuthenticatedInbound("session", eventID, msg); err != nil || applied {
+		t.Fatalf("restart replay=%v err=%v", applied, err)
+	}
+	substituted := msg
+	substituted.Content = "changed"
+	if _, err := restarted.ApplyAuthenticatedInbound("session", eventID, substituted); err == nil {
+		t.Fatal("Event-ID substitution was accepted")
+	}
+	if _, err := NewSessionManager("").ApplyAuthenticatedInbound("session", eventID, msg); err == nil {
+		t.Fatal("in-memory application acknowledgement was accepted")
 	}
 }
 

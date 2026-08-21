@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"regexp"
 	"strconv"
 	"strings"
@@ -267,6 +268,17 @@ func (c *BaseChannel) HandleMessageWithContext(
 	inboundCtx bus.InboundContext,
 	senderOpts ...bus.SenderInfo,
 ) error {
+	return c.handleMessageWithContext(ctx, deliveryChatID, content, media, inboundCtx, nil, senderOpts...)
+}
+
+func (c *BaseChannel) handleMessageWithContext(
+	ctx context.Context,
+	deliveryChatID, content string,
+	media []string,
+	inboundCtx bus.InboundContext,
+	applicationResult chan error,
+	senderOpts ...bus.SenderInfo,
+) error {
 	// Use SenderInfo-based allow check when available, else fall back to string
 	var sender bus.SenderInfo
 	if len(senderOpts) > 0 {
@@ -275,10 +287,16 @@ func (c *BaseChannel) HandleMessageWithContext(
 	senderID := strings.TrimSpace(inboundCtx.SenderID)
 	if sender.CanonicalID != "" || sender.PlatformID != "" {
 		if !c.IsAllowedSender(sender) {
+			if applicationResult != nil {
+				return errors.New("leased application sender is not allowed")
+			}
 			return nil
 		}
 	} else {
 		if !c.IsAllowed(senderID) {
+			if applicationResult != nil {
+				return errors.New("leased application sender is not allowed")
+			}
 			return nil
 		}
 	}
@@ -304,11 +322,12 @@ func (c *BaseChannel) HandleMessageWithContext(
 	scope := BuildMediaScope(c.name, deliveryChatID, inboundCtx.MessageID)
 
 	msg := bus.InboundMessage{
-		Context:    inboundCtx,
-		Sender:     sender,
-		Content:    content,
-		Media:      media,
-		MediaScope: scope,
+		Context:           inboundCtx,
+		Sender:            sender,
+		Content:           content,
+		Media:             media,
+		MediaScope:        scope,
+		ApplicationResult: applicationResult,
 	}
 	msg = bus.NormalizeInboundMessage(msg)
 
@@ -353,6 +372,24 @@ func (c *BaseChannel) HandleMessageWithContext(
 		return err
 	}
 	return nil
+}
+
+// HandleInboundContextWithApplicationResult publishes a normalized message
+// and carries a one-shot durable-application result back to a leasing channel.
+func (c *BaseChannel) HandleInboundContextWithApplicationResult(
+	ctx context.Context,
+	deliveryChatID, content string,
+	media []string,
+	inboundCtx bus.InboundContext,
+	applicationResult chan error,
+	senderOpts ...bus.SenderInfo,
+) error {
+	if applicationResult == nil {
+		return errors.New("application result channel is required")
+	}
+	return c.handleMessageWithContext(
+		ctx, deliveryChatID, content, media, inboundCtx, applicationResult, senderOpts...,
+	)
 }
 
 // HandleInboundContext publishes a normalized inbound message using only the

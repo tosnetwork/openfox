@@ -22,6 +22,10 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 	// Process the initial message
 	response, err := al.processMessage(ctx, initialMsg)
 	if err != nil {
+		if initialMsg.ApplicationResult != nil {
+			reportMessageApplication(initialMsg, err)
+			return
+		}
 		if !al.maybePublishError(ctx, initialMsg.Channel, initialMsg.ChatID, initialMsg.SessionKey, err) {
 			return // context canceled
 		}

@@ -4,10 +4,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/session"
 )
 
 // SetupTurn extracts the one-time initialization phase, returning a
@@ -30,6 +32,11 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		}
 	}
 	ts.captureRestorePoint(history, summary)
+	applicationEventID, applicationErr := authenticatedApplicationEventID(ts.opts)
+	if applicationErr != nil {
+		reportApplicationResult(ts.opts.ApplicationResult, applicationErr)
+		return nil, applicationErr
+	}
 
 	contextualSkills := ts.activeSkills
 	if ts.agent.ContextBuilder != nil {
@@ -123,7 +130,27 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	if !ts.opts.NoHistory && (strings.TrimSpace(ts.userMessage) != "" || len(ts.media) > 0) {
 		rootMsg := userPromptMessage(ts.userMessage, ts.media)
 		markUserMessageProvenance(&rootMsg, ts.opts.Dispatch.InboundContext)
-		if len(rootMsg.Media) > 0 || rootMsg.ActionProvenanceState != "" {
+		if applicationEventID != "" {
+			store, ok := ts.agent.Sessions.(session.AuthenticatedInboundSessionStore)
+			if !ok {
+				applicationErr = errors.New("Agent session store cannot durably apply authenticated input")
+				reportApplicationResult(ts.opts.ApplicationResult, applicationErr)
+				return nil, applicationErr
+			}
+			applied, err := store.ApplyAuthenticatedInbound(ts.sessionKey, applicationEventID, rootMsg)
+			if err != nil {
+				reportApplicationResult(ts.opts.ApplicationResult, err)
+				return nil, err
+			}
+			if !applied {
+				reportApplicationResult(ts.opts.ApplicationResult, nil)
+				return nil, errAuthenticatedInboundReplay
+			}
+			// A later hard abort may roll back assistant/tool work, but an input
+			// whose daemon lease has completed must remain durably represented.
+			ts.captureRestorePoint(ts.agent.Sessions.GetHistory(ts.sessionKey), summary)
+			reportApplicationResult(ts.opts.ApplicationResult, nil)
+		} else if len(rootMsg.Media) > 0 || rootMsg.ActionProvenanceState != "" {
 			ts.agent.Sessions.AddFullMessage(ts.sessionKey, rootMsg)
 		} else {
 			ts.agent.Sessions.AddMessage(ts.sessionKey, rootMsg.Role, rootMsg.Content)

@@ -497,6 +497,7 @@ func DefaultConfig() *Config {
 			Enabled:  true,
 			Interval: 30,
 		},
+		Opportunity: OpportunitySettings{Mode: "off"},
 		Devices: DevicesConfig{
 			Enabled:    false,
 			MonitorUSB: true,

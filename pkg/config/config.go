@@ -34,20 +34,21 @@ func init() {
 // Config is the current config structure with version support.
 type Config struct {
 	// Config schema version for migration.
-	Version   int             `json:"version"             yaml:"-"`
-	Isolation IsolationConfig `json:"isolation,omitempty" yaml:"-"`
-	Agents    AgentsConfig    `json:"agents"              yaml:"-"`
-	Session   SessionConfig   `json:"session,omitempty"   yaml:"-"`
-	Evolution EvolutionConfig `json:"evolution,omitempty" yaml:"-"`
-	Channels  ChannelsConfig  `json:"channel_list"        yaml:"channel_list"`
-	ModelList SecureModelList `json:"model_list"          yaml:"model_list"` // New model-centric provider configuration
-	Gateway   GatewayConfig   `json:"gateway"             yaml:"-"`
-	Events    EventsConfig    `json:"events,omitempty"    yaml:"-"`
-	Hooks     HooksConfig     `json:"hooks,omitempty"     yaml:"-"`
-	Tools     ToolsConfig     `json:"tools"               yaml:",inline"`
-	Heartbeat HeartbeatConfig `json:"heartbeat"           yaml:"-"`
-	Devices   DevicesConfig   `json:"devices"             yaml:"-"`
-	Voice     VoiceConfig     `json:"voice"               yaml:"-"`
+	Version     int                 `json:"version"             yaml:"-"`
+	Isolation   IsolationConfig     `json:"isolation,omitempty" yaml:"-"`
+	Agents      AgentsConfig        `json:"agents"              yaml:"-"`
+	Session     SessionConfig       `json:"session,omitempty"   yaml:"-"`
+	Evolution   EvolutionConfig     `json:"evolution,omitempty" yaml:"-"`
+	Channels    ChannelsConfig      `json:"channel_list"        yaml:"channel_list"`
+	ModelList   SecureModelList     `json:"model_list"          yaml:"model_list"` // New model-centric provider configuration
+	Gateway     GatewayConfig       `json:"gateway"             yaml:"-"`
+	Events      EventsConfig        `json:"events,omitempty"    yaml:"-"`
+	Hooks       HooksConfig         `json:"hooks,omitempty"     yaml:"-"`
+	Tools       ToolsConfig         `json:"tools"               yaml:",inline"`
+	Heartbeat   HeartbeatConfig     `json:"heartbeat"           yaml:"-"`
+	Opportunity OpportunitySettings `json:"opportunity"         yaml:"-"`
+	Devices     DevicesConfig       `json:"devices"             yaml:"-"`
+	Voice       VoiceConfig         `json:"voice"               yaml:"-"`
 	// BuildInfo contains build-time version information
 	BuildInfo BuildInfo `json:"build_info,omitempty" yaml:"-"`
 
@@ -802,6 +803,24 @@ type SlackWebhookTarget struct {
 type HeartbeatConfig struct {
 	Enabled  bool `json:"enabled"  env:"OPENFOX_HEARTBEAT_ENABLED"`
 	Interval int  `json:"interval" env:"OPENFOX_HEARTBEAT_INTERVAL"` // minutes, min 5
+}
+
+// OpportunitySettings enables bounded, read-only Capability discovery. The
+// separate native coordinator owns Gateway credentials and finalized chain
+// reads; this configuration carries no custody or payment material.
+type OpportunitySettings struct {
+	Mode                  string   `json:"mode"`
+	CoordinatorSocket     string   `json:"coordinator_socket,omitempty"`
+	StateDir              string   `json:"state_dir,omitempty"`
+	Queries               []string `json:"queries,omitempty"`
+	IntervalMinutes       uint64   `json:"interval_minutes,omitempty"`
+	JitterSeconds         uint64   `json:"jitter_seconds,omitempty"`
+	RequestTimeoutSeconds uint64   `json:"request_timeout_seconds,omitempty"`
+	PageSize              uint32   `json:"page_size,omitempty"`
+	MaxCandidates         uint32   `json:"max_candidates,omitempty"`
+	AllowedOperations     []string `json:"allowed_operations,omitempty"`
+	AllowedProviders      []string `json:"allowed_providers,omitempty"`
+	DeniedProviders       []string `json:"denied_providers,omitempty"`
 }
 
 type DevicesConfig struct {

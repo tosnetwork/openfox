@@ -50,6 +50,7 @@ import (
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/media"
 	"github.com/tosnetwork/openfox/pkg/netbind"
+	"github.com/tosnetwork/openfox/pkg/opportunity"
 	"github.com/tosnetwork/openfox/pkg/pid"
 	"github.com/tosnetwork/openfox/pkg/providers"
 	"github.com/tosnetwork/openfox/pkg/state"
@@ -67,16 +68,17 @@ const (
 )
 
 type services struct {
-	CronService      *cron.CronService
-	HeartbeatService *heartbeat.HeartbeatService
-	MediaStore       media.MediaStore
-	ChannelManager   *channels.Manager
-	DeviceService    *devices.Service
-	HealthServer     *health.Server
-	VoiceAgentCancel context.CancelFunc
-	manualReloadChan chan struct{}
-	reloading        atomic.Bool
-	authToken        string
+	CronService        *cron.CronService
+	HeartbeatService   *heartbeat.HeartbeatService
+	OpportunityService *opportunity.Service
+	MediaStore         media.MediaStore
+	ChannelManager     *channels.Manager
+	DeviceService      *devices.Service
+	HealthServer       *health.Server
+	VoiceAgentCancel   context.CancelFunc
+	manualReloadChan   chan struct{}
+	reloading          atomic.Bool
+	authToken          string
 }
 
 type startupBlockedProvider struct {
@@ -308,6 +310,9 @@ func preCheckConfig(cfg *config.Config) error {
 	if cfg.Gateway.Port <= 0 || cfg.Gateway.Port > 65535 {
 		return fmt.Errorf("invalid gateway port: %d, port must be between 1 and 65535", cfg.Gateway.Port)
 	}
+	if _, err := opportunityRuntimeConfig(cfg.Opportunity); err != nil {
+		return fmt.Errorf("invalid opportunity configuration: %w", err)
+	}
 	return nil
 }
 
@@ -444,6 +449,14 @@ func setupAndStartServices(
 	}
 	fmt.Println("✓ Heartbeat service started")
 
+	runningServices.OpportunityService, err = setupOpportunityService(cfg, agentLoop)
+	if err != nil {
+		return nil, fmt.Errorf("error setting up opportunity service: %w", err)
+	}
+	if runningServices.OpportunityService != nil {
+		fmt.Println("✓ Opportunity service started")
+	}
+
 	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
 		Enabled:  cfg.Tools.MediaCleanup.Enabled,
 		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
@@ -550,6 +563,9 @@ func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Dura
 	}
 	if runningServices.HeartbeatService != nil {
 		runningServices.HeartbeatService.Stop()
+	}
+	if runningServices.OpportunityService != nil {
+		runningServices.OpportunityService.Stop()
 	}
 	if runningServices.CronService != nil {
 		runningServices.CronService.Stop()

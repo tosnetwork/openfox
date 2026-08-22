@@ -8,7 +8,7 @@ require (
 	github.com/tosnetwork/openfox v0.0.0
 	github.com/tosnetwork/tos-ai v0.0.0
 	github.com/tosnetwork/tos-service-protocol v0.0.0
-	github.com/tosnetwork/tosutils-go v1.18.1
+	github.com/tosnetwork/tosutils-go v1.18.2-0.20260820143526-4d1a10d94bef
 	google.golang.org/protobuf v1.36.11
 )
 

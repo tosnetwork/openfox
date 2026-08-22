@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -43,48 +44,108 @@ type evidence struct {
 func main() {
 	left := flag.String("left", "", "first transcript export JSON")
 	right := flag.String("right", "", "second transcript export JSON")
+	leftAttestation := flag.String("left-attestation", "", "signed first-operator attestation JSON")
+	rightAttestation := flag.String("right-attestation", "", "signed second-operator attestation JSON")
+	messageAttestation := flag.String("attestation-message", "", "print the canonical signing message for an unsigned attestation JSON")
 	restart := flag.String("require-restart-agent", "", "canonical AgentID that must have transcript entries from two run IDs")
 	flag.Parse()
-	if flag.NArg() != 0 || *left == "" || *right == "" {
-		fmt.Fprintln(os.Stderr, "usage: openfox-messenger-evidence -left alice.json -right bob.json [-require-restart-agent agent_...]")
+	if *messageAttestation != "" {
+		if flag.NArg() != 0 || *left != "" || *right != "" || *leftAttestation != "" || *rightAttestation != "" || *restart != "" {
+			fmt.Fprintln(os.Stderr, "usage: openfox-messenger-evidence -attestation-message unsigned-attestation.json")
+			os.Exit(2)
+		}
+		attestation, err := readAttestation(*messageAttestation, true)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "FAIL", err)
+			os.Exit(1)
+		}
+		message, err := attestationMessage(attestation)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "FAIL", err)
+			os.Exit(1)
+		}
+		digest := sha256.Sum256(message)
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"schema": attestationSchema,
+			"message_hex": hex.EncodeToString(message), "message_sha256": hex.EncodeToString(digest[:])})
+		return
+	}
+	if flag.NArg() != 0 || *left == "" || *right == "" || (*leftAttestation == "") != (*rightAttestation == "") {
+		fmt.Fprintln(os.Stderr, "usage: openfox-messenger-evidence -left alice.json -right bob.json [-left-attestation alice-attestation.json -right-attestation bob-attestation.json] [-require-restart-agent agent_...]")
 		os.Exit(2)
 	}
-	a, err := readEvidence(*left)
+	a, aDigest, err := readEvidence(*left)
 	var b evidence
+	var bDigest [sha256.Size]byte
 	if err == nil {
-		b, err = readEvidence(*right)
+		b, bDigest, err = readEvidence(*right)
 		if err == nil {
 			err = verifyPair(a, b, *restart)
+		}
+		if err == nil && *leftAttestation != "" {
+			var leftValue, rightValue operatorAttestation
+			leftValue, err = readAttestation(*leftAttestation, false)
+			if err == nil {
+				rightValue, err = readAttestation(*rightAttestation, false)
+			}
+			if err == nil {
+				err = verifyAttestationPair(leftValue, rightValue, a, b, aDigest, bDigest)
+			}
 		}
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "FAIL", err)
 		os.Exit(1)
 	}
-	fmt.Printf("PASS agent_a=%s agent_b=%s authenticated_round_trip=true restart_agent=%s\n", a.AgentID, b.AgentID, *restart)
+	fmt.Printf("PASS agent_a=%s agent_b=%s authenticated_round_trip=true signed_operator_attestations=%t restart_agent=%s\n",
+		a.AgentID, b.AgentID, *leftAttestation != "", *restart)
 }
 
-func readEvidence(path string) (evidence, error) {
+func readEvidence(path string) (evidence, [sha256.Size]byte, error) {
 	var result evidence
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > maxEvidence {
-		return result, errors.New("evidence must be a bounded regular file")
-	}
-	raw, err := os.ReadFile(path)
+	var digest [sha256.Size]byte
+	raw, err := readBoundedRegularFile(path, maxEvidence)
 	if err != nil {
-		return result, err
+		return result, digest, errors.New("evidence must be a bounded stable regular file")
 	}
+	digest = sha256.Sum256(raw)
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&result) != nil || result.Schema != controlSchema || !canonicalAgent(result.AgentID) ||
 		!canonicalRunID(result.RunID) || len(result.Transcript) == 0 || len(result.Transcript) > 100000 {
-		return result, errors.New("invalid Messenger transcript evidence")
+		return result, digest, errors.New("invalid Messenger transcript evidence")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return result, errors.New("trailing Messenger evidence data")
+		return result, digest, errors.New("trailing Messenger evidence data")
 	}
-	return result, nil
+	return result, digest, nil
+}
+
+func readBoundedRegularFile(path string, maximum int64) ([]byte, error) {
+	initial, err := os.Lstat(path)
+	if err != nil || !initial.Mode().IsRegular() || initial.Mode()&os.ModeSymlink != 0 ||
+		initial.Size() <= 0 || initial.Size() > maximum {
+		return nil, errors.New("invalid bounded regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(initial, opened) || opened.Size() != initial.Size() {
+		return nil, errors.New("regular file changed before open")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	if err != nil || int64(len(raw)) != opened.Size() || int64(len(raw)) > maximum {
+		return nil, errors.New("regular file changed during bounded read")
+	}
+	final, err := file.Stat()
+	if err != nil || !os.SameFile(opened, final) || final.Size() != opened.Size() ||
+		!final.ModTime().Equal(opened.ModTime()) {
+		return nil, errors.New("regular file changed during verification")
+	}
+	return raw, nil
 }
 
 func verifyPair(a, b evidence, restartAgent string) error {

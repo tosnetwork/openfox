@@ -104,8 +104,69 @@ openfox-messenger-evidence \
 The verifier requires distinct canonical AgentIDs, canonical Event IDs, exact
 cross-transcript content, authenticated sender continuity, reply causality and
 activity under two process run IDs for the restarted Agent. It deliberately
-does not infer operator or network independence from files. The published
-evidence record must also bind host/operator identities, public endpoints,
-finalized checkpoints, redacted configuration digests, binary digests and exact
-commits from OpenFox, `tos-messenger`, `tos-service-protocol` and
-`tos-service-spec`.
+does not infer operator or network independence from files.
+
+## Sign the operator evidence
+
+Unsigned transcript matching is smoke evidence only. Each operator creates a
+strict `tos.openfox.messenger-operator-attestation.v1` JSON document with these
+fields (lowercase hexadecimal, Unix seconds, and the exact public Descriptor
+endpoint):
+
+```json
+{
+  "schema": "tos.openfox.messenger-operator-attestation.v1",
+  "operator_id": "independent-operator-alice",
+  "site_id": "alice-public-site",
+  "agent_id": "agent_A64",
+  "transcript_sha256": "TRANSCRIPT_SHA256",
+  "public_messenger_endpoint": "https://alice.example/v1/tos-messenger/messages",
+  "network_id": "tos-testnet",
+  "genesis_root_hash": "GENESIS_ROOT_SHA256",
+  "genesis_file_hash": "GENESIS_FILE_SHA256",
+  "openfox_commit": "OPENFOX_GIT_SHA1",
+  "messenger_commit": "MESSENGER_GIT_SHA1",
+  "openfox_binary_sha256": "OPENFOX_BINARY_SHA256",
+  "messenger_binary_sha256": "MESSENGER_BINARY_SHA256",
+  "openfox_config_sha256": "REDACTED_OPENFOX_CONFIG_SHA256",
+  "messenger_config_sha256": "REDACTED_MESSENGER_CONFIG_SHA256",
+  "interval_start_unix": 1787410000,
+  "interval_end_unix": 1787413600,
+  "attestation_public_key_ed25519_hex": "OPERATOR_ED25519_PUBLIC_KEY"
+}
+```
+
+The interval must cover every transcript entry and may span at most seven
+days. Generate the exact domain-separated signing bytes without exposing a
+private key to OpenFox:
+
+```sh
+openfox-messenger-evidence \
+  -attestation-message alice-attestation-unsigned.json \
+  > alice-signing-message.json
+```
+
+The operator's independently controlled Ed25519 signer signs the bytes obtained
+by hex-decoding `message_hex`—not the printable hexadecimal and not
+`message_sha256`. Add the lowercase 64-byte signature as
+`attestation_signature_ed25519_hex`. Repeat independently for Bob.
+
+The acceptance verification command is then:
+
+```sh
+openfox-messenger-evidence \
+  -left alice-transcript.json \
+  -right bob-transcript.json \
+  -left-attestation alice-attestation.json \
+  -right-attestation bob-attestation.json \
+  -require-restart-agent agent_BOB64
+```
+
+The verifier checks both Ed25519 signatures; exact transcript hashes; AgentID;
+public HTTPS endpoints; network/genesis tuple; commits; binary/config digests;
+observation intervals; and distinct asserted operator, site, endpoint and key
+values. Those signed assertions prevent artifact substitution but do not prove
+that the named parties are independent. The external reviewer must verify the
+real operators/sites and sign the completed evidence record. The published
+record also binds finalized checkpoints and the exact `tos-service-protocol`
+and `tos-service-spec` commits.

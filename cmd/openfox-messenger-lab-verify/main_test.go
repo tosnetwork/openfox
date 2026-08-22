@@ -16,7 +16,7 @@ import (
 )
 
 func TestVerifyAcceptance(t *testing.T) {
-	config, sends := acceptanceFixture(t, false, false)
+	config, sends := acceptanceFixture(t, false, false, false)
 	report, err := verify(context.Background(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestVerifyAcceptance(t *testing.T) {
 	}
 	for _, agent := range report.Agents {
 		if !agent.ActiveMember || agent.ReplyMode != "agent-loop" ||
-			agent.TranscriptRecords != 3 || agent.AcceptanceEvents != 3 {
+			agent.TranscriptRecords != 4 || agent.AcceptanceEvents != 3 {
 			t.Fatalf("unexpected Agent evidence: %#v", agent)
 		}
 	}
@@ -36,14 +36,14 @@ func TestVerifyAcceptance(t *testing.T) {
 
 func TestVerifyRejectsReplayAndRelaySubstitution(t *testing.T) {
 	t.Run("replay Event", func(t *testing.T) {
-		config, _ := acceptanceFixture(t, true, false)
+		config, _ := acceptanceFixture(t, true, false, false)
 		if _, err := verify(context.Background(), config); err == nil ||
 			!strings.Contains(err.Error(), "substituted Event ID") {
 			t.Fatalf("substituted replay accepted: %v", err)
 		}
 	})
 	t.Run("Relay plaintext", func(t *testing.T) {
-		config, sends := acceptanceFixture(t, false, true)
+		config, sends := acceptanceFixture(t, false, true, false)
 		if _, err := verify(context.Background(), config); err == nil ||
 			!strings.Contains(err.Error(), "Relay state contains") {
 			t.Fatalf("Relay plaintext accepted: %v", err)
@@ -52,6 +52,29 @@ func TestVerifyRejectsReplayAndRelaySubstitution(t *testing.T) {
 			t.Fatal("verifier replayed before rejecting Relay plaintext")
 		}
 	})
+}
+
+func TestVerifyDoesNotReplayUnboundRequestID(t *testing.T) {
+	config, sends := acceptanceFixture(t, false, false, false)
+	config.requestID = "different-unbound-request"
+	if _, err := verify(context.Background(), config); err == nil ||
+		!strings.Contains(err.Error(), "opening Event substitution") {
+		t.Fatalf("unbound request ID accepted: %v", err)
+	}
+	if sends.Load() != 0 {
+		t.Fatalf("verifier sent an unbound request ID %d time(s)", sends.Load())
+	}
+}
+
+func TestVerifyComparesCompleteTranscriptAcrossReplay(t *testing.T) {
+	config, sends := acceptanceFixture(t, false, false, true)
+	if _, err := verify(context.Background(), config); err == nil ||
+		!strings.Contains(err.Error(), "changed complete transcript") {
+		t.Fatalf("non-acceptance transcript mutation accepted: %v", err)
+	}
+	if sends.Load() != 1 {
+		t.Fatalf("replay sends=%d want=1", sends.Load())
+	}
 }
 
 func TestVerifyTranscriptRejectsCausalAndRuntimeForgery(t *testing.T) {
@@ -174,7 +197,10 @@ func TestControlJSONRejectsProtocolWeakening(t *testing.T) {
 	}
 }
 
-func acceptanceFixture(t *testing.T, substituteReplay, leakPlaintext bool) (options, *atomic.Int32) {
+func acceptanceFixture(
+	t *testing.T,
+	substituteReplay, leakPlaintext, mutateTranscriptAfterReplay bool,
+) (options, *atomic.Int32) {
 	t.Helper()
 	config := fixtureOptions()
 	sends := &atomic.Int32{}
@@ -190,7 +216,7 @@ func acceptanceFixture(t *testing.T, substituteReplay, leakPlaintext bool) (opti
 		}
 		config.controlSockets[agentID] = startControlServer(
 			t, health, transcriptResponse{Schema: controlSchema, Transcript: transcriptFor(agentID, config)},
-			replayID, sends,
+			replayID, sends, mutateTranscriptAfterReplay,
 		)
 	}
 	directory := t.TempDir()
@@ -227,14 +253,17 @@ func fixtureOptions() options {
 		openingEventID:  "msg_" + strings.Repeat("1", 64),
 		bobReplyEventID: "msg_" + strings.Repeat("2", 64),
 		carolReplyID:    "msg_" + strings.Repeat("3", 64),
-		expectedRecords: 3,
+		expectedRecords: 4,
 		timeout:         2 * time.Second,
 	}
 }
 
 func transcriptFor(viewer string, config options) []transcriptLine {
 	lines := []transcriptLine{
-		{AgentID: aliceID, EventID: config.openingEventID, Content: config.content},
+		{
+			AgentID: aliceID, EventID: config.openingEventID,
+			ClientID: config.requestID, Content: config.content,
+		},
 		{
 			AgentID:        bobID,
 			EventID:        config.bobReplyEventID,
@@ -247,6 +276,10 @@ func transcriptFor(viewer string, config options) []transcriptLine {
 			ReplyToEventID: config.openingEventID,
 			Content:        "ack-from-carol",
 		},
+		{
+			AgentID: aliceID, EventID: "msg_" + strings.Repeat("4", 64),
+			Content: "unrelated historical message",
+		},
 	}
 	for index := range lines {
 		lines[index].Direction = "inbound"
@@ -255,6 +288,9 @@ func transcriptFor(viewer string, config options) []transcriptLine {
 			if lines[index].EventID != config.openingEventID {
 				lines[index].Runtime = "openfox-agent-loop"
 			}
+		}
+		if lines[index].EventID == config.openingEventID && viewer != aliceID {
+			lines[index].ClientID = ""
 		}
 	}
 	return lines
@@ -271,7 +307,7 @@ func mutateLine(lines []transcriptLine, eventID string, mutate func(*transcriptL
 }
 
 func startControlServer(t *testing.T, health healthResponse, transcript transcriptResponse,
-	replayID string, sends *atomic.Int32,
+	replayID string, sends *atomic.Int32, mutateTranscriptAfterReplay bool,
 ) string {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -279,7 +315,12 @@ func startControlServer(t *testing.T, health healthResponse, transcript transcri
 		writeFixtureJSON(w, health)
 	})
 	mux.HandleFunc("GET /v1/transcript", func(w http.ResponseWriter, _ *http.Request) {
-		writeFixtureJSON(w, transcript)
+		current := transcript
+		if mutateTranscriptAfterReplay && health.AgentID == bobID && sends.Load() > 0 {
+			current.Transcript = append([]transcriptLine(nil), transcript.Transcript...)
+			current.Transcript[len(current.Transcript)-1].Content = "substituted historical message"
+		}
+		writeFixtureJSON(w, current)
 	})
 	mux.HandleFunc("POST /v1/send", func(w http.ResponseWriter, request *http.Request) {
 		sends.Add(1)

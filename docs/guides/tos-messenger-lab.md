@@ -204,9 +204,10 @@ files cannot silently activate a partial deployment.
 `cmd/openfox-messenger-lab-verify` independently checks an already running
 seven-process deployment. It does not read Relay credentials and cannot create
 a new acceptance round: all three transcripts must already contain the exact
-opening and two reply Event IDs before it issues the identical Alice request.
-That request must return the original Event ID without changing any transcript
-or the opaque Relay state.
+opening and two reply Event IDs, and Alice's durable opening record must bind
+the supplied request ID, before it issues the identical Alice request. That
+request must return the original Event ID without changing any complete
+transcript or the opaque Relay state.
 
 The verifier requires the expected SHA-256 digest and absolute path of every
 deployed artifact. It also requires three distinct mode-`0600` control sockets,
@@ -232,7 +233,7 @@ GOWORK=off go run ./cmd/openfox-messenger-lab-verify \
   -bob-reply-event-id "msg_<64-lowercase-hex>" \
   -carol-reply-event-id "msg_<64-lowercase-hex>" \
   -expected-transcript-records 120 \
-  -artifact "openfox-agent=<sha256>:$HOME/.local/bin/openfox-messenger-lab-agent"
+  -artifact "openfox-messenger-lab-agent=<sha256>:$HOME/.local/bin/openfox-messenger-lab-agent"
 ```
 
 Repeat `-artifact` for the Relay, proxy, OpenMLS driver, Agent and deployer.

@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -85,6 +86,7 @@ type transcriptLine struct {
 	Direction      string `json:"direction"`
 	AgentID        string `json:"agent_id"`
 	EventID        string `json:"event_id"`
+	ClientID       string `json:"client_id,omitempty"`
 	ReplyToEventID string `json:"reply_to_event_id,omitempty"`
 	Runtime        string `json:"runtime,omitempty"`
 	Content        string `json:"content"`
@@ -194,6 +196,7 @@ func verify(ctx context.Context, config options) (acceptanceReport, error) {
 	}
 	var canonicalReplies map[string]string
 	socketIdentities := make(map[string]os.FileInfo, len(agentIDs))
+	initialTranscripts := make(map[string]transcriptResponse, len(agentIDs))
 	for _, agentID := range agentIDs {
 		socket := config.controlSockets[agentID]
 		before, socketErr := validateSocket(socket)
@@ -226,6 +229,7 @@ func verify(ctx context.Context, config options) (acceptanceReport, error) {
 			return acceptanceReport{}, fmt.Errorf("%s control boundary: %w", agentID, err)
 		}
 		socketIdentities[agentID] = before
+		initialTranscripts[agentID] = transcript
 		report.Agents = append(report.Agents, agentEvidence{
 			AgentID: agentID, ControlSocket: socket, ActiveMember: true,
 			ReplyMode: health.ReplyMode, TranscriptRecords: len(transcript.Transcript), AcceptanceEvents: 3,
@@ -257,6 +261,9 @@ func verify(ctx context.Context, config options) (acceptanceReport, error) {
 		transcript, transcriptErr := getTranscript(ctx, config.controlSockets[agentID], config.timeout)
 		if transcriptErr != nil {
 			return acceptanceReport{}, fmt.Errorf("%s post-replay transcript: %w", agentID, transcriptErr)
+		}
+		if !reflect.DeepEqual(transcript, initialTranscripts[agentID]) {
+			return acceptanceReport{}, fmt.Errorf("%s exact replay changed complete transcript", agentID)
 		}
 		replies, verifyErr := verifyTranscript(agentID, transcript, config)
 		if verifyErr != nil {
@@ -352,7 +359,10 @@ func verifyTranscript(viewer string, response transcriptResponse, config options
 			return nil, errors.New("acceptance Event direction mismatch")
 		}
 		if line.EventID == config.openingEventID {
-			if line.Content != config.content || line.ReplyToEventID != "" || line.Runtime != "" {
+			clientBindingValid := viewer == aliceID && line.ClientID == config.requestID ||
+				viewer != aliceID && line.ClientID == ""
+			if line.Content != config.content || line.ReplyToEventID != "" || line.Runtime != "" ||
+				!clientBindingValid {
 				return nil, errors.New("opening Event substitution")
 			}
 			continue

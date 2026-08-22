@@ -84,6 +84,52 @@ func TestConsumeAcknowledgesDurablyAppliedReplyWithoutAgentReplay(t *testing.T) 
 	}
 }
 
+func TestConsumePublishesFreshInboundEventAndRetainsApplicationLease(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	eventID := "evt_" + strings.Repeat("3", 64)
+	service := &service{agentID: "agent_" + strings.Repeat("a", 64), runID: testRunID,
+		statePath: filepath.Join(directory, "transcript.json"), state: durableState{Schema: stateSchema},
+		pending: map[string]chan error{}}
+	if err := service.recordBootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	inbound := make(chan bus.InboundMessage, 1)
+	application := make(chan error, 1)
+	inbound <- bus.InboundMessage{MessageID: eventID, Content: "ping:fresh",
+		Sender: bus.SenderInfo{PlatformID: "agent_" + strings.Repeat("b", 64)}, ApplicationResult: application}
+	target := bus.NewMessageBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- service.consume(ctx, inbound, target) }()
+
+	select {
+	case message := <-target.InboundChan():
+		if message.MessageID != eventID || message.ApplicationResult != nil {
+			t.Fatalf("unexpected AgentLoop input: %+v", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh event was not published to AgentLoop")
+	}
+	service.mu.Lock()
+	retained := service.pending[eventID]
+	service.mu.Unlock()
+	if retained != application {
+		t.Fatal("application lease was not retained until AgentLoop reply")
+	}
+	select {
+	case result := <-application:
+		t.Fatalf("application lease completed before AgentLoop reply: %v", result)
+	default:
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestControlSendCarriesOnlyRecipientIntentAndStableRuntimeID(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "state")
 	if err := os.Mkdir(directory, 0o700); err != nil {

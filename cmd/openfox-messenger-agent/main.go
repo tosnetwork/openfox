@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -42,9 +43,11 @@ const (
 type transcriptLine struct {
 	Direction      string `json:"direction"`
 	PeerAgentID    string `json:"peer_agent_id,omitempty"`
+	RecipientInput string `json:"recipient_input,omitempty"`
 	EventID        string `json:"event_id"`
 	ReplyToEventID string `json:"reply_to_event_id,omitempty"`
 	Content        string `json:"content"`
+	RunID          string `json:"run_id"`
 	AppliedUnix    int64  `json:"applied_unix"`
 }
 
@@ -54,11 +57,11 @@ type durableState struct {
 }
 
 type service struct {
-	agentID, statePath, triggerPrefix string
-	channel                           messengerSender
-	mu                                sync.Mutex
-	state                             durableState
-	pending                           map[string]chan error
+	agentID, runID, statePath, triggerPrefix string
+	channel                                  messengerSender
+	mu                                       sync.Mutex
+	state                                    durableState
+	pending                                  map[string]chan error
 }
 
 type messengerSender interface {
@@ -119,6 +122,10 @@ func run(agentID, daemonSocket, workspace, statePath, controlPath, triggerPrefix
 	defer loop.Close()
 	service := &service{agentID: agentID, statePath: statePath, triggerPrefix: triggerPrefix, channel: channel,
 		state: durableState{Schema: stateSchema}, pending: map[string]chan error{}}
+	service.runID, err = randomRunID()
+	if err != nil {
+		return err
+	}
 	if err := service.load(); err != nil {
 		return err
 	}
@@ -140,7 +147,7 @@ func run(agentID, daemonSocket, workspace, statePath, controlPath, triggerPrefix
 		}
 		errorsCh <- err
 	}()
-	fmt.Printf("READY agent_id=%s daemon_socket=%s control_socket=%s\n", agentID, daemonSocket, controlPath)
+	fmt.Printf("READY agent_id=%s run_id=%s daemon_socket=%s control_socket=%s\n", agentID, service.runID, daemonSocket, controlPath)
 	select {
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -251,13 +258,13 @@ func (s *service) sendReplies(ctx context.Context, outbound <-chan bus.OutboundM
 func (s *service) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", func(writer http.ResponseWriter, _ *http.Request) {
-		writeJSON(writer, http.StatusOK, map[string]any{"schema": controlSchema, "ok": true, "agent_id": s.agentID})
+		writeJSON(writer, http.StatusOK, map[string]any{"schema": controlSchema, "ok": true, "agent_id": s.agentID, "run_id": s.runID})
 	})
 	mux.HandleFunc("GET /v1/transcript", func(writer http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		lines := append([]transcriptLine(nil), s.state.Transcript...)
 		s.mu.Unlock()
-		writeJSON(writer, http.StatusOK, map[string]any{"schema": controlSchema, "transcript": lines})
+		writeJSON(writer, http.StatusOK, map[string]any{"schema": controlSchema, "agent_id": s.agentID, "run_id": s.runID, "transcript": lines})
 	})
 	mux.HandleFunc("POST /v1/send", func(writer http.ResponseWriter, request *http.Request) {
 		var value struct {
@@ -277,7 +284,8 @@ func (s *service) routes() http.Handler {
 			http.Error(writer, "send failed", http.StatusBadGateway)
 			return
 		}
-		if err := s.record(transcriptLine{Direction: "outbound", EventID: ids[0], Content: value.Content}); err != nil {
+		if err := s.record(transcriptLine{Direction: "outbound", RecipientInput: value.Recipient,
+			EventID: ids[0], Content: value.Content}); err != nil {
 			http.Error(writer, "persist send failed", http.StatusInternalServerError)
 			return
 		}
@@ -288,16 +296,21 @@ func (s *service) routes() http.Handler {
 
 func (s *service) record(line transcriptLine) error {
 	if !canonicalEventID(line.EventID) || line.Content == "" ||
-		(line.ReplyToEventID != "" && !canonicalEventID(line.ReplyToEventID)) {
+		(line.ReplyToEventID != "" && !canonicalEventID(line.ReplyToEventID)) || !canonicalRunID(s.runID) ||
+		(line.Direction != "inbound" && line.Direction != "outbound") ||
+		(line.Direction == "inbound" && (!canonicalAgent(line.PeerAgentID) || line.RecipientInput != "")) ||
+		(line.Direction == "outbound" && line.PeerAgentID != "") {
 		return errors.New("invalid transcript line")
 	}
 	line.AppliedUnix = time.Now().UTC().Unix()
+	line.RunID = s.runID
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.state.Transcript {
 		if existing.EventID == line.EventID {
 			if existing.Direction == line.Direction && existing.Content == line.Content &&
-				existing.ReplyToEventID == line.ReplyToEventID && existing.PeerAgentID == line.PeerAgentID {
+				existing.ReplyToEventID == line.ReplyToEventID && existing.PeerAgentID == line.PeerAgentID &&
+				existing.RecipientInput == line.RecipientInput {
 				return nil
 			}
 			return errors.New("Event ID conflicts with durable transcript")
@@ -309,6 +322,14 @@ func (s *service) record(line transcriptLine) error {
 		return errors.New("encode bounded transcript")
 	}
 	return fileutil.WriteFileAtomic(s.statePath, raw, 0o600)
+}
+
+func randomRunID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", errors.New("generate process run identity")
+	}
+	return "run_" + hex.EncodeToString(raw[:]), nil
 }
 
 func (s *service) replyApplied(eventID string) bool {
@@ -343,7 +364,25 @@ func (s *service) load() error {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return errors.New("trailing transcript data")
 	}
+	seen := make(map[string]struct{}, len(s.state.Transcript))
+	for _, line := range s.state.Transcript {
+		if !validStoredLine(line) {
+			return errors.New("invalid durable transcript line")
+		}
+		if _, duplicate := seen[line.EventID]; duplicate {
+			return errors.New("duplicate durable transcript Event ID")
+		}
+		seen[line.EventID] = struct{}{}
+	}
 	return nil
+}
+
+func validStoredLine(line transcriptLine) bool {
+	return canonicalEventID(line.EventID) && line.Content != "" && canonicalRunID(line.RunID) && line.AppliedUnix > 0 &&
+		(line.ReplyToEventID == "" || canonicalEventID(line.ReplyToEventID)) &&
+		(line.Direction == "inbound" || line.Direction == "outbound") &&
+		(line.Direction != "inbound" || (canonicalAgent(line.PeerAgentID) && line.RecipientInput == "")) &&
+		(line.Direction != "outbound" || line.PeerAgentID == "")
 }
 
 func (s *service) recordBootstrap() error {
@@ -447,6 +486,14 @@ func canonicalEventID(value string) bool {
 		return false
 	}
 	_, err := hex.DecodeString(strings.TrimPrefix(value, "evt_"))
+	return err == nil
+}
+
+func canonicalRunID(value string) bool {
+	if len(value) != len("run_")+32 || !strings.HasPrefix(value, "run_") || value != strings.ToLower(value) {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "run_"))
 	return err == nil
 }
 

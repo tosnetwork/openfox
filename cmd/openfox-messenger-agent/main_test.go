@@ -18,6 +18,8 @@ type senderFake struct {
 	eventID  string
 }
 
+const testRunID = "run_11111111111111111111111111111111"
+
 func (f *senderFake) Send(_ context.Context, message bus.OutboundMessage) ([]string, error) {
 	f.messages = append(f.messages, message)
 	if f.eventID == "" {
@@ -30,7 +32,7 @@ func TestControlRejectsNonCanonicalDaemonEventID(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "state")
 	_ = os.Mkdir(directory, 0o700)
 	sender := &senderFake{eventID: "model-selected-event"}
-	service := &service{agentID: "agent_" + strings.Repeat("a", 64), statePath: filepath.Join(directory, "transcript.json"),
+	service := &service{agentID: "agent_" + strings.Repeat("a", 64), runID: testRunID, statePath: filepath.Join(directory, "transcript.json"),
 		channel: sender, state: durableState{Schema: stateSchema}, pending: map[string]chan error{}}
 	_ = service.recordBootstrap()
 	request := httptest.NewRequest(http.MethodPost, "/v1/send", strings.NewReader(
@@ -47,7 +49,7 @@ func TestConsumeAcknowledgesDurablyAppliedReplyWithoutAgentReplay(t *testing.T) 
 	_ = os.Mkdir(directory, 0o700)
 	originalID := "evt_" + strings.Repeat("1", 64)
 	replyID := "evt_" + strings.Repeat("2", 64)
-	service := &service{agentID: "agent_" + strings.Repeat("a", 64), statePath: filepath.Join(directory, "transcript.json"),
+	service := &service{agentID: "agent_" + strings.Repeat("a", 64), runID: testRunID, statePath: filepath.Join(directory, "transcript.json"),
 		state: durableState{Schema: stateSchema, Transcript: []transcriptLine{
 			{Direction: "inbound", PeerAgentID: "agent_" + strings.Repeat("b", 64), EventID: originalID, Content: "ping:hello"},
 			{Direction: "outbound", EventID: replyID, ReplyToEventID: originalID, Content: "ack"},
@@ -88,7 +90,7 @@ func TestControlSendCarriesOnlyRecipientIntentAndStableRuntimeID(t *testing.T) {
 		t.Fatal(err)
 	}
 	sender := &senderFake{}
-	service := &service{agentID: "agent_" + strings.Repeat("a", 64), statePath: filepath.Join(directory, "transcript.json"),
+	service := &service{agentID: "agent_" + strings.Repeat("a", 64), runID: testRunID, statePath: filepath.Join(directory, "transcript.json"),
 		channel: sender, state: durableState{Schema: stateSchema}, pending: map[string]chan error{}}
 	if err := service.recordBootstrap(); err != nil {
 		t.Fatal(err)
@@ -116,7 +118,7 @@ func TestControlRejectsModelRouteAuthorityFields(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "state")
 	_ = os.Mkdir(directory, 0o700)
 	sender := &senderFake{}
-	service := &service{agentID: "agent_" + strings.Repeat("a", 64), statePath: filepath.Join(directory, "transcript.json"),
+	service := &service{agentID: "agent_" + strings.Repeat("a", 64), runID: testRunID, statePath: filepath.Join(directory, "transcript.json"),
 		channel: sender, state: durableState{Schema: stateSchema}, pending: map[string]chan error{}}
 	_ = service.recordBootstrap()
 	request := httptest.NewRequest(http.MethodPost, "/v1/send", strings.NewReader(

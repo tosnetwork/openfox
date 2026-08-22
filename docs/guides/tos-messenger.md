@@ -91,22 +91,23 @@ That typed metadata is persisted by the Agent runtime but omitted from model
 provider payloads; tool and custody authorization use it as non-model-controlled
 provenance.
 
-`Send` accepts only a response whose context carries the exact authenticated
-Messenger Event it is answering and whose chat has an operator-configured
-route. The AgentLoop preserves that runtime-owned origin and sets the reply
+For direct messages, `Send` accepts only a response whose context carries the
+exact authenticated Messenger Event it is answering. The AgentLoop preserves
+that runtime-owned origin and sets the reply
 target to the current inbound Event when it publishes its final response; it
 does not reconstruct an empty generic outbound context after model execution.
-OpenFox sends only message semantics to `outbox.compose`; the daemon
-owns sender identity, network, clock, kind, payload schema and Event ID. The
-configured conversation/room/session/recipient binding is never taken from
-model output. A stable idempotency key derived from the authenticated input,
-exact response and route makes process retries return the same Event ID;
-content or recipient substitution is refused by the daemon's durable claim.
+OpenFox submits only that authenticated source Event ID and response semantics
+to `messages.reply-direct`; the daemon derives conversation, peer Agent,
+Endpoint, Device, session and delivery copies from its durable admitted Event.
+A stable idempotency key derived from the authenticated input and exact
+response makes process retries return the same Event ID; content or recipient
+substitution is refused by the daemon's durable claim. Room sends continue to
+use an operator-authorized room route and membership epoch.
 The daemon may honestly remain queue-only when no production transport is
 configured, and this channel never falls back to the lab carrier.
 
-The AgentLoop `message` tool can also initiate a text message over an existing
-direct route using only a high-level recipient intent:
+The AgentLoop `message` tool can initiate a direct text message using only a
+high-level recipient intent:
 
 ```json
 {
@@ -118,23 +119,19 @@ direct route using only a high-level recipient intent:
 
 `recipient` also accepts a canonical `agent_<64 lowercase hex>` value and is
 mutually exclusive with `chat_id`, reply targeting and media. OpenFox sends the
-input to `tos-messengerd`'s `contacts.resolve` operation. The daemon reduces a
-`.tos` alias to a quorum-finalized AgentID and then runs that AgentID through
-the ordinary delegation, DHT, Contact Descriptor, device and prekey chain.
-OpenFox discards the optional canonical-name display metadata and selects only
-an operator route whose `recipient_agent_id` equals the resolved AgentID.
-
-Compose carries the canonical AgentID as a route assertion; the daemon
-re-resolves it without DNS and verifies that the configured recipient Endpoint
-belongs to that Agent before queueing. Conversation, session and Endpoint IDs
-remain operator/daemon-owned and cannot be supplied by model output. A `.tos`
+input directly to `tos-messengerd`'s `messages.send-direct` operation. The
+daemon reduces a `.tos` alias to a quorum-finalized AgentID and then runs that
+AgentID through the ordinary delegation, DHT, Contact Descriptor, device,
+prekey, admission, session and per-device fan-out chain. Conversation, session
+and Endpoint IDs remain daemon-owned and cannot be supplied by model output. A `.tos`
 transfer affects a later lookup only: existing conversations, sessions,
 mandates, approvals, payments and receipts remain keyed by their original
 AgentID. The runtime's recipient-neutral delivery-intent ID is re-keyed with
-the resolved AgentID before the durable compose, so replay protection never
-uses the alias. If no matching established route exists, the send fails
-closed; this boundary does not invent session bootstrap or bypass the
-still-unselected production transport.
+the resolved AgentID before durable composition, so replay protection never
+uses the alias. No peer-specific direct route is configured in OpenFox. With
+daemon transport `none`, the exact copies remain honestly queued; with
+`https-bootstrap`, the descriptor-bound real-TLS fallback sends them and
+accepts only Endpoint-signed durable acknowledgements.
 
 For a direct route, `chat_id` must equal `conversation_id`, `room_id` is empty,
 and `membership_epoch` is zero. For a room route, `chat_id` must equal

@@ -105,7 +105,8 @@ func TestControlSendAndTranscriptAreDurable(t *testing.T) {
 	if err := restarted.load(); err != nil {
 		t.Fatal(err)
 	}
-	if len(restarted.state.Transcript) != 1 || restarted.state.Transcript[0].Direction != "outbound" {
+	if len(restarted.state.Transcript) != 1 || restarted.state.Transcript[0].Direction != "outbound" ||
+		restarted.state.Transcript[0].ClientID != "request-1" {
 		t.Fatalf("state=%+v", restarted.state)
 	}
 	info, err := os.Stat(service.statePath)

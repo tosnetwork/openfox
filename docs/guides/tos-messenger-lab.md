@@ -198,3 +198,50 @@ command, and the two argument arrays for `systemctl --user daemon-reload` and
 activation arrays. Exact rerun preserves credentials and reports every unit
 unchanged. The command never invokes a shell or systemd itself, so installing
 files cannot silently activate a partial deployment.
+
+## Machine-checkable running acceptance
+
+`cmd/openfox-messenger-lab-verify` independently checks an already running
+seven-process deployment. It does not read Relay credentials and cannot create
+a new acceptance round: all three transcripts must already contain the exact
+opening and two reply Event IDs, and Alice's durable opening record must bind
+the supplied request ID, before it issues the identical Alice request. That
+request must return the original Event ID without changing any complete
+transcript or the opaque Relay state.
+
+The verifier requires the expected SHA-256 digest and absolute path of every
+deployed artifact. It also requires three distinct mode-`0600` control sockets,
+the exact room and request identities, and the exact transcript length. It
+fails closed on an inactive or substituted Agent, non-AgentLoop reply, missing
+or duplicate Event, wrong reply causality, cross-transcript plaintext mismatch,
+socket replacement, artifact replacement, Relay-state replacement, unexpected
+JSON field or duplicate JSON key, redirect, non-`0600` Relay state, or any of
+the three acceptance plaintexts appearing in that state.
+
+Example, after obtaining the exact IDs and hashes from the acceptance round:
+
+```sh
+GOWORK=off go run ./cmd/openfox-messenger-lab-verify \
+  -alice-control "$XDG_RUNTIME_DIR/openfox-messenger-agent-alice.sock" \
+  -bob-control "$XDG_RUNTIME_DIR/openfox-messenger-agent-bob.sock" \
+  -carol-control "$XDG_RUNTIME_DIR/openfox-messenger-agent-carol.sock" \
+  -relay-state "$HOME/.local/state/tos-messenger-openfox-mls/relay.json" \
+  -room-id "room_<64-lowercase-hex>" \
+  -request-id "acceptance-stable-id" \
+  -content "process-probe: exact acceptance text" \
+  -opening-event-id "msg_<64-lowercase-hex>" \
+  -bob-reply-event-id "msg_<64-lowercase-hex>" \
+  -carol-reply-event-id "msg_<64-lowercase-hex>" \
+  -expected-transcript-records 120 \
+  -artifact "openfox-messenger-lab-agent=<sha256>:$HOME/.local/bin/openfox-messenger-lab-agent"
+```
+
+Repeat `-artifact` for the Relay, proxy, OpenMLS driver, Agent and deployer.
+Success emits one `openfox.messenger-lab-acceptance.v1` JSON report containing
+the exact identities, artifact hashes, Relay hash/size/mode and per-Agent
+record counts. Its `scope` is always `same-host-local-route-only`; it is not
+M0-R, public-network, independent-operator, or independent-implementation
+evidence. The artifact paths are operator-supplied pinned inputs; the report
+does not by itself prove which executable image a supervisor loaded. Check the
+seven unit states and their process identities separately through the target
+systemd user manager.

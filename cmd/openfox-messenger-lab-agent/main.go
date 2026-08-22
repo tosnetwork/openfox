@@ -63,6 +63,7 @@ type transcriptLine struct {
 	Direction      string `json:"direction"`
 	AgentID        string `json:"agent_id"`
 	EventID        string `json:"event_id"`
+	ClientID       string `json:"client_id,omitempty"`
 	ReplyToEventID string `json:"reply_to_event_id,omitempty"`
 	Runtime        string `json:"runtime,omitempty"`
 	Content        string `json:"content"`
@@ -369,7 +370,7 @@ func (s *agentService) routes() http.Handler {
 		}
 		if err := s.record(transcriptLine{
 			Direction: "outbound", AgentID: s.agentID,
-			EventID: ids[0], Content: request.Content,
+			EventID: ids[0], ClientID: request.RequestID, Content: request.Content,
 		}); err != nil {
 			http.Error(w, "persist send failed", http.StatusInternalServerError)
 			return

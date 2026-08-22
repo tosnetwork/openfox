@@ -149,3 +149,52 @@ turn. Each process must use a different mode-`0700` Agent workspace, whose
 session history survives process restart. This proves local OpenFox runtime
 composition only; it is not evidence for a production model, public route or
 independent operator.
+
+## Reproducible systemd-user deployment
+
+`cmd/openfox-messenger-lab-deploy` renders the seven-process acceptance loop as
+four Messenger services (one opaque Relay and three owner-private OpenMLS
+proxies) plus three independently supervised OpenFox AgentLoop services. It
+requires clean absolute executable, state, credential and unit paths. Existing
+different unit files are refused unless `-replace-units` is explicit; symlink
+targets/components, non-executable binaries, public credential permissions,
+duplicate credentials and partial three-member MLS bootstrap state fail
+closed.
+
+The Relay receives one mode-`0600` environment file containing all three
+random credentials because it authenticates all members. Each proxy and its
+matching OpenFox process receive a separate derived mode-`0600` file containing
+only that Agent's token. Units therefore do not give Alice Bob's or Carol's
+Relay authority. They retain `UMask=0077`, read-only home/system protection,
+private tmp, SUID/personality/realtime restrictions and an `AF_UNIX`-only
+address-family boundary. State and Agent workspaces are real mode-`0700`
+directories. Capability-bounding directives are deliberately omitted because
+some unprivileged/containerized user managers cannot execute the required
+`capset`; deployment acceptance requires the generated units to start under the
+actual target supervisor rather than treating syntax verification as runtime
+evidence.
+
+Build and inspect a deployment plan first:
+
+```sh
+GOWORK=off go build -o /tmp/openfox-messenger-lab-deploy \
+  ./cmd/openfox-messenger-lab-deploy
+
+/tmp/openfox-messenger-lab-deploy -check -replace-units \
+  -unit-dir "$HOME/.config/systemd/user" \
+  -env-file "$HOME/.config/tos-messenger-openfox-lab.env" \
+  -state-dir "$HOME/.local/state/tos-messenger-openfox-mls" \
+  -relay-bin "$HOME/.local/bin/tos-messenger-lab-group" \
+  -proxy-bin "$HOME/.local/bin/tos-messenger-openfox-mls" \
+  -driver-bin "$HOME/.local/libexec/tos-openmls-driver" \
+  -openfox-agent-bin "$HOME/.local/bin/openfox-messenger-lab-agent"
+```
+
+Remove `-check` to install atomically. The single JSON result contains no
+secret: it lists changed/unchanged units, whether all three MLS snapshots still
+need bootstrap, the exact argument array for the existing Messenger bootstrap
+command, and the two argument arrays for `systemctl --user daemon-reload` and
+`enable --now`. Operators execute bootstrap first when requested, then the
+activation arrays. Exact rerun preserves credentials and reports every unit
+unchanged. The command never invokes a shell or systemd itself, so installing
+files cannot silently activate a partial deployment.

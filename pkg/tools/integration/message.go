@@ -220,8 +220,8 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		if t.recipientCallback == nil {
 			return &ToolResult{ForLLM: "Recipient messaging not configured", IsError: true}
 		}
-		if err := t.recipientCallback(ctx, channel, recipient, content); err != nil {
-			return &ToolResult{ForLLM: fmt.Sprintf("sending message: %v", err), IsError: true, Err: err}
+		if sendErr := t.recipientCallback(ctx, channel, recipient, content); sendErr != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("sending message: %v", sendErr), IsError: true, Err: sendErr}
 		}
 		sessionKey := ToolSessionKey(ctx)
 		t.mu.Lock()

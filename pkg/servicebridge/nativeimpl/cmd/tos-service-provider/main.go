@@ -50,18 +50,18 @@ func (f *endpointsFlag) Set(value string) error {
 }
 
 type options struct {
-	stateDir, socket, fifoDir                            string
-	networkID, genesisRoot, genesisFile                  string
-	registryBOC, registryHash, escrowHash                string
-	providerAgent, providerAddress                       string
-	transportDigest, signerAuthorization, signerSeedPath string
-	executionSignerWallet, executionSignerPublicKey      string
-	tosctlBinary, tosctlConfig, tosctlWallet             string
-	certificate, privateKey, bearerPath                  string
-	a2aAddress, mcpAddress, packetAddress, artifactAddr  string
-	messengerPacketSocket                                string
-	artifactOrigin                                       string
-	endpoints                                            endpointsFlag
+	stateDir, socket, fifoDir                           string
+	networkID, genesisRoot, genesisFile                 string
+	registryBOC, registryHash, escrowHash               string
+	providerAgent, providerAddress                      string
+	transportDigest, signerAuthorization                string
+	executionSignerWallet, executionSignerPublicKey     string
+	tosctlBinary, tosctlConfig, tosctlWallet            string
+	certificate, privateKey, bearerPath                 string
+	a2aAddress, mcpAddress, packetAddress, artifactAddr string
+	messengerPacketSocket                               string
+	artifactOrigin                                      string
+	endpoints                                           endpointsFlag
 }
 
 func main() {
@@ -93,7 +93,6 @@ func parseFlags() options {
 		"",
 		"execution signer authorization SHA-256 digest",
 	)
-	flag.StringVar(&value.signerSeedPath, "execution-signer-seed", "", "private raw 32-byte Ed25519 seed")
 	flag.StringVar(
 		&value.executionSignerWallet,
 		"execution-signer-wallet",
@@ -141,12 +140,8 @@ func run(value options) error {
 		value.certificate == "" || value.privateKey == "" || value.bearerPath == "" {
 		return errors.New("provider configuration is incomplete")
 	}
-	seedSigner := value.signerSeedPath != "" && value.executionSignerWallet == "" &&
-		value.executionSignerPublicKey == ""
-	tosctlSigner := value.signerSeedPath == "" && value.executionSignerWallet != "" &&
-		value.executionSignerPublicKey != ""
-	if !seedSigner && !tosctlSigner {
-		return errors.New("configure exactly one execution signer custody mode")
+	if value.executionSignerWallet == "" || value.executionSignerPublicKey == "" {
+		return errors.New("production provider requires tosctl execution signer custody")
 	}
 	if err := requirePrivateDirectory(value.stateDir); err != nil {
 		return err
@@ -266,26 +261,14 @@ func run(value options) error {
 	if err != nil {
 		return err
 	}
-	var signer nativeimpl.ExecutionSigner
-	if seedSigner {
-		seed, seedErr := readPrivateSeed(value.signerSeedPath)
-		if seedErr != nil {
-			return seedErr
-		}
-		signer, err = nativeimpl.NewEd25519ExecutionSigner(ed25519.NewKeyFromSeed(seed))
-		for index := range seed {
-			seed[index] = 0
-		}
-	} else {
-		public, decodeErr := hex.DecodeString(value.executionSignerPublicKey)
-		if decodeErr != nil || len(public) != ed25519.PublicKeySize {
-			return errors.New("execution signer public key must be 32-byte lowercase hex")
-		}
-		signer, err = nativeimpl.NewTOSCTLExecutionSigner(nativeimpl.TOSCTLExecutionSignerConfig{
-			BinaryPath: value.tosctlBinary, ConfigPath: value.tosctlConfig, WalletName: value.executionSignerWallet,
-			ExpectedPublicKey: ed25519.PublicKey(public), Timeout: time.Minute,
-		})
+	public, decodeErr := hex.DecodeString(value.executionSignerPublicKey)
+	if decodeErr != nil || len(public) != ed25519.PublicKeySize || value.executionSignerPublicKey != strings.ToLower(value.executionSignerPublicKey) {
+		return errors.New("execution signer public key must be 32-byte lowercase hex")
 	}
+	signer, err := nativeimpl.NewTOSCTLExecutionSigner(nativeimpl.TOSCTLExecutionSignerConfig{
+		BinaryPath: value.tosctlBinary, ConfigPath: value.tosctlConfig, WalletName: value.executionSignerWallet,
+		ExpectedPublicKey: ed25519.PublicKey(public), Timeout: time.Minute,
+	})
 	if err != nil {
 		return err
 	}
@@ -403,21 +386,6 @@ func readBase64File(path string, maximum int64) (string, error) {
 		return "", errors.New("Registry code BOC is not base64")
 	}
 	return compact, nil
-}
-
-func readPrivateSeed(path string) ([]byte, error) {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return nil, errors.New("execution signer seed path must be canonical and absolute")
-	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
-		return nil, errors.New("execution signer seed must be a private regular file")
-	}
-	value, err := os.ReadFile(path)
-	if err != nil || len(value) != ed25519.SeedSize {
-		return nil, errors.New("execution signer seed must contain exactly 32 bytes")
-	}
-	return value, nil
 }
 
 func readPrivateBearer(path string) (string, error) {

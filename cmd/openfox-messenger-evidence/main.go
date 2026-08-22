@@ -130,8 +130,9 @@ func validateTranscript(value evidence) error {
 		if line.Direction == "inbound" && !canonicalAgent(line.PeerAgentID) {
 			return errors.New("inbound event lacks canonical authenticated peer")
 		}
-		if line.Direction == "outbound" && line.PeerAgentID != "" {
-			return errors.New("outbound line invents peer authentication")
+		if line.Direction == "outbound" && (line.PeerAgentID != "" ||
+			(line.ReplyToEventID == "") != (line.RecipientInput != "")) {
+			return errors.New("outbound line has invalid recipient-intent/reply shape")
 		}
 		if _, duplicate := seen[line.EventID]; duplicate {
 			return errors.New("duplicate Event ID in transcript")
@@ -145,7 +146,7 @@ func hasRoundTrip(sender, receiver evidence) bool {
 	receiverByID := index(receiver.Transcript)
 	senderByID := index(sender.Transcript)
 	for _, sent := range sender.Transcript {
-		if sent.Direction != "outbound" || sent.ReplyToEventID != "" {
+		if sent.Direction != "outbound" || sent.ReplyToEventID != "" || sent.RecipientInput == "" {
 			continue
 		}
 		got, ok := receiverByID[sent.EventID]

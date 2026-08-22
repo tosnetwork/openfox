@@ -299,7 +299,8 @@ func (s *service) record(line transcriptLine) error {
 		(line.ReplyToEventID != "" && !canonicalEventID(line.ReplyToEventID)) || !canonicalRunID(s.runID) ||
 		(line.Direction != "inbound" && line.Direction != "outbound") ||
 		(line.Direction == "inbound" && (!canonicalAgent(line.PeerAgentID) || line.RecipientInput != "")) ||
-		(line.Direction == "outbound" && line.PeerAgentID != "") {
+		(line.Direction == "outbound" && (line.PeerAgentID != "" ||
+			(line.ReplyToEventID == "") != (line.RecipientInput != ""))) {
 		return errors.New("invalid transcript line")
 	}
 	line.AppliedUnix = time.Now().UTC().Unix()
@@ -382,7 +383,8 @@ func validStoredLine(line transcriptLine) bool {
 		(line.ReplyToEventID == "" || canonicalEventID(line.ReplyToEventID)) &&
 		(line.Direction == "inbound" || line.Direction == "outbound") &&
 		(line.Direction != "inbound" || (canonicalAgent(line.PeerAgentID) && line.RecipientInput == "")) &&
-		(line.Direction != "outbound" || line.PeerAgentID == "")
+		(line.Direction != "outbound" || (line.PeerAgentID == "" &&
+			(line.ReplyToEventID == "") == (line.RecipientInput != "")))
 }
 
 func (s *service) recordBootstrap() error {

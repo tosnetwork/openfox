@@ -2488,6 +2488,23 @@ type messageToolProvider struct {
 	calls int
 }
 
+type recipientMessageToolProvider struct{ calls int }
+
+func (m *recipientMessageToolProvider) Chat(
+	context.Context, []providers.Message, []providers.ToolDefinition, string, map[string]any,
+) (*providers.LLMResponse, error) {
+	m.calls++
+	if m.calls == 1 {
+		return &providers.LLMResponse{ToolCalls: []providers.ToolCall{{
+			ID: "call_recipient", Type: "function", Name: "message",
+			Arguments: map[string]any{"channel": "tos_messenger", "recipient": "alice.tos", "content": "hello Alice"},
+		}}}, nil
+	}
+	return &providers.LLMResponse{}, nil
+}
+
+func (*recipientMessageToolProvider) GetDefaultModel() string { return "recipient-message-tool-model" }
+
 func (m *messageToolProvider) Chat(
 	ctx context.Context,
 	messages []providers.Message,
@@ -6428,6 +6445,31 @@ func TestProcessMessage_MessageToolPublishesOutboundWithTurnMetadata(t *testing.
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected message tool outbound")
+	}
+}
+
+func TestProcessMessage_MessageToolPublishesTypedRecipientIntent(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ModelName = "test-model"
+	cfg.Session.Dimensions = []string{"chat"}
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &recipientMessageToolProvider{})
+	if _, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
+		Channel: "telegram", SenderID: "owner", ChatID: "owner-chat", MessageID: "owner-command-1",
+		Content: "send Alice a message",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Channel != config.ChannelTOSMessenger || outbound.Recipient != "alice.tos" ||
+			outbound.ChatID != "" || outbound.Content != "hello Alice" ||
+			!strings.HasPrefix(outbound.DeliveryIntentID, "intent_") {
+			t.Fatalf("unexpected recipient intent: %+v", outbound)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AgentLoop did not publish recipient intent")
 	}
 }
 

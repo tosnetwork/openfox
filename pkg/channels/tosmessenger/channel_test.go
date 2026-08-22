@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -348,6 +349,56 @@ func TestSendRefusesUntrustedOrUnroutedOutput(t *testing.T) {
 		},
 	}); !errors.Is(err, ErrOutboundUnavailable) {
 		t.Fatalf("unrouted output was not refused: %v", err)
+	}
+}
+
+func TestProactiveSendCanonicalizesAliasThenUsesOnlyAgentBoundRoute(t *testing.T) {
+	agentA := "agent_" + strings.Repeat("a", 64)
+	agentB := "agent_" + strings.Repeat("b", 64)
+	socket, requests, stop := serveProactiveCompose(t, []string{agentA, agentB})
+	defer stop()
+	route := func(agent, digit string) config.TOSMessengerRoute {
+		conversation := "conv_" + strings.Repeat(digit, 64)
+		return config.TOSMessengerRoute{
+			ChatID: conversation, ConversationID: conversation,
+			SessionID:           "ses_" + strings.Repeat(digit, 64),
+			RecipientEndpointID: "mep_" + strings.Repeat(digit, 64),
+			RecipientAgentID:    agent, LifetimeSeconds: 3600,
+		}
+	}
+	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
+		SocketPath: socket, Routes: []config.TOSMessengerRoute{route(agentA, "1"), route(agentB, "2")},
+	}, bus.NewMessageBus())
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel.SetRunning(true)
+	for index := 0; index < 2; index++ {
+		ids, sendErr := channel.Send(context.Background(), bus.OutboundMessage{
+			Recipient:        "alice.tos",
+			Content:          "hello",
+			DeliveryIntentID: "intent_" + strings.Repeat(strconv.Itoa(index+3), 64),
+		})
+		if sendErr != nil || len(ids) != 1 {
+			t.Fatalf("proactive send %d: ids=%v err=%v", index, ids, sendErr)
+		}
+	}
+	resolveA, composeA, resolveB, composeB := <-requests, <-requests, <-requests, <-requests
+	if resolveA.Op != "contacts.resolve" || resolveA.Recipient != "alice.tos" || resolveA.SessionID != "" ||
+		resolveA.RecipientEndpointID != "" || resolveA.RecipientAgentID != "" {
+		t.Fatalf("alias crossed authority boundary: %+v", resolveA)
+	}
+	if composeA.Op != "outbox.compose" || composeA.Recipient != "" || composeA.RecipientAgentID != agentA ||
+		composeA.RecipientEndpointID != "mep_"+strings.Repeat("1", 64) ||
+		!strings.HasPrefix(composeA.IdempotencyKey, "idem_") {
+		t.Fatalf("first canonical compose=%+v", composeA)
+	}
+	if resolveB.Op != "contacts.resolve" || composeB.Recipient != "" || composeB.RecipientAgentID != agentB ||
+		composeB.RecipientEndpointID != "mep_"+strings.Repeat(
+			"2",
+			64,
+		) || composeA.ConversationID == composeB.ConversationID || composeA.IdempotencyKey == composeB.IdempotencyKey {
+		t.Fatalf("name transfer retargeted or leaked alias: resolve=%+v compose=%+v", resolveB, composeB)
 	}
 }
 
@@ -712,6 +763,47 @@ func serveCompose(t *testing.T, count int) (string, <-chan localRequest, func())
 			_, _ = connection.Write(header[:])
 			_, _ = connection.Write(body)
 			_ = connection.Close()
+		}
+	}()
+	return path, requests, func() { _ = listener.Close(); <-done }
+}
+
+func serveProactiveCompose(t *testing.T, resolvedAgents []string) (string, <-chan localRequest, func()) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "runtime.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan localRequest, len(resolvedAgents)*2)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, agentID := range resolvedAgents {
+			for step := 0; step < 2; step++ {
+				connection, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					return
+				}
+				var header [4]byte
+				_, _ = io.ReadFull(connection, header[:])
+				raw := make([]byte, binary.BigEndian.Uint32(header[:]))
+				_, _ = io.ReadFull(connection, raw)
+				var request localRequest
+				_ = json.Unmarshal(raw, &request)
+				requests <- request
+				response := localResponse{Schema: responseSchema, OK: true}
+				if step == 0 {
+					response.AgentID, response.CanonicalName = agentID, "alice.tos"
+				} else {
+					response.EventID = "evt_" + strings.Repeat("d", 64)
+				}
+				body, _ := json.Marshal(response)
+				binary.BigEndian.PutUint32(header[:], uint32(len(body)))
+				_, _ = connection.Write(header[:])
+				_, _ = connection.Write(body)
+				_ = connection.Close()
+			}
 		}
 	}()
 	return path, requests, func() { _ = listener.Close(); <-done }

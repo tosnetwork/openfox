@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	requestSchema  = "tos.messaging.local-request.v6"
+	requestSchema  = "tos.messaging.local-request.v8"
 	responseSchema = "tos.messaging.local-response.v5"
 	maxFrameBytes  = 2 << 20
 )
@@ -39,6 +39,8 @@ type localRequest struct {
 	IdempotencyKey      string `json:"idempotency_key,omitempty"`
 	SessionID           string `json:"session_id,omitempty"`
 	RecipientEndpointID string `json:"recipient_endpoint_id,omitempty"`
+	RecipientAgentID    string `json:"recipient_agent_id,omitempty"`
+	Recipient           string `json:"recipient,omitempty"`
 	ExpiresAtUnix       uint64 `json:"expires_at_unix,omitempty"`
 	Filename            string `json:"filename,omitempty"`
 	PlaintextDigest     string `json:"plaintext_digest,omitempty"`
@@ -92,19 +94,21 @@ type admittedAttachment struct {
 }
 
 type localResponse struct {
-	Schema      string              `json:"schema"`
-	OK          bool                `json:"ok"`
-	Code        string              `json:"code,omitempty"`
-	Detail      string              `json:"detail,omitempty"`
-	Events      []pendingEvent      `json:"events,omitempty"`
-	Event       *pendingEvent       `json:"claimed,omitempty"`
-	Attachments []pendingAttachment `json:"attachments,omitempty"`
-	Attachment  *admittedAttachment `json:"attachment,omitempty"`
-	Fresh       bool                `json:"fresh,omitempty"`
-	EventID     string              `json:"event_id,omitempty"`
-	UploadID    string              `json:"upload_id,omitempty"`
-	NextChunk   uint32              `json:"next_chunk,omitempty"`
-	Complete    bool                `json:"complete,omitempty"`
+	Schema        string              `json:"schema"`
+	OK            bool                `json:"ok"`
+	Code          string              `json:"code,omitempty"`
+	Detail        string              `json:"detail,omitempty"`
+	Events        []pendingEvent      `json:"events,omitempty"`
+	Event         *pendingEvent       `json:"claimed,omitempty"`
+	Attachments   []pendingAttachment `json:"attachments,omitempty"`
+	Attachment    *admittedAttachment `json:"attachment,omitempty"`
+	Fresh         bool                `json:"fresh,omitempty"`
+	EventID       string              `json:"event_id,omitempty"`
+	UploadID      string              `json:"upload_id,omitempty"`
+	NextChunk     uint32              `json:"next_chunk,omitempty"`
+	Complete      bool                `json:"complete,omitempty"`
+	AgentID       string              `json:"agent_id,omitempty"`
+	CanonicalName string              `json:"canonical_name,omitempty"`
 }
 
 func validPendingAttachment(value pendingAttachment) bool {

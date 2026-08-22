@@ -108,7 +108,15 @@ type OutboundMessage struct {
 	Scope            *OutboundScope `json:"scope,omitempty"`
 	Content          string         `json:"content"`
 	ReplyToMessageID string         `json:"reply_to_message_id,omitempty"`
-	ContextUsage     *ContextUsage  `json:"context_usage,omitempty"`
+	// Recipient is a high-level identity intent accepted by channels that own
+	// a canonicalization boundary. It must never carry endpoint, device,
+	// session, or route authority.
+	Recipient string `json:"recipient,omitempty"`
+	// DeliveryIntentID is runtime-generated and is not populated from model
+	// tool arguments. A canonicalizing channel must combine it with the resolved
+	// protocol identity before constructing a durable replay/idempotency key.
+	DeliveryIntentID string        `json:"delivery_intent_id,omitempty"`
+	ContextUsage     *ContextUsage `json:"context_usage,omitempty"`
 }
 
 // MediaPart describes a single media attachment to send.

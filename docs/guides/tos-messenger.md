@@ -21,6 +21,7 @@ after the daemon has authenticated, decrypted, admitted, and durably staged it.
         "membership_epoch": 7,
         "session_id": "ses_<64 lowercase hex>",
         "recipient_endpoint_id": "mep_<64 lowercase hex>",
+        "recipient_agent_id": "agent_<64 lowercase hex>",
         "lifetime_seconds": 86400
       }]
     }
@@ -103,6 +104,37 @@ exact response and route makes process retries return the same Event ID;
 content or recipient substitution is refused by the daemon's durable claim.
 The daemon may honestly remain queue-only when no production transport is
 configured, and this channel never falls back to the lab carrier.
+
+The AgentLoop `message` tool can also initiate a text message over an existing
+direct route using only a high-level recipient intent:
+
+```json
+{
+  "channel": "tos_messenger",
+  "recipient": "alice.tos",
+  "content": "hello"
+}
+```
+
+`recipient` also accepts a canonical `agent_<64 lowercase hex>` value and is
+mutually exclusive with `chat_id`, reply targeting and media. OpenFox sends the
+input to `tos-messengerd`'s `contacts.resolve` operation. The daemon reduces a
+`.tos` alias to a quorum-finalized AgentID and then runs that AgentID through
+the ordinary delegation, DHT, Contact Descriptor, device and prekey chain.
+OpenFox discards the optional canonical-name display metadata and selects only
+an operator route whose `recipient_agent_id` equals the resolved AgentID.
+
+Compose carries the canonical AgentID as a route assertion; the daemon
+re-resolves it without DNS and verifies that the configured recipient Endpoint
+belongs to that Agent before queueing. Conversation, session and Endpoint IDs
+remain operator/daemon-owned and cannot be supplied by model output. A `.tos`
+transfer affects a later lookup only: existing conversations, sessions,
+mandates, approvals, payments and receipts remain keyed by their original
+AgentID. The runtime's recipient-neutral delivery-intent ID is re-keyed with
+the resolved AgentID before the durable compose, so replay protection never
+uses the alias. If no matching established route exists, the send fails
+closed; this boundary does not invent session bootstrap or bypass the
+still-unselected production transport.
 
 For a direct route, `chat_id` must equal `conversation_id`, `room_id` is empty,
 and `membership_epoch` is zero. For a room route, `chat_id` must equal

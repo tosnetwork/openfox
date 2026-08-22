@@ -40,7 +40,10 @@ func NewFilePurchaseJournal(directory string) (*FilePurchaseJournal, error) {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
 		return nil, errors.New("servicebridge: purchase journal directory must be owner-private")
 	}
-	j := &FilePurchaseJournal{path: filepath.Join(directory, "purchases.json"), records: map[PurchaseKey]PurchaseRecord{}}
+	j := &FilePurchaseJournal{
+		path:    filepath.Join(directory, "purchases.json"),
+		records: map[PurchaseKey]PurchaseRecord{},
+	}
 	if err := j.load(); err != nil {
 		return nil, err
 	}
@@ -173,8 +176,10 @@ func (j *FilePurchaseJournal) SpentInWindow(now time.Time, window time.Duration)
 }
 
 func (j *FilePurchaseJournal) persist(records map[PurchaseKey]PurchaseRecord) error {
-	document := filePurchaseJournalDocument{Schema: filePurchaseJournalSchema,
-		Records: make([]PurchaseRecord, 0, len(records))}
+	document := filePurchaseJournalDocument{
+		Schema:  filePurchaseJournalSchema,
+		Records: make([]PurchaseRecord, 0, len(records)),
+	}
 	for _, record := range records {
 		document.Records = append(document.Records, record)
 	}
@@ -196,23 +201,23 @@ func (j *FilePurchaseJournal) persist(records map[PurchaseKey]PurchaseRecord) er
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
+	if chmodErr := temporary.Chmod(0o600); chmodErr != nil {
 		temporary.Close()
-		return err
+		return chmodErr
 	}
-	if _, err := temporary.Write(encoded); err != nil {
+	if _, writeErr := temporary.Write(encoded); writeErr != nil {
 		temporary.Close()
-		return err
+		return writeErr
 	}
-	if err := temporary.Sync(); err != nil {
+	if syncErr := temporary.Sync(); syncErr != nil {
 		temporary.Close()
-		return err
+		return syncErr
 	}
-	if err := temporary.Close(); err != nil {
-		return err
+	if closeErr := temporary.Close(); closeErr != nil {
+		return closeErr
 	}
-	if err := os.Rename(temporaryPath, j.path); err != nil {
-		return err
+	if renameErr := os.Rename(temporaryPath, j.path); renameErr != nil {
+		return renameErr
 	}
 	dir, err := os.Open(directory)
 	if err != nil {

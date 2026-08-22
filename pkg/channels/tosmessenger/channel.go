@@ -198,9 +198,11 @@ func (c *Channel) SendMedia(ctx context.Context, message bus.OutboundMediaMessag
 	replyTo := origin.EventID
 	var eventIDs []string
 	if caption != "" {
-		captionIDs, err := c.Send(ctx, bus.OutboundMessage{Channel: message.Channel, ChatID: message.ChatID,
+		captionIDs, err := c.Send(ctx, bus.OutboundMessage{
+			Channel: message.Channel, ChatID: message.ChatID,
 			Context: message.Context, AgentID: message.AgentID, SessionKey: message.SessionKey,
-			Scope: message.Scope, Content: caption, ReplyToMessageID: origin.EventID})
+			Scope: message.Scope, Content: caption, ReplyToMessageID: origin.EventID,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -248,16 +250,19 @@ func (c *Channel) SendMedia(ctx context.Context, message bus.OutboundMediaMessag
 }
 
 func (c *Channel) streamAttachment(ctx context.Context, route config.TOSMessengerRoute, originEventID,
-	replyTo string, partIndex int, partType, filename, mediaType string, size uint64, digest string, file *os.File) ([]string, error) {
+	replyTo string, partIndex int, partType, filename, mediaType string, size uint64, digest string, file *os.File,
+) ([]string, error) {
 	preimage := route.ChatID + "\x00" + route.ConversationID + "\x00" + route.RoomID + "\x00" +
 		route.SessionID + "\x00" + route.RecipientEndpointID + "\x00" + originEventID + "\x00" + replyTo + "\x00" +
 		partType + "\x00" + filename + "\x00" + mediaType + "\x00" + digest + "\x00" + strconv.Itoa(partIndex)
 	idempotency := sha256.Sum256([]byte(preimage))
-	response, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "attachments.outbound.begin",
+	response, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
+		Op:             "attachments.outbound.begin",
 		ConversationID: route.ConversationID, RoomID: route.RoomID, ReplyToEventID: replyTo,
 		MembershipEpoch: route.MembershipEpoch, IdempotencyKey: "idem_" + hex.EncodeToString(idempotency[:]),
 		SessionID: route.SessionID, RecipientEndpointID: route.RecipientEndpointID,
-		Filename: filename, MediaType: mediaType, PlaintextDigest: digest, PlaintextBytes: size})
+		Filename: filename, MediaType: mediaType, PlaintextDigest: digest, PlaintextBytes: size,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -289,8 +294,10 @@ func (c *Channel) streamAttachment(ctx context.Context, route config.TOSMessenge
 			clear(chunk)
 			return nil, errors.New("read exact Messenger attachment source chunk")
 		}
-		appended, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "attachments.outbound.chunk",
-			UploadID: response.UploadID, ChunkIndex: chunkIndex, Chunk: chunk})
+		appended, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
+			Op:       "attachments.outbound.chunk",
+			UploadID: response.UploadID, ChunkIndex: chunkIndex, Chunk: chunk,
+		})
 		clear(chunk)
 		if err != nil {
 			return nil, err
@@ -301,7 +308,12 @@ func (c *Channel) streamAttachment(ctx context.Context, route config.TOSMessenge
 	}
 	uploaded := uint32(0)
 	for {
-		committed, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "attachments.outbound.commit", UploadID: response.UploadID})
+		committed, err := callLocal(
+			ctx,
+			c.settings.SocketPath,
+			c.timeout,
+			localRequest{Op: "attachments.outbound.commit", UploadID: response.UploadID},
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -311,7 +323,8 @@ func (c *Channel) streamAttachment(ctx context.Context, route config.TOSMessenge
 			}
 			return []string{committed.EventID}, nil
 		}
-		if committed.UploadID != response.UploadID || committed.EventID != "" || committed.NextChunk <= uploaded || committed.NextChunk >= count {
+		if committed.UploadID != response.UploadID || committed.EventID != "" || committed.NextChunk <= uploaded ||
+			committed.NextChunk >= count {
 			return nil, errors.New("Messenger attachment storage progress did not advance")
 		}
 		uploaded = committed.NextChunk
@@ -320,7 +333,8 @@ func (c *Channel) streamAttachment(ctx context.Context, route config.TOSMessenge
 
 func openAndDigestMedia(path string) (*os.File, uint64, string, error) {
 	pathInfo, err := os.Lstat(path)
-	if err != nil || !pathInfo.Mode().IsRegular() || pathInfo.Mode()&os.ModeSymlink != 0 || pathInfo.Size() <= 0 || pathInfo.Size() > maxOutboundAttachmentBytes {
+	if err != nil || !pathInfo.Mode().IsRegular() || pathInfo.Mode()&os.ModeSymlink != 0 || pathInfo.Size() <= 0 ||
+		pathInfo.Size() > maxOutboundAttachmentBytes {
 		return nil, 0, "", errors.New("tos_messenger media source must be a bounded regular file")
 	}
 	file, err := os.Open(path)
@@ -413,7 +427,12 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 }
 
 func (c *Channel) pollAttachments(ctx context.Context) error {
-	response, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "attachments.pending", Limit: 64})
+	response, err := callLocal(
+		ctx,
+		c.settings.SocketPath,
+		c.timeout,
+		localRequest{Op: "attachments.pending", Limit: 64},
+	)
 	if err != nil {
 		return err
 	}
@@ -425,8 +444,10 @@ func (c *Channel) pollAttachments(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		claimed, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "attachments.claim",
-			EventID: offered.EventID, LeaseID: leaseID, LeaseSeconds: c.lease})
+		claimed, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
+			Op:      "attachments.claim",
+			EventID: offered.EventID, LeaseID: leaseID, LeaseSeconds: c.lease,
+		})
 		if err != nil {
 			continue
 		}
@@ -434,8 +455,10 @@ func (c *Channel) pollAttachments(ctx context.Context) error {
 			claimed.Attachment.SenderEndpointID != offered.SenderEndpointID ||
 			claimed.Attachment.ConversationID != offered.ConversationID ||
 			claimed.Attachment.ReceivedAtUnix != offered.ReceivedAtUnix || !validAdmittedAttachment(*claimed.Attachment) {
-			if _, rejectErr := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "inbox.reject",
-				EventID: offered.EventID, LeaseID: leaseID, Code: "not-authentic"}); rejectErr != nil {
+			if _, rejectErr := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
+				Op:      "inbox.reject",
+				EventID: offered.EventID, LeaseID: leaseID, Code: "not-authentic",
+			}); rejectErr != nil {
 				return rejectErr
 			}
 			continue
@@ -443,8 +466,10 @@ func (c *Channel) pollAttachments(ctx context.Context) error {
 		if err := c.publishAttachment(ctx, *claimed.Attachment); err != nil {
 			return err
 		}
-		if _, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{Op: "inbox.complete",
-			EventID: offered.EventID, LeaseID: leaseID}); err != nil {
+		if _, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
+			Op:      "inbox.complete",
+			EventID: offered.EventID, LeaseID: leaseID,
+		}); err != nil {
 			return err
 		}
 	}
@@ -457,19 +482,35 @@ func (c *Channel) publishAttachment(ctx context.Context, attachment admittedAtta
 		chatID, chatType, spaceType = attachment.RoomID, "group", "room"
 	}
 	senderID := config.ChannelTOSMessenger + ":" + attachment.SenderAgentID
-	origin := actionauth.Origin{AgentID: attachment.SenderAgentID, EndpointID: attachment.SenderEndpointID,
+	origin := actionauth.Origin{
+		AgentID: attachment.SenderAgentID, EndpointID: attachment.SenderEndpointID,
 		DeviceID: attachment.SenderDeviceID, EventID: attachment.EventID, ConversationID: attachment.ConversationID,
-		Kind: "artifact.encrypted", ReceivedAtUnix: attachment.ReceivedAtUnix}
-	inbound := bus.InboundContext{Channel: c.Name(), ChatID: chatID, ChatType: chatType,
+		Kind: "artifact.encrypted", ReceivedAtUnix: attachment.ReceivedAtUnix,
+	}
+	inbound := bus.InboundContext{
+		Channel: c.Name(), ChatID: chatID, ChatType: chatType,
 		SpaceID: attachment.RoomID, SpaceType: spaceType, SenderID: senderID, MessageID: attachment.EventID,
 		ReplyToMessageID: attachment.ReplyToEventID,
-		Raw: map[string]string{"transport": "tos-messengerd-authenticated-admission", "attachment_filename": attachment.Filename,
-			"attachment_media_type": attachment.MediaType, "attachment_plaintext_digest": attachment.PlaintextDigest},
-		AuthenticatedMessagingOrigin: &origin}
+		Raw: map[string]string{
+			"transport": "tos-messengerd-authenticated-admission", "attachment_filename": attachment.Filename,
+			"attachment_media_type": attachment.MediaType, "attachment_plaintext_digest": attachment.PlaintextDigest,
+		},
+		AuthenticatedMessagingOrigin: &origin,
+	}
 	result := make(chan error, 1)
-	sender := bus.SenderInfo{Platform: config.ChannelTOSMessenger, PlatformID: attachment.SenderAgentID,
-		CanonicalID: senderID}
-	if err := c.HandleInboundContextWithApplicationResult(ctx, chatID, attachment.Body, nil, inbound, result, sender); err != nil {
+	sender := bus.SenderInfo{
+		Platform: config.ChannelTOSMessenger, PlatformID: attachment.SenderAgentID,
+		CanonicalID: senderID,
+	}
+	if err := c.HandleInboundContextWithApplicationResult(
+		ctx,
+		chatID,
+		attachment.Body,
+		nil,
+		inbound,
+		result,
+		sender,
+	); err != nil {
 		return err
 	}
 	select {

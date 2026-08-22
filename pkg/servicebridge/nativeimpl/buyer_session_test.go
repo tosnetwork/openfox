@@ -7,11 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 type fakePreparer struct {
@@ -30,7 +31,11 @@ func (f *fakePreparer) PreparePurchase(context.Context, buyersdk.PurchaseInput) 
 	return f.prepared, nil
 }
 
-func (f *fakePreparer) FundPurchase(_ context.Context, _ *buyersdk.PreparedPurchase, key string) (*toschain.FinalizedEscrowV1, error) {
+func (f *fakePreparer) FundPurchase(
+	_ context.Context,
+	_ *buyersdk.PreparedPurchase,
+	key string,
+) (*toschain.FinalizedEscrowV1, error) {
 	f.fundKeys = append(f.fundKeys, key)
 	if f.fundErr != nil {
 		return nil, f.fundErr
@@ -53,8 +58,10 @@ func sampleInput() buyersdk.PurchaseInput {
 			MaximumPrice: &nativev1.MoneyV1{
 				AtomicAmount: "25000000",
 				Asset: &nativev1.TOSAssetIdentityV1{
-					Master: &nativev1.TOSContractIdentityV1{Workchain: 0,
-						AccountId: bytes.Repeat([]byte{0xAB}, 32), CodeHash: "tvm-cell-sha256:" + hex64},
+					Master: &nativev1.TOSContractIdentityV1{
+						Workchain: 0,
+						AccountId: bytes.Repeat([]byte{0xAB}, 32), CodeHash: "tvm-cell-sha256:" + hex64,
+					},
 					WalletCodeHash: "tvm-cell-sha256:" + hex64,
 					Decimals:       9,
 				},
@@ -68,8 +75,10 @@ func sampleRef() servicebridge.CapabilityRef {
 	return servicebridge.CapabilityRef{
 		AgentID: "agent_" + hex64, CapabilityID: "cap_" + hex64, Version: "1.0.0",
 		ManifestDigest: "sha256:" + hex64, CapabilityClass: "compute.inference",
-		Network: servicebridge.Network{ID: "tos-local", GenesisRootHash: hex64,
-			GenesisFileHash: strings.Repeat("b", 64)},
+		Network: servicebridge.Network{
+			ID: "tos-local", GenesisRootHash: hex64,
+			GenesisFileHash: strings.Repeat("b", 64),
+		},
 	}
 }
 
@@ -175,7 +184,10 @@ func TestBuyerSessionPrepareErrorNotStashed(t *testing.T) {
 	if _, err := session.BuildAcceptedQuote(context.Background(), prop); err == nil {
 		t.Fatalf("a rejected preparation must surface the buyersdk error")
 	}
-	if err := session.SignAndFundEscrow(context.Background(), servicebridge.AcceptedQuote{QuoteCommitment: "tvm-cell-sha256:" + hex64, EscrowAddress: "0:" + hex64}); err == nil {
+	if err := session.SignAndFundEscrow(
+		context.Background(),
+		servicebridge.AcceptedQuote{QuoteCommitment: "tvm-cell-sha256:" + hex64, EscrowAddress: "0:" + hex64},
+	); err == nil {
 		t.Fatalf("a failed preparation must leave nothing fundable")
 	}
 }

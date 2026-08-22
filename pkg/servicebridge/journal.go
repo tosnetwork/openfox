@@ -75,7 +75,7 @@ func CanAcquireFundingLease(p Phase) bool {
 type ResumeAction string
 
 const (
-	// ResumeInvalid marks an unrecognised phase; recovery must not proceed.
+	// ResumeInvalid marks an unrecognized phase; recovery must not proceed.
 	ResumeInvalid ResumeAction = "invalid"
 	// ResumeMayFund means the purchase crashed before the funding lease and may
 	// still fund.

@@ -5,9 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	"github.com/tosnetwork/tos-ai/pkg/artifactstore"
 	"github.com/tosnetwork/tos-ai/pkg/softwarework"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 type fakeRunner struct {
@@ -25,8 +26,16 @@ func TestRunnerExecutionAdapterMapsClaimAndOutcome(t *testing.T) {
 	fr := &fakeRunner{outcome: softwarework.Outcome{
 		QuoteCommitment: "tvm-cell-sha256:qc",
 		ExecutionID:     "sha256:x",
-		Artifact:        artifactstore.Descriptor{Digest: "sha256:a", MediaType: "application/vnd.tos.service.software-artifact.v1+tar", SizeBytes: 3072},
-		Report:          artifactstore.Descriptor{Digest: "sha256:r", MediaType: "application/vnd.tos.service.test-report.v1+json", SizeBytes: 355},
+		Artifact: artifactstore.Descriptor{
+			Digest:    "sha256:a",
+			MediaType: "application/vnd.tos.service.software-artifact.v1+tar",
+			SizeBytes: 3072,
+		},
+		Report: artifactstore.Descriptor{
+			Digest:    "sha256:r",
+			MediaType: "application/vnd.tos.service.test-report.v1+json",
+			SizeBytes: 355,
+		},
 		ExitCode:        0,
 		CompletedAtUnix: 1786765456,
 	}}

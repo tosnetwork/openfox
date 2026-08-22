@@ -81,8 +81,8 @@ func NewJSONLStore(dir string) (*JSONLStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: create directory: %w", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("memory: protect directory: %w", err)
+	if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil {
+		return nil, fmt.Errorf("memory: protect directory: %w", chmodErr)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -729,9 +729,9 @@ func (s *JSONLStore) addMsgLocked(sessionKey string, msg providers.Message) erro
 	if err != nil {
 		return fmt.Errorf("memory: open jsonl for append: %w", err)
 	}
-	if err := f.Chmod(0o600); err != nil {
+	if chmodErr := f.Chmod(0o600); chmodErr != nil {
 		f.Close()
-		return fmt.Errorf("memory: protect jsonl: %w", err)
+		return fmt.Errorf("memory: protect jsonl: %w", chmodErr)
 	}
 	_, writeErr := f.Write(line)
 	if writeErr != nil {

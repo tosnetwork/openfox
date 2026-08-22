@@ -258,8 +258,10 @@ func (c *Channel) sendWithClientID(
 		ctx,
 		http.MethodPost,
 		"/v1/messages",
-		map[string]string{"room_id": roomID, "client_id": clientID, "content": outbound.Content,
-			"reply_to_event_id": outbound.ReplyToMessageID},
+		map[string]string{
+			"room_id": roomID, "client_id": clientID, "content": outbound.Content,
+			"reply_to_event_id": outbound.ReplyToMessageID,
+		},
 		&result,
 	)
 	if err != nil {
@@ -513,8 +515,10 @@ func (c *Channel) call(ctx context.Context, method, path string, requestBody, re
 		return errors.New("Messenger lab response exceeds its bound")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return &messengerLabHTTPError{statusCode: response.StatusCode, status: response.Status,
-			detail: strings.TrimSpace(string(raw))}
+		return &messengerLabHTTPError{
+			statusCode: response.StatusCode, status: response.Status,
+			detail: strings.TrimSpace(string(raw)),
+		}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()

@@ -51,12 +51,12 @@ func (f *stringFlags) String() string         { return strings.Join(*f, ",") }
 func (f *stringFlags) Set(value string) error { *f = append(*f, value); return nil }
 
 type channelAPI interface {
-	Start(context.Context) error
-	Stop(context.Context) error
-	SendWithClientID(context.Context, bus.OutboundMessage, string) ([]string, error)
-	RoomID(string, []string) (string, bool)
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
+	SendWithClientID(ctx context.Context, message bus.OutboundMessage, clientID string) ([]string, error)
+	RoomID(label string, members []string) (string, bool)
 	RoomIDs() []string
-	MembershipStatus(context.Context) (tosmessengerlab.MembershipStatus, error)
+	MembershipStatus(ctx context.Context) (tosmessengerlab.MembershipStatus, error)
 }
 
 type transcriptLine struct {
@@ -95,7 +95,11 @@ func main() {
 	replyPrefix := flag.String("reply-prefix", "", "reply once to non-reply inbound messages")
 	replyMode := flag.String("reply-mode", replyModeStatic, "static or agent-loop")
 	agentWorkspace := flag.String("agent-workspace", "", "private durable OpenFox Agent workspace (agent-loop mode)")
-	startupTimeout := flag.Duration("startup-timeout", 30*time.Second, "bounded wait for the Messenger proxy Unix listener")
+	startupTimeout := flag.Duration(
+		"startup-timeout",
+		30*time.Second,
+		"bounded wait for the Messenger proxy Unix listener",
+	)
 	triggerPrefix := flag.String("trigger-prefix", "", "reply only to inbound messages with this prefix")
 	flag.Var(&members, "member", "room member Agent ID (repeat)")
 	flag.Parse()
@@ -149,11 +153,11 @@ func run(agentID, token, socket, cursor, statePath, controlPath, label, encrypti
 	if err != nil {
 		return err
 	}
-	if err := channel.EnableDurableApplication(30 * time.Second); err != nil {
-		return err
+	if enableErr := channel.EnableDurableApplication(30 * time.Second); enableErr != nil {
+		return enableErr
 	}
-	if err := channel.Start(ctx); err != nil {
-		return err
+	if startErr := channel.Start(ctx); startErr != nil {
+		return startErr
 	}
 	defer channel.Stop(context.Background())
 	roomID, err := resolveRoom(ctx, channel, label, members)
@@ -165,8 +169,8 @@ func run(agentID, token, socket, cursor, statePath, controlPath, label, encrypti
 		replyMode: replyMode, statePath: statePath, channel: channel, state: durableState{Schema: stateSchema},
 		applications: make(map[string]chan error),
 	}
-	if err := service.load(); err != nil {
-		return err
+	if loadErr := service.load(); loadErr != nil {
+		return loadErr
 	}
 	listener, err := listenControl(controlPath)
 	if err != nil {
@@ -311,8 +315,8 @@ func listenControl(path string) (net.Listener, error) {
 		if info.Mode()&os.ModeSocket == 0 {
 			return nil, errors.New("control path exists and is not a socket")
 		}
-		if err := os.Remove(path); err != nil {
-			return nil, err
+		if removeErr := os.Remove(path); removeErr != nil {
+			return nil, removeErr
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err

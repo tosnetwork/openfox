@@ -384,9 +384,11 @@ func (r *ToolRegistry) ExecuteWithContext(
 			return ErrorResult(fmt.Sprintf("physical tool %q arguments are not canonical", name)).WithError(err)
 		}
 		digest := sha256.Sum256(encoded)
-		physical = &actionauth.PhysicalOperation{CapabilityID: physicalCapability, Tool: name,
+		physical = &actionauth.PhysicalOperation{
+			CapabilityID: physicalCapability, Tool: name,
 			Operation: operation, ArgumentsDigest: "sha256:" + hex.EncodeToString(digest[:]),
-			ArgumentsJSON: string(encoded)}
+			ArgumentsJSON: string(encoded),
+		}
 		if !physical.Valid() {
 			return ErrorResult(fmt.Sprintf("physical tool %q has malformed local Capability configuration", name)).
 				WithError(fmt.Errorf("physical Capability refused"))

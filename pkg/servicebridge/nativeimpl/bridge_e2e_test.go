@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	"github.com/tosnetwork/tos-ai/pkg/softwarework"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
@@ -16,6 +15,8 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 // memLedger is the in-memory chain double: the single authoritative escrow store
@@ -63,7 +64,10 @@ func (l *memLedger) ResolveFinalized(_ context.Context, addr string) (*toschain.
 		return nil, false, nil
 	}
 	copyState := *state
-	return &toschain.FinalizedEscrowV1{State: &copyState, Reference: &nativev1.ChainReference{FinalizedCheckpoint: l.cp}}, true, nil
+	return &toschain.FinalizedEscrowV1{
+		State:     &copyState,
+		Reference: &nativev1.ChainReference{FinalizedCheckpoint: l.cp},
+	}, true, nil
 }
 
 // ledgerPreparer stands in for *buyersdk.Buyer: PreparePurchase yields the
@@ -78,7 +82,11 @@ func (p *ledgerPreparer) PreparePurchase(context.Context, buyersdk.PurchaseInput
 	return p.prepared, nil
 }
 
-func (p *ledgerPreparer) FundPurchase(_ context.Context, purchase *buyersdk.PreparedPurchase, _ string) (*toschain.FinalizedEscrowV1, error) {
+func (p *ledgerPreparer) FundPurchase(
+	_ context.Context,
+	purchase *buyersdk.PreparedPurchase,
+	_ string,
+) (*toschain.FinalizedEscrowV1, error) {
 	p.fundCalls++
 	amount, err := atomicUint64(purchase.AmountAtomic)
 	if err != nil {
@@ -115,7 +123,11 @@ func (g *atMostOnceGate) ClaimExecution(_ context.Context, r executiongate.Reque
 		return executiongate.Evidence{}, errors.New("gate: purchase slot already claimed")
 	}
 	g.claimed[key] = true
-	return executiongate.Evidence{QuoteCommitment: r.QuoteCommitment, EscrowAddress: r.EscrowAddress, ProviderAgentID: "agent_" + hex64}, nil
+	return executiongate.Evidence{
+		QuoteCommitment: r.QuoteCommitment,
+		EscrowAddress:   r.EscrowAddress,
+		ProviderAgentID: "agent_" + hex64,
+	}, nil
 }
 
 var _ ProviderGate = (*atMostOnceGate)(nil)
@@ -128,6 +140,7 @@ type e2eResolver struct{ reader *EscrowSettlementReader }
 func (r e2eResolver) ResolveCapability(context.Context, servicebridge.CapabilityRef) error {
 	return nil
 }
+
 func (r e2eResolver) ResolveEscrow(ctx context.Context, addr string) (servicebridge.EscrowState, error) {
 	return r.reader.ResolveEscrow(ctx, addr)
 }
@@ -136,10 +149,18 @@ func (r e2eResolver) ResolveEscrow(ctx context.Context, addr string) (servicebri
 // never builds a receipt (the provider does), so BuildReceipt refuses.
 type e2eReceipts struct{ reader *EscrowSettlementReader }
 
-func (e e2eReceipts) BuildReceipt(context.Context, servicebridge.AcceptedQuote, servicebridge.Outcome) (servicebridge.Receipt, error) {
+func (e e2eReceipts) BuildReceipt(
+	context.Context,
+	servicebridge.AcceptedQuote,
+	servicebridge.Outcome,
+) (servicebridge.Receipt, error) {
 	return servicebridge.Receipt{}, errors.New("buyer does not build receipts")
 }
-func (e e2eReceipts) VerifySettlement(ctx context.Context, aq servicebridge.AcceptedQuote) (servicebridge.Settlement, error) {
+
+func (e e2eReceipts) VerifySettlement(
+	ctx context.Context,
+	aq servicebridge.AcceptedQuote,
+) (servicebridge.Settlement, error) {
 	return e.reader.VerifySettlement(ctx, aq)
 }
 
@@ -156,10 +177,12 @@ func e2ePolicy() servicebridge.SpendingPolicy {
 	input := sampleInput()
 	asset := input.Proposal.GetMaximumPrice().GetAsset()
 	return servicebridge.SpendingPolicy{
-		Asset: servicebridge.AssetIdentity{Master: "0:" + repeatHex("ab"),
+		Asset: servicebridge.AssetIdentity{
+			Master:         "0:" + repeatHex("ab"),
 			WalletCodeHash: asset.GetWalletCodeHash(), Network: sampleRef().Network,
 			Workchain: asset.GetMaster().GetWorkchain(), MasterCodeHash: asset.GetMaster().GetCodeHash(),
-			Decimals: asset.GetDecimals()},
+			Decimals: asset.GetDecimals(),
+		},
 		MaxAtomicPurchase: 100_000_000,
 		DailyBudgetAtomic: 100_000_000,
 		Window:            24 * time.Hour,
@@ -181,7 +204,12 @@ func repeatHex(pair string) string {
 // providerHandler builds the real provider execution path for one task exactly
 // as the receiver adapters do: shared Gate claim (Evidence) -> runner execute
 // (Outcome) -> post-execution Settler (Receipt -> escrow release).
-func providerHandler(t *testing.T, gate *atMostOnceGate, ledger *memLedger, sub ledgerReleaseSubmitter) func(context.Context, servicebridge.Task) error {
+func providerHandler(
+	t *testing.T,
+	gate *atMostOnceGate,
+	ledger *memLedger,
+	sub ledgerReleaseSubmitter,
+) func(context.Context, servicebridge.Task) error {
 	t.Helper()
 	settler, err := NewEscrowReleaseSettler(ledger, &fakeExecSigner{}, sub)
 	if err != nil {
@@ -189,11 +217,17 @@ func providerHandler(t *testing.T, gate *atMostOnceGate, ledger *memLedger, sub 
 	}
 	runner := &fakeRunner{outcome: sampleOutcome()}
 	return func(ctx context.Context, task servicebridge.Task) error {
-		evidence, err := gate.ClaimExecution(ctx, executiongate.Request{QuoteCommitment: task.QuoteCommitment, EscrowAddress: task.EscrowAddress})
+		evidence, err := gate.ClaimExecution(
+			ctx,
+			executiongate.Request{QuoteCommitment: task.QuoteCommitment, EscrowAddress: task.EscrowAddress},
+		)
 		if err != nil {
 			return err
 		}
-		outcome, err := runner.Execute(ctx, softwarework.Request{QuoteCommitment: task.QuoteCommitment, ExecutionID: task.ExecutionID})
+		outcome, err := runner.Execute(
+			ctx,
+			softwarework.Request{QuoteCommitment: task.QuoteCommitment, ExecutionID: task.ExecutionID},
+		)
 		if err != nil {
 			return err
 		}
@@ -229,7 +263,11 @@ func TestBridgeClosesTheFullPaidLoop(t *testing.T) {
 	}
 
 	buildTask := func(aq servicebridge.AcceptedQuote) (servicebridge.Task, error) {
-		return servicebridge.Task{EscrowAddress: aq.EscrowAddress, QuoteCommitment: aq.QuoteCommitment, ExecutionID: "sha256:" + hex64}, nil
+		return servicebridge.Task{
+			EscrowAddress:   aq.EscrowAddress,
+			QuoteCommitment: aq.QuoteCommitment,
+			ExecutionID:     "sha256:" + hex64,
+		}, nil
 	}
 
 	settlement, err := buyer.Purchase(context.Background(), sampleRef(), servicebridge.TransportA2A, buildTask)

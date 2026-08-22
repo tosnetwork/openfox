@@ -120,7 +120,8 @@ func (c *Client) Authorize(ctx context.Context, action actionauth.Action) error 
 		len(action.DerivedFrom) > actionauth.MaxProvenance {
 		return fmt.Errorf("%w: malformed OpenFox action", ErrRefused)
 	}
-	if (action.Effect == actionauth.EffectToolCall || action.Effect == actionauth.EffectPhysicalIO) && len(action.IdempotencyKey) != len("idem_")+64 {
+	if (action.Effect == actionauth.EffectToolCall || action.Effect == actionauth.EffectPhysicalIO) &&
+		len(action.IdempotencyKey) != len("idem_")+64 {
 		return fmt.Errorf("%w: tool call has no canonical invocation key", ErrRefused)
 	}
 	if action.Effect == actionauth.EffectPhysicalIO && (action.Physical == nil || !action.Physical.Valid()) {
@@ -147,8 +148,10 @@ func (c *Client) Authorize(ctx context.Context, action actionauth.Action) error 
 		return fmt.Errorf("%w: %s", ErrRefused, asked.Detail)
 	}
 	if asked.Authorized {
-		if action.Effect == actionauth.EffectToolCall || action.Effect == actionauth.EffectPhysicalIO || action.Effect == actionauth.EffectSpend ||
-			action.Effect == actionauth.EffectKeyUse || action.Effect == actionauth.EffectConfiguration {
+		if action.Effect == actionauth.EffectToolCall || action.Effect == actionauth.EffectPhysicalIO ||
+			action.Effect == actionauth.EffectSpend ||
+			action.Effect == actionauth.EffectKeyUse ||
+			action.Effect == actionauth.EffectConfiguration {
 			return fmt.Errorf("%w: Messenger returned an inline authorization for a one-shot effect", ErrRefused)
 		}
 		return nil

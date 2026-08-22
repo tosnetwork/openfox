@@ -21,16 +21,24 @@ func writeSignedSpendingPolicy(t *testing.T) string {
 		t.Fatal(err)
 	}
 	signature := ed25519.Sign(privateKey, message)
-	document := spendingPolicyDocument{Schema: "tos.openfox.spending-policy.v1",
+	document := spendingPolicyDocument{
+		Schema:            "tos.openfox.spending-policy.v1",
 		OwnerPublicKeyHex: hex.EncodeToString(privateKey.Public().(ed25519.PublicKey)),
 		OwnerSignatureHex: hex.EncodeToString(signature), Asset: spendingPolicyAsset{
-			Master: policy.Asset.Master, WalletCodeHash: policy.Asset.WalletCodeHash,
-			Network: spendingPolicyNetwork{ID: policy.Asset.Network.ID,
-				GenesisRootHash: policy.Asset.Network.GenesisRootHash, GenesisFileHash: policy.Asset.Network.GenesisFileHash},
-			Workchain: policy.Asset.Workchain, MasterCodeHash: policy.Asset.MasterCodeHash, Decimals: policy.Asset.Decimals,
+			Master:         policy.Asset.Master,
+			WalletCodeHash: policy.Asset.WalletCodeHash,
+			Network: spendingPolicyNetwork{
+				ID:              policy.Asset.Network.ID,
+				GenesisRootHash: policy.Asset.Network.GenesisRootHash,
+				GenesisFileHash: policy.Asset.Network.GenesisFileHash,
+			},
+			Workchain:      policy.Asset.Workchain,
+			MasterCodeHash: policy.Asset.MasterCodeHash,
+			Decimals:       policy.Asset.Decimals,
 		}, MaxAtomicPurchase: policy.MaxAtomicPurchase, DailyBudgetAtomic: policy.DailyBudgetAtomic,
 		WindowSeconds: uint64(policy.Window.Seconds()), ExpiryUnix: policy.Expiry.Unix(),
-		CapabilityAllow: []string{"cap_" + hex64}, ConfirmationMode: policy.ConfirmationMode}
+		CapabilityAllow: []string{"cap_" + hex64}, ConfirmationMode: policy.ConfirmationMode,
+	}
 	raw, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		t.Fatal(err)

@@ -44,8 +44,10 @@ func ResolveDNSNameInput(
 		return nil, err
 	}
 	response, err := client.ResolveDNSAlias(ctx, &nativev1.ResolveDNSAliasRequest{
-		Context: &nativev1.RequestContext{RequestId: requestID, CallerId: callerID,
-			DeadlineUnixMillis: now.Add(30 * time.Second).UnixMilli()},
+		Context: &nativev1.RequestContext{
+			RequestId: requestID, CallerId: callerID,
+			DeadlineUnixMillis: now.Add(30 * time.Second).UnixMilli(),
+		},
 		Name: name, Kind: kind,
 	})
 	if err != nil {
@@ -57,7 +59,13 @@ func ResolveDNSNameInput(
 	return response, nil
 }
 
-func validateDNSAliasEvidence(response *nativev1.ResolveDNSAliasResponse, network *nativev1.NetworkDomain, name string, kind nativev1.DNSAliasKindV1, now uint64) error {
+func validateDNSAliasEvidence(
+	response *nativev1.ResolveDNSAliasResponse,
+	network *nativev1.NetworkDomain,
+	name string,
+	kind nativev1.DNSAliasKindV1,
+	now uint64,
+) error {
 	if response == nil || response.CanonicalName != name || response.Kind != kind ||
 		response.Provenance != nativev1.DNSProvenanceV1_DNS_PROVENANCE_V1_QUORUM_AGREED ||
 		response.NativeState == nil || response.ResolvedAccount == nil {

@@ -35,9 +35,11 @@ func TestInvocationContextCopiesProvenance(t *testing.T) {
 }
 
 func TestPhysicalOperationRequiresReviewableCanonicalArguments(t *testing.T) {
-	valid := PhysicalOperation{CapabilityID: "cap_" + strings.Repeat("a", 64), Tool: "i2c", Operation: "read",
+	valid := PhysicalOperation{
+		CapabilityID: "cap_" + strings.Repeat("a", 64), Tool: "i2c", Operation: "read",
 		ArgumentsDigest: "sha256:16384135fc236bb03583cf3024b9fb573cc1ae45f908a98d0601d2ab45f8cfbe",
-		ArgumentsJSON:   `{"action":"read"}`}
+		ArgumentsJSON:   `{"action":"read"}`,
+	}
 	if !valid.Valid() {
 		t.Fatal("valid physical operation was refused")
 	}

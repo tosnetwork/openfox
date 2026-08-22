@@ -39,7 +39,11 @@ type EscrowReleaseSettler struct {
 }
 
 // NewEscrowReleaseSettler validates its collaborators and returns a settler.
-func NewEscrowReleaseSettler(escrow finalizedEscrowReader, signer ExecutionSigner, submit ReleaseSubmitter) (*EscrowReleaseSettler, error) {
+func NewEscrowReleaseSettler(
+	escrow finalizedEscrowReader,
+	signer ExecutionSigner,
+	submit ReleaseSubmitter,
+) (*EscrowReleaseSettler, error) {
 	if escrow == nil || signer == nil || submit == nil {
 		return nil, errors.New("nativeimpl: escrow release settler needs an escrow reader, a signer, and a submitter")
 	}
@@ -49,7 +53,11 @@ func NewEscrowReleaseSettler(escrow finalizedEscrowReader, signer ExecutionSigne
 // Settle releases escrow for one completed execution. It fails closed on any
 // mismatch between the outcome, the Gate evidence, and the finalized escrow, so
 // a release is only ever built for a funded escrow bound to exactly this quote.
-func (s *EscrowReleaseSettler) Settle(ctx context.Context, evidence executiongate.Evidence, outcome softwarework.Outcome) error {
+func (s *EscrowReleaseSettler) Settle(
+	ctx context.Context,
+	evidence executiongate.Evidence,
+	outcome softwarework.Outcome,
+) error {
 	if evidence.EscrowAddress == "" || evidence.ProviderAgentID == "" {
 		return errors.New("nativeimpl: settlement evidence is missing escrow or provider identity")
 	}
@@ -80,16 +88,30 @@ func (s *EscrowReleaseSettler) Settle(ctx context.Context, evidence executiongat
 	queryID := deterministicQueryID(outcome.ExecutionID)
 
 	receipt, _, err := nativecore.BuildSoftwareWorkReceiptCellV1(nativecore.SoftwareWorkReceiptV1{
-		QuoteCommitment: outcome.QuoteCommitment, ExecutionID: outcome.ExecutionID, InputDigest: outcome.InputDigest,
-		ResultDigest: outcome.ResultDigest, ArtifactDigest: outcome.Artifact.Digest, ReportDigest: outcome.Report.Digest,
-		SourceDigest: outcome.SourceDigest, ToolchainDigest: outcome.ToolchainDigest, SandboxDigest: outcome.SandboxDigest,
-		ChargedAtomicAmount: charged.String(), ProviderAgentID: evidence.ProviderAgentID,
-		CompletedAt: outcome.CompletedAtUnix, ExitCode: int32(outcome.ExitCode),
+		QuoteCommitment:     outcome.QuoteCommitment,
+		ExecutionID:         outcome.ExecutionID,
+		InputDigest:         outcome.InputDigest,
+		ResultDigest:        outcome.ResultDigest,
+		ArtifactDigest:      outcome.Artifact.Digest,
+		ReportDigest:        outcome.Report.Digest,
+		SourceDigest:        outcome.SourceDigest,
+		ToolchainDigest:     outcome.ToolchainDigest,
+		SandboxDigest:       outcome.SandboxDigest,
+		ChargedAtomicAmount: charged.String(),
+		ProviderAgentID:     evidence.ProviderAgentID,
+		CompletedAt:         outcome.CompletedAtUnix,
+		ExitCode:            int32(outcome.ExitCode),
 	})
 	if err != nil {
 		return err
 	}
-	intent, err := nativecore.BuildEscrowSettlementIntentV1(evidence.EscrowAddress, state.AcceptedQuote, receipt, charged, queryID)
+	intent, err := nativecore.BuildEscrowSettlementIntentV1(
+		evidence.EscrowAddress,
+		state.AcceptedQuote,
+		receipt,
+		charged,
+		queryID,
+	)
 	if err != nil {
 		return err
 	}

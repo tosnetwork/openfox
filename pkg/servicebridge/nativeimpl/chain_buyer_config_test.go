@@ -47,17 +47,23 @@ func writeChainBuyerConfig(t *testing.T) string {
 	if err := os.WriteFile(tosctlConfig, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	document := chainBuyerConfigDocument{Schema: "tos.openfox.chain-buyer-config.v1", StateDir: state,
+	document := chainBuyerConfigDocument{
+		Schema: "tos.openfox.chain-buyer-config.v1", StateDir: state,
 		Network: base.Network, Endpoints: base.Endpoints, RegistryCodeBOCPath: writeCode("registry.boc", registry),
 		RegistryCodeHash: base.RegistryCodeHash, EscrowCodeBOCPath: writeCode("escrow.boc", base.EscrowCode),
 		EscrowCodeHash: base.EscrowCodeHash, AssetWalletCodeBOCPath: writeCode("wallet.boc", base.AssetWalletCode),
 		BuyerAddress: base.BuyerAddress, BuyerAgentID: base.BuyerAgentID,
-		Budget: chainBuyerBudget{WindowSeconds: 86400, MaxPurchases: 4,
-			MaxPerPurchaseAtomic: "100", MaxTotalAtomic: "300"},
+		Budget: chainBuyerBudget{
+			WindowSeconds: 86400, MaxPurchases: 4,
+			MaxPerPurchaseAtomic: "100", MaxTotalAtomic: "300",
+		},
 		PollIntervalMilliseconds: 10, FinalityTimeoutSeconds: 2,
-		TOSCTL: chainBuyerTOSCTL{BinaryPath: binary, ConfigPath: tosctlConfig, WalletName: "buyer",
+		TOSCTL: chainBuyerTOSCTL{
+			BinaryPath: binary, ConfigPath: tosctlConfig, WalletName: "buyer",
 			DeploymentAttachedNanoTOS: 100_000_000, FundingAttachedNanoTOS: 100_000_000,
-			FundingForwardNanoTOS: 50_000_000, TimeoutSeconds: 2}}
+			FundingForwardNanoTOS: 50_000_000, TimeoutSeconds: 2,
+		},
+	}
 	raw, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +80,8 @@ func TestLoadChainBuyerStackBuildsReviewedCustodyGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stack == nil || stack.SDK == nil || stack.Escrow == nil || stack.Deployer == nil || stack.Capability != stack.SDK {
+	if stack == nil || stack.SDK == nil || stack.Escrow == nil || stack.Deployer == nil ||
+		stack.Capability != stack.SDK {
 		t.Fatalf("stack = %+v", stack)
 	}
 }

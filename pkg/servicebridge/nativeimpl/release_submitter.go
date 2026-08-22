@@ -76,7 +76,11 @@ func NewTOSCTLReleaseSubmitter(c TOSCTLReleaseSubmitterConfig) (*TOSCTLReleaseSu
 // tosctl prepares a message that does not match the exact release the settler
 // signed — same body, same escrow destination, same provider payer — so a
 // tampered or misdirected broadcast is refused rather than submitted.
-func (s *TOSCTLReleaseSubmitter) SubmitRelease(ctx context.Context, escrowAddress string, releaseBody *cell.Cell) error {
+func (s *TOSCTLReleaseSubmitter) SubmitRelease(
+	ctx context.Context,
+	escrowAddress string,
+	releaseBody *cell.Cell,
+) error {
 	if s == nil || ctx == nil || releaseBody == nil || !isRawWorkchainZero(escrowAddress) {
 		return errors.New("nativeimpl: invalid escrow release broadcast request")
 	}

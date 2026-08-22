@@ -14,9 +14,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	"github.com/tosnetwork/tos-ai/pkg/agentpacketadapter"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentpacket"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 // packetPoster delivers a signed packet to the provider endpoint. agentpacket.Post
@@ -67,13 +68,19 @@ func NewAgentPacketTaskTransport(c AgentPacketTransportConfig) (*AgentPacketTask
 // Dispatch delivers the bound Task as a signed Agent Packet. It handles only
 // TransportAgentPacket and fails closed on any other transport or an
 // insufficiently bound task before signing or sending anything.
-func (t *AgentPacketTaskTransport) Dispatch(ctx context.Context, transport servicebridge.Transport, task servicebridge.Task) error {
+func (t *AgentPacketTaskTransport) Dispatch(
+	ctx context.Context,
+	transport servicebridge.Transport,
+	task servicebridge.Task,
+) error {
 	if transport != servicebridge.TransportAgentPacket {
 		return errors.New("nativeimpl: Agent Packet transport was asked to dispatch a non-packet transport")
 	}
 	if task.EscrowAddress == "" || task.QuoteCommitment == "" || task.ExecutionID == "" ||
 		task.InputDigest == "" || len(task.SourceArchive) == 0 {
-		return errors.New("nativeimpl: Agent Packet dispatch needs a fully bound task (escrow, quote, execution, input, source)")
+		return errors.New(
+			"nativeimpl: Agent Packet dispatch needs a fully bound task (escrow, quote, execution, input, source)",
+		)
 	}
 	sourceHash := sha256.Sum256(task.SourceArchive)
 	payload, err := json.Marshal(agentPacketWorkPayload{
@@ -119,11 +126,13 @@ type agentPacketWorkPayload struct {
 
 func validPacketEndpoint(endpoint string) bool {
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed == nil || parsed.User != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || parsed == nil || parsed.User != nil || parsed.Host == "" || parsed.RawQuery != "" ||
+		parsed.Fragment != "" {
 		return false
 	}
 	if parsed.Scheme == "https" {
 		return true
 	}
-	return parsed.Scheme == "http" && (parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "localhost" || parsed.Hostname() == "::1")
+	return parsed.Scheme == "http" &&
+		(parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "localhost" || parsed.Hostname() == "::1")
 }

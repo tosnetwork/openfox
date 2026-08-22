@@ -21,6 +21,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	nativeimpl "github.com/tosnetwork/openfox/pkg/servicebridge/nativeimpl"
 )
@@ -73,7 +74,8 @@ func run() error {
 
 	var document fundedTask
 	encoded, err := os.ReadFile(taskPath)
-	if err != nil || json.Unmarshal(encoded, &document) != nil || document.Schema != "tos.service.local-funded-task.v1" {
+	if err != nil || json.Unmarshal(encoded, &document) != nil ||
+		document.Schema != "tos.service.local-funded-task.v1" {
 		return errors.New("read funded task")
 	}
 	archive, err := os.ReadFile(document.SourceArchive)
@@ -84,9 +86,11 @@ func run() error {
 	if "sha256:"+hex.EncodeToString(hash[:]) != document.SourceDigest {
 		return errors.New("source archive digest mismatch")
 	}
-	task := servicebridge.Task{EscrowAddress: document.EscrowAddress, QuoteCommitment: document.QuoteCommitment,
+	task := servicebridge.Task{
+		EscrowAddress: document.EscrowAddress, QuoteCommitment: document.QuoteCommitment,
 		ExecutionID: document.ExecutionID, InputDigest: document.InputDigest, SourceDigest: document.SourceDigest,
-		SourceArchive: archive}
+		SourceArchive: archive,
+	}
 
 	ca, err := os.ReadFile(caPath)
 	if err != nil {
@@ -101,7 +105,8 @@ func run() error {
 		return errors.New("read bearer token")
 	}
 	client := &http.Client{Transport: bearerRoundTripper{token: strings.TrimSpace(string(token)), base: &http.Transport{
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots}}}}
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots},
+	}}}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
@@ -115,8 +120,10 @@ func run() error {
 	case "mcp":
 		mcpClient := mcp.NewClient(&mcp.Implementation{Name: "tos-service-local-buyer", Version: "1.0.0"}, nil)
 		var session *mcp.ClientSession
-		session, err = mcpClient.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: client,
-			DisableStandaloneSSE: true, MaxRetries: -1}, nil)
+		session, err = mcpClient.Connect(ctx, &mcp.StreamableClientTransport{
+			Endpoint: endpoint, HTTPClient: client,
+			DisableStandaloneSSE: true, MaxRetries: -1,
+		}, nil)
 		if err == nil {
 			dispatch, err = nativeimpl.NewMCPTaskTransport(session)
 			closeSession = session.Close
@@ -156,8 +163,16 @@ func run() error {
 		ExecutionID     string `json:"execution_id"`
 		SourceDigest    string `json:"source_digest"`
 		CompletedAtUnix int64  `json:"completed_at_unix"`
-	}{"tos.service.local-provider-dispatch.v1", "PASS_REAL_PROVIDER_DISPATCH", transportName,
-		document.EscrowAddress, document.QuoteCommitment, document.ExecutionID, document.SourceDigest, time.Now().Unix()}
+	}{
+		"tos.service.local-provider-dispatch.v1",
+		"PASS_REAL_PROVIDER_DISPATCH",
+		transportName,
+		document.EscrowAddress,
+		document.QuoteCommitment,
+		document.ExecutionID,
+		document.SourceDigest,
+		time.Now().Unix(),
+	}
 	body, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {
 		return err

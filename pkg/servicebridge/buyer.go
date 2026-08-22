@@ -31,9 +31,11 @@ type Buyer struct {
 
 var (
 	ErrBuyerMisconfigured = errors.New("servicebridge: buyer is missing a required component")
-	ErrFundingAmbiguous   = errors.New("servicebridge: escrow funding did not reach the exact quoted amount in finalized state")
-	ErrManualNoConfirmer  = errors.New("servicebridge: manual policy has no confirmer")
-	ErrSettlementPending  = errors.New("servicebridge: finalized settlement is not terminal yet")
+	ErrFundingAmbiguous   = errors.New(
+		"servicebridge: escrow funding did not reach the exact quoted amount in finalized state",
+	)
+	ErrManualNoConfirmer = errors.New("servicebridge: manual policy has no confirmer")
+	ErrSettlementPending = errors.New("servicebridge: finalized settlement is not terminal yet")
 )
 
 func (b *Buyer) now() time.Time {
@@ -51,7 +53,12 @@ func (b *Buyer) ready() bool {
 // Purchase runs the eight-step buyer flow and returns the finalized settlement.
 // It dispatches the task on the given transport only after finalized funding,
 // and never re-funds after the single funding lease.
-func (b *Buyer) Purchase(ctx context.Context, ref CapabilityRef, transport Transport, buildTask TaskBuilder) (Settlement, error) {
+func (b *Buyer) Purchase(
+	ctx context.Context,
+	ref CapabilityRef,
+	transport Transport,
+	buildTask TaskBuilder,
+) (Settlement, error) {
 	if !b.ready() || buildTask == nil {
 		return Settlement{}, ErrBuyerMisconfigured
 	}
@@ -96,18 +103,18 @@ func (b *Buyer) Purchase(ctx context.Context, ref CapabilityRef, transport Trans
 		if b.Confirm == nil {
 			return Settlement{}, ErrManualNoConfirmer
 		}
-		if err := b.Confirm.Confirm(ctx, proposal); err != nil {
-			return Settlement{}, err
+		if confirmErr := b.Confirm.Confirm(ctx, proposal); confirmErr != nil {
+			return Settlement{}, confirmErr
 		}
 	} else if authErr != nil {
 		return Settlement{}, authErr
 	}
 
 	// Step 6: atomic slot+budget claim, single funding lease, exact finalized funding.
-	if _, err := b.Journal.Begin(PurchaseRecord{
+	if _, beginErr := b.Journal.Begin(PurchaseRecord{
 		Key: key, AssetMaster: proposal.Asset.Master, AtomicAmount: proposal.MaxAtomicAmount,
-	}, now); err != nil {
-		return Settlement{}, err
+	}, now); beginErr != nil {
+		return Settlement{}, beginErr
 	}
 
 	acquired, rec, err := b.Journal.AcquireFundingLease(key)
@@ -116,10 +123,10 @@ func (b *Buyer) Purchase(ctx context.Context, ref CapabilityRef, transport Trans
 	}
 	if acquired {
 		// Only the lease holder may broadcast a funding message.
-		if err := b.Signer.SignAndFundEscrow(ctx, aq); err != nil {
+		if fundErr := b.Signer.SignAndFundEscrow(ctx, aq); fundErr != nil {
 			// A broadcast error is ambiguous; recovery below re-resolves finalized
 			// state and never re-funds because the phase is already FundingLease.
-			return Settlement{}, err
+			return Settlement{}, fundErr
 		}
 	} else if rec.Phase == PhaseFundingLease {
 		// Crash/recovery: another attempt already leased and may have broadcast.
@@ -138,18 +145,18 @@ func (b *Buyer) Purchase(ctx context.Context, ref CapabilityRef, transport Trans
 	if err != nil {
 		return Settlement{}, err
 	}
-	if err := b.QuoteVerifier.VerifyAcceptedQuote(
+	if verifyErr := b.QuoteVerifier.VerifyAcceptedQuote(
 		ctx, aq.QuoteCommitment, aq.EscrowAddress, expectedTerms,
-	); err != nil {
-		return Settlement{}, err
+	); verifyErr != nil {
+		return Settlement{}, verifyErr
 	}
 	current, ok := b.Journal.Get(key)
 	if !ok {
 		return Settlement{}, ErrJournalMissing
 	}
 	if current.Phase.Order() < PhaseFunded.Order() {
-		if err := b.Journal.Advance(key, PhaseFunded); err != nil {
-			return Settlement{}, err
+		if advanceErr := b.Journal.Advance(key, PhaseFunded); advanceErr != nil {
+			return Settlement{}, advanceErr
 		}
 		current, _ = b.Journal.Get(key)
 	}
@@ -157,18 +164,18 @@ func (b *Buyer) Purchase(ctx context.Context, ref CapabilityRef, transport Trans
 	// Step 7: dispatch the bound task only after finalized funding. The shared
 	// execution Gate guarantees at-most-once across all transports.
 	if current.Phase.Order() < PhaseExecution.Order() {
-		task, err := buildTask(aq)
-		if err != nil {
-			return Settlement{}, err
+		task, taskErr := buildTask(aq)
+		if taskErr != nil {
+			return Settlement{}, taskErr
 		}
 		if task.QuoteCommitment != aq.QuoteCommitment || task.EscrowAddress != aq.EscrowAddress {
 			return Settlement{}, errors.New("servicebridge: built task does not bind the accepted quote")
 		}
-		if err := b.Transport.Dispatch(ctx, transport, task); err != nil {
-			return Settlement{}, err
+		if dispatchErr := b.Transport.Dispatch(ctx, transport, task); dispatchErr != nil {
+			return Settlement{}, dispatchErr
 		}
-		if err := b.Journal.Advance(key, PhaseExecution); err != nil {
-			return Settlement{}, err
+		if advanceErr := b.Journal.Advance(key, PhaseExecution); advanceErr != nil {
+			return Settlement{}, advanceErr
 		}
 	}
 

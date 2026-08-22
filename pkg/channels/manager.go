@@ -2055,13 +2055,17 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 		for _, chunk := range chunks {
 			chunkMsg := msg
 			chunkMsg.Content = chunk
-			m.sendWithRetry(ctx, channelName, w, chunkMsg)
+			if _, ok := m.sendWithRetry(ctx, channelName, w, chunkMsg); !ok {
+				return fmt.Errorf("%w: channel %s", ErrSendFailed, channelName)
+			}
 		}
 	} else {
 		if len(chunks) == 1 {
 			msg.Content = chunks[0]
 		}
-		m.sendWithRetry(ctx, channelName, w, msg)
+		if _, ok := m.sendWithRetry(ctx, channelName, w, msg); !ok {
+			return fmt.Errorf("%w: channel %s", ErrSendFailed, channelName)
+		}
 	}
 	return nil
 }

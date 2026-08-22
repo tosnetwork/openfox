@@ -24,6 +24,8 @@ type SendCallbackWithContext func(
 	mediaParts []bus.MediaPart,
 ) error
 
+type SendRecipientCallback func(ctx context.Context, channel, recipient, content string) error
+
 type messageMediaArg struct {
 	Path     string
 	Type     string
@@ -38,6 +40,7 @@ type sentTarget struct {
 
 type MessageTool struct {
 	sendCallback      SendCallbackWithContext
+	recipientCallback SendRecipientCallback
 	workspace         string
 	restrict          bool
 	maxFileSize       int
@@ -82,6 +85,10 @@ func (t *MessageTool) Parameters() map[string]any {
 		"reply_to_message_id": map[string]any{
 			"type":        "string",
 			"description": "Optional: reply target message ID for channels that support threaded replies",
+		},
+		"recipient": map[string]any{
+			"type":        "string",
+			"description": "Optional high-level recipient identity (for example agent_<id> or alice.tos). Mutually exclusive with chat_id and reply_to_message_id.",
 		},
 	}
 	params := map[string]any{
@@ -177,6 +184,10 @@ func (t *MessageTool) SetSendCallback(callback SendCallbackWithContext) {
 	t.sendCallback = callback
 }
 
+func (t *MessageTool) SetRecipientSendCallback(callback SendRecipientCallback) {
+	t.recipientCallback = callback
+}
+
 func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
 	content, _ := args["content"].(string)
 	content = strings.TrimSpace(content)
@@ -197,6 +208,27 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 	channel, _ := args["channel"].(string)
 	chatID, _ := args["chat_id"].(string)
 	replyToMessageID, _ := args["reply_to_message_id"].(string)
+	recipient, _ := args["recipient"].(string)
+	recipient = strings.TrimSpace(recipient)
+	if recipient != "" {
+		if channel == "" || chatID != "" || replyToMessageID != "" || len(mediaArgs) != 0 {
+			return &ToolResult{
+				ForLLM:  "recipient requires an explicit channel and cannot be combined with chat_id, reply_to_message_id, or media",
+				IsError: true,
+			}
+		}
+		if t.recipientCallback == nil {
+			return &ToolResult{ForLLM: "Recipient messaging not configured", IsError: true}
+		}
+		if err := t.recipientCallback(ctx, channel, recipient, content); err != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("sending message: %v", err), IsError: true, Err: err}
+		}
+		sessionKey := ToolSessionKey(ctx)
+		t.mu.Lock()
+		t.sentTargets[sessionKey] = append(t.sentTargets[sessionKey], sentTarget{Channel: channel, ChatID: recipient})
+		t.mu.Unlock()
+		return &ToolResult{ForLLM: fmt.Sprintf("Message sent to %s recipient %s", channel, recipient), Silent: true}
+	}
 
 	if channel == "" {
 		channel = ToolChannel(ctx)

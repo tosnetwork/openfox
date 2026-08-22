@@ -4,6 +4,9 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -219,6 +222,37 @@ func registerSharedTools(
 				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer pubCancel()
 				return msgBus.PublishOutbound(pubCtx, outboundMessage)
+			})
+			messageTool.SetRecipientSendCallback(func(ctx context.Context, channel, recipient, content string) error {
+				if channel != config.ChannelTOSMessenger {
+					return fmt.Errorf("high-level recipient intent is supported only by %s", config.ChannelTOSMessenger)
+				}
+				outboundAgentID, outboundSessionKey, outboundScope := outboundTurnMetadata(
+					tools.ToolAgentID(ctx), tools.ToolSessionKey(ctx), tools.ToolSessionScope(ctx),
+				)
+				seed := tools.ToolMessageID(ctx)
+				if seed == "" {
+					var nonce [32]byte
+					if _, err := rand.Read(nonce[:]); err != nil {
+						return fmt.Errorf("create recipient delivery identity: %w", err)
+					}
+					seed = hex.EncodeToString(nonce[:])
+				}
+				digest := sha256.Sum256(
+					[]byte(
+						outboundAgentID + "\x00" + outboundSessionKey + "\x00" + seed + "\x00" + channel + "\x00" + content,
+					),
+				)
+				message := bus.OutboundMessage{
+					Channel: channel, Context: bus.NewOutboundContext(channel, "", ""),
+					AgentID: outboundAgentID, SessionKey: outboundSessionKey, Scope: outboundScope,
+					Content: content, Recipient: recipient,
+					DeliveryIntentID: "intent_" + hex.EncodeToString(digest[:]),
+				}
+				if al.channelManager != nil {
+					return al.channelManager.SendMessage(ctx, message)
+				}
+				return msgBus.PublishOutbound(ctx, message)
 			})
 			agent.Tools.RegisterWithEffect(messageTool, actionauth.EffectMessage)
 		}

@@ -36,8 +36,9 @@ var ErrOutboundUnavailable = errors.New(
 )
 
 var (
-	sessionPattern = regexp.MustCompile(`^ses_[0-9a-f]{64}$`)
-	uploadPattern  = regexp.MustCompile(`^attup_[0-9a-f]{64}$`)
+	sessionPattern        = regexp.MustCompile(`^ses_[0-9a-f]{64}$`)
+	uploadPattern         = regexp.MustCompile(`^attup_[0-9a-f]{64}$`)
+	deliveryIntentPattern = regexp.MustCompile(`^intent_[0-9a-f]{64}$`)
 )
 
 type Channel struct {
@@ -47,6 +48,7 @@ type Channel struct {
 	lease       uint64
 	timeout     time.Duration
 	routes      map[string]config.TOSMessengerRoute
+	agentRoutes map[string]config.TOSMessengerRoute
 	attachments bool
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
@@ -73,6 +75,7 @@ func New(bc *config.Channel, settings *config.TOSMessengerSettings, messageBus *
 		return nil, errors.New("tos_messenger lease is outside 5..300 seconds")
 	}
 	routes := make(map[string]config.TOSMessengerRoute, len(settings.Routes))
+	agentRoutes := make(map[string]config.TOSMessengerRoute, len(settings.Routes))
 	for _, route := range settings.Routes {
 		if route.ChatID == "" || !conversationPattern.MatchString(route.ConversationID) ||
 			!sessionPattern.MatchString(route.SessionID) || !endpointPattern.MatchString(route.RecipientEndpointID) {
@@ -85,6 +88,14 @@ func New(bc *config.Channel, settings *config.TOSMessengerSettings, messageBus *
 		} else if !roomPattern.MatchString(route.RoomID) || route.ChatID != route.RoomID || route.MembershipEpoch == 0 {
 			return nil, errors.New("tos_messenger room route must bind chat_id, room_id, and membership_epoch")
 		}
+		if route.RecipientAgentID != "" {
+			if route.RoomID != "" || !agentPattern.MatchString(route.RecipientAgentID) {
+				return nil, errors.New("tos_messenger proactive route needs a canonical AgentID and must be direct")
+			}
+			if _, duplicate := agentRoutes[route.RecipientAgentID]; duplicate {
+				return nil, errors.New("tos_messenger has duplicate recipient Agent route")
+			}
+		}
 		if route.LifetimeSeconds == 0 {
 			route.LifetimeSeconds = 24 * 60 * 60
 		}
@@ -95,11 +106,14 @@ func New(bc *config.Channel, settings *config.TOSMessengerSettings, messageBus *
 			return nil, errors.New("tos_messenger has duplicate chat route")
 		}
 		routes[route.ChatID] = route
+		if route.RecipientAgentID != "" {
+			agentRoutes[route.RecipientAgentID] = route
+		}
 	}
 	return &Channel{
 		BaseChannel: channels.NewBaseChannel(config.ChannelTOSMessenger, settings, messageBus, bc.AllowFrom),
 		settings:    settings, interval: interval, lease: uint64(lease), timeout: 10 * time.Second,
-		routes: routes, attachments: settings.EnableAttachments,
+		routes: routes, agentRoutes: agentRoutes, attachments: settings.EnableAttachments,
 	}, nil
 }
 
@@ -128,8 +142,45 @@ func (c *Channel) Send(ctx context.Context, message bus.OutboundMessage) ([]stri
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}
-	route, known := c.routes[message.ChatID]
 	origin := message.Context.AuthenticatedMessagingOrigin
+	if message.Recipient != "" {
+		if origin != nil || message.ChatID != "" || message.ReplyToMessageID != "" || message.Content == "" ||
+			!deliveryIntentPattern.MatchString(message.DeliveryIntentID) {
+			return nil, ErrOutboundUnavailable
+		}
+		resolved, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
+			Op: "contacts.resolve", Recipient: message.Recipient,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !agentPattern.MatchString(resolved.AgentID) {
+			return nil, errors.New("Messenger contact resolution returned no canonical AgentID")
+		}
+		route, known := c.agentRoutes[resolved.AgentID]
+		if !known {
+			return nil, errors.New("no operator route for resolved Messenger AgentID")
+		}
+		idempotencyDigest := sha256.Sum256([]byte(
+			"openfox.tos-messenger.proactive-idempotency.v1\x00" + message.DeliveryIntentID + "\x00" +
+				resolved.AgentID + "\x00" + message.Content,
+		))
+		response, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
+			Op: "outbox.compose", ConversationID: route.ConversationID,
+			MediaType: "text/plain; charset=utf-8", Body: message.Content,
+			IdempotencyKey: "idem_" + hex.EncodeToString(idempotencyDigest[:]), SessionID: route.SessionID,
+			RecipientEndpointID: route.RecipientEndpointID, RecipientAgentID: resolved.AgentID,
+			ExpiresAtUnix: uint64(time.Now().Add(time.Duration(route.LifetimeSeconds) * time.Second).Unix()),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !eventPattern.MatchString(response.EventID) {
+			return nil, errors.New("Messenger compose returned no canonical Event ID")
+		}
+		return []string{response.EventID}, nil
+	}
+	route, known := c.routes[message.ChatID]
 	if !known || origin == nil || origin.EventID != message.Context.MessageID ||
 		!eventPattern.MatchString(origin.EventID) || origin.ReceivedAtUnix == 0 || message.Content == "" {
 		return nil, ErrOutboundUnavailable

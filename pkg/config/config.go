@@ -723,7 +723,11 @@ type TOSMessengerRoute struct {
 	MembershipEpoch     uint64 `json:"membership_epoch,omitempty" yaml:"-"`
 	SessionID           string `json:"session_id"                 yaml:"-"`
 	RecipientEndpointID string `json:"recipient_endpoint_id"      yaml:"-"`
-	LifetimeSeconds     uint64 `json:"lifetime_seconds,omitempty" yaml:"-"`
+	// RecipientAgentID is the canonical identity for proactive direct sends.
+	// It is operator-owned and is re-verified by tos-messengerd against the
+	// selected Endpoint; aliases are never stored here.
+	RecipientAgentID string `json:"recipient_agent_id,omitempty" yaml:"-"`
+	LifetimeSeconds  uint64 `json:"lifetime_seconds,omitempty"   yaml:"-"`
 }
 
 // TOSMessengerSettings connects OpenFox to the authenticated daemon runtime

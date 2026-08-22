@@ -75,6 +75,30 @@ func TestMessageTool_Execute_Success(t *testing.T) {
 	}
 }
 
+func TestMessageToolSubmitsOnlyHighLevelRecipientIntent(t *testing.T) {
+	tool := NewMessageTool()
+	var channel, recipient, content string
+	tool.SetRecipientSendCallback(func(_ context.Context, gotChannel, gotRecipient, gotContent string) error {
+		channel, recipient, content = gotChannel, gotRecipient, gotContent
+		return nil
+	})
+	result := tool.Execute(context.Background(), map[string]any{
+		"channel": "tos_messenger", "recipient": "alice.tos", "content": "hello",
+	})
+	if result.IsError || !result.Silent || channel != "tos_messenger" || recipient != "alice.tos" ||
+		content != "hello" {
+		t.Fatalf("recipient send result=%+v channel=%q recipient=%q content=%q", result, channel, recipient, content)
+	}
+	for _, args := range []map[string]any{
+		{"channel": "tos_messenger", "recipient": "alice.tos", "chat_id": "chosen-route", "content": "hello"},
+		{"channel": "tos_messenger", "recipient": "alice.tos", "reply_to_message_id": "evt_model", "content": "hello"},
+	} {
+		if got := tool.Execute(context.Background(), args); !got.IsError {
+			t.Fatalf("recipient intent accepted low-level/ambiguous fields: %+v", args)
+		}
+	}
+}
+
 func TestMessageTool_Execute_WithCustomChannel(t *testing.T) {
 	tool := NewMessageTool()
 

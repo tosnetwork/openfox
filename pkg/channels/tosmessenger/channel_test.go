@@ -315,6 +315,36 @@ func TestSendUsesDaemonCompositionAndStableAuthenticatedOrigin(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedDirectReplyNeedsNoConfiguredRoute(t *testing.T) {
+	path, requests, stop := serveCompose(t, 1)
+	defer stop()
+	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
+		SocketPath: path, ProactiveLifetimeSeconds: 3600,
+	}, bus.NewMessageBus())
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel.SetRunning(true)
+	originEvent := "evt_" + strings.Repeat("a", 64)
+	conversation := "conv_" + strings.Repeat("3", 64)
+	ids, err := channel.Send(context.Background(), bus.OutboundMessage{ChatID: conversation,
+		Content: "route-free reply", ReplyToMessageID: originEvent, Context: bus.InboundContext{
+			MessageID: originEvent, AuthenticatedMessagingOrigin: &actionauth.Origin{
+				AgentID: "agent_" + strings.Repeat("5", 64), EventID: originEvent,
+				ConversationID: conversation, ReceivedAtUnix: 1_800_000_100,
+			},
+		}})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("direct reply: ids=%v err=%v", ids, err)
+	}
+	request := <-requests
+	if request.Op != "messages.reply-direct" || request.ReplyToEventID != originEvent ||
+		request.Recipient != "" || request.ConversationID != "" || request.SessionID != "" ||
+		request.RecipientEndpointID != "" || request.RecipientAgentID != "" {
+		t.Fatalf("direct reply leaked route authority: %+v", request)
+	}
+}
+
 func TestSendRefusesUntrustedOrUnroutedOutput(t *testing.T) {
 	roomID := "room_" + strings.Repeat("9", 64)
 	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
@@ -353,21 +383,10 @@ func TestSendRefusesUntrustedOrUnroutedOutput(t *testing.T) {
 }
 
 func TestProactiveSendCanonicalizesAliasThenUsesOnlyAgentBoundRoute(t *testing.T) {
-	agentA := "agent_" + strings.Repeat("a", 64)
-	agentB := "agent_" + strings.Repeat("b", 64)
-	socket, requests, stop := serveProactiveCompose(t, []string{agentA, agentB})
+	socket, requests, stop := serveProactiveCompose(t, 2)
 	defer stop()
-	route := func(agent, digit string) config.TOSMessengerRoute {
-		conversation := "conv_" + strings.Repeat(digit, 64)
-		return config.TOSMessengerRoute{
-			ChatID: conversation, ConversationID: conversation,
-			SessionID:           "ses_" + strings.Repeat(digit, 64),
-			RecipientEndpointID: "mep_" + strings.Repeat(digit, 64),
-			RecipientAgentID:    agent, LifetimeSeconds: 3600,
-		}
-	}
 	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
-		SocketPath: socket, Routes: []config.TOSMessengerRoute{route(agentA, "1"), route(agentB, "2")},
+		SocketPath: socket, ProactiveLifetimeSeconds: 3600,
 	}, bus.NewMessageBus())
 	if err != nil {
 		t.Fatal(err)
@@ -383,22 +402,16 @@ func TestProactiveSendCanonicalizesAliasThenUsesOnlyAgentBoundRoute(t *testing.T
 			t.Fatalf("proactive send %d: ids=%v err=%v", index, ids, sendErr)
 		}
 	}
-	resolveA, composeA, resolveB, composeB := <-requests, <-requests, <-requests, <-requests
-	if resolveA.Op != "contacts.resolve" || resolveA.Recipient != "alice.tos" || resolveA.SessionID != "" ||
-		resolveA.RecipientEndpointID != "" || resolveA.RecipientAgentID != "" {
-		t.Fatalf("alias crossed authority boundary: %+v", resolveA)
+	first, second := <-requests, <-requests
+	for index, request := range []localRequest{first, second} {
+		if request.Op != "messages.send-direct" || request.Recipient != "alice.tos" ||
+			request.SessionID != "" || request.RecipientEndpointID != "" || request.RecipientAgentID != "" ||
+			request.ConversationID != "" || !strings.HasPrefix(request.IdempotencyKey, "idem_") {
+			t.Fatalf("direct intent %d leaked low-level authority: %+v", index, request)
+		}
 	}
-	if composeA.Op != "outbox.compose" || composeA.Recipient != "" || composeA.RecipientAgentID != agentA ||
-		composeA.RecipientEndpointID != "mep_"+strings.Repeat("1", 64) ||
-		!strings.HasPrefix(composeA.IdempotencyKey, "idem_") {
-		t.Fatalf("first canonical compose=%+v", composeA)
-	}
-	if resolveB.Op != "contacts.resolve" || composeB.Recipient != "" || composeB.RecipientAgentID != agentB ||
-		composeB.RecipientEndpointID != "mep_"+strings.Repeat(
-			"2",
-			64,
-		) || composeA.ConversationID == composeB.ConversationID || composeA.IdempotencyKey == composeB.IdempotencyKey {
-		t.Fatalf("name transfer retargeted or leaked alias: resolve=%+v compose=%+v", resolveB, composeB)
+	if first.IdempotencyKey == second.IdempotencyKey {
+		t.Fatal("distinct delivery intents shared an idempotency key")
 	}
 }
 
@@ -768,42 +781,36 @@ func serveCompose(t *testing.T, count int) (string, <-chan localRequest, func())
 	return path, requests, func() { _ = listener.Close(); <-done }
 }
 
-func serveProactiveCompose(t *testing.T, resolvedAgents []string) (string, <-chan localRequest, func()) {
+func serveProactiveCompose(t *testing.T, count int) (string, <-chan localRequest, func()) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "runtime.sock")
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	requests := make(chan localRequest, len(resolvedAgents)*2)
+	requests := make(chan localRequest, count)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for _, agentID := range resolvedAgents {
-			for step := 0; step < 2; step++ {
-				connection, acceptErr := listener.Accept()
-				if acceptErr != nil {
-					return
-				}
-				var header [4]byte
-				_, _ = io.ReadFull(connection, header[:])
-				raw := make([]byte, binary.BigEndian.Uint32(header[:]))
-				_, _ = io.ReadFull(connection, raw)
-				var request localRequest
-				_ = json.Unmarshal(raw, &request)
-				requests <- request
-				response := localResponse{Schema: responseSchema, OK: true}
-				if step == 0 {
-					response.AgentID, response.CanonicalName = agentID, "alice.tos"
-				} else {
-					response.EventID = "evt_" + strings.Repeat("d", 64)
-				}
-				body, _ := json.Marshal(response)
-				binary.BigEndian.PutUint32(header[:], uint32(len(body)))
-				_, _ = connection.Write(header[:])
-				_, _ = connection.Write(body)
-				_ = connection.Close()
+		for step := 0; step < count; step++ {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
 			}
+			var header [4]byte
+			_, _ = io.ReadFull(connection, header[:])
+			raw := make([]byte, binary.BigEndian.Uint32(header[:]))
+			_, _ = io.ReadFull(connection, raw)
+			var request localRequest
+			_ = json.Unmarshal(raw, &request)
+			requests <- request
+			response := localResponse{Schema: responseSchema, OK: true,
+				EventID: "evt_" + strings.Repeat("d", 64)}
+			body, _ := json.Marshal(response)
+			binary.BigEndian.PutUint32(header[:], uint32(len(body)))
+			_, _ = connection.Write(header[:])
+			_, _ = connection.Write(body)
+			_ = connection.Close()
 		}
 	}()
 	return path, requests, func() { _ = listener.Close(); <-done }

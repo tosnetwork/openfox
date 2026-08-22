@@ -43,15 +43,16 @@ var (
 
 type Channel struct {
 	*channels.BaseChannel
-	settings    *config.TOSMessengerSettings
-	interval    time.Duration
-	lease       uint64
-	timeout     time.Duration
-	routes      map[string]config.TOSMessengerRoute
-	agentRoutes map[string]config.TOSMessengerRoute
-	attachments bool
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	settings          *config.TOSMessengerSettings
+	interval          time.Duration
+	lease             uint64
+	timeout           time.Duration
+	routes            map[string]config.TOSMessengerRoute
+	agentRoutes       map[string]config.TOSMessengerRoute
+	proactiveLifetime uint64
+	attachments       bool
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
 }
 
 func New(bc *config.Channel, settings *config.TOSMessengerSettings, messageBus *bus.MessageBus) (*Channel, error) {
@@ -73,6 +74,13 @@ func New(bc *config.Channel, settings *config.TOSMessengerSettings, messageBus *
 	}
 	if lease < 5 || lease > 300 {
 		return nil, errors.New("tos_messenger lease is outside 5..300 seconds")
+	}
+	proactiveLifetime := settings.ProactiveLifetimeSeconds
+	if proactiveLifetime == 0 {
+		proactiveLifetime = 24 * 60 * 60
+	}
+	if proactiveLifetime < 60 || proactiveLifetime > 7*24*60*60 {
+		return nil, errors.New("tos_messenger proactive lifetime is outside 1m..7d")
 	}
 	routes := make(map[string]config.TOSMessengerRoute, len(settings.Routes))
 	agentRoutes := make(map[string]config.TOSMessengerRoute, len(settings.Routes))
@@ -113,7 +121,8 @@ func New(bc *config.Channel, settings *config.TOSMessengerSettings, messageBus *
 	return &Channel{
 		BaseChannel: channels.NewBaseChannel(config.ChannelTOSMessenger, settings, messageBus, bc.AllowFrom),
 		settings:    settings, interval: interval, lease: uint64(lease), timeout: 10 * time.Second,
-		routes: routes, agentRoutes: agentRoutes, attachments: settings.EnableAttachments,
+		routes: routes, agentRoutes: agentRoutes, proactiveLifetime: proactiveLifetime,
+		attachments: settings.EnableAttachments,
 	}, nil
 }
 
@@ -148,35 +157,41 @@ func (c *Channel) Send(ctx context.Context, message bus.OutboundMessage) ([]stri
 			!deliveryIntentPattern.MatchString(message.DeliveryIntentID) {
 			return nil, ErrOutboundUnavailable
 		}
-		resolved, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
-			Op: "contacts.resolve", Recipient: message.Recipient,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if !agentPattern.MatchString(resolved.AgentID) {
-			return nil, errors.New("Messenger contact resolution returned no canonical AgentID")
-		}
-		route, known := c.agentRoutes[resolved.AgentID]
-		if !known {
-			return nil, errors.New("no operator route for resolved Messenger AgentID")
-		}
 		idempotencyDigest := sha256.Sum256([]byte(
 			"openfox.tos-messenger.proactive-idempotency.v1\x00" + message.DeliveryIntentID + "\x00" +
-				resolved.AgentID + "\x00" + message.Content,
+				message.Recipient + "\x00" + message.Content,
 		))
 		response, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
-			Op: "outbox.compose", ConversationID: route.ConversationID,
+			Op: "messages.send-direct", Recipient: message.Recipient,
 			MediaType: "text/plain; charset=utf-8", Body: message.Content,
-			IdempotencyKey: "idem_" + hex.EncodeToString(idempotencyDigest[:]), SessionID: route.SessionID,
-			RecipientEndpointID: route.RecipientEndpointID, RecipientAgentID: resolved.AgentID,
-			ExpiresAtUnix: uint64(time.Now().Add(time.Duration(route.LifetimeSeconds) * time.Second).Unix()),
+			IdempotencyKey: "idem_" + hex.EncodeToString(idempotencyDigest[:]),
+			ExpiresAtUnix:  uint64(time.Now().Add(time.Duration(c.proactiveLifetime) * time.Second).Unix()),
 		})
 		if err != nil {
 			return nil, err
 		}
 		if !eventPattern.MatchString(response.EventID) {
 			return nil, errors.New("Messenger compose returned no canonical Event ID")
+		}
+		return []string{response.EventID}, nil
+	}
+	if origin != nil && conversationPattern.MatchString(message.ChatID) &&
+		origin.EventID == message.Context.MessageID && origin.ConversationID == message.ChatID &&
+		eventPattern.MatchString(origin.EventID) && origin.ReceivedAtUnix != 0 && message.Content != "" {
+		preimage := "openfox.tos-messenger.reply-idempotency.v1\x00" + origin.EventID + "\x00" +
+			message.ReplyToMessageID + "\x00" + message.Content
+		digest := sha256.Sum256([]byte(preimage))
+		response, err := callLocal(ctx, c.settings.SocketPath, c.timeout, localRequest{
+			Op: "messages.reply-direct", ReplyToEventID: origin.EventID,
+			MediaType: "text/plain; charset=utf-8", Body: message.Content,
+			IdempotencyKey: "idem_" + hex.EncodeToString(digest[:]),
+			ExpiresAtUnix:  uint64(time.Now().Add(time.Duration(c.proactiveLifetime) * time.Second).Unix()),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !eventPattern.MatchString(response.EventID) {
+			return nil, errors.New("Messenger direct reply returned no canonical Event ID")
 		}
 		return []string{response.EventID}, nil
 	}

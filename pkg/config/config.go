@@ -733,11 +733,12 @@ type TOSMessengerRoute struct {
 // TOSMessengerSettings connects OpenFox to the authenticated daemon runtime
 // boundary for inbound delivery and daemon-owned outbound construction.
 type TOSMessengerSettings struct {
-	SocketPath        string              `json:"socket_path"                  yaml:"-"`
-	PollIntervalMS    int                 `json:"poll_interval_ms"             yaml:"-"`
-	LeaseSeconds      int                 `json:"lease_seconds"                yaml:"-"`
-	EnableAttachments bool                `json:"enable_attachments,omitempty" yaml:"-"`
-	Routes            []TOSMessengerRoute `json:"routes,omitempty"             yaml:"-"`
+	SocketPath               string              `json:"socket_path"                  yaml:"-"`
+	PollIntervalMS           int                 `json:"poll_interval_ms"             yaml:"-"`
+	LeaseSeconds             int                 `json:"lease_seconds"                yaml:"-"`
+	ProactiveLifetimeSeconds uint64              `json:"proactive_lifetime_seconds,omitempty" yaml:"-"`
+	EnableAttachments        bool                `json:"enable_attachments,omitempty" yaml:"-"`
+	Routes                   []TOSMessengerRoute `json:"routes,omitempty"             yaml:"-"`
 }
 
 type IRCSettings struct {

@@ -250,8 +250,10 @@ func decodePreparedPurchasePayload(encoded []byte) (*buyersdk.PreparedPurchase, 
 		return nil, errors.New("nativeimpl: invalid prepared-purchase escrow data")
 	}
 	state, err := nativecore.DecodeEscrowDataV1(data)
-	if err != nil || state.QuoteCommitment != payload.QuoteCommitment || state.EscrowTermsDigest != payload.EscrowTermsDigest ||
-		state.AuthorizationDigest != payload.AuthorizationDigest || state.TransportDigest != payload.TransportDigest ||
+	if err != nil || state.QuoteCommitment != payload.QuoteCommitment ||
+		state.EscrowTermsDigest != payload.EscrowTermsDigest ||
+		state.AuthorizationDigest != payload.AuthorizationDigest ||
+		state.TransportDigest != payload.TransportDigest ||
 		state.DisputePolicyDigest != payload.DisputePolicyDigest ||
 		state.AssetMasterAddress != payload.AssetMasterAddress ||
 		state.AcceptedQuote == nil ||

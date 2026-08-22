@@ -51,26 +51,36 @@ func (t *OpportunityTool) Execute(_ context.Context, args map[string]any) *ToolR
 		limit = int(value)
 	}
 	type item struct {
-		IntentID            string                   `json:"intent_id"`
-		Phase               opportunity.Phase        `json:"phase"`
-		Key                 opportunity.CandidateKey `json:"canonical_candidate"`
-		FinalizedCheckpoint uint64                   `json:"finalized_checkpoint"`
-		Operation           string                   `json:"verified_operation"`
-		Eligible            bool                     `json:"eligible_for_operator_review"`
-		LocalReason         string                   `json:"local_reason"`
-		GatewayScore        uint32                   `json:"untrusted_gateway_score"`
-		Display             map[string]string        `json:"untrusted_display_metadata,omitempty"`
+		IntentID            string                        `json:"intent_id"`
+		Phase               opportunity.Phase             `json:"phase"`
+		Key                 opportunity.CandidateKey      `json:"canonical_candidate"`
+		FinalizedCheckpoint uint64                        `json:"finalized_checkpoint"`
+		Operation           string                        `json:"verified_operation"`
+		Eligible            bool                          `json:"eligible_for_operator_review"`
+		LocalReason         string                        `json:"local_reason"`
+		GatewayScore        uint32                        `json:"untrusted_gateway_score"`
+		Display             map[string]string             `json:"untrusted_display_metadata,omitempty"`
+		Purchase            *opportunity.PurchaseProgress `json:"purchase_projection,omitempty"`
+		Failure             string                        `json:"failure,omitempty"`
 	}
 	items := make([]item, 0, limit)
 	for _, record := range t.journal.List() {
-		if record.Phase != opportunity.PhaseAssessed || record.Verified == nil || record.Assessment == nil ||
+		if record.Verified == nil || record.Assessment == nil ||
 			(eligibleOnly && !record.Assessment.Eligible) {
 			continue
 		}
 		value := item{IntentID: record.IntentID, Phase: record.Phase, Key: record.Verified.Key,
 			FinalizedCheckpoint: record.Verified.FinalizedCheckpoint, Operation: record.Verified.Operation,
 			Eligible: record.Assessment.Eligible, LocalReason: record.Assessment.Reason,
-			GatewayScore: record.Hint.GatewayMatchScore}
+			GatewayScore: record.Hint.GatewayMatchScore, Failure: record.Failure}
+		if record.Purchase != nil {
+			owned := *record.Purchase
+			if record.Purchase.Key != nil {
+				key := *record.Purchase.Key
+				owned.Key = &key
+			}
+			value.Purchase = &owned
+		}
 		if record.Hint.DisplayName != "" || record.Hint.DisplayDescription != "" {
 			value.Display = map[string]string{"name": record.Hint.DisplayName, "description": record.Hint.DisplayDescription}
 		}

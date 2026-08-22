@@ -73,6 +73,41 @@ type Coordinator interface {
 	Verify(ctx context.Context, hint CandidateHint) (VerifiedCandidate, error)
 }
 
+// PurchaseRunner is a narrow projection of the custody-bearing native buyer.
+// Each call asks the isolated coordinator to resume one durable intent. The
+// coordinator owns Quote validation, signed-policy authorization, the
+// authoritative purchase journal, custody, dispatch, Receipt verification and
+// finalized settlement; OpenFox may only mirror returned progress.
+type PurchaseRunner interface {
+	AdvancePurchase(context.Context, PurchaseRequest) (PurchaseProgress, error)
+}
+
+type PurchaseRequest struct {
+	IntentID  string            `json:"intent_id"`
+	Current   Phase             `json:"current_phase"`
+	Candidate VerifiedCandidate `json:"candidate"`
+	Key       *PurchaseKey      `json:"purchase_key,omitempty"`
+}
+
+type PurchaseKey struct {
+	QuoteCommitment string `json:"quote_commitment"`
+	EscrowAddress   string `json:"escrow_address"`
+}
+
+type PurchaseProgress struct {
+	IntentID            string       `json:"intent_id"`
+	CandidateKey        CandidateKey `json:"candidate_key"`
+	Phase               Phase        `json:"phase"`
+	Key                 *PurchaseKey `json:"purchase_key,omitempty"`
+	AuthoritativePhase  string       `json:"authoritative_purchase_phase,omitempty"`
+	AssetMaster         string       `json:"asset_master,omitempty"`
+	AtomicAmount        string       `json:"atomic_amount,omitempty"`
+	QuoteExpiryUnix     int64        `json:"quote_expiry_unix,omitempty"`
+	FinalizedCheckpoint uint64       `json:"finalized_checkpoint,omitempty"`
+	Released            bool         `json:"released,omitempty"`
+	Refunded            bool         `json:"refunded,omitempty"`
+}
+
 type Config struct {
 	Mode              Mode
 	Queries           []string
@@ -153,6 +188,49 @@ func validateVerified(v VerifiedCandidate) bool {
 	return validateKey(v.Key) && v.FinalizedCheckpoint > 0 && strings.HasPrefix(v.TVMStateHash, "tvm-cell-sha256:") &&
 		digestPattern.MatchString(v.TVMStateHash) && boundedToken(v.Operation, 64) && boundedText(v.ManifestName, 1, 128) &&
 		v.VerifiedAtUnix > 0
+}
+
+func validatePurchaseKey(key PurchaseKey) bool {
+	return strings.HasPrefix(key.QuoteCommitment, "tvm-cell-sha256:") && digestPattern.MatchString(key.QuoteCommitment) &&
+		boundedToken(key.EscrowAddress, 96)
+}
+
+func validatePurchaseProgress(progress PurchaseProgress) bool {
+	if !regexpIntent(progress.IntentID) || !validateKey(progress.CandidateKey) {
+		return false
+	}
+	switch progress.Phase {
+	case PhaseQuoteVerified:
+		return progress.Key == nil && boundedToken(progress.AssetMaster, 96) && positiveDecimal(progress.AtomicAmount) &&
+			progress.QuoteExpiryUnix > 0 && progress.AuthoritativePhase == "" && progress.FinalizedCheckpoint == 0 &&
+			!progress.Released && !progress.Refunded
+	case PhasePolicyAuthorized:
+		return progress.Key == nil && boundedToken(progress.AssetMaster, 96) && positiveDecimal(progress.AtomicAmount) &&
+			progress.QuoteExpiryUnix > 0 && progress.AuthoritativePhase == "" && progress.FinalizedCheckpoint == 0 &&
+			!progress.Released && !progress.Refunded
+	case PhasePurchaseReferenced:
+		return progress.Key != nil && validatePurchaseKey(*progress.Key) && boundedToken(progress.AuthoritativePhase, 64) &&
+			boundedToken(progress.AssetMaster, 96) && positiveDecimal(progress.AtomicAmount) && progress.QuoteExpiryUnix > 0 &&
+			!progress.Released && !progress.Refunded
+	case PhasePurchaseResolved:
+		return progress.Key != nil && validatePurchaseKey(*progress.Key) && progress.AuthoritativePhase == "resolved" &&
+			boundedToken(progress.AssetMaster, 96) && positiveDecimal(progress.AtomicAmount) && progress.QuoteExpiryUnix > 0 &&
+			progress.FinalizedCheckpoint > 0 && progress.Released != progress.Refunded
+	default:
+		return false
+	}
+}
+
+func positiveDecimal(value string) bool {
+	if value == "" || len(value) > 78 || value[0] == '0' {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func boundedText(value string, min, max int) bool {

@@ -19,14 +19,16 @@ const (
 	wireSchema       = "tos.openfox.opportunity-coordinator.v1"
 	searchPath       = "/v1/opportunities/search"
 	verifyPath       = "/v1/opportunities/verify"
+	purchasePath     = "/v1/opportunities/purchase/advance"
 	maxRequestBytes  = 1 << 20
 	maxResponseBytes = 8 << 20
 )
 
 type wireRequest struct {
-	Schema string         `json:"schema"`
-	Search *SearchRequest `json:"search,omitempty"`
-	Hint   *CandidateHint `json:"hint,omitempty"`
+	Schema   string           `json:"schema"`
+	Search   *SearchRequest   `json:"search,omitempty"`
+	Hint     *CandidateHint   `json:"hint,omitempty"`
+	Purchase *PurchaseRequest `json:"purchase,omitempty"`
 }
 
 type wireResponse struct {
@@ -36,6 +38,7 @@ type wireResponse struct {
 	Detail   string             `json:"detail,omitempty"`
 	Hints    []CandidateHint    `json:"hints,omitempty"`
 	Verified *VerifiedCandidate `json:"verified,omitempty"`
+	Progress *PurchaseProgress  `json:"purchase_progress,omitempty"`
 }
 
 type UnixClient struct {
@@ -63,7 +66,7 @@ func (c *UnixClient) Search(ctx context.Context, request SearchRequest) ([]Candi
 	if err != nil {
 		return nil, err
 	}
-	if response.Verified != nil || len(response.Hints) > int(request.MaxCandidates) || len(response.Hints) > int(request.PageSize) {
+	if response.Verified != nil || response.Progress != nil || len(response.Hints) > int(request.MaxCandidates) || len(response.Hints) > int(request.PageSize) {
 		return nil, errors.New("invalid opportunity search response")
 	}
 	for _, hint := range response.Hints {
@@ -82,10 +85,29 @@ func (c *UnixClient) Verify(ctx context.Context, hint CandidateHint) (VerifiedCa
 	if err != nil {
 		return VerifiedCandidate{}, err
 	}
-	if response.Verified == nil || len(response.Hints) != 0 || !validateVerified(*response.Verified) || response.Verified.Key != hint.Key {
+	if response.Verified == nil || response.Progress != nil || len(response.Hints) != 0 || !validateVerified(*response.Verified) || response.Verified.Key != hint.Key {
 		return VerifiedCandidate{}, errors.New("invalid verified opportunity response")
 	}
 	return *response.Verified, nil
+}
+
+func (c *UnixClient) AdvancePurchase(ctx context.Context, request PurchaseRequest) (PurchaseProgress, error) {
+	if !validatePurchaseRequest(request) {
+		return PurchaseProgress{}, errors.New("invalid opportunity purchase request")
+	}
+	response, err := c.call(ctx, purchasePath, wireRequest{Schema: wireSchema, Purchase: &request})
+	if err != nil {
+		return PurchaseProgress{}, err
+	}
+	if response.Progress == nil || response.Verified != nil || len(response.Hints) != 0 ||
+		!validatePurchaseProgress(*response.Progress) || response.Progress.IntentID != request.IntentID ||
+		response.Progress.CandidateKey != request.Candidate.Key || !validPurchaseTransition(request.Current, response.Progress.Phase) {
+		return PurchaseProgress{}, errors.New("invalid opportunity purchase response")
+	}
+	if request.Key != nil && (response.Progress.Key == nil || *response.Progress.Key != *request.Key) {
+		return PurchaseProgress{}, errors.New("opportunity purchase identity changed")
+	}
+	return clonePurchaseProgress(*response.Progress), nil
 }
 
 func (c *UnixClient) call(ctx context.Context, path string, value wireRequest) (wireResponse, error) {
@@ -118,6 +140,9 @@ func (c *UnixClient) call(ctx context.Context, path string, value wireRequest) (
 		if decoded.Code == "candidate-rejected" && boundedText(decoded.Detail, 1, 400) {
 			return wireResponse{}, &Rejection{Reason: decoded.Detail}
 		}
+		if decoded.Code == "purchase-rejected" && boundedText(decoded.Detail, 1, 400) {
+			return wireResponse{}, &PurchaseRejection{Reason: decoded.Detail}
+		}
 		return wireResponse{}, fmt.Errorf("opportunity coordinator failed: %s", decoded.Code)
 	}
 	if decoded.Code != "" || decoded.Detail != "" {
@@ -127,6 +152,10 @@ func (c *UnixClient) call(ctx context.Context, path string, value wireRequest) (
 }
 
 func NewHandler(coordinator Coordinator) (http.Handler, error) {
+	return NewHandlerWithPurchaseRunner(coordinator, nil)
+}
+
+func NewHandlerWithPurchaseRunner(coordinator Coordinator, purchases PurchaseRunner) (http.Handler, error) {
 	if coordinator == nil {
 		return nil, errors.New("opportunity coordinator handler needs an implementation")
 	}
@@ -137,6 +166,11 @@ func NewHandler(coordinator Coordinator) (http.Handler, error) {
 	mux.HandleFunc(verifyPath, func(writer http.ResponseWriter, request *http.Request) {
 		serveCoordinator(coordinator, false, writer, request)
 	})
+	if purchases != nil {
+		mux.HandleFunc(purchasePath, func(writer http.ResponseWriter, request *http.Request) {
+			servePurchase(purchases, writer, request)
+		})
+	}
 	return mux, nil
 }
 
@@ -152,7 +186,7 @@ func serveCoordinator(coordinator Coordinator, search bool, writer http.Response
 		return
 	}
 	var value wireRequest
-	if decodeStrict(raw, &value) != nil || value.Schema != wireSchema || (value.Search == nil) == (value.Hint == nil) {
+	if decodeStrict(raw, &value) != nil || value.Schema != wireSchema || value.Purchase != nil || (value.Search == nil) == (value.Hint == nil) {
 		writeWire(writer, http.StatusBadRequest, wireResponse{Schema: wireSchema, Code: "invalid-request", Detail: "invalid request body"})
 		return
 	}
@@ -195,7 +229,50 @@ func serveCoordinator(coordinator Coordinator, search bool, writer http.Response
 	writeWire(writer, http.StatusOK, wireResponse{Schema: wireSchema, OK: true, Verified: &verified})
 }
 
+func servePurchase(purchases PurchaseRunner, writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost || request.URL.RawQuery != "" || request.Header.Get("Content-Type") != "application/json" {
+		writeWire(writer, http.StatusBadRequest, wireResponse{Schema: wireSchema, Code: "invalid-request", Detail: "invalid request envelope"})
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBytes)
+	raw, err := io.ReadAll(request.Body)
+	if err != nil {
+		writeWire(writer, http.StatusBadRequest, wireResponse{Schema: wireSchema, Code: "invalid-request", Detail: "invalid request body"})
+		return
+	}
+	var value wireRequest
+	if decodeStrict(raw, &value) != nil || value.Schema != wireSchema || value.Search != nil || value.Hint != nil ||
+		value.Purchase == nil || !validatePurchaseRequest(*value.Purchase) {
+		writeWire(writer, http.StatusBadRequest, wireResponse{Schema: wireSchema, Code: "invalid-request", Detail: "invalid purchase"})
+		return
+	}
+	progress, err := purchases.AdvancePurchase(request.Context(), *value.Purchase)
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, ErrPurchaseRejected) {
+			status = http.StatusUnprocessableEntity
+		}
+		writeWire(writer, status, wireFailure(err))
+		return
+	}
+	if !validatePurchaseProgress(progress) || progress.IntentID != value.Purchase.IntentID ||
+		progress.CandidateKey != value.Purchase.Candidate.Key || !validPurchaseTransition(value.Purchase.Current, progress.Phase) ||
+		(value.Purchase.Key != nil && (progress.Key == nil || *progress.Key != *value.Purchase.Key)) {
+		writeWire(writer, http.StatusServiceUnavailable, wireFailure(errors.New("purchase runner produced invalid progress")))
+		return
+	}
+	writeWire(writer, http.StatusOK, wireResponse{Schema: wireSchema, OK: true, Progress: &progress})
+}
+
 func wireFailure(err error) wireResponse {
+	if errors.Is(err, ErrPurchaseRejected) {
+		detail := "purchase rejected before funding"
+		var rejection *PurchaseRejection
+		if errors.As(err, &rejection) && boundedText(rejection.Reason, 1, 400) {
+			detail = rejection.Reason
+		}
+		return wireResponse{Schema: wireSchema, Code: "purchase-rejected", Detail: detail}
+	}
 	if errors.Is(err, ErrCoordinatorRejected) {
 		detail := "candidate failed finalized verification"
 		var rejection *Rejection
@@ -205,6 +282,20 @@ func wireFailure(err error) wireResponse {
 		return wireResponse{Schema: wireSchema, Code: "candidate-rejected", Detail: detail}
 	}
 	return wireResponse{Schema: wireSchema, Code: "temporarily-unavailable", Detail: "coordinator unavailable"}
+}
+
+func validatePurchaseRequest(request PurchaseRequest) bool {
+	if !regexpIntent(request.IntentID) || !validateVerified(request.Candidate) {
+		return false
+	}
+	switch request.Current {
+	case PhaseQuoteRequested, PhaseQuoteVerified, PhasePolicyAuthorized:
+		return request.Key == nil
+	case PhasePurchaseReferenced:
+		return request.Key != nil && validatePurchaseKey(*request.Key)
+	default:
+		return false
+	}
 }
 
 func writeWire(writer http.ResponseWriter, status int, response wireResponse) {

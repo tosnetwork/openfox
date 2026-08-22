@@ -77,6 +77,56 @@ func TestUnixCoordinatorPreservesTerminalRejectionClass(t *testing.T) {
 	}
 }
 
+func TestUnixCoordinatorCarriesPolicyProgressWithoutRouteOrCustodyFields(t *testing.T) {
+	_, verified := testCandidate()
+	runner := &fakePurchaseRunner{}
+	handler, err := NewHandlerWithPurchaseRunner(&fakeCoordinator{}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(t.TempDir(), "run")
+	_ = os.Mkdir(directory, 0o700)
+	socket := filepath.Join(directory, "opportunity.sock")
+	server, _ := ListenUnix(socket, handler)
+	done := make(chan error, 1)
+	go func() { done <- server.Serve() }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+		<-done
+	}()
+	client, _ := NewUnixClient(socket, 5*time.Second)
+	request := PurchaseRequest{IntentID: "opp_" + strings.Repeat("a", 64), Current: PhaseQuoteRequested, Candidate: verified}
+	progress, err := client.AdvancePurchase(context.Background(), request)
+	if err != nil || progress.Phase != PhaseQuoteVerified || progress.Key != nil || progress.CandidateKey != verified.Key {
+		t.Fatalf("purchase progress: %+v err=%v", progress, err)
+	}
+}
+
+func TestUnixCoordinatorPreservesPreFundingPolicyRejection(t *testing.T) {
+	_, verified := testCandidate()
+	runner := &fakePurchaseRunner{rejectAt: PhaseQuoteRequested}
+	handler, _ := NewHandlerWithPurchaseRunner(&fakeCoordinator{}, runner)
+	directory := filepath.Join(t.TempDir(), "run")
+	_ = os.Mkdir(directory, 0o700)
+	socket := filepath.Join(directory, "opportunity.sock")
+	server, _ := ListenUnix(socket, handler)
+	done := make(chan error, 1)
+	go func() { done <- server.Serve() }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+		<-done
+	}()
+	client, _ := NewUnixClient(socket, 5*time.Second)
+	request := PurchaseRequest{IntentID: "opp_" + strings.Repeat("a", 64), Current: PhaseQuoteRequested, Candidate: verified}
+	if _, err := client.AdvancePurchase(context.Background(), request); !errors.Is(err, ErrPurchaseRejected) {
+		t.Fatalf("purchase rejection class lost over wire: %v", err)
+	}
+}
+
 func TestCoordinatorWireRejectsUnknownFields(t *testing.T) {
 	coordinator := &fakeCoordinator{}
 	handler, _ := NewHandler(coordinator)

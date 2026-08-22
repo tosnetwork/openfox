@@ -62,7 +62,11 @@ func setupOpportunityService(cfg *config.Config, agentLoop *agent.AgentLoop) (*o
 	if err != nil {
 		return nil, err
 	}
-	service, err := opportunity.NewService(runtime, client, journal, opportunityLogReporter{})
+	var purchases opportunity.PurchaseRunner
+	if runtime.Mode == opportunity.ModePolicyGated {
+		purchases = client
+	}
+	service, err := opportunity.NewServiceWithPurchaseRunner(runtime, client, purchases, journal, opportunityLogReporter{})
 	if err != nil {
 		return nil, err
 	}

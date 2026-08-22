@@ -25,10 +25,15 @@ const (
 type Phase string
 
 const (
-	PhaseDiscovered Phase = "discovered"
-	PhaseVerified   Phase = "finalized-verified"
-	PhaseAssessed   Phase = "locally-assessed"
-	PhaseFailed     Phase = "terminal-failed"
+	PhaseDiscovered         Phase = "discovered"
+	PhaseVerified           Phase = "finalized-verified"
+	PhaseAssessed           Phase = "locally-assessed"
+	PhaseQuoteRequested     Phase = "quote-requested"
+	PhaseQuoteVerified      Phase = "quote-verified"
+	PhasePolicyAuthorized   Phase = "policy-authorized"
+	PhasePurchaseReferenced Phase = "purchase-referenced"
+	PhasePurchaseResolved   Phase = "purchase-resolved"
+	PhaseFailed             Phase = "terminal-failed"
 )
 
 type Record struct {
@@ -37,6 +42,7 @@ type Record struct {
 	Hint           CandidateHint      `json:"hint"`
 	Verified       *VerifiedCandidate `json:"verified,omitempty"`
 	Assessment     *Assessment        `json:"assessment,omitempty"`
+	Purchase       *PurchaseProgress  `json:"purchase,omitempty"`
 	Failure        string             `json:"failure,omitempty"`
 	DiscoveredUnix int64              `json:"discovered_unix"`
 	UpdatedUnix    int64              `json:"updated_unix"`
@@ -159,11 +165,44 @@ func (j *Journal) MarkAssessed(intent string, assessment Assessment, now time.Ti
 
 func (j *Journal) MarkFailed(intent, reason string, now time.Time) (Record, error) {
 	return j.transition(intent, now, func(record *Record) error {
-		if record.Phase != PhaseDiscovered || !boundedText(reason, 1, 512) {
+		if (record.Phase != PhaseDiscovered && record.Phase != PhaseAssessed && record.Phase != PhaseQuoteRequested &&
+			record.Phase != PhaseQuoteVerified && record.Phase != PhasePolicyAuthorized) ||
+			(record.Purchase != nil && record.Purchase.Key != nil) ||
+			!boundedText(reason, 1, 512) {
 			return errors.New("invalid opportunity failure transition")
 		}
 		record.Failure = reason
 		record.Phase = PhaseFailed
+		return nil
+	})
+}
+
+func (j *Journal) MarkQuoteRequested(intent string, now time.Time) (Record, error) {
+	return j.transition(intent, now, func(record *Record) error {
+		if record.Phase != PhaseAssessed || record.Assessment == nil || !record.Assessment.Eligible || record.Purchase != nil {
+			return errors.New("only an eligible assessed opportunity may request a Quote")
+		}
+		record.Phase = PhaseQuoteRequested
+		return nil
+	})
+}
+
+// MarkPurchaseProgress mirrors a coordinator-owned transition. It never
+// advances the authoritative purchase journal and refuses a changed candidate
+// or PurchaseKey.
+func (j *Journal) MarkPurchaseProgress(intent string, progress PurchaseProgress, now time.Time) (Record, error) {
+	return j.transition(intent, now, func(record *Record) error {
+		if !validatePurchaseProgress(progress) || progress.IntentID != intent || record.Verified == nil ||
+			progress.CandidateKey != record.Verified.Key || !validPurchaseTransition(record.Phase, progress.Phase) {
+			return errors.New("invalid opportunity purchase projection")
+		}
+		if record.Purchase != nil && record.Purchase.Key != nil &&
+			(progress.Key == nil || *record.Purchase.Key != *progress.Key) {
+			return errors.New("opportunity purchase identity changed")
+		}
+		owned := clonePurchaseProgress(progress)
+		record.Purchase = &owned
+		record.Phase = progress.Phase
 		return nil
 	})
 }
@@ -229,13 +268,51 @@ func validRecord(record Record) bool {
 	}
 	switch record.Phase {
 	case PhaseDiscovered:
-		return record.Verified == nil && record.Assessment == nil && record.Failure == ""
+		return record.Verified == nil && record.Assessment == nil && record.Purchase == nil && record.Failure == ""
 	case PhaseVerified:
-		return record.Verified != nil && validateVerified(*record.Verified) && record.Verified.Key == record.Hint.Key && record.Assessment == nil && record.Failure == ""
+		return record.Verified != nil && validateVerified(*record.Verified) && record.Verified.Key == record.Hint.Key && record.Assessment == nil && record.Purchase == nil && record.Failure == ""
 	case PhaseAssessed:
-		return record.Verified != nil && validateVerified(*record.Verified) && record.Verified.Key == record.Hint.Key && record.Assessment != nil && record.Assessment.AssessedAtUnix > 0 && boundedText(record.Assessment.Reason, 1, 512) && record.Failure == ""
+		return record.Verified != nil && validateVerified(*record.Verified) && record.Verified.Key == record.Hint.Key && record.Assessment != nil && record.Assessment.AssessedAtUnix > 0 && boundedText(record.Assessment.Reason, 1, 512) && record.Purchase == nil && record.Failure == ""
+	case PhaseQuoteRequested:
+		return validAssessedPurchaseBase(record) && record.Purchase == nil
+	case PhaseQuoteVerified, PhasePolicyAuthorized, PhasePurchaseReferenced, PhasePurchaseResolved:
+		return validAssessedPurchaseBase(record) && record.Purchase != nil && validatePurchaseProgress(*record.Purchase) &&
+			record.Purchase.IntentID == record.IntentID && record.Purchase.CandidateKey == record.Verified.Key &&
+			record.Purchase.Phase == record.Phase
 	case PhaseFailed:
-		return record.Verified == nil && record.Assessment == nil && boundedText(record.Failure, 1, 512)
+		return validFailedRecord(record)
+	default:
+		return false
+	}
+}
+
+func validFailedRecord(record Record) bool {
+	if !boundedText(record.Failure, 1, 512) {
+		return false
+	}
+	if record.Purchase == nil {
+		return true
+	}
+	return record.Purchase.Key == nil && validatePurchaseProgress(*record.Purchase) &&
+		(record.Purchase.Phase == PhaseQuoteVerified || record.Purchase.Phase == PhasePolicyAuthorized)
+}
+
+func validAssessedPurchaseBase(record Record) bool {
+	return record.Verified != nil && validateVerified(*record.Verified) && record.Verified.Key == record.Hint.Key &&
+		record.Assessment != nil && record.Assessment.Eligible && record.Assessment.AssessedAtUnix > 0 &&
+		boundedText(record.Assessment.Reason, 1, 512) && record.Failure == ""
+}
+
+func validPurchaseTransition(from, to Phase) bool {
+	switch from {
+	case PhaseQuoteRequested:
+		return to == PhaseQuoteVerified
+	case PhaseQuoteVerified:
+		return to == PhasePolicyAuthorized
+	case PhasePolicyAuthorized:
+		return to == PhasePurchaseReferenced
+	case PhasePurchaseReferenced:
+		return to == PhasePurchaseReferenced || to == PhasePurchaseResolved
 	default:
 		return false
 	}
@@ -265,7 +342,19 @@ func cloneRecord(record Record) Record {
 		owned := *record.Assessment
 		record.Assessment = &owned
 	}
+	if record.Purchase != nil {
+		owned := clonePurchaseProgress(*record.Purchase)
+		record.Purchase = &owned
+	}
 	return record
+}
+
+func clonePurchaseProgress(progress PurchaseProgress) PurchaseProgress {
+	if progress.Key != nil {
+		owned := *progress.Key
+		progress.Key = &owned
+	}
+	return progress
 }
 
 func cloneRecords(records map[string]Record) map[string]Record {

@@ -14,6 +14,7 @@ import (
 var (
 	ErrCoordinatorRejected  = errors.New("opportunity coordinator rejected candidate")
 	ErrPolicyRunnerRequired = errors.New("policy-gated opportunity mode requires the Phase D purchase runner")
+	ErrPurchaseRejected     = errors.New("opportunity purchase was rejected before funding")
 )
 
 type Rejection struct{ Reason string }
@@ -27,6 +28,17 @@ func (e *Rejection) Error() string {
 
 func (e *Rejection) Unwrap() error { return ErrCoordinatorRejected }
 
+type PurchaseRejection struct{ Reason string }
+
+func (e *PurchaseRejection) Error() string {
+	if e == nil || e.Reason == "" {
+		return ErrPurchaseRejected.Error()
+	}
+	return ErrPurchaseRejected.Error() + ": " + e.Reason
+}
+
+func (e *PurchaseRejection) Unwrap() error { return ErrPurchaseRejected }
+
 type Reporter interface {
 	OpportunityAssessed(Record)
 	OpportunityCycleFailed(error)
@@ -35,6 +47,7 @@ type Reporter interface {
 type Service struct {
 	config      Config
 	coordinator Coordinator
+	purchases   PurchaseRunner
 	journal     *Journal
 	reporter    Reporter
 	now         func() time.Time
@@ -45,19 +58,23 @@ type Service struct {
 }
 
 func NewService(config Config, coordinator Coordinator, journal *Journal, reporter Reporter) (*Service, error) {
+	return NewServiceWithPurchaseRunner(config, coordinator, nil, journal, reporter)
+}
+
+func NewServiceWithPurchaseRunner(config Config, coordinator Coordinator, purchases PurchaseRunner, journal *Journal, reporter Reporter) (*Service, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	if config.Mode == ModeOff {
 		return &Service{config: config}, nil
 	}
-	if config.Mode == ModePolicyGated {
+	if config.Mode == ModePolicyGated && purchases == nil {
 		return nil, ErrPolicyRunnerRequired
 	}
 	if coordinator == nil || journal == nil {
 		return nil, errors.New("observe opportunity service needs a coordinator and durable journal")
 	}
-	return &Service{config: cloneConfig(config), coordinator: coordinator, journal: journal, reporter: reporter, now: time.Now}, nil
+	return &Service{config: cloneConfig(config), coordinator: coordinator, purchases: purchases, journal: journal, reporter: reporter, now: time.Now}, nil
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -146,7 +163,7 @@ func (s *Service) process(ctx context.Context, hint CandidateHint, now time.Time
 	if err != nil {
 		return err
 	}
-	if record.Phase == PhaseAssessed || record.Phase == PhaseFailed {
+	if record.Phase == PhaseFailed || record.Phase == PhasePurchaseResolved {
 		return nil
 	}
 	if record.Phase == PhaseDiscovered {
@@ -169,12 +186,70 @@ func (s *Service) process(ctx context.Context, hint CandidateHint, now time.Time
 			return err
 		}
 	}
-	assessment := s.assess(record, now)
-	record, err = s.journal.MarkAssessed(record.IntentID, assessment, now)
-	if err == nil && s.reporter != nil {
-		s.reporter.OpportunityAssessed(record)
+	if record.Phase == PhaseVerified {
+		assessment := s.assess(record, now)
+		record, err = s.journal.MarkAssessed(record.IntentID, assessment, now)
+		if err == nil && s.reporter != nil {
+			s.reporter.OpportunityAssessed(record)
+		}
+		if err != nil || s.config.Mode == ModeObserve || !assessment.Eligible {
+			return err
+		}
 	}
-	return err
+	if s.config.Mode != ModePolicyGated {
+		return nil
+	}
+	return s.advancePurchase(ctx, record, now)
+}
+
+func (s *Service) advancePurchase(ctx context.Context, record Record, now time.Time) error {
+	if s.purchases == nil || record.Verified == nil || record.Assessment == nil || !record.Assessment.Eligible {
+		return ErrPolicyRunnerRequired
+	}
+	if record.Phase == PhaseAssessed {
+		var err error
+		record, err = s.journal.MarkQuoteRequested(record.IntentID, now)
+		if err != nil {
+			return err
+		}
+	}
+	// The isolated coordinator exposes one durable transition per call. Four
+	// steps cover Quote verification, signed-policy authorization, immutable
+	// PurchaseKey creation, and one authoritative purchase reconciliation.
+	for step := 0; step < 4 && record.Phase != PhasePurchaseResolved; step++ {
+		var key *PurchaseKey
+		if record.Purchase != nil && record.Purchase.Key != nil {
+			owned := *record.Purchase.Key
+			key = &owned
+		}
+		call, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
+		progress, runErr := s.purchases.AdvancePurchase(call, PurchaseRequest{IntentID: record.IntentID,
+			Current: record.Phase, Candidate: *record.Verified, Key: key})
+		cancel()
+		if runErr != nil {
+			if errors.Is(runErr, ErrPurchaseRejected) && record.Phase != PhasePurchaseReferenced {
+				reason := "purchase rejected by exact signed policy"
+				var rejection *PurchaseRejection
+				if errors.As(runErr, &rejection) && boundedText(rejection.Reason, 1, 400) {
+					reason += ": " + rejection.Reason
+				}
+				_, markErr := s.journal.MarkFailed(record.IntentID, reason, now)
+				return errors.Join(runErr, markErr)
+			}
+			return runErr
+		}
+		var err error
+		record, err = s.journal.MarkPurchaseProgress(record.IntentID, progress, now)
+		if err != nil {
+			return err
+		}
+		if record.Phase == PhasePurchaseReferenced {
+			// Funding/dispatch/settlement may be slow. One reconciliation per
+			// scheduler cycle keeps the autonomous loop bounded.
+			return nil
+		}
+	}
+	return nil
 }
 
 func (s *Service) assess(record Record, now time.Time) Assessment {

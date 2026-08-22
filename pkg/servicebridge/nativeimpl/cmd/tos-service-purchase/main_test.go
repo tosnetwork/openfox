@@ -37,8 +37,16 @@ func TestWritePrivateNewIsOwnerOnlyAndNeverOverwrites(t *testing.T) {
 }
 
 func TestPurchaseCommandRequiresExplicitStageAndInputs(t *testing.T) {
-	for _, args := range [][]string{nil, {"unknown"}, {"prepare"}, {"inspect"}, {"deploy-prepare"},
-		{"deploy-broadcast"}, {"fund"}, {"dispatch"}} {
+	for _, args := range [][]string{
+		nil,
+		{"unknown"},
+		{"prepare"},
+		{"inspect"},
+		{"deploy-prepare"},
+		{"deploy-broadcast"},
+		{"fund"},
+		{"dispatch"},
+	} {
 		if err := run(args); err == nil {
 			t.Fatalf("run(%v) succeeded without explicit reviewed inputs", args)
 		}
@@ -60,14 +68,20 @@ func TestFundingAndTaskHandoffsBindPreparedPurchase(t *testing.T) {
 	if err := os.Chmod(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	purchase := &buyersdk.PreparedPurchase{QuoteCommitment: "tvm-cell-sha256:" + strings.Repeat("1", 64),
-		Escrow: nativecore.EscrowIdentityV1{Address: "0:" + strings.Repeat("2", 64),
-			CodeHash: "tvm-cell-sha256:" + strings.Repeat("3", 64)}, AmountAtomic: "25"}
-	funding := finalizedFundingDocument{Schema: "tos.openfox.finalized-funding.v1",
+	purchase := &buyersdk.PreparedPurchase{
+		QuoteCommitment: "tvm-cell-sha256:" + strings.Repeat("1", 64),
+		Escrow: nativecore.EscrowIdentityV1{
+			Address:  "0:" + strings.Repeat("2", 64),
+			CodeHash: "tvm-cell-sha256:" + strings.Repeat("3", 64),
+		}, AmountAtomic: "25",
+	}
+	funding := finalizedFundingDocument{
+		Schema:  "tos.openfox.finalized-funding.v1",
 		Verdict: "PASS_FINALIZED_EXACT_FUNDING", EscrowAddress: purchase.Escrow.Address,
 		QuoteCommitment: purchase.QuoteCommitment, AmountAtomic: purchase.AmountAtomic,
 		FinalizedCheckpoint: 42, ContractCodeHash: purchase.Escrow.CodeHash,
-		FinalizedAt: time.Unix(1_900_000_000, 0).UTC().Format(time.RFC3339Nano)}
+		FinalizedAt: time.Unix(1_900_000_000, 0).UTC().Format(time.RFC3339Nano),
+	}
 	fundingRaw, _ := json.Marshal(funding)
 	fundingPath := filepath.Join(directory, "funding.json")
 	if err := os.WriteFile(fundingPath, fundingRaw, 0o600); err != nil {
@@ -83,10 +97,12 @@ func TestFundingAndTaskHandoffsBindPreparedPurchase(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(archive)
-	task := dispatchTaskDocument{Schema: "tos.service.local-funded-task.v1",
+	task := dispatchTaskDocument{
+		Schema:        "tos.service.local-funded-task.v1",
 		EscrowAddress: purchase.Escrow.Address, QuoteCommitment: purchase.QuoteCommitment,
 		ExecutionID: "exec_1", InputDigest: "sha256:" + strings.Repeat("4", 64),
-		SourceDigest: "sha256:" + hex.EncodeToString(digest[:]), SourceArchive: archivePath}
+		SourceDigest: "sha256:" + hex.EncodeToString(digest[:]), SourceArchive: archivePath,
+	}
 	taskRaw, _ := json.Marshal(task)
 	taskPath := filepath.Join(directory, "task.json")
 	if err := os.WriteFile(taskPath, taskRaw, 0o600); err != nil {

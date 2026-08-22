@@ -8,13 +8,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tosnetwork/openfox/pkg/actionauth"
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
+
+	"github.com/tosnetwork/openfox/pkg/actionauth"
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 // ChainBuyerStackConfig is the reviewed, route-independent production buyer
@@ -161,10 +162,14 @@ func NewChainBuyerStack(c ChainBuyerStackConfig) (*ChainBuyerStack, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ChainBuyerStack{SDK: sdk, Capability: sdk, Escrow: escrow,
+	return &ChainBuyerStack{
+		SDK: sdk, Capability: sdk, Escrow: escrow,
 		Deployer: c.EscrowDeployer, Journal: purchaseJournal,
-		Network: servicebridge.Network{ID: c.Network.GetNetworkId(),
+		Network: servicebridge.Network{
+			ID:              c.Network.GetNetworkId(),
 			GenesisRootHash: strings.TrimPrefix(c.Network.GetGenesisRootHash(), "sha256:"),
-			GenesisFileHash: strings.TrimPrefix(c.Network.GetGenesisFileHash(), "sha256:")},
-		RegistryCodeHash: c.RegistryCodeHash}, nil
+			GenesisFileHash: strings.TrimPrefix(c.Network.GetGenesisFileHash(), "sha256:"),
+		},
+		RegistryCodeHash: c.RegistryCodeHash,
+	}, nil
 }

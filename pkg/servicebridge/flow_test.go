@@ -23,6 +23,7 @@ func (f *fakeResolver) ResolveCapability(context.Context, CapabilityRef) error {
 	f.capHits++
 	return f.capErr
 }
+
 func (f *fakeResolver) ResolveEscrow(context.Context, string) (EscrowState, error) {
 	return f.escrow, f.escErr
 }
@@ -35,6 +36,7 @@ type fakeQuotes struct {
 func (f *fakeQuotes) RequestQuote(context.Context, CapabilityRef) (QuoteProposal, error) {
 	return f.proposal, nil
 }
+
 func (f *fakeQuotes) BuildAcceptedQuote(context.Context, QuoteProposal) (AcceptedQuote, error) {
 	return f.aq, nil
 }
@@ -49,6 +51,7 @@ func (f *fakeSigner) SignAndFundEscrow(context.Context, AcceptedQuote) error {
 	f.fundCalls++
 	return f.fundErr
 }
+
 func (f *fakeSigner) SignSettlementIntent(context.Context, string) ([]byte, error) {
 	f.intentCalls++
 	return []byte("sig"), nil
@@ -94,6 +97,7 @@ type fakeReceipts struct {
 func (f *fakeReceipts) BuildReceipt(context.Context, AcceptedQuote, Outcome) (Receipt, error) {
 	return f.receipt, nil
 }
+
 func (f *fakeReceipts) VerifySettlement(context.Context, AcceptedQuote) (Settlement, error) {
 	return f.settlement, nil
 }
@@ -104,16 +108,22 @@ func (f *fakeConfirmer) Confirm(context.Context, QuoteProposal) error { return f
 
 // ---- fixtures ----------------------------------------------------------------
 
-const qc = "tvm-cell-sha256:qc"
-const esc = "EQescrow"
+const (
+	qc  = "tvm-cell-sha256:qc"
+	esc = "EQescrow"
+)
 
 func happyBuyer() (*Buyer, *fakeResolver, *fakeSigner, *fakeTransport) {
 	prop := baseProposal()
 	digest := "sha256:" + strings.Repeat("a", 64)
-	prop.Capability = CapabilityRef{AgentID: "agent_" + strings.Repeat("1", 64), CapabilityID: "cap_sw",
-		Version: "1", ManifestDigest: digest, CapabilityClass: "compute.inference"}
-	prop.Asset.Network = Network{ID: "tos-local", GenesisRootHash: strings.Repeat("2", 64),
-		GenesisFileHash: strings.Repeat("3", 64)}
+	prop.Capability = CapabilityRef{
+		AgentID: "agent_" + strings.Repeat("1", 64), CapabilityID: "cap_sw",
+		Version: "1", ManifestDigest: digest, CapabilityClass: "compute.inference",
+	}
+	prop.Asset.Network = Network{
+		ID: "tos-local", GenesisRootHash: strings.Repeat("2", 64),
+		GenesisFileHash: strings.Repeat("3", 64),
+	}
 	prop.Asset.MasterCodeHash = "tvm-cell-sha256:" + strings.Repeat("4", 64)
 	prop.TransportBindingDigest = digest
 	prop.EscrowTermsDigest = digest
@@ -125,15 +135,20 @@ func happyBuyer() (*Buyer, *fakeResolver, *fakeSigner, *fakeTransport) {
 	policy := basePolicy()
 	policy.Asset = prop.Asset
 	b := &Buyer{
-		Policy:        policy,
-		Resolver:      res,
-		Quotes:        &fakeQuotes{proposal: prop, aq: AcceptedQuote{Proposal: prop, QuoteCommitment: qc, EscrowAddress: esc}},
+		Policy:   policy,
+		Resolver: res,
+		Quotes: &fakeQuotes{
+			proposal: prop,
+			aq:       AcceptedQuote{Proposal: prop, QuoteCommitment: qc, EscrowAddress: esc},
+		},
 		Journal:       NewInMemoryJournal(),
 		Signer:        sig,
 		QuoteVerifier: &fakeQuoteVerifier{},
 		Transport:     tr,
-		Receipts:      &fakeReceipts{settlement: Settlement{Released: true, ProviderCreditAtomic: prop.MaxAtomicAmount}},
-		Now:           func() time.Time { return time.Unix(1_700_000_000, 0) },
+		Receipts: &fakeReceipts{
+			settlement: Settlement{Released: true, ProviderCreditAtomic: prop.MaxAtomicAmount},
+		},
+		Now: func() time.Time { return time.Unix(1_700_000_000, 0) },
 	}
 	return b, res, sig, tr
 }
@@ -193,7 +208,15 @@ func TestBuyerSettlementRecoveryDoesNotRedispatch(t *testing.T) {
 	b, _, _, transport := happyBuyer()
 	receipts := b.Receipts.(*fakeReceipts)
 	receipts.settlement = Settlement{}
-	if _, err := b.Purchase(context.Background(), ref(), TransportAgentPacket, buildTask); !errors.Is(err, ErrSettlementPending) {
+	if _, err := b.Purchase(
+		context.Background(),
+		ref(),
+		TransportAgentPacket,
+		buildTask,
+	); !errors.Is(
+		err,
+		ErrSettlementPending,
+	) {
 		t.Fatalf("pending settlement = %v", err)
 	}
 	if len(transport.dispatched) != 1 {
@@ -212,8 +235,10 @@ func TestBuyerStagedFundingReservationIsNotDoubleCounted(t *testing.T) {
 	b, _, signer, _ := happyBuyer()
 	b.Policy.DailyBudgetAtomic = b.Policy.MaxAtomicPurchase
 	key := PurchaseKey{QuoteCommitment: qc, EscrowAddress: esc}
-	if _, err := b.Journal.Begin(PurchaseRecord{Key: key, AssetMaster: b.Policy.Asset.Master,
-		AtomicAmount: b.Policy.MaxAtomicPurchase}, b.now()); err != nil {
+	if _, err := b.Journal.Begin(PurchaseRecord{
+		Key: key, AssetMaster: b.Policy.Asset.Master,
+		AtomicAmount: b.Policy.MaxAtomicPurchase,
+	}, b.now()); err != nil {
 		t.Fatal(err)
 	}
 	if acquired, _, err := b.Journal.AcquireFundingLease(key); err != nil || !acquired {
@@ -233,7 +258,15 @@ func TestBuyerStagedFundingReservationIsNotDoubleCounted(t *testing.T) {
 func TestBuyerFundingAmbiguousFailsClosed(t *testing.T) {
 	b, res, _, _ := happyBuyer()
 	res.escrow.FundedAtomic = 24_999_999 // not the exact quoted amount
-	if _, err := b.Purchase(context.Background(), ref(), TransportA2A, buildTask); !errors.Is(err, ErrFundingAmbiguous) {
+	if _, err := b.Purchase(
+		context.Background(),
+		ref(),
+		TransportA2A,
+		buildTask,
+	); !errors.Is(
+		err,
+		ErrFundingAmbiguous,
+	) {
 		t.Fatalf("want ErrFundingAmbiguous, got %v", err)
 	}
 }
@@ -260,7 +293,15 @@ func TestBuyerRechecksFinalizedQuoteAfterFundingRecovery(t *testing.T) {
 func TestBuyerPolicyRejectionBlocksSpend(t *testing.T) {
 	b, _, sig, _ := happyBuyer()
 	b.Policy.CapabilityAllow = map[string]bool{"cap_other": true} // cap_sw not allowed
-	if _, err := b.Purchase(context.Background(), ref(), TransportA2A, buildTask); !errors.Is(err, ErrCapabilityNotAllowed) {
+	if _, err := b.Purchase(
+		context.Background(),
+		ref(),
+		TransportA2A,
+		buildTask,
+	); !errors.Is(
+		err,
+		ErrCapabilityNotAllowed,
+	) {
 		t.Fatalf("want ErrCapabilityNotAllowed, got %v", err)
 	}
 	if sig.fundCalls != 0 {
@@ -284,7 +325,15 @@ func TestBuyerManualConfirmation(t *testing.T) {
 	b.Policy.ConfirmationMode = ConfirmManual
 
 	// No confirmer -> refuse.
-	if _, err := b.Purchase(context.Background(), ref(), TransportA2A, buildTask); !errors.Is(err, ErrManualNoConfirmer) {
+	if _, err := b.Purchase(
+		context.Background(),
+		ref(),
+		TransportA2A,
+		buildTask,
+	); !errors.Is(
+		err,
+		ErrManualNoConfirmer,
+	) {
 		t.Fatalf("want ErrManualNoConfirmer, got %v", err)
 	}
 	if sig.fundCalls != 0 {
@@ -316,8 +365,11 @@ func happyProvider() (*Provider, AcceptedQuote, Task) {
 	p := &Provider{
 		Resolver: &fakeResolver{escrow: EscrowState{Address: esc, Found: true, FundedAtomic: prop.MaxAtomicAmount}},
 		Executor: &fakeExec{outcome: Outcome{ExecutionID: "sha256:x", QuoteCommitment: qc, ArtifactDigest: "sha256:a"}},
-		Receipts: &fakeReceipts{receipt: Receipt{Commitment: "tvm-cell-sha256:r", QuoteCommitment: qc}, settlement: Settlement{Released: true}},
-		Signer:   &fakeSigner{},
+		Receipts: &fakeReceipts{
+			receipt:    Receipt{Commitment: "tvm-cell-sha256:r", QuoteCommitment: qc},
+			settlement: Settlement{Released: true},
+		},
+		Signer: &fakeSigner{},
 	}
 	return p, aq, task
 }

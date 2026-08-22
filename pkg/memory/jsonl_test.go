@@ -81,27 +81,27 @@ func TestApplyAuthenticatedInboundIsDurableIdempotentAndPrivate(t *testing.T) {
 		Role: "user", Content: "private Messenger input", SourceEventID: eventID,
 		ActionProvenanceState: "authenticated-messaging", ActionOrigins: []actionauth.Origin{{EventID: eventID}},
 	}
-	if applied, err := store.ApplyAuthenticatedInbound(ctx, "session", eventID, msg); err != nil || !applied {
-		t.Fatalf("first apply=%v err=%v", applied, err)
+	if applied, applyErr := store.ApplyAuthenticatedInbound(ctx, "session", eventID, msg); applyErr != nil || !applied {
+		t.Fatalf("first apply=%v err=%v", applied, applyErr)
 	}
-	if err := os.Chmod(dir, 0o755); err != nil {
-		t.Fatal(err)
+	if chmodErr := os.Chmod(dir, 0o755); chmodErr != nil {
+		t.Fatal(chmodErr)
 	}
 	for _, path := range []string{store.jsonlPath("session"), store.metaPath("session")} {
-		if err := os.Chmod(path, 0o644); err != nil {
-			t.Fatal(err)
+		if chmodErr := os.Chmod(path, 0o644); chmodErr != nil {
+			t.Fatal(chmodErr)
 		}
 	}
 	store, err = NewJSONLStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied, err := store.ApplyAuthenticatedInbound(ctx, "session", eventID, msg); err != nil || applied {
-		t.Fatalf("exact restart replay=%v err=%v", applied, err)
+	if applied, applyErr := store.ApplyAuthenticatedInbound(ctx, "session", eventID, msg); applyErr != nil || applied {
+		t.Fatalf("exact restart replay=%v err=%v", applied, applyErr)
 	}
 	substituted := msg
 	substituted.Content = "substitution"
-	if _, err := store.ApplyAuthenticatedInbound(ctx, "session", eventID, substituted); err == nil {
+	if _, applyErr := store.ApplyAuthenticatedInbound(ctx, "session", eventID, substituted); applyErr == nil {
 		t.Fatal("Event-ID substitution was accepted")
 	}
 	history, err := store.GetHistory(ctx, "session")
@@ -170,27 +170,27 @@ func TestRoomModerationProjectsHistoryAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	target := "evt_" + strings.Repeat("a", 64)
 	roomID := "room_" + strings.Repeat("b", 64)
-	if err := store.AddFullMessage(ctx, "room-session", providers.Message{
+	if addErr := store.AddFullMessage(ctx, "room-session", providers.Message{
 		Role: "user", Content: "sensitive text", SourceEventID: target, SourceRoomID: roomID,
-	}); err != nil {
-		t.Fatal(err)
+	}); addErr != nil {
+		t.Fatal(addErr)
 	}
 	hide := providers.RoomModerationDecision{
 		RoomID: roomID, TargetEventID: target,
 		DecisionEventID: "evt_" + strings.Repeat("c", 64), DecisionRevision: 1, Action: "hide", Reason: "policy",
 	}
-	if changed, err := store.ApplyRoomModeration(ctx, "room-session", hide); err != nil || !changed {
-		t.Fatalf("hide changed=%v err=%v", changed, err)
+	if changed, applyErr := store.ApplyRoomModeration(ctx, "room-session", hide); applyErr != nil || !changed {
+		t.Fatalf("hide changed=%v err=%v", changed, applyErr)
 	}
-	if changed, err := store.ApplyRoomModeration(ctx, "room-session", hide); err != nil || changed {
-		t.Fatalf("exact replay changed=%v err=%v", changed, err)
+	if changed, applyErr := store.ApplyRoomModeration(ctx, "room-session", hide); applyErr != nil || changed {
+		t.Fatalf("exact replay changed=%v err=%v", changed, applyErr)
 	}
 	history, err := store.GetHistory(ctx, "room-session")
 	if err != nil || len(history) != 1 || history[0].Content == "sensitive text" {
 		t.Fatalf("hidden history=%+v err=%v", history, err)
 	}
-	if err := store.SetHistory(ctx, "room-session", history); err != nil {
-		t.Fatalf("rewrite hidden history: %v", err)
+	if setErr := store.SetHistory(ctx, "room-session", history); setErr != nil {
+		t.Fatalf("rewrite hidden history: %v", setErr)
 	}
 	store, err = NewJSONLStore(dir)
 	if err != nil {
@@ -204,13 +204,13 @@ func TestRoomModerationProjectsHistoryAcrossRestart(t *testing.T) {
 	gap.DecisionEventID = "evt_" + strings.Repeat("d", 64)
 	gap.DecisionRevision = 3
 	gap.Action = "restore"
-	if _, err := store.ApplyRoomModeration(ctx, "room-session", gap); err == nil {
+	if _, applyErr := store.ApplyRoomModeration(ctx, "room-session", gap); applyErr == nil {
 		t.Fatal("revision gap accepted")
 	}
 	restore := gap
 	restore.DecisionRevision = 2
-	if changed, err := store.ApplyRoomModeration(ctx, "room-session", restore); err != nil || !changed {
-		t.Fatalf("restore changed=%v err=%v", changed, err)
+	if changed, applyErr := store.ApplyRoomModeration(ctx, "room-session", restore); applyErr != nil || !changed {
+		t.Fatalf("restore changed=%v err=%v", changed, applyErr)
 	}
 	history, err = store.GetHistory(ctx, "room-session")
 	if err != nil || len(history) != 1 || history[0].Content != "sensitive text" ||

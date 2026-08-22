@@ -7,8 +7,9 @@ package nativeimpl
 import (
 	"context"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	"github.com/tosnetwork/tos-ai/pkg/softwarework"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 // softwareRunner is the narrow behaviour of *softwarework.Runner the execution

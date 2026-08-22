@@ -31,7 +31,9 @@ type NativeProviderConfig struct {
 // executes once and settles once regardless of the transport it arrived on.
 func NewNativeProviderReceivers(c NativeProviderConfig) (*ProviderReceivers, error) {
 	if c.Escrow == nil || c.Gate == nil || c.Runner == nil || c.Locator == nil || c.Signer == nil || c.Release == nil {
-		return nil, errors.New("nativeimpl: native provider needs escrow resolver, gate, runner, locator, signer, and release broadcaster")
+		return nil, errors.New(
+			"nativeimpl: native provider needs escrow resolver, gate, runner, locator, signer, and release broadcaster",
+		)
 	}
 	settler, err := NewEscrowReleaseSettler(c.Escrow, c.Signer, c.Release)
 	if err != nil {

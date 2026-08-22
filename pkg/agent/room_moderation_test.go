@@ -10,7 +10,10 @@ import (
 )
 
 func TestRoomModerationIsDurableAndCancelsActiveRoomTurn(t *testing.T) {
-	al, _, _, _, cleanup := newTestAgentLoop(t)
+	al, messageBus, provider, cfg, cleanup := newTestAgentLoop(t)
+	_ = messageBus
+	_ = provider
+	_ = cfg
 	defer cleanup()
 	roomID := "room_" + strings.Repeat("1", 64)
 	target := "evt_" + strings.Repeat("2", 64)
@@ -53,7 +56,10 @@ func TestRoomModerationIsDurableAndCancelsActiveRoomTurn(t *testing.T) {
 }
 
 func TestRoomModerationControlRejectsUntrustedInput(t *testing.T) {
-	al, _, _, _, cleanup := newTestAgentLoop(t)
+	al, messageBus, provider, cfg, cleanup := newTestAgentLoop(t)
+	_ = messageBus
+	_ = provider
+	_ = cfg
 	defer cleanup()
 	if err := al.processRoomModeration(bus.InboundMessage{RoomModeration: &bus.RoomModerationControl{
 		RoomID: "room", TargetEventID: "event", DecisionEventID: "decision", DecisionRevision: 1, Action: "hide",

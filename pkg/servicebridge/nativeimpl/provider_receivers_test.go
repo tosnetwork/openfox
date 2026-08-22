@@ -39,7 +39,12 @@ func TestNewProviderReceiversMountsAllThreeOnOneGate(t *testing.T) {
 	gate := &countingGate{}
 	runner := &fakeRunner{outcome: sampleOutcome()}
 
-	recv, err := NewProviderReceivers(gate, runner, staticLocator{url: "https://cdn.example/artifact"}, newTestSettler(t))
+	recv, err := NewProviderReceivers(
+		gate,
+		runner,
+		staticLocator{url: "https://cdn.example/artifact"},
+		newTestSettler(t),
+	)
 	if err != nil {
 		t.Fatalf("new receivers: %v", err)
 	}

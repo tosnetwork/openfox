@@ -18,7 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	nativeimpl "github.com/tosnetwork/openfox/pkg/servicebridge/nativeimpl"
 	"github.com/tosnetwork/tos-ai/pkg/a2aadapter"
 	"github.com/tosnetwork/tos-ai/pkg/adapterhttp"
 	"github.com/tosnetwork/tos-ai/pkg/artifacthttp"
@@ -32,6 +31,8 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/executiongate"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+
+	nativeimpl "github.com/tosnetwork/openfox/pkg/servicebridge/nativeimpl"
 )
 
 const (
@@ -86,10 +87,25 @@ func parseFlags() options {
 	flag.StringVar(&value.providerAgent, "provider-agent-id", "", "provider Native Agent ID")
 	flag.StringVar(&value.providerAddress, "provider-address", "", "provider raw wallet address")
 	flag.StringVar(&value.transportDigest, "transport-digest", "", "transport binding SHA-256 digest")
-	flag.StringVar(&value.signerAuthorization, "signer-authorization", "", "execution signer authorization SHA-256 digest")
+	flag.StringVar(
+		&value.signerAuthorization,
+		"signer-authorization",
+		"",
+		"execution signer authorization SHA-256 digest",
+	)
 	flag.StringVar(&value.signerSeedPath, "execution-signer-seed", "", "private raw 32-byte Ed25519 seed")
-	flag.StringVar(&value.executionSignerWallet, "execution-signer-wallet", "", "tosctl wallet holding the execution signer")
-	flag.StringVar(&value.executionSignerPublicKey, "execution-signer-public-key", "", "expected execution signer Ed25519 public key hex")
+	flag.StringVar(
+		&value.executionSignerWallet,
+		"execution-signer-wallet",
+		"",
+		"tosctl wallet holding the execution signer",
+	)
+	flag.StringVar(
+		&value.executionSignerPublicKey,
+		"execution-signer-public-key",
+		"",
+		"expected execution signer Ed25519 public key hex",
+	)
 	flag.StringVar(&value.tosctlBinary, "tosctl", "", "tosctl executable")
 	flag.StringVar(&value.tosctlConfig, "tosctl-config", "", "private tosctl configuration")
 	flag.StringVar(&value.tosctlWallet, "tosctl-wallet", "provider", "tosctl provider wallet name")
@@ -99,9 +115,19 @@ func parseFlags() options {
 	flag.StringVar(&value.a2aAddress, "a2a-address", "127.0.0.1:8443", "A2A listen address")
 	flag.StringVar(&value.mcpAddress, "mcp-address", "127.0.0.1:8444", "MCP listen address")
 	flag.StringVar(&value.packetAddress, "agent-packet-address", "127.0.0.1:8445", "Agent Packet listen address")
-	flag.StringVar(&value.messengerPacketSocket, "messenger-agent-packet-socket", "", "owner-private Unix socket for tos-messengerd Agent Packet delivery")
+	flag.StringVar(
+		&value.messengerPacketSocket,
+		"messenger-agent-packet-socket",
+		"",
+		"owner-private Unix socket for tos-messengerd Agent Packet delivery",
+	)
 	flag.StringVar(&value.artifactAddr, "artifact-address", "127.0.0.1:8446", "artifact listen address")
-	flag.StringVar(&value.artifactOrigin, "artifact-origin", "https://127.0.0.1:8446", "buyer-visible artifact HTTPS origin")
+	flag.StringVar(
+		&value.artifactOrigin,
+		"artifact-origin",
+		"https://127.0.0.1:8446",
+		"buyer-visible artifact HTTPS origin",
+	)
 	flag.Parse()
 	return value
 }
@@ -115,8 +141,10 @@ func run(value options) error {
 		value.certificate == "" || value.privateKey == "" || value.bearerPath == "" {
 		return errors.New("provider configuration is incomplete")
 	}
-	seedSigner := value.signerSeedPath != "" && value.executionSignerWallet == "" && value.executionSignerPublicKey == ""
-	tosctlSigner := value.signerSeedPath == "" && value.executionSignerWallet != "" && value.executionSignerPublicKey != ""
+	seedSigner := value.signerSeedPath != "" && value.executionSignerWallet == "" &&
+		value.executionSignerPublicKey == ""
+	tosctlSigner := value.signerSeedPath == "" && value.executionSignerWallet != "" &&
+		value.executionSignerPublicKey != ""
 	if !seedSigner && !tosctlSigner {
 		return errors.New("configure exactly one execution signer custody mode")
 	}
@@ -127,7 +155,11 @@ func run(value options) error {
 	if err != nil {
 		return err
 	}
-	network := &nativev1.NetworkDomain{NetworkId: value.networkID, GenesisRootHash: value.genesisRoot, GenesisFileHash: value.genesisFile}
+	network := &nativev1.NetworkDomain{
+		NetworkId:       value.networkID,
+		GenesisRootHash: value.genesisRoot,
+		GenesisFileHash: value.genesisFile,
+	}
 	registryBOC, err := readBase64File(value.registryBOC, 1<<20)
 	if err != nil {
 		return err
@@ -140,38 +172,68 @@ func run(value options) error {
 	if err != nil {
 		return err
 	}
-	nativeResolver, err := toschain.NewSimplifiedNativeResolver(chain, registryLocator, filepath.Join(value.stateDir, "native.checkpoint"))
+	nativeResolver, err := toschain.NewSimplifiedNativeResolver(
+		chain,
+		registryLocator,
+		filepath.Join(value.stateDir, "native.checkpoint"),
+	)
 	if err != nil {
 		return err
 	}
-	escrowResolver, err := toschain.NewEscrowResolver(chain, network, value.escrowHash, filepath.Join(value.stateDir, "escrow.checkpoint"))
+	escrowResolver, err := toschain.NewEscrowResolver(
+		chain,
+		network,
+		value.escrowHash,
+		filepath.Join(value.stateDir, "escrow.checkpoint"),
+	)
 	if err != nil {
 		return err
 	}
 	gate, err := executiongate.New(executiongate.Config{
-		Directory: filepath.Join(value.stateDir, "gate"), EscrowResolver: escrowResolver, NativeResolver: nativeResolver,
-		Network: network, RegistryCodeHash: value.registryHash, ProviderAgentID: value.providerAgent,
-		ProviderAddress: value.providerAddress, ManifestDigest: manifestDigest, TransportDigest: value.transportDigest,
-		ExecutionSignerAuthorization: value.signerAuthorization, Timeout: 30 * time.Second,
+		Directory: filepath.Join(
+			value.stateDir,
+			"gate",
+		),
+		EscrowResolver:               escrowResolver,
+		NativeResolver:               nativeResolver,
+		Network:                      network,
+		RegistryCodeHash:             value.registryHash,
+		ProviderAgentID:              value.providerAgent,
+		ProviderAddress:              value.providerAddress,
+		ManifestDigest:               manifestDigest,
+		TransportDigest:              value.transportDigest,
+		ExecutionSignerAuthorization: value.signerAuthorization,
+		Timeout:                      30 * time.Second,
 	})
 	if err != nil {
 		return err
 	}
 
-	limits := executor.Limits{CPUMillis: 120_000, MemoryBytes: 1 << 30, DiskBytes: 2 << 30,
-		PIDs: 64, ExecutionTime: 180 * time.Second, OutputBytes: 16 << 20}
+	limits := executor.Limits{
+		CPUMillis: 120_000, MemoryBytes: 1 << 30, DiskBytes: 2 << 30,
+		PIDs: 64, ExecutionTime: 180 * time.Second, OutputBytes: 16 << 20,
+	}
 	backend, err := containerdbackend.Open(context.Background(), containerdbackend.Config{
-		SocketPath: value.socket, Namespace: "tos-service-paid-work", Snapshotter: "overlayfs", Runtime: "io.containerd.runc.v2",
-		FIFODir: value.fifoDir, MaxActive: 4, PolicyLimits: limits, ImageReference: imageReference,
-		ImageDigest: toolchainDigest, ImagePlatform: "linux/amd64",
+		SocketPath:     value.socket,
+		Namespace:      "tos-service-paid-work",
+		Snapshotter:    "overlayfs",
+		Runtime:        "io.containerd.runc.v2",
+		FIFODir:        value.fifoDir,
+		MaxActive:      4,
+		PolicyLimits:   limits,
+		ImageReference: imageReference,
+		ImageDigest:    toolchainDigest,
+		ImagePlatform:  "linux/amd64",
 	})
 	if err != nil {
 		return err
 	}
 	defer backend.Close()
-	bound, err := executor.NewPolicyExecutor(executor.Policy{AllowedImages: map[string]struct{}{toolchainDigest: {}},
+	bound, err := executor.NewPolicyExecutor(executor.Policy{
+		AllowedImages:    map[string]struct{}{toolchainDigest: {}},
 		MaxAllowedImages: 1, MaxEnvironment: 8, MaxArguments: 8, MaxAllowedHosts: 0, MaxStringBytes: 4096,
-		MaxInputBytes: 16 << 20, Ceiling: limits, RequireReadOnlyRoot: true}, backend)
+		MaxInputBytes: 16 << 20, Ceiling: limits, RequireReadOnlyRoot: true,
+	}, backend)
 	if err != nil {
 		return err
 	}
@@ -185,9 +247,15 @@ func run(value options) error {
 	}
 	defer journal.Close()
 	runner, err := softwarework.NewRunner(bound, store, journal, softwarework.Contract{
-		ManifestDigest: manifestDigest, ToolchainDigest: toolchainDigest, SandboxDigest: manifestDigest,
-		Executable: "/usr/local/bin/go", Arguments: []string{"test", "./...", "-count=1"}, WorkingDirectory: "/workspace/source",
-		Limits: limits, UserID: 65532, GroupID: 65532,
+		ManifestDigest:   manifestDigest,
+		ToolchainDigest:  toolchainDigest,
+		SandboxDigest:    manifestDigest,
+		Executable:       "/usr/local/bin/go",
+		Arguments:        []string{"test", "./...", "-count=1"},
+		WorkingDirectory: "/workspace/source",
+		Limits:           limits,
+		UserID:           65532,
+		GroupID:          65532,
 	})
 	if err != nil {
 		return err
@@ -236,9 +304,11 @@ func run(value options) error {
 	}
 
 	serverConfig := func(address string) adapterhttp.ServerConfig {
-		return adapterhttp.ServerConfig{Address: address, CertificateFile: value.certificate, PrivateKeyFile: value.privateKey,
+		return adapterhttp.ServerConfig{
+			Address: address, CertificateFile: value.certificate, PrivateKeyFile: value.privateKey,
 			Boundary:    adapterhttp.BoundaryConfig{BearerToken: bearer, MaxRequestBytes: 16 << 20, MaxConcurrent: 8},
-			ReadTimeout: 4 * time.Minute}
+			ReadTimeout: 4 * time.Minute,
+		}
 	}
 	a2aServer, err := a2aadapter.NewPublicServer(receivers.A2A, serverConfig(value.a2aAddress))
 	if err != nil {
@@ -248,7 +318,11 @@ func run(value options) error {
 	if err != nil {
 		return err
 	}
-	packetHandler := agentpacket.Handler(chainAgentResolver{resolver: nativeResolver}, &agentpacket.ReplayGuard{}, receivers.AgentPacket)
+	packetHandler := agentpacket.Handler(
+		chainAgentResolver{resolver: nativeResolver},
+		&agentpacket.ReplayGuard{},
+		receivers.AgentPacket,
+	)
 	packetServer, err := adapterhttp.NewServer(packetHandler, serverConfig(value.packetAddress))
 	if err != nil {
 		return err

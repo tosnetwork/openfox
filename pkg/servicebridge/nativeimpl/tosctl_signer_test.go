@@ -98,8 +98,10 @@ func testTOSCTLSigner(t *testing.T, public ed25519.PublicKey) *TOSCTLExecutionSi
 	if err := os.WriteFile(config, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	signer, err := NewTOSCTLExecutionSigner(TOSCTLExecutionSignerConfig{BinaryPath: binary, ConfigPath: config,
-		WalletName: "execution-signer", ExpectedPublicKey: public})
+	signer, err := NewTOSCTLExecutionSigner(TOSCTLExecutionSignerConfig{
+		BinaryPath: binary, ConfigPath: config,
+		WalletName: "execution-signer", ExpectedPublicKey: public,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

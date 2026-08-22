@@ -18,8 +18,10 @@ func privateJournalDirectory(t *testing.T) string {
 }
 
 func durableRecord() PurchaseRecord {
-	return PurchaseRecord{Key: PurchaseKey{QuoteCommitment: "tvm-cell-sha256:q", EscrowAddress: "0:e"},
-		AssetMaster: "0:a", AtomicAmount: 25}
+	return PurchaseRecord{
+		Key:         PurchaseKey{QuoteCommitment: "tvm-cell-sha256:q", EscrowAddress: "0:e"},
+		AssetMaster: "0:a", AtomicAmount: 25,
+	}
 }
 
 func TestFilePurchaseJournalPersistsFundingLeaseAcrossRestart(t *testing.T) {
@@ -71,7 +73,11 @@ func TestFilePurchaseJournalRejectsConflictRegressionAndDamagedState(t *testing.
 		t.Fatalf("regression = %v", err)
 	}
 	path := filepath.Join(directory, "purchases.json")
-	if err := os.WriteFile(path, []byte(`{"schema":"tos.openfox.purchase-journal.v1","records":[],"authority":true}`), 0o600); err != nil {
+	if err := os.WriteFile(
+		path,
+		[]byte(`{"schema":"tos.openfox.purchase-journal.v1","records":[],"authority":true}`),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewFilePurchaseJournal(directory); err == nil {

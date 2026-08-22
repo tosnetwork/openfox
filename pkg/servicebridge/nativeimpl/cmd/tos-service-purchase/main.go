@@ -28,14 +28,15 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tosnetwork/openfox/pkg/actionauth"
-	"github.com/tosnetwork/openfox/pkg/messengerauth"
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
-	nativeimpl "github.com/tosnetwork/openfox/pkg/servicebridge/nativeimpl"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"google.golang.org/protobuf/encoding/protojson"
+
+	"github.com/tosnetwork/openfox/pkg/actionauth"
+	"github.com/tosnetwork/openfox/pkg/messengerauth"
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
+	nativeimpl "github.com/tosnetwork/openfox/pkg/servicebridge/nativeimpl"
 )
 
 type purchaseInputDocument struct {
@@ -171,7 +172,10 @@ func runDeployPrepare(args []string) error {
 	config := flags.String("config", "", "owner-private chain buyer config")
 	purchasePath := flags.String("purchase", "", "reviewed prepared purchase")
 	output := flags.String("output", "", "new owner-private signed deployment artifact")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *config == "" || *purchasePath == "" || *output == "" {
+	if err := flags.Parse(
+		args,
+	); err != nil || flags.NArg() != 0 || *config == "" || *purchasePath == "" ||
+		*output == "" {
 		return errors.New("deploy-prepare requires --config, --purchase, and --output")
 	}
 	stack, err := nativeimpl.LoadChainBuyerStack(*config)
@@ -195,10 +199,12 @@ func runDeployPrepare(args []string) error {
 	if err := writePrivateNew(*output, encoded); err != nil {
 		return err
 	}
-	return printJSON(map[string]any{"verdict": "SIGNED_DEPLOYMENT_REVIEW_REQUIRED",
+	return printJSON(map[string]any{
+		"verdict":        "SIGNED_DEPLOYMENT_REVIEW_REQUIRED",
 		"escrow_address": deployment.EscrowAddress, "quote_commitment": deployment.QuoteCommitment,
 		"state_init_hash": deployment.StateInitHash, "message_hash": deployment.MessageHash,
-		"attached_nanotos": deployment.AttachedNanoTOS, "artifact": *output})
+		"attached_nanotos": deployment.AttachedNanoTOS, "artifact": *output,
+	})
 }
 
 func runDeployBroadcast(args []string) error {
@@ -225,9 +231,11 @@ func runDeployBroadcast(args []string) error {
 	if err := stack.Deployer.BroadcastEscrowDeployment(ctx, deployment); err != nil {
 		return err
 	}
-	return printJSON(map[string]any{"verdict": "DEPLOYMENT_SUBMITTED_REQUIRES_FINALIZED_REVIEW",
+	return printJSON(map[string]any{
+		"verdict":        "DEPLOYMENT_SUBMITTED_REQUIRES_FINALIZED_REVIEW",
 		"escrow_address": deployment.EscrowAddress, "quote_commitment": deployment.QuoteCommitment,
-		"message_hash": deployment.MessageHash})
+		"message_hash": deployment.MessageHash,
+	})
 }
 
 func runFund(args []string) error {
@@ -242,7 +250,9 @@ func runFund(args []string) error {
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *config == "" || *purchasePath == "" ||
 		*requestKey == "" || len(*requestKey) > 256 || *evidencePath == "" || *messengerSocket == "" ||
 		*mandateID == "" || *capabilityClass == "" {
-		return errors.New("fund requires --config, --purchase, --request-key, --evidence, --messenger-socket, --mandate-id, and --capability-class")
+		return errors.New(
+			"fund requires --config, --purchase, --request-key, --evidence, --messenger-socket, --mandate-id, and --capability-class",
+		)
 	}
 	stack, err := nativeimpl.LoadChainBuyerStack(*config)
 	if err != nil {
@@ -262,10 +272,12 @@ func runFund(args []string) error {
 	if err != nil {
 		return err
 	}
-	ref := servicebridge.CapabilityRef{AgentID: purchase.Proposal.GetProviderAgentId(),
+	ref := servicebridge.CapabilityRef{
+		AgentID:      purchase.Proposal.GetProviderAgentId(),
 		CapabilityID: purchase.Proposal.GetCapabilityId(), Version: purchase.Proposal.GetCapabilityVersion(),
 		ManifestDigest: purchase.Proposal.GetManifestDigest(), RegistryCodeHash: stack.RegistryCodeHash,
-		Network: stack.Network, CapabilityClass: *capabilityClass}
+		Network: stack.Network, CapabilityClass: *capabilityClass,
+	}
 	proposal, err := session.RequestQuote(ctx, ref)
 	if err != nil {
 		return err
@@ -275,8 +287,10 @@ func runFund(args []string) error {
 		return errors.New("purchase amount is outside the OpenFox policy range")
 	}
 	key := servicebridge.PurchaseKey{QuoteCommitment: purchase.QuoteCommitment, EscrowAddress: purchase.Escrow.Address}
-	if _, err := stack.Journal.Begin(servicebridge.PurchaseRecord{Key: key,
-		AssetMaster: purchase.AssetMasterAddress, AtomicAmount: amount}, time.Now().UTC()); err != nil {
+	if _, err := stack.Journal.Begin(servicebridge.PurchaseRecord{
+		Key:         key,
+		AssetMaster: purchase.AssetMasterAddress, AtomicAmount: amount,
+	}, time.Now().UTC()); err != nil {
 		return err
 	}
 	acquired, record, err := stack.Journal.AcquireFundingLease(key)
@@ -296,8 +310,10 @@ func runFund(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := messenger.Authorize(ctx, actionauth.Action{Effect: actionauth.EffectSpend,
-			Summary: "fund accepted quote " + purchase.QuoteCommitment, MandateID: *mandateID, Terms: &terms}); err != nil {
+		if err := messenger.Authorize(ctx, actionauth.Action{
+			Effect:  actionauth.EffectSpend,
+			Summary: "fund accepted quote " + purchase.QuoteCommitment, MandateID: *mandateID, Terms: &terms,
+		}); err != nil {
 			return err
 		}
 		funded, err := stack.SDK.FundPurchase(ctx, purchase, *requestKey)
@@ -328,13 +344,19 @@ func runFund(args []string) error {
 		fundedStateAmount != purchase.AmountAtomic {
 		return errors.New("funding evidence is not an exact finalized purchase")
 	}
-	if err := stack.Journal.Advance(key, servicebridge.PhaseFunded); err != nil && !errors.Is(err, servicebridge.ErrJournalPhase) {
+	if err := stack.Journal.Advance(
+		key,
+		servicebridge.PhaseFunded,
+	); err != nil &&
+		!errors.Is(err, servicebridge.ErrJournalPhase) {
 		return err
 	}
-	evidence := map[string]any{"schema": "tos.openfox.finalized-funding.v1", "verdict": "PASS_FINALIZED_EXACT_FUNDING",
+	evidence := map[string]any{
+		"schema": "tos.openfox.finalized-funding.v1", "verdict": "PASS_FINALIZED_EXACT_FUNDING",
 		"escrow_address": purchase.Escrow.Address, "quote_commitment": purchase.QuoteCommitment,
 		"amount_atomic": fundedStateAmount, "finalized_checkpoint": finalizedCheckpoint,
-		"contract_code_hash": contractCodeHash, "finalized_at": finalizedAt.UTC().Format(time.RFC3339Nano)}
+		"contract_code_hash": contractCodeHash, "finalized_at": finalizedAt.UTC().Format(time.RFC3339Nano),
+	}
 	encoded, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {
 		return err
@@ -379,7 +401,9 @@ func runDispatch(args []string) error {
 		return err
 	}
 	if policy.ConfirmationMode != servicebridge.ConfirmAuto {
-		return errors.New("manual spending policy requires the interactive OpenFox runtime, not the stock dispatch command")
+		return errors.New(
+			"manual spending policy requires the interactive OpenFox runtime, not the stock dispatch command",
+		)
 	}
 	purchase, err := loadPreparedPurchase(*purchasePath)
 	if err != nil {
@@ -419,35 +443,54 @@ func runDispatch(args []string) error {
 	if err != nil {
 		return err
 	}
-	buyer, err := nativeimpl.NewChainNativeBuyer(nativeimpl.ChainNativeBuyerConfig{Stack: stack, Input: input,
+	buyer, err := nativeimpl.NewChainNativeBuyer(nativeimpl.ChainNativeBuyerConfig{
+		Stack: stack, Input: input,
 		Policy: policy, OwnerPublicKey: ownerKey, Transport: dispatch, Authorizer: messenger,
-		QuoteVerifier: messenger, MandateID: *mandateID})
-	if err != nil {
-		return err
-	}
-	ref := servicebridge.CapabilityRef{AgentID: purchase.Proposal.GetProviderAgentId(),
-		CapabilityID: purchase.Proposal.GetCapabilityId(), Version: purchase.Proposal.GetCapabilityVersion(),
-		ManifestDigest: purchase.Proposal.GetManifestDigest(), RegistryCodeHash: stack.RegistryCodeHash,
-		Network: stack.Network, CapabilityClass: *capabilityClass}
-	transport := servicebridge.Transport(*transportName)
-	settlement, err := buyer.Purchase(ctx, ref, transport, func(accepted servicebridge.AcceptedQuote) (servicebridge.Task, error) {
-		if accepted.QuoteCommitment != taskDocument.QuoteCommitment || accepted.EscrowAddress != taskDocument.EscrowAddress {
-			return servicebridge.Task{}, errors.New("task differs from the accepted purchase")
-		}
-		return servicebridge.Task{EscrowAddress: taskDocument.EscrowAddress,
-			QuoteCommitment: taskDocument.QuoteCommitment, ExecutionID: taskDocument.ExecutionID,
-			InputDigest: taskDocument.InputDigest, SourceDigest: taskDocument.SourceDigest,
-			SourceArchive: append([]byte(nil), archive...)}, nil
+		QuoteVerifier: messenger, MandateID: *mandateID,
 	})
 	if err != nil {
 		return err
 	}
-	evidence := map[string]any{"schema": "tos.openfox.terminal-settlement.v1", "verdict": "PASS_TERMINAL_SETTLEMENT",
-		"transport": *transportName, "escrow_address": purchase.Escrow.Address,
-		"quote_commitment": purchase.QuoteCommitment, "execution_id": taskDocument.ExecutionID,
-		"released": settlement.Released, "refunded": settlement.Refunded,
-		"provider_credit_atomic": settlement.ProviderCreditAtomic, "buyer_balance_atomic": settlement.BuyerBalanceAtomic,
-		"finalized_checkpoint": settlement.Checkpoint}
+	ref := servicebridge.CapabilityRef{
+		AgentID:      purchase.Proposal.GetProviderAgentId(),
+		CapabilityID: purchase.Proposal.GetCapabilityId(), Version: purchase.Proposal.GetCapabilityVersion(),
+		ManifestDigest: purchase.Proposal.GetManifestDigest(), RegistryCodeHash: stack.RegistryCodeHash,
+		Network: stack.Network, CapabilityClass: *capabilityClass,
+	}
+	transport := servicebridge.Transport(*transportName)
+	settlement, err := buyer.Purchase(
+		ctx,
+		ref,
+		transport,
+		func(accepted servicebridge.AcceptedQuote) (servicebridge.Task, error) {
+			if accepted.QuoteCommitment != taskDocument.QuoteCommitment ||
+				accepted.EscrowAddress != taskDocument.EscrowAddress {
+				return servicebridge.Task{}, errors.New("task differs from the accepted purchase")
+			}
+			return servicebridge.Task{
+				EscrowAddress:   taskDocument.EscrowAddress,
+				QuoteCommitment: taskDocument.QuoteCommitment, ExecutionID: taskDocument.ExecutionID,
+				InputDigest: taskDocument.InputDigest, SourceDigest: taskDocument.SourceDigest,
+				SourceArchive: append([]byte(nil), archive...),
+			}, nil
+		},
+	)
+	if err != nil {
+		return err
+	}
+	evidence := map[string]any{
+		"schema":                 "tos.openfox.terminal-settlement.v1",
+		"verdict":                "PASS_TERMINAL_SETTLEMENT",
+		"transport":              *transportName,
+		"escrow_address":         purchase.Escrow.Address,
+		"quote_commitment":       purchase.QuoteCommitment,
+		"execution_id":           taskDocument.ExecutionID,
+		"released":               settlement.Released,
+		"refunded":               settlement.Refunded,
+		"provider_credit_atomic": settlement.ProviderCreditAtomic,
+		"buyer_balance_atomic":   settlement.BuyerBalanceAtomic,
+		"finalized_checkpoint":   settlement.Checkpoint,
+	}
 	encoded, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {
 		return err
@@ -529,8 +572,11 @@ func newPinnedHTTPClient(endpoint, caPath, tokenPath string) (*http.Client, erro
 	return &http.Client{Transport: bearerRoundTripper{token: strings.TrimSpace(string(token)), base: transport}}, nil
 }
 
-func newDispatchTransport(ctx context.Context, name, endpoint, seedPath, senderAgent, recipientAgent, capabilityID string,
-	client *http.Client) (servicebridge.TaskTransport, func() error, error) {
+func newDispatchTransport(
+	ctx context.Context,
+	name, endpoint, seedPath, senderAgent, recipientAgent, capabilityID string,
+	client *http.Client,
+) (servicebridge.TaskTransport, func() error, error) {
 	switch name {
 	case "a2a":
 		wire := a2aclient.NewJSONRPCTransport(endpoint, client)
@@ -538,8 +584,10 @@ func newDispatchTransport(ctx context.Context, name, endpoint, seedPath, senderA
 		return transport, func() error { wire.Destroy(); return nil }, err
 	case "mcp":
 		mcpClient := mcp.NewClient(&mcp.Implementation{Name: "tos-service-production-buyer", Version: "1.0.0"}, nil)
-		session, err := mcpClient.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: client,
-			DisableStandaloneSSE: true, MaxRetries: -1}, nil)
+		session, err := mcpClient.Connect(ctx, &mcp.StreamableClientTransport{
+			Endpoint: endpoint, HTTPClient: client,
+			DisableStandaloneSSE: true, MaxRetries: -1,
+		}, nil)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -560,7 +608,8 @@ func newDispatchTransport(ctx context.Context, name, endpoint, seedPath, senderA
 		}
 		transport, err := nativeimpl.NewAgentPacketTaskTransport(nativeimpl.AgentPacketTransportConfig{
 			SenderAgentID: senderAgent, RecipientAgentID: recipientAgent, CapabilityID: capabilityID,
-			SigningKey: key, Endpoint: endpoint, Client: client})
+			SigningKey: key, Endpoint: endpoint, Client: client,
+		})
 		return transport, nil, err
 	default:
 		return nil, nil, errors.New("transport must be a2a, mcp, or agent_packet")
@@ -590,11 +639,14 @@ func loadPurchaseInput(path string) (buyersdk.PurchaseInput, error) {
 		return buyersdk.PurchaseInput{}, errors.New("invalid execution signer public key")
 	}
 	return buyersdk.PurchaseInput{Proposal: &proposal, ManifestCBOR: manifest, EscrowTerms: nativecore.EscrowTermsV1{
-		BuyerAddress: document.EscrowTerms.BuyerAddress, ProviderAddress: document.EscrowTerms.ProviderAddress,
-		FundingDeadline: document.EscrowTerms.FundingDeadline, RefundAvailableAt: document.EscrowTerms.RefundAvailableAt,
+		BuyerAddress:      document.EscrowTerms.BuyerAddress,
+		ProviderAddress:   document.EscrowTerms.ProviderAddress,
+		FundingDeadline:   document.EscrowTerms.FundingDeadline,
+		RefundAvailableAt: document.EscrowTerms.RefundAvailableAt,
 	}, ExecutionSignerEd25519: signer, TransportBinding: nativecore.TransportBindingV1{
-		SecurityMode: document.TransportBinding.SecurityMode, MaxRequestBytes: document.TransportBinding.MaxRequestBytes,
-		BaseURL: document.TransportBinding.BaseURL,
+		SecurityMode:    document.TransportBinding.SecurityMode,
+		MaxRequestBytes: document.TransportBinding.MaxRequestBytes,
+		BaseURL:         document.TransportBinding.BaseURL,
 	}}, nil
 }
 
@@ -607,10 +659,12 @@ func loadPreparedPurchase(path string) (*buyersdk.PreparedPurchase, error) {
 }
 
 func printReview(verdict string, purchase *buyersdk.PreparedPurchase) error {
-	return printJSON(map[string]any{"verdict": verdict, "manifest_digest": purchase.ManifestDigest,
+	return printJSON(map[string]any{
+		"verdict": verdict, "manifest_digest": purchase.ManifestDigest,
 		"quote_commitment": purchase.QuoteCommitment, "escrow_address": purchase.Escrow.Address,
 		"escrow_code_hash": purchase.Escrow.CodeHash, "asset_master_address": purchase.AssetMasterAddress,
-		"buyer_wallet_address": purchase.BuyerWalletAddress, "amount_atomic": purchase.AmountAtomic})
+		"buyer_wallet_address": purchase.BuyerWalletAddress, "amount_atomic": purchase.AmountAtomic,
+	})
 }
 
 func printJSON(value any) error {

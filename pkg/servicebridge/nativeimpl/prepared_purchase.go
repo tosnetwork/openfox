@@ -89,8 +89,10 @@ func MarshalPreparedPurchase(purchase *buyersdk.PreparedPurchase) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	encoded, err := json.MarshalIndent(preparedPurchaseEnvelope{Schema: preparedPurchaseSchema,
-		Payload: payloadJSON, IntegrityDigest: digest}, "", "  ")
+	encoded, err := json.MarshalIndent(preparedPurchaseEnvelope{
+		Schema:  preparedPurchaseSchema,
+		Payload: payloadJSON, IntegrityDigest: digest,
+	}, "", "  ")
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +107,11 @@ func UnmarshalPreparedPurchase(encoded []byte) (*buyersdk.PreparedPurchase, erro
 		return nil, errors.New("nativeimpl: invalid prepared-purchase artifact size")
 	}
 	var envelope preparedPurchaseEnvelope
-	if err := decodeStrictJSON(encoded, &envelope); err != nil || envelope.Schema != preparedPurchaseSchema || len(envelope.Payload) == 0 {
+	if err := decodeStrictJSON(
+		encoded,
+		&envelope,
+	); err != nil || envelope.Schema != preparedPurchaseSchema ||
+		len(envelope.Payload) == 0 {
 		return nil, errors.New("nativeimpl: invalid prepared-purchase envelope")
 	}
 	digest, err := preparedPayloadDigest(envelope.Payload)
@@ -126,12 +132,14 @@ func PurchaseInputFromPreparedPurchase(purchase *buyersdk.PreparedPurchase) (buy
 	if err != nil || state.QuoteCommitment != purchase.QuoteCommitment || state.AcceptedQuote == nil {
 		return buyersdk.PurchaseInput{}, errors.New("nativeimpl: prepared purchase escrow data changed")
 	}
-	return buyersdk.PurchaseInput{Proposal: proto.Clone(purchase.Proposal).(*nativev1.QuoteProposalV1),
+	return buyersdk.PurchaseInput{
+		Proposal:     proto.Clone(purchase.Proposal).(*nativev1.QuoteProposalV1),
 		ManifestCBOR: append([]byte(nil), purchase.ManifestCBOR...), EscrowTerms: nativecore.EscrowTermsV1{
 			BuyerAddress: state.BuyerAddress, ProviderAddress: state.ProviderAddress,
 			FundingDeadline: state.FundingDeadline, RefundAvailableAt: state.RefundAvailableAt,
 		}, ExecutionSignerEd25519: append([]byte(nil), state.ExecutionSignerEd25519...),
-		TransportBinding: state.TransportBinding}, nil
+		TransportBinding: state.TransportBinding,
+	}, nil
 }
 
 // MarshalPreparedEscrowDeployment persists the exact custody-signed deploy
@@ -151,8 +159,10 @@ func MarshalPreparedEscrowDeployment(deployment *buyersdk.PreparedEscrowDeployme
 	if err != nil {
 		return nil, err
 	}
-	encoded, err := json.MarshalIndent(preparedDeploymentEnvelope{Schema: preparedDeploymentSchema,
-		Deployment: payload, IntegrityDigest: digest}, "", "  ")
+	encoded, err := json.MarshalIndent(preparedDeploymentEnvelope{
+		Schema:     preparedDeploymentSchema,
+		Deployment: payload, IntegrityDigest: digest,
+	}, "", "  ")
 	if err != nil {
 		return nil, err
 	}
@@ -179,9 +189,13 @@ func UnmarshalPreparedEscrowDeployment(encoded []byte) (*buyersdk.PreparedEscrow
 
 func decodePreparedEscrowDeployment(encoded []byte) (*buyersdk.PreparedEscrowDeployment, error) {
 	var deployment buyersdk.PreparedEscrowDeployment
-	if err := decodeStrictJSON(encoded, &deployment); err != nil || deployment.Schema != "tos.service.escrow-deployment.v1" ||
+	if err := decodeStrictJSON(
+		encoded,
+		&deployment,
+	); err != nil || deployment.Schema != "tos.service.escrow-deployment.v1" ||
 		deployment.EscrowAddress == "" || deployment.QuoteCommitment == "" || deployment.StateInitBOCBase64 == "" ||
-		deployment.StateInitHash == "" || deployment.AttachedNanoTOS == 0 || deployment.MessageBOCBase64 == "" ||
+		deployment.StateInitHash == "" || deployment.AttachedNanoTOS == 0 ||
+		deployment.MessageBOCBase64 == "" ||
 		deployment.MessageHash == "" {
 		return nil, errors.New("nativeimpl: invalid prepared escrow deployment")
 	}
@@ -215,7 +229,8 @@ func decodePreparedPurchasePayload(encoded []byte) (*buyersdk.PreparedPurchase, 
 		return nil, errors.New("nativeimpl: invalid prepared-purchase manifest")
 	}
 	manifestHash := sha256.Sum256(manifest)
-	if payload.ManifestDigest != "sha256:"+hex.EncodeToString(manifestHash[:]) || proposal.ManifestDigest != payload.ManifestDigest {
+	if payload.ManifestDigest != "sha256:"+hex.EncodeToString(manifestHash[:]) ||
+		proposal.ManifestDigest != payload.ManifestDigest {
 		return nil, errors.New("nativeimpl: prepared-purchase manifest changed")
 	}
 	quoteBOC, err := decodeCanonicalBOC(payload.QuoteBOCBase64, 1<<20, true)
@@ -237,8 +252,10 @@ func decodePreparedPurchasePayload(encoded []byte) (*buyersdk.PreparedPurchase, 
 	state, err := nativecore.DecodeEscrowDataV1(data)
 	if err != nil || state.QuoteCommitment != payload.QuoteCommitment || state.EscrowTermsDigest != payload.EscrowTermsDigest ||
 		state.AuthorizationDigest != payload.AuthorizationDigest || state.TransportDigest != payload.TransportDigest ||
-		state.DisputePolicyDigest != payload.DisputePolicyDigest || state.AssetMasterAddress != payload.AssetMasterAddress ||
-		state.AcceptedQuote == nil || cellHashDigest(state.AcceptedQuote) != payload.QuoteCommitment ||
+		state.DisputePolicyDigest != payload.DisputePolicyDigest ||
+		state.AssetMasterAddress != payload.AssetMasterAddress ||
+		state.AcceptedQuote == nil ||
+		cellHashDigest(state.AcceptedQuote) != payload.QuoteCommitment ||
 		!bytes.Equal(state.AcceptedQuote.ToBOC(), quote.ToBOC()) {
 		return nil, errors.New("nativeimpl: prepared-purchase escrow links changed")
 	}
@@ -254,18 +271,26 @@ func decodePreparedPurchasePayload(encoded []byte) (*buyersdk.PreparedPurchase, 
 	}
 	expectedMaster := fmt.Sprintf("%d:%x", proposal.MaximumPrice.Asset.Master.Workchain,
 		proposal.MaximumPrice.Asset.Master.AccountId)
-	if payload.AssetMasterAddress != expectedMaster || payload.BuyerWalletAddress == "" || payload.EscrowCodeHash == "" {
+	if payload.AssetMasterAddress != expectedMaster || payload.BuyerWalletAddress == "" ||
+		payload.EscrowCodeHash == "" {
 		return nil, errors.New("nativeimpl: prepared-purchase asset route changed")
 	}
-	return &buyersdk.PreparedPurchase{Proposal: &proposal, ManifestCBOR: manifest,
+	return &buyersdk.PreparedPurchase{
+		Proposal: &proposal, ManifestCBOR: manifest,
 		ManifestDigest: payload.ManifestDigest, QuoteCommitment: payload.QuoteCommitment,
 		QuoteBOCBase64: payload.QuoteBOCBase64, Escrow: nativecore.EscrowIdentityV1{
-			Address: payload.EscrowAddress, CodeHash: payload.EscrowCodeHash,
-			QuoteCommitment: payload.QuoteCommitment, EscrowTermsDigest: payload.EscrowTermsDigest,
-			AuthorizationDigest: payload.AuthorizationDigest, TransportDigest: payload.TransportDigest,
-			DisputePolicyDigest: payload.DisputePolicyDigest, StateInitBOC: payload.EscrowStateInitBOCBase64, Data: data,
+			Address:             payload.EscrowAddress,
+			CodeHash:            payload.EscrowCodeHash,
+			QuoteCommitment:     payload.QuoteCommitment,
+			EscrowTermsDigest:   payload.EscrowTermsDigest,
+			AuthorizationDigest: payload.AuthorizationDigest,
+			TransportDigest:     payload.TransportDigest,
+			DisputePolicyDigest: payload.DisputePolicyDigest,
+			StateInitBOC:        payload.EscrowStateInitBOCBase64,
+			Data:                data,
 		}, AssetMasterAddress: payload.AssetMasterAddress, BuyerWalletAddress: payload.BuyerWalletAddress,
-		AmountAtomic: payload.AmountAtomic}, nil
+		AmountAtomic: payload.AmountAtomic,
+	}, nil
 }
 
 func decodeStrictJSON(encoded []byte, target any) error {

@@ -33,8 +33,12 @@ func signedValidCard(t *testing.T) (ContactCardFacts, ed25519.PublicKey) {
 	key := ed25519.NewKeyFromSeed([]byte("0123456789abcdef0123456789abcdef"))
 	net := contactNetwork()
 	card := agentpacket.ContactCard{
-		AgentID:       "agent_" + hex64,
-		Network:       &nativev1.NetworkDomain{NetworkId: net.NetworkID, GenesisRootHash: net.GenesisRoot, GenesisFileHash: net.GenesisFile},
+		AgentID: "agent_" + hex64,
+		Network: &nativev1.NetworkDomain{
+			NetworkId:       net.NetworkID,
+			GenesisRootHash: net.GenesisRoot,
+			GenesisFileHash: net.GenesisFile,
+		},
 		Endpoint:      "https://provider.example/agent",
 		Capabilities:  []string{"cap_" + hex64},
 		ExpiresAtUnix: contactExpiryUnix,
@@ -116,14 +120,48 @@ func TestContactCardVectors(t *testing.T) {
 
 	cases := []contactVectorCase{
 		{Name: "valid", Card: base, Expect: string(ContactOK)},
-		{Name: "agent_id_malformed", Card: mutate(func(c *contactVectorCard) { c.AgentID = "agent_short" }), Expect: string(ContactAgentIDMalformed)},
-		{Name: "public_key_malformed", Card: mutate(func(c *contactVectorCard) { c.PublicKeyHex = hex.EncodeToString(make([]byte, 16)) }), Expect: string(ContactPublicKeyMalformed)},
-		{Name: "signature_malformed", Card: mutate(func(c *contactVectorCard) { c.SignatureHex = hex.EncodeToString(make([]byte, 32)) }), Expect: string(ContactSignatureMalformed)},
-		{Name: "endpoint_non_loopback_http", Card: mutate(func(c *contactVectorCard) { c.Endpoint = "http://provider.example/agent" }), Expect: string(ContactEndpointMalformed)},
-		{Name: "expiry_past", Card: mutate(func(c *contactVectorCard) { c.ExpiresAtUnix = contactNowUnix - 1 }), Expect: string(ContactExpiryInvalid)},
-		{Name: "expiry_exceeds_lifetime", Card: mutate(func(c *contactVectorCard) { c.ExpiresAtUnix = contactNowUnix + ContactLifetimeSeconds + 1 }), Expect: string(ContactExpiryInvalid)},
-		{Name: "capability_malformed", Card: mutate(func(c *contactVectorCard) { c.Capabilities = []string{"cap_short"} }), Expect: string(ContactCapabilityInvalid)},
-		{Name: "network_mismatch", Card: mutate(func(c *contactVectorCard) { c.NetworkID = "tos-testnet" }), Expect: string(ContactNetworkMismatch)},
+		{
+			Name:   "agent_id_malformed",
+			Card:   mutate(func(c *contactVectorCard) { c.AgentID = "agent_short" }),
+			Expect: string(ContactAgentIDMalformed),
+		},
+		{
+			Name:   "public_key_malformed",
+			Card:   mutate(func(c *contactVectorCard) { c.PublicKeyHex = hex.EncodeToString(make([]byte, 16)) }),
+			Expect: string(ContactPublicKeyMalformed),
+		},
+		{
+			Name:   "signature_malformed",
+			Card:   mutate(func(c *contactVectorCard) { c.SignatureHex = hex.EncodeToString(make([]byte, 32)) }),
+			Expect: string(ContactSignatureMalformed),
+		},
+		{
+			Name:   "endpoint_non_loopback_http",
+			Card:   mutate(func(c *contactVectorCard) { c.Endpoint = "http://provider.example/agent" }),
+			Expect: string(ContactEndpointMalformed),
+		},
+		{
+			Name:   "expiry_past",
+			Card:   mutate(func(c *contactVectorCard) { c.ExpiresAtUnix = contactNowUnix - 1 }),
+			Expect: string(ContactExpiryInvalid),
+		},
+		{
+			Name: "expiry_exceeds_lifetime",
+			Card: mutate(
+				func(c *contactVectorCard) { c.ExpiresAtUnix = contactNowUnix + ContactLifetimeSeconds + 1 },
+			),
+			Expect: string(ContactExpiryInvalid),
+		},
+		{
+			Name:   "capability_malformed",
+			Card:   mutate(func(c *contactVectorCard) { c.Capabilities = []string{"cap_short"} }),
+			Expect: string(ContactCapabilityInvalid),
+		},
+		{
+			Name:   "network_mismatch",
+			Card:   mutate(func(c *contactVectorCard) { c.NetworkID = "tos-testnet" }),
+			Expect: string(ContactNetworkMismatch),
+		},
 	}
 
 	for i := range cases {
@@ -142,7 +180,11 @@ func TestContactCardVectors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal vectors: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join("testdata", "mobile_buyer_contact_card_v1.json"), append(raw, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(
+		filepath.Join("testdata", "mobile_buyer_contact_card_v1.json"),
+		append(raw, '\n'),
+		0o644,
+	); err != nil {
 		t.Fatalf("write vectors: %v", err)
 	}
 }

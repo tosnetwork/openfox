@@ -13,9 +13,10 @@ import (
 	"strings"
 	"time"
 
-	nativeimpl "github.com/tosnetwork/openfox/pkg/servicebridge/nativeimpl"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativeclient"
+
+	nativeimpl "github.com/tosnetwork/openfox/pkg/servicebridge/nativeimpl"
 )
 
 func main() {
@@ -52,15 +53,21 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	client, err := nativeclient.New(nativeclient.Config{BaseURL: *gateway, BearerToken: token,
-		Timeout: 30 * time.Second, CAFile: *caFile, ClientCertFile: *clientCert, ClientKeyFile: *clientKey})
+	client, err := nativeclient.New(nativeclient.Config{
+		BaseURL: *gateway, BearerToken: token,
+		Timeout: 30 * time.Second, CAFile: *caFile, ClientCertFile: *clientCert, ClientKeyFile: *clientKey,
+	})
 	if err != nil {
 		return err
 	}
 	defer client.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
-	network := &nativev1.NetworkDomain{NetworkId: *networkID, GenesisRootHash: *genesisRoot, GenesisFileHash: *genesisFile}
+	network := &nativev1.NetworkDomain{
+		NetworkId:       *networkID,
+		GenesisRootHash: *genesisRoot,
+		GenesisFileHash: *genesisFile,
+	}
 	evidence, err := nativeimpl.ResolveDNSNameInput(ctx, client, network, *name, *caller, kind, time.Now())
 	if err != nil {
 		return err
@@ -79,14 +86,16 @@ func run(args []string) error {
 		FileHash        string   `json:"file_hash_hex"`
 		RenewalDeadline uint64   `json:"renewal_deadline_unix_seconds"`
 		ResolverPath    []string `json:"resolver_path"`
-	}{Schema: "tos.openfox.dns-alias-review.v1", Verdict: "DISCOVERY_ONLY_REVERIFY_NATIVE_ID",
+	}{
+		Schema: "tos.openfox.dns-alias-review.v1", Verdict: "DISCOVERY_ONLY_REVERIFY_NATIVE_ID",
 		InputName: *name, CanonicalName: evidence.CanonicalName, Kind: *kindName,
 		NativeObjectID:  evidence.NativeObjectId,
 		ResolvedAccount: fmt.Sprintf("%d:%s", account.Workchain, hex.EncodeToString(account.AccountId)),
 		Checkpoint:      evidence.Checkpoint.Sequence, RootHash: hex.EncodeToString(evidence.Checkpoint.RootHash),
 		FileHash:        hex.EncodeToString(evidence.Checkpoint.FileHash),
 		RenewalDeadline: evidence.Lifecycle.RenewalDeadlineUnixSeconds,
-		ResolverPath:    make([]string, 0, len(evidence.ResolverPath))}
+		ResolverPath:    make([]string, 0, len(evidence.ResolverPath)),
+	}
 	for _, address := range evidence.ResolverPath {
 		document.ResolverPath = append(document.ResolverPath,
 			fmt.Sprintf("%d:%s", address.Workchain, hex.EncodeToString(address.AccountId)))

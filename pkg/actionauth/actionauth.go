@@ -13,8 +13,10 @@ import (
 	"regexp"
 )
 
-const MaxProvenance = 32
-const MaxPhysicalArgumentsBytes = 8 << 10
+const (
+	MaxProvenance             = 32
+	MaxPhysicalArgumentsBytes = 8 << 10
+)
 
 type Effect string
 
@@ -99,9 +101,11 @@ type PhysicalOperation struct {
 	ArgumentsJSON   string `json:"arguments_json"`
 }
 
-var physicalCapabilityPattern = regexp.MustCompile(`^cap_[0-9a-f]{64}$`)
-var physicalNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
-var physicalDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var (
+	physicalCapabilityPattern = regexp.MustCompile(`^cap_[0-9a-f]{64}$`)
+	physicalNamePattern       = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+	physicalDigestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+)
 
 func (p PhysicalOperation) Valid() bool {
 	if !physicalCapabilityPattern.MatchString(p.CapabilityID) ||

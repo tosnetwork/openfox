@@ -18,7 +18,9 @@ type CompositeTaskTransport struct {
 // NewCompositeTaskTransport builds a router from a non-empty set of per-transport
 // senders. Each sender is expected to handle its own transport; the router
 // enforces that a purchase is only dispatched over a configured channel.
-func NewCompositeTaskTransport(routes map[servicebridge.Transport]servicebridge.TaskTransport) (*CompositeTaskTransport, error) {
+func NewCompositeTaskTransport(
+	routes map[servicebridge.Transport]servicebridge.TaskTransport,
+) (*CompositeTaskTransport, error) {
 	if len(routes) == 0 {
 		return nil, errors.New("nativeimpl: composite transport needs at least one route")
 	}
@@ -35,7 +37,11 @@ func NewCompositeTaskTransport(routes map[servicebridge.Transport]servicebridge.
 // Dispatch routes to the sender configured for the selected transport, failing
 // closed if the buyer was not configured for that channel rather than silently
 // dropping or misrouting the task.
-func (t *CompositeTaskTransport) Dispatch(ctx context.Context, transport servicebridge.Transport, task servicebridge.Task) error {
+func (t *CompositeTaskTransport) Dispatch(
+	ctx context.Context,
+	transport servicebridge.Transport,
+	task servicebridge.Task,
+) error {
 	route, ok := t.routes[transport]
 	if !ok {
 		return errors.New("nativeimpl: no transport is configured for the selected channel")

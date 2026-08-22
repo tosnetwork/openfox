@@ -14,7 +14,11 @@ type recordingTransport struct {
 	err  error
 }
 
-func (r *recordingTransport) Dispatch(_ context.Context, transport servicebridge.Transport, _ servicebridge.Task) error {
+func (r *recordingTransport) Dispatch(
+	_ context.Context,
+	transport servicebridge.Transport,
+	_ servicebridge.Task,
+) error {
 	r.hits++
 	r.got = transport
 	return r.err

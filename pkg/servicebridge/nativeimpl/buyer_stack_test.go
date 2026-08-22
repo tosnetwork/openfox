@@ -12,10 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 type stackFundingSender struct{}
@@ -65,9 +66,11 @@ func testChainBuyerStackConfig(t *testing.T) ChainBuyerStackConfig {
 	walletCode := cell.BeginCell().MustStoreUInt(0xaaaaaaaa, 32).EndCell()
 	return ChainBuyerStackConfig{
 		StateDir: state,
-		Network: &nativev1.NetworkDomain{NetworkId: "tos-local",
+		Network: &nativev1.NetworkDomain{
+			NetworkId:       "tos-local",
 			GenesisRootHash: "sha256:" + strings.Repeat("1", 64),
-			GenesisFileHash: "sha256:" + strings.Repeat("2", 64)},
+			GenesisFileHash: "sha256:" + strings.Repeat("2", 64),
+		},
 		Endpoints:        []string{"http://127.0.0.1:19001", "http://127.0.0.1:19002", "http://127.0.0.1:19003"},
 		RegistryCodeBOC:  base64.StdEncoding.EncodeToString(registryCode.ToBOC()),
 		RegistryCodeHash: "tvm-cell-sha256:" + hex.EncodeToString(registryCode.Hash()),
@@ -78,8 +81,10 @@ func testChainBuyerStackConfig(t *testing.T) ChainBuyerStackConfig {
 		AssetWalletCode:  walletCode,
 		FundingSender:    stackFundingSender{},
 		EscrowDeployer:   stackEscrowDeployer{},
-		BudgetLimits: buyersdk.BudgetLimits{Window: 24 * time.Hour, MaxPurchases: 4,
-			MaxPerPurchaseAtomic: "100", MaxTotalAtomic: "300"},
+		BudgetLimits: buyersdk.BudgetLimits{
+			Window: 24 * time.Hour, MaxPurchases: 4,
+			MaxPerPurchaseAtomic: "100", MaxTotalAtomic: "300",
+		},
 		PollInterval: 10 * time.Millisecond, FinalityTimeout: time.Second,
 	}
 }
@@ -89,7 +94,8 @@ func TestNewChainBuyerStackAssemblesOneAuthorityGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stack.SDK == nil || stack.Capability != stack.SDK || stack.Escrow == nil || stack.Deployer == nil || stack.Journal == nil {
+	if stack.SDK == nil || stack.Capability != stack.SDK || stack.Escrow == nil || stack.Deployer == nil ||
+		stack.Journal == nil {
 		t.Fatalf("stack = %+v", stack)
 	}
 }
@@ -152,8 +158,10 @@ func TestNewChainNativeBuyerRejectsPlaceholderPolicySignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewChainNativeBuyer(ChainNativeBuyerConfig{Stack: stack, Input: sampleInput(),
-		Policy: e2ePolicy(), OwnerPublicKey: bytes.Repeat([]byte{1}, ed25519.PublicKeySize)}); err == nil {
+	if _, err := NewChainNativeBuyer(ChainNativeBuyerConfig{
+		Stack: stack, Input: sampleInput(),
+		Policy: e2ePolicy(), OwnerPublicKey: bytes.Repeat([]byte{1}, ed25519.PublicKeySize),
+	}); err == nil {
 		t.Fatal("production buyer accepted a non-empty placeholder owner signature")
 	}
 }

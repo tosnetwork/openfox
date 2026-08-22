@@ -9,6 +9,7 @@ import (
 	"time"
 
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/tos-service-protocol/pkg/dnsalias"
 )
 
 type aliasClientFunc func(context.Context, *nativev1.ResolveDNSAliasRequest) (*nativev1.ResolveDNSAliasResponse, error)
@@ -64,6 +65,24 @@ func TestResolveDNSNameInputFailsClosed(t *testing.T) {
 	}
 }
 
+func TestResolveDNSNameInputRejectsNoncanonicalLookupNamesLocally(t *testing.T) {
+	client := aliasClientFunc(func(context.Context, *nativev1.ResolveDNSAliasRequest) (*nativev1.ResolveDNSAliasResponse, error) {
+		t.Fatal("invalid name reached the Native gateway")
+		return nil, nil
+	})
+	for _, name := range []string{
+		" alice.tos", "alice.tos ", "alice..tos", "alice/example.tos", "alice:port.tos",
+		"älice.tos", strings.Repeat("a", 123) + ".tos",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ResolveDNSNameInput(t.Context(), client, testAliasNetwork(), name, "agent_buyer",
+				nativev1.DNSAliasKindV1_DNS_ALIAS_KIND_V1_AGENT, time.Unix(1_800_000_000, 0)); err == nil {
+				t.Fatal("noncanonical alias input accepted")
+			}
+		})
+	}
+}
+
 func validAliasEvidence(id, name string, kind nativev1.DNSAliasKindV1, now uint64) *nativev1.ResolveDNSAliasResponse {
 	state := &nativev1.NativeStateV1{Network: testAliasNetwork(), Reference: &nativev1.ChainReference{
 		Account: "0:" + strings.Repeat("0", 64), FinalizedCheckpoint: 42}}
@@ -78,7 +97,7 @@ func validAliasEvidence(id, name string, kind nativev1.DNSAliasKindV1, now uint6
 		Checkpoint: &nativev1.DNSCheckpointV1{Workchain: -1, Sequence: 42, RootHash: make([]byte, 32),
 			FileHash: make([]byte, 32), GenerationUnixSeconds: now},
 		Lifecycle: &nativev1.DNSLifecycleV1{LastFillUpUnixSeconds: now - 1_000,
-			RenewalDeadlineUnixSeconds: now - 1_000 + dnsLeaseSeconds},
+			RenewalDeadlineUnixSeconds: now - 1_000 + dnsalias.LeaseSeconds},
 		Provenance: nativev1.DNSProvenanceV1_DNS_PROVENANCE_V1_QUORUM_AGREED,
 		ResolverPath: []*nativev1.TOSAccountAddressV1{{Workchain: -1, AccountId: make([]byte, 32)},
 			{Workchain: 0, AccountId: make([]byte, 32)}, {Workchain: 0, AccountId: make([]byte, 32)}},

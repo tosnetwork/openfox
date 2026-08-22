@@ -11,10 +11,9 @@ import (
 	"time"
 
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/tos-service-protocol/pkg/dnsalias"
 	"google.golang.org/protobuf/proto"
 )
-
-const dnsLeaseSeconds = uint64(31_622_400)
 
 type DNSAliasClient interface {
 	ResolveDNSAlias(context.Context, *nativev1.ResolveDNSAliasRequest) (*nativev1.ResolveDNSAliasResponse, error)
@@ -32,8 +31,8 @@ func ResolveDNSNameInput(
 		return nil, errors.New("nativeimpl: DNS alias input resolver is incomplete")
 	}
 	trimmed := strings.TrimSpace(input)
-	name := strings.ToLower(trimmed)
-	if name == "" || trimmed != input || !strings.HasSuffix(name, ".tos") {
+	name, err := dnsalias.CanonicalName(strings.ToLower(trimmed))
+	if err != nil || trimmed != input {
 		return nil, errors.New("nativeimpl: DNS alias input must be a canonical .tos name")
 	}
 	if kind != nativev1.DNSAliasKindV1_DNS_ALIAS_KIND_V1_AGENT &&
@@ -98,8 +97,8 @@ func validateDNSAliasEvidence(response *nativev1.ResolveDNSAliasResponse, networ
 	}
 	lifecycle := response.Lifecycle
 	if lifecycle == nil || lifecycle.AuctionEndUnixSeconds != 0 || lifecycle.LastFillUpUnixSeconds == 0 ||
-		lifecycle.LastFillUpUnixSeconds > ^uint64(0)-dnsLeaseSeconds ||
-		lifecycle.RenewalDeadlineUnixSeconds != lifecycle.LastFillUpUnixSeconds+dnsLeaseSeconds ||
+		lifecycle.LastFillUpUnixSeconds > ^uint64(0)-dnsalias.LeaseSeconds ||
+		lifecycle.RenewalDeadlineUnixSeconds != lifecycle.LastFillUpUnixSeconds+dnsalias.LeaseSeconds ||
 		now > lifecycle.RenewalDeadlineUnixSeconds {
 		return errors.New("nativeimpl: DNS alias lifecycle is unsafe")
 	}

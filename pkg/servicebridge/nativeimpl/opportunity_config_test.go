@@ -88,3 +88,21 @@ func TestLoadOpportunityCoordinatorRequiresPollingProtectionAndStrictConfig(t *t
 		t.Fatal("unknown custody authority was accepted")
 	}
 }
+
+func TestLoadOpportunityCoordinatorRejectsIncompletePolicyGatedAuthority(t *testing.T) {
+	path := writeOpportunityCoordinatorConfig(t)
+	raw, _ := os.ReadFile(path)
+	var document opportunityCoordinatorDocument
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	document.Purchase = &opportunityPurchaseConfig{StateDir: document.StateDir, MandateID: "mandate",
+		CapabilityClass: "software-work", RequestTimeoutSeconds: 5}
+	mutated, _ := json.Marshal(document)
+	if err := os.WriteFile(path, mutated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOpportunityCoordinator(path); err == nil {
+		t.Fatal("incomplete policy, custody, Messenger, and task authority was accepted")
+	}
+}

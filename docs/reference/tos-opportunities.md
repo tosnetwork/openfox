@@ -59,9 +59,10 @@ a finalized ownership, lifecycle, version or manifest mismatch becomes a
 durable terminal rejection.
 
 The `opportunities` AgentLoop tool only lists finalized, locally assessed
-records. It has no mutation operation. `policy-gated` is a separately typed
-mode and currently fails startup unless the Phase D purchase runner is
-explicitly assembled; there is no unrestricted autonomous-spend mode.
+records and the read-only projection of any purchase progress. It has no
+mutation operation. `policy-gated` uses the same scheduler only when the
+isolated coordinator is assembled with the purchase configuration below;
+there is no unrestricted autonomous-spend mode.
 
 ## Coordinator configuration
 
@@ -122,5 +123,56 @@ or a finite checkpoint-cache age. That declaration is deployment
 configuration, not fabricated evidence that an external Gateway actually
 enforces it.
 
-The coordinator contains no wallet or `tosctl` configuration and exposes only
-search and verification operations on its private socket.
+Without a `purchase` member, the coordinator contains no wallet or `tosctl`
+configuration and exposes only search and verification operations on its
+private socket.
+
+## Policy-gated purchases
+
+Set OpenFox's opportunity mode to `policy-gated` and add this optional member
+to the coordinator configuration only after creating an owner-signed spending
+policy and a Messenger mandate. All paths are absolute. State directories are
+mode 0700, private credentials/configurations are mode 0600, and reviewed
+source/CA inputs must not be group- or world-writable.
+
+```json
+"purchase": {
+  "state_dir": "/var/lib/openfox/opportunity-purchases",
+  "chain_buyer_config": "/etc/openfox/chain-buyer.json",
+  "spending_policy": "/etc/openfox/spending-policy.json",
+  "messenger_socket": "/run/tos-messenger/runtime.sock",
+  "mandate_id": "mandate_<owner-approved-id>",
+  "capability_class": "software-work",
+  "buyer_address": "0:<64 lowercase hex>",
+  "execution_signer_public_key_hex": "<64 lowercase hex>",
+  "transport": "a2a",
+  "source_archive": "/var/lib/openfox/tasks/reviewed-source.tar",
+  "source_digest": "sha256:<64 lowercase hex>",
+  "input_digest": "sha256:<64 lowercase hex>",
+  "provider_ca": "/etc/openfox/provider-ca.pem",
+  "provider_bearer_token": "/etc/openfox/provider.token",
+  "request_timeout_seconds": 15
+}
+```
+
+`transport` may be `a2a`, `mcp`, or `agent_packet`. Agent Packet additionally
+requires `sender_agent_id` and an owner-private `agent_signing_seed`. The
+provider endpoint is never configured by the model: it comes from the complete
+validated Quote preimage, and remote endpoints require TLS 1.3 plus the
+reviewed CA. The source archive, input digest, transport, signed policy,
+mandate, execution signer and custody stack are all operator-pinned.
+
+The coordinator advances one durable transition per request:
+
+```text
+quote-verified -> policy-authorized -> purchase-referenced
+                -> authoritative buyer journal -> purchase-resolved
+```
+
+Before `purchase-referenced`, an exact signed-policy rejection may terminate
+the opportunity. Afterwards, errors remain recoverable and cannot discard or
+replace `PurchaseKey{QuoteCommitment, EscrowAddress}`. Escrow deployment has a
+durable one-way lease; an ambiguous broadcast is reconciled from finalized
+state and is never blindly repeated. Funding, dispatch, Receipt and settlement
+then reuse the existing buyer journal, Messenger mandate/Quote verifier,
+`tosctl` custody, shared provider execution Gate and finalized escrow reader.

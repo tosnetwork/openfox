@@ -1,6 +1,8 @@
 package nativeimpl
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"errors"
 	"net/url"
 	"os"
@@ -15,6 +17,9 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativeclient"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+
+	"github.com/tosnetwork/openfox/pkg/messengerauth"
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 const opportunityCoordinatorConfigSchema = "tos.openfox.opportunity-coordinator-config.v1"
@@ -34,6 +39,27 @@ type opportunityCoordinatorDocument struct {
 	CredentialQuotaEnforced      bool                       `json:"credential_quota_enforced"`
 	CheckpointCacheMaxAgeSeconds uint64                     `json:"checkpoint_cache_max_age_seconds,omitempty"`
 	Gateways                     []opportunityGatewayConfig `json:"gateways"`
+	Purchase                     *opportunityPurchaseConfig `json:"purchase,omitempty"`
+}
+
+type opportunityPurchaseConfig struct {
+	StateDir                    string `json:"state_dir"`
+	ChainBuyerConfig            string `json:"chain_buyer_config"`
+	SpendingPolicy              string `json:"spending_policy"`
+	MessengerSocket             string `json:"messenger_socket"`
+	MandateID                   string `json:"mandate_id"`
+	CapabilityClass             string `json:"capability_class"`
+	BuyerAddress                string `json:"buyer_address"`
+	ExecutionSignerPublicKeyHex string `json:"execution_signer_public_key_hex"`
+	Transport                   string `json:"transport"`
+	SourceArchive               string `json:"source_archive"`
+	SourceDigest                string `json:"source_digest"`
+	InputDigest                 string `json:"input_digest"`
+	ProviderCA                  string `json:"provider_ca,omitempty"`
+	ProviderBearerToken         string `json:"provider_bearer_token"`
+	SenderAgentID               string `json:"sender_agent_id,omitempty"`
+	AgentSigningSeed            string `json:"agent_signing_seed,omitempty"`
+	RequestTimeoutSeconds       uint64 `json:"request_timeout_seconds"`
 }
 
 type opportunityGatewayConfig struct {
@@ -49,6 +75,7 @@ type opportunityGatewayConfig struct {
 
 type OpportunityCoordinatorResources struct {
 	Coordinator *OpportunityCoordinator
+	Purchases   *PurchaseCoordinator
 	SocketPath  string
 }
 
@@ -115,7 +142,62 @@ func LoadOpportunityCoordinator(path string) (*OpportunityCoordinatorResources, 
 	if err != nil {
 		return nil, err
 	}
-	return &OpportunityCoordinatorResources{Coordinator: coordinator, SocketPath: document.SocketPath}, nil
+	var purchases *PurchaseCoordinator
+	if document.Purchase != nil {
+		purchases, err = assembleOpportunityPurchase(*document.Purchase, document.Network, gateways)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &OpportunityCoordinatorResources{Coordinator: coordinator, Purchases: purchases, SocketPath: document.SocketPath}, nil
+}
+
+func assembleOpportunityPurchase(config opportunityPurchaseConfig, network *nativev1.NetworkDomain,
+	gateways []gatewayfederation.Gateway) (*PurchaseCoordinator, error) {
+	if !ownerDirectory(config.StateDir) || config.MandateID == "" || config.CapabilityClass == "" ||
+		config.RequestTimeoutSeconds == 0 || config.RequestTimeoutSeconds > 60 {
+		return nil, errors.New("nativeimpl: invalid policy-gated opportunity configuration")
+	}
+	stack, err := LoadChainBuyerStack(config.ChainBuyerConfig)
+	if err != nil {
+		return nil, err
+	}
+	policy, owner, err := LoadSignedSpendingPolicy(config.SpendingPolicy)
+	if err != nil {
+		return nil, err
+	}
+	messenger, err := messengerauth.NewClient(config.MessengerSocket, time.Duration(config.RequestTimeoutSeconds)*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	executionSigner, err := hex.DecodeString(config.ExecutionSignerPublicKeyHex)
+	if err != nil || len(executionSigner) != ed25519.PublicKeySize || config.ExecutionSignerPublicKeyHex != strings.ToLower(config.ExecutionSignerPublicKeyHex) {
+		return nil, errors.New("nativeimpl: invalid autonomous execution signer public key")
+	}
+	planner, err := NewStaticDispatchPlanner(StaticDispatchPlannerConfig{Transport: servicebridge.Transport(config.Transport),
+		SourceArchivePath: config.SourceArchive, SourceDigest: config.SourceDigest, InputDigest: config.InputDigest,
+		CAFile: config.ProviderCA, BearerTokenFile: config.ProviderBearerToken, SenderAgentID: config.SenderAgentID,
+		AgentSigningSeed: config.AgentSigningSeed, RequestTimeout: 30 * time.Minute})
+	if err != nil {
+		return nil, err
+	}
+	quoteGateways := make([]NamedQuoteGateway, 0, len(gateways))
+	for _, gateway := range gateways {
+		client, ok := gateway.Client.(QuoteGateway)
+		if !ok {
+			return nil, errors.New("nativeimpl: configured Gateway cannot request Quote Proposals")
+		}
+		quoteGateways = append(quoteGateways, NamedQuoteGateway{ID: gateway.ID, Client: client})
+	}
+	backend, err := NewChainOpportunityPurchaseBackend(ChainOpportunityPurchaseBackendConfig{StateDir: config.StateDir,
+		Stack: stack, Network: network, Gateways: quoteGateways, Policy: policy, OwnerPublicKey: owner,
+		BuyerAddress: config.BuyerAddress, Messenger: messenger, MandateID: config.MandateID,
+		CapabilityClass: config.CapabilityClass, ExecutionSigner: ed25519.PublicKey(executionSigner), Planner: planner,
+		QuoteTimeout: time.Duration(config.RequestTimeoutSeconds) * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	return OpenPurchaseCoordinator(config.StateDir, backend)
 }
 
 func assembleOpportunityGateways(configs []opportunityGatewayConfig, timeout time.Duration) ([]gatewayfederation.Gateway, error) {

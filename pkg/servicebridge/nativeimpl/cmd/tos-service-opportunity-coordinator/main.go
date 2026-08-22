@@ -39,7 +39,7 @@ func run(configPath string, checkOnly bool) error {
 		fmt.Println("opportunity coordinator configuration is structurally valid; live Gateway and finalized chain reads were not claimed")
 		return nil
 	}
-	handler, err := opportunity.NewHandler(resources.Coordinator)
+	handler, err := opportunity.NewHandlerWithPurchaseRunner(resources.Coordinator, resources.Purchases)
 	if err != nil {
 		return err
 	}

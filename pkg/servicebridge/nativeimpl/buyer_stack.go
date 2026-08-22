@@ -50,6 +50,8 @@ type ChainBuyerStack struct {
 	Journal          servicebridge.PurchaseJournal
 	Network          servicebridge.Network
 	RegistryCodeHash string
+	BuyerAddress     string
+	BuyerAgentID     string
 }
 
 // EscrowDeployer preserves the owner-review boundary between custody signing
@@ -171,5 +173,6 @@ func NewChainBuyerStack(c ChainBuyerStackConfig) (*ChainBuyerStack, error) {
 			GenesisFileHash: strings.TrimPrefix(c.Network.GetGenesisFileHash(), "sha256:"),
 		},
 		RegistryCodeHash: c.RegistryCodeHash,
+		BuyerAddress:     c.BuyerAddress, BuyerAgentID: c.BuyerAgentID,
 	}, nil
 }

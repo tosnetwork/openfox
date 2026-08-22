@@ -240,4 +240,7 @@ Success emits one `openfox.messenger-lab-acceptance.v1` JSON report containing
 the exact identities, artifact hashes, Relay hash/size/mode and per-Agent
 record counts. Its `scope` is always `same-host-local-route-only`; it is not
 M0-R, public-network, independent-operator, or independent-implementation
-evidence.
+evidence. The artifact paths are operator-supplied pinned inputs; the report
+does not by itself prove which executable image a supervisor loaded. Check the
+seven unit states and their process identities separately through the target
+systemd user manager.

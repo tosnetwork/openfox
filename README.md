@@ -148,6 +148,9 @@ stable retry IDs, rather than composing all three channel instances in one
 acceptance process. Its optional `agent-loop` reply mode runs each message
 through the real OpenFox Agent runtime with a local deterministic provider and
 private durable workspace, without requiring external model credentials.
+`openfox-messenger-lab-deploy` makes that seven-service loop reproducible as
+hardened systemd-user units with per-Agent least-privilege Relay credentials,
+strict no-substitution installation and explicit bootstrap/activation output.
 
 The [`tos_messenger` production channel](docs/guides/tos-messenger.md) drains
 authenticated and admitted daemon events, independently checks their Event IDs

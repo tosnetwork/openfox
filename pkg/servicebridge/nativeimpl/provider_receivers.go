@@ -71,9 +71,16 @@ func (s mcpLocatorShim) URL(d artifactstore.Descriptor) (string, error) {
 // runner, artifact locator, and settler. Because all four are shared, every
 // admitted task — regardless of transport — executes at most once behind the
 // one Gate and settles through the one canonical release path.
-func NewProviderReceivers(gate ProviderGate, runner softwareRunner, locator ProviderArtifactLocator, settler ProviderSettler) (*ProviderReceivers, error) {
+func NewProviderReceivers(
+	gate ProviderGate,
+	runner softwareRunner,
+	locator ProviderArtifactLocator,
+	settler ProviderSettler,
+) (*ProviderReceivers, error) {
 	if gate == nil || runner == nil || locator == nil || settler == nil {
-		return nil, errors.New("nativeimpl: provider receivers need a gate, a runner, an artifact locator, and a settler")
+		return nil, errors.New(
+			"nativeimpl: provider receivers need a gate, a runner, an artifact locator, and a settler",
+		)
 	}
 	a2aAdapter, err := a2aadapter.NewSettling(gate, runner, a2aLocatorShim{inner: locator}, settler)
 	if err != nil {

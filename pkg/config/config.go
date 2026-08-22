@@ -439,7 +439,7 @@ type AgentDefaults struct {
 	Routing                   *RoutingConfig     `json:"routing,omitempty"`
 	SteeringMode              string             `json:"steering_mode,omitempty"          env:"OPENFOX_AGENTS_DEFAULTS_STEERING_MODE"`      // "one-at-a-time" (default) or "all"
 	MaxParallelTurns          int                `json:"max_parallel_turns,omitempty"     env:"OPENFOX_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"` // Max concurrent turns (0 or 1 = sequential)
-	SubTurn                   SubTurnConfig      `json:"subturn"                                                                                      envPrefix:"OPENFOX_AGENTS_DEFAULTS_SUBTURN_"`
+	SubTurn                   SubTurnConfig      `json:"subturn"                                                                                     envPrefix:"OPENFOX_AGENTS_DEFAULTS_SUBTURN_"`
 	ToolFeedback              ToolFeedbackConfig `json:"tool_feedback,omitempty"`
 	SplitOnMarker             bool               `json:"split_on_marker"                  env:"OPENFOX_AGENTS_DEFAULTS_SPLIT_ON_MARKER"` // split messages on <|[SPLIT]|> marker
 	ContextManager            string             `json:"context_manager,omitempty"        env:"OPENFOX_AGENTS_DEFAULTS_CONTEXT_MANAGER"`
@@ -704,12 +704,12 @@ type TOSMessengerLabRoom struct {
 // "openmls-proxy" when the socket is one Agent's private OpenMLS proxy and the
 // shared Hub is only an opaque ciphertext Relay.
 type TOSMessengerLabSettings struct {
-	SocketPath     string                `json:"socket_path"      yaml:"-"`
-	AgentID        string                `json:"agent_id"         yaml:"-"`
-	Token          SecureString          `json:"token,omitzero"   yaml:"token,omitempty"`
-	CursorPath     string                `json:"cursor_path"      yaml:"-"`
-	PollIntervalMS int                   `json:"poll_interval_ms" yaml:"-"`
-	Rooms          []TOSMessengerLabRoom `json:"rooms,omitempty"  yaml:"-"`
+	SocketPath     string                `json:"socket_path"          yaml:"-"`
+	AgentID        string                `json:"agent_id"             yaml:"-"`
+	Token          SecureString          `json:"token,omitzero"       yaml:"token,omitempty"`
+	CursorPath     string                `json:"cursor_path"          yaml:"-"`
+	PollIntervalMS int                   `json:"poll_interval_ms"     yaml:"-"`
+	Rooms          []TOSMessengerLabRoom `json:"rooms,omitempty"      yaml:"-"`
 	Encryption     string                `json:"encryption,omitempty" yaml:"-"`
 }
 
@@ -717,23 +717,23 @@ type TOSMessengerLabSettings struct {
 // delivery route. OpenFox never discovers or substitutes these authority
 // bearing identifiers from model output.
 type TOSMessengerRoute struct {
-	ChatID              string `json:"chat_id" yaml:"-"`
-	ConversationID      string `json:"conversation_id" yaml:"-"`
-	RoomID              string `json:"room_id,omitempty" yaml:"-"`
+	ChatID              string `json:"chat_id"                    yaml:"-"`
+	ConversationID      string `json:"conversation_id"            yaml:"-"`
+	RoomID              string `json:"room_id,omitempty"          yaml:"-"`
 	MembershipEpoch     uint64 `json:"membership_epoch,omitempty" yaml:"-"`
-	SessionID           string `json:"session_id" yaml:"-"`
-	RecipientEndpointID string `json:"recipient_endpoint_id" yaml:"-"`
+	SessionID           string `json:"session_id"                 yaml:"-"`
+	RecipientEndpointID string `json:"recipient_endpoint_id"      yaml:"-"`
 	LifetimeSeconds     uint64 `json:"lifetime_seconds,omitempty" yaml:"-"`
 }
 
 // TOSMessengerSettings connects OpenFox to the authenticated daemon runtime
 // boundary for inbound delivery and daemon-owned outbound construction.
 type TOSMessengerSettings struct {
-	SocketPath        string              `json:"socket_path"                   yaml:"-"`
-	PollIntervalMS    int                 `json:"poll_interval_ms"              yaml:"-"`
-	LeaseSeconds      int                 `json:"lease_seconds"                 yaml:"-"`
-	EnableAttachments bool                `json:"enable_attachments,omitempty"  yaml:"-"`
-	Routes            []TOSMessengerRoute `json:"routes,omitempty"              yaml:"-"`
+	SocketPath        string              `json:"socket_path"                  yaml:"-"`
+	PollIntervalMS    int                 `json:"poll_interval_ms"             yaml:"-"`
+	LeaseSeconds      int                 `json:"lease_seconds"                yaml:"-"`
+	EnableAttachments bool                `json:"enable_attachments,omitempty" yaml:"-"`
+	Routes            []TOSMessengerRoute `json:"routes,omitempty"             yaml:"-"`
 }
 
 type IRCSettings struct {
@@ -1071,17 +1071,17 @@ type BaiduSearchConfig struct {
 
 type WebToolsConfig struct {
 	ToolConfig  `                   yaml:"-"                      envPrefix:"OPENFOX_TOOLS_WEB_"`
-	Brave       BraveConfig        `yaml:"brave,omitempty"                                        json:"brave"`
-	Tavily      TavilyConfig       `yaml:"tavily,omitempty"                                       json:"tavily"`
-	Kagi        KagiConfig         `yaml:"kagi,omitempty"                                         json:"kagi"`
-	Sogou       SogouConfig        `yaml:"-"                                                      json:"sogou"`
-	DuckDuckGo  DuckDuckGoConfig   `yaml:"-"                                                      json:"duckduckgo"`
-	Gemini      GeminiSearchConfig `yaml:"gemini,omitempty"                                       json:"gemini"`
-	Perplexity  PerplexityConfig   `yaml:"perplexity,omitempty"                                   json:"perplexity"`
-	SearXNG     SearXNGConfig      `yaml:"-"                                                      json:"searxng"`
-	GLMSearch   GLMSearchConfig    `yaml:"glm_search,omitempty"                                   json:"glm_search"`
-	BaiduSearch BaiduSearchConfig  `yaml:"baidu_search,omitempty"                                 json:"baidu_search"`
-	Provider    string             `yaml:"-"                                                      json:"provider,omitempty" env:"OPENFOX_TOOLS_WEB_PROVIDER"`
+	Brave       BraveConfig        `yaml:"brave,omitempty"                                       json:"brave"`
+	Tavily      TavilyConfig       `yaml:"tavily,omitempty"                                      json:"tavily"`
+	Kagi        KagiConfig         `yaml:"kagi,omitempty"                                        json:"kagi"`
+	Sogou       SogouConfig        `yaml:"-"                                                     json:"sogou"`
+	DuckDuckGo  DuckDuckGoConfig   `yaml:"-"                                                     json:"duckduckgo"`
+	Gemini      GeminiSearchConfig `yaml:"gemini,omitempty"                                      json:"gemini"`
+	Perplexity  PerplexityConfig   `yaml:"perplexity,omitempty"                                  json:"perplexity"`
+	SearXNG     SearXNGConfig      `yaml:"-"                                                     json:"searxng"`
+	GLMSearch   GLMSearchConfig    `yaml:"glm_search,omitempty"                                  json:"glm_search"`
+	BaiduSearch BaiduSearchConfig  `yaml:"baidu_search,omitempty"                                json:"baidu_search"`
+	Provider    string             `yaml:"-"                                                     json:"provider,omitempty" env:"OPENFOX_TOOLS_WEB_PROVIDER"`
 	// PreferNative controls whether to use provider-native web search when
 	// the active LLM supports it (e.g. OpenAI web_search_preview). When true,
 	// the client-side web_search tool is hidden to avoid duplicate search surfaces,
@@ -1106,16 +1106,16 @@ type CronToolsConfig struct {
 
 type ExecConfig struct {
 	ToolConfig          `         envPrefix:"OPENFOX_TOOLS_EXEC_"`
-	EnableDenyPatterns  bool     `                                 json:"enable_deny_patterns"  env:"OPENFOX_TOOLS_EXEC_ENABLE_DENY_PATTERNS"`
-	AllowRemote         bool     `                                 json:"allow_remote"          env:"OPENFOX_TOOLS_EXEC_ALLOW_REMOTE"`
-	CustomDenyPatterns  []string `                                 json:"custom_deny_patterns"  env:"OPENFOX_TOOLS_EXEC_CUSTOM_DENY_PATTERNS"`
-	CustomAllowPatterns []string `                                 json:"custom_allow_patterns" env:"OPENFOX_TOOLS_EXEC_CUSTOM_ALLOW_PATTERNS"`
-	TimeoutSeconds      int      `                                 json:"timeout_seconds"       env:"OPENFOX_TOOLS_EXEC_TIMEOUT_SECONDS"` // 0 means use default (60s)
+	EnableDenyPatterns  bool     `                                json:"enable_deny_patterns"  env:"OPENFOX_TOOLS_EXEC_ENABLE_DENY_PATTERNS"`
+	AllowRemote         bool     `                                json:"allow_remote"          env:"OPENFOX_TOOLS_EXEC_ALLOW_REMOTE"`
+	CustomDenyPatterns  []string `                                json:"custom_deny_patterns"  env:"OPENFOX_TOOLS_EXEC_CUSTOM_DENY_PATTERNS"`
+	CustomAllowPatterns []string `                                json:"custom_allow_patterns" env:"OPENFOX_TOOLS_EXEC_CUSTOM_ALLOW_PATTERNS"`
+	TimeoutSeconds      int      `                                json:"timeout_seconds"       env:"OPENFOX_TOOLS_EXEC_TIMEOUT_SECONDS"` // 0 means use default (60s)
 }
 
 type SkillsToolsConfig struct {
 	ToolConfig `                       yaml:"-"                    envPrefix:"OPENFOX_TOOLS_SKILLS_"`
-	Registries SkillsRegistriesConfig `yaml:"registries,omitempty"                                    json:"registries"`
+	Registries SkillsRegistriesConfig `yaml:"registries,omitempty"                                   json:"registries"`
 	// Deprecated: use registries.github instead.
 	Github                SkillsGithubConfig `yaml:"github,omitempty" json:"github"`
 	MaxConcurrentSearches int                `yaml:"-"                json:"max_concurrent_searches" env:"OPENFOX_TOOLS_SKILLS_MAX_CONCURRENT_SEARCHES"`
@@ -1124,8 +1124,8 @@ type SkillsToolsConfig struct {
 
 type MediaCleanupConfig struct {
 	ToolConfig `    envPrefix:"OPENFOX_MEDIA_CLEANUP_"`
-	MaxAge     int `                                    json:"max_age_minutes"  env:"OPENFOX_MEDIA_CLEANUP_MAX_AGE"`
-	Interval   int `                                    json:"interval_minutes" env:"OPENFOX_MEDIA_CLEANUP_INTERVAL"`
+	MaxAge     int `                                   json:"max_age_minutes"  env:"OPENFOX_MEDIA_CLEANUP_MAX_AGE"`
+	Interval   int `                                   json:"interval_minutes" env:"OPENFOX_MEDIA_CLEANUP_INTERVAL"`
 }
 
 type ReadFileToolConfig struct {
@@ -1169,8 +1169,8 @@ func (c ReadFileToolConfig) EffectiveMode() string {
 
 type ToolsConfig struct {
 	ActionAuthorization ActionAuthorizationConfig `json:"action_authorization" yaml:"-" envPrefix:"OPENFOX_TOOLS_ACTION_AUTHORIZATION_"`
-	AllowReadPaths      []string                  `json:"allow_read_paths"  yaml:"-" env:"OPENFOX_TOOLS_ALLOW_READ_PATHS"`
-	AllowWritePaths     []string                  `json:"allow_write_paths" yaml:"-" env:"OPENFOX_TOOLS_ALLOW_WRITE_PATHS"`
+	AllowReadPaths      []string                  `json:"allow_read_paths"     yaml:"-"                                                 env:"OPENFOX_TOOLS_ALLOW_READ_PATHS"`
+	AllowWritePaths     []string                  `json:"allow_write_paths"    yaml:"-"                                                 env:"OPENFOX_TOOLS_ALLOW_WRITE_PATHS"`
 	// FilterSensitiveData controls whether to filter sensitive values (API keys,
 	// tokens, secrets) from tool results before sending to the LLM.
 	// Default: true (enabled)
@@ -1185,24 +1185,24 @@ type ToolsConfig struct {
 	Skills          SkillsToolsConfig  `json:"skills"            yaml:"skills,omitempty"`
 	MediaCleanup    MediaCleanupConfig `json:"media_cleanup"     yaml:"-"`
 	MCP             MCPConfig          `json:"mcp"               yaml:"-"`
-	AppendFile      ToolConfig         `json:"append_file"       yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_APPEND_FILE_"`
-	EditFile        ToolConfig         `json:"edit_file"         yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_EDIT_FILE_"`
-	FindSkills      ToolConfig         `json:"find_skills"       yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_FIND_SKILLS_"`
-	I2C             ToolConfig         `json:"i2c"               yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_I2C_"`
-	InstallSkill    ToolConfig         `json:"install_skill"     yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_INSTALL_SKILL_"`
-	ListDir         ToolConfig         `json:"list_dir"          yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_LIST_DIR_"`
-	LoadImage       ToolConfig         `json:"load_image"        yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_LOAD_IMAGE_"`
+	AppendFile      ToolConfig         `json:"append_file"       yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_APPEND_FILE_"`
+	EditFile        ToolConfig         `json:"edit_file"         yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_EDIT_FILE_"`
+	FindSkills      ToolConfig         `json:"find_skills"       yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_FIND_SKILLS_"`
+	I2C             ToolConfig         `json:"i2c"               yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_I2C_"`
+	InstallSkill    ToolConfig         `json:"install_skill"     yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_INSTALL_SKILL_"`
+	ListDir         ToolConfig         `json:"list_dir"          yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_LIST_DIR_"`
+	LoadImage       ToolConfig         `json:"load_image"        yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_LOAD_IMAGE_"`
 	Message         MessageToolsConfig `json:"message"           yaml:"-"`
-	ReadFile        ReadFileToolConfig `json:"read_file"         yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_READ_FILE_"`
-	Serial          ToolConfig         `json:"serial"            yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_SERIAL_"`
-	SendFile        ToolConfig         `json:"send_file"         yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_SEND_FILE_"`
-	SendTTS         ToolConfig         `json:"send_tts"          yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_SEND_TTS_"`
-	Spawn           ToolConfig         `json:"spawn"             yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_SPAWN_"`
-	SpawnStatus     ToolConfig         `json:"spawn_status"      yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_SPAWN_STATUS_"`
-	SPI             ToolConfig         `json:"spi"               yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_SPI_"`
-	Subagent        ToolConfig         `json:"subagent"          yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_SUBAGENT_"`
-	WebFetch        ToolConfig         `json:"web_fetch"         yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_WEB_FETCH_"`
-	WriteFile       ToolConfig         `json:"write_file"        yaml:"-"                                                       envPrefix:"OPENFOX_TOOLS_WRITE_FILE_"`
+	ReadFile        ReadFileToolConfig `json:"read_file"         yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_READ_FILE_"`
+	Serial          ToolConfig         `json:"serial"            yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_SERIAL_"`
+	SendFile        ToolConfig         `json:"send_file"         yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_SEND_FILE_"`
+	SendTTS         ToolConfig         `json:"send_tts"          yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_SEND_TTS_"`
+	Spawn           ToolConfig         `json:"spawn"             yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_SPAWN_"`
+	SpawnStatus     ToolConfig         `json:"spawn_status"      yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_SPAWN_STATUS_"`
+	SPI             ToolConfig         `json:"spi"               yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_SPI_"`
+	Subagent        ToolConfig         `json:"subagent"          yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_SUBAGENT_"`
+	WebFetch        ToolConfig         `json:"web_fetch"         yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_WEB_FETCH_"`
+	WriteFile       ToolConfig         `json:"write_file"        yaml:"-"                                                      envPrefix:"OPENFOX_TOOLS_WRITE_FILE_"`
 }
 
 // IsFilterSensitiveDataEnabled returns true if sensitive data filtering is enabled
@@ -1336,7 +1336,7 @@ type MCPServerConfig struct {
 // MCPConfig defines configuration for all MCP servers
 type MCPConfig struct {
 	ToolConfig `                    envPrefix:"OPENFOX_TOOLS_MCP_"`
-	Discovery  ToolDiscoveryConfig `                                json:"discovery"`
+	Discovery  ToolDiscoveryConfig `                               json:"discovery"`
 	// MaxInlineTextChars controls how much MCP text stays inline before it is saved as an artifact.
 	MaxInlineTextChars int `json:"max_inline_text_chars,omitempty" env:"OPENFOX_TOOLS_MCP_MAX_INLINE_TEXT_CHARS"`
 	// Servers is a map of server name to server configuration

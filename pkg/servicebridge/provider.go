@@ -69,8 +69,8 @@ func (p *Provider) HandleAdmittedTask(ctx context.Context, aq AcceptedQuote, tas
 	if receipt.Commitment == "" || receipt.QuoteCommitment != aq.QuoteCommitment {
 		return Receipt{}, Settlement{}, errors.New("servicebridge: built receipt does not bind the accepted quote")
 	}
-	if _, err := p.Signer.SignSettlementIntent(ctx, receipt.Commitment); err != nil {
-		return Receipt{}, Settlement{}, err
+	if _, signErr := p.Signer.SignSettlementIntent(ctx, receipt.Commitment); signErr != nil {
+		return Receipt{}, Settlement{}, signErr
 	}
 
 	// Step 6: reconcile provider stablecoin credit from finalized wallet state.

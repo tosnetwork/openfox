@@ -26,16 +26,20 @@ import (
 func TestChannelPublishesOnlyDaemonAdmittedAttachmentAndCompletesLease(t *testing.T) {
 	body := "hello from a scanned encrypted attachment\n"
 	digest := sha256.Sum256([]byte(body))
-	attachment := admittedAttachment{EventID: "evt_" + strings.Repeat("1", 64),
+	attachment := admittedAttachment{
+		EventID:       "evt_" + strings.Repeat("1", 64),
 		SenderAgentID: "agent_" + strings.Repeat("a", 64), SenderEndpointID: "mep_" + strings.Repeat("b", 64),
 		SenderDeviceID: "dev_" + strings.Repeat("c", 64), ConversationID: "conv_" + strings.Repeat("d", 64),
 		ReceivedAtUnix: 1_800_000_100, Filename: "note.txt", MediaType: "text/plain",
 		PlaintextDigest: "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: uint64(len(body)), Body: body,
-		Scans: []attachmentScan{{ScannerID: "clamav", ScannerDigest: "sha256:" + strings.Repeat("e", 64),
+		Scans: []attachmentScan{{
+			ScannerID: "clamav", ScannerDigest: "sha256:" + strings.Repeat("e", 64),
 			Resources: []attachmentScanResource{
 				{Name: "clamscan", Digest: "sha256:" + strings.Repeat("1", 64)},
 				{Name: "daily.cvd", Digest: "sha256:" + strings.Repeat("2", 64)},
-			}}}}
+			},
+		}},
+	}
 	path, operations, stop := serveAttachmentInbox(t, attachment)
 	defer stop()
 	messageBus := bus.NewMessageBus()
@@ -133,10 +137,14 @@ func TestChannelPublishesOnlyClaimedAuthenticatedEventWithTypedOrigin(t *testing
 }
 
 func TestIndependentDecoderConsumesMessengerEventV2Vector(t *testing.T) {
-	raw := []byte(`{"schema":"tos.messaging.event.v2","network_id":"tos-local","genesis_root_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","genesis_file_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","conversation_id":"conv_1111111111111111111111111111111111111111111111111111111111111111","event_id":"evt_907a3ee25f59981718c2021d8dedd81451f45159878e7fc97b95201d216e0614","sender_agent_id":"agent_2222222222222222222222222222222222222222222222222222222222222222","sender_messaging_endpoint_id":"mep_7e03fe8741547ed3530ae38dbc690a42273db8dce07edda055f309d26f24f46a","sender_device_id":"dev_4444444444444444444444444444444444444444444444444444444444444444","created_at_unix":1800000010,"event_kind":"text","payload_schema":"tos.messaging.payload.text.v1","content_base64":"dG9zLm1lc3NhZ2luZy5wYXlsb2FkLnYxAHRvcy5tZXNzYWdpbmcucGF5bG9hZC50ZXh0LnYxAAAAABl0ZXh0L3BsYWluOyBjaGFyc2V0PXV0Zi04AAAABWhlbGxvAAAAAA==","rendering":"hello"}`)
-	pending := pendingEvent{EventID: "evt_907a3ee25f59981718c2021d8dedd81451f45159878e7fc97b95201d216e0614",
+	raw := []byte(
+		`{"schema":"tos.messaging.event.v2","network_id":"tos-local","genesis_root_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","genesis_file_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","conversation_id":"conv_1111111111111111111111111111111111111111111111111111111111111111","event_id":"evt_907a3ee25f59981718c2021d8dedd81451f45159878e7fc97b95201d216e0614","sender_agent_id":"agent_2222222222222222222222222222222222222222222222222222222222222222","sender_messaging_endpoint_id":"mep_7e03fe8741547ed3530ae38dbc690a42273db8dce07edda055f309d26f24f46a","sender_device_id":"dev_4444444444444444444444444444444444444444444444444444444444444444","created_at_unix":1800000010,"event_kind":"text","payload_schema":"tos.messaging.payload.text.v1","content_base64":"dG9zLm1lc3NhZ2luZy5wYXlsb2FkLnYxAHRvcy5tZXNzYWdpbmcucGF5bG9hZC50ZXh0LnYxAAAAABl0ZXh0L3BsYWluOyBjaGFyc2V0PXV0Zi04AAAABWhlbGxvAAAAAA==","rendering":"hello"}`,
+	)
+	pending := pendingEvent{
+		EventID:          "evt_907a3ee25f59981718c2021d8dedd81451f45159878e7fc97b95201d216e0614",
 		SenderEndpointID: "mep_7e03fe8741547ed3530ae38dbc690a42273db8dce07edda055f309d26f24f46a",
-		ConversationID:   "conv_" + strings.Repeat("1", 64), ReceivedAtUnix: 1_800_000_011, Event: raw}
+		ConversationID:   "conv_" + strings.Repeat("1", 64), ReceivedAtUnix: 1_800_000_011, Event: raw,
+	}
 	event, body, err := decodeAdmittedText(pending)
 	if err != nil || body != "hello" || event.EventID != pending.EventID {
 		t.Fatalf("consume Messenger v2 vector: event=%+v body=%q err=%v", event, body, err)
@@ -354,25 +362,33 @@ func TestSendMediaStreamsOnlyPlaintextSemanticsAndStableRetry(t *testing.T) {
 	roomID := "room_" + strings.Repeat("9", 64)
 	channel, err := New(&config.Channel{AllowFrom: []string{"*"}}, &config.TOSMessengerSettings{
 		SocketPath: socket, EnableAttachments: true,
-		Routes: []config.TOSMessengerRoute{{ChatID: roomID, ConversationID: "conv_" + strings.Repeat("3", 64),
+		Routes: []config.TOSMessengerRoute{{
+			ChatID: roomID, ConversationID: "conv_" + strings.Repeat("3", 64),
 			RoomID: roomID, MembershipEpoch: 3, SessionID: "ses_" + strings.Repeat("8", 64),
-			RecipientEndpointID: "mep_" + strings.Repeat("6", 64), LifetimeSeconds: 3600}},
+			RecipientEndpointID: "mep_" + strings.Repeat("6", 64), LifetimeSeconds: 3600,
+		}},
 	}, bus.NewMessageBus())
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := media.NewFileMediaStore()
-	ref, err := store.Store(path, media.MediaMeta{Filename: "evidence.txt", ContentType: "text/plain",
-		CleanupPolicy: media.CleanupPolicyForgetOnly}, "test")
+	ref, err := store.Store(path, media.MediaMeta{
+		Filename: "evidence.txt", ContentType: "text/plain",
+		CleanupPolicy: media.CleanupPolicyForgetOnly,
+	}, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	channel.SetMediaStore(store)
 	channel.SetRunning(true)
 	originEvent := "evt_" + strings.Repeat("a", 64)
-	message := bus.OutboundMediaMessage{ChatID: roomID, Context: bus.InboundContext{MessageID: originEvent,
-		AuthenticatedMessagingOrigin: &actionauth.Origin{EventID: originEvent, ReceivedAtUnix: 1_800_000_100}},
-		Parts: []bus.MediaPart{{Type: "file", Ref: ref, Filename: "evidence.txt", ContentType: "text/plain"}}}
+	message := bus.OutboundMediaMessage{
+		ChatID: roomID, Context: bus.InboundContext{
+			MessageID:                    originEvent,
+			AuthenticatedMessagingOrigin: &actionauth.Origin{EventID: originEvent, ReceivedAtUnix: 1_800_000_100},
+		},
+		Parts: []bus.MediaPart{{Type: "file", Ref: ref, Filename: "evidence.txt", ContentType: "text/plain"}},
+	}
 	first, err := channel.SendMedia(context.Background(), message)
 	if err != nil || len(first) != 1 {
 		t.Fatalf("first media send ids=%v err=%v", first, err)
@@ -383,9 +399,14 @@ func TestSendMediaStreamsOnlyPlaintextSemanticsAndStableRetry(t *testing.T) {
 	}
 	begin, chunkOne, chunkTwo, commitOne, commitTwo, retryBegin := <-requests, <-requests, <-requests, <-requests, <-requests, <-requests
 	digest := sha256.Sum256(body)
-	if begin.Op != "attachments.outbound.begin" || begin.Filename != "evidence.txt" || begin.MediaType != "text/plain" ||
-		begin.PlaintextDigest != "sha256:"+hex.EncodeToString(digest[:]) || begin.PlaintextBytes != uint64(len(body)) ||
-		begin.RoomID != roomID || begin.MembershipEpoch != 3 || begin.ReplyToEventID != originEvent {
+	if begin.Op != "attachments.outbound.begin" ||
+		begin.Filename != "evidence.txt" ||
+		begin.MediaType != "text/plain" ||
+		begin.PlaintextDigest != "sha256:"+hex.EncodeToString(digest[:]) ||
+		begin.PlaintextBytes != uint64(len(body)) ||
+		begin.RoomID != roomID ||
+		begin.MembershipEpoch != 3 ||
+		begin.ReplyToEventID != originEvent {
 		t.Fatalf("unexpected attachment begin: %+v", begin)
 	}
 	if chunkOne.Op != "attachments.outbound.chunk" || chunkOne.UploadID == "" || chunkOne.ChunkIndex != 0 ||
@@ -597,9 +618,11 @@ func serveAttachmentInbox(t *testing.T, attachment admittedAttachment) (string, 
 			response := localResponse{Schema: responseSchema, OK: true}
 			switch request.Op {
 			case "attachments.pending":
-				response.Attachments = []pendingAttachment{{EventID: attachment.EventID,
+				response.Attachments = []pendingAttachment{{
+					EventID:          attachment.EventID,
 					SenderEndpointID: attachment.SenderEndpointID, ConversationID: attachment.ConversationID,
-					ReceivedAtUnix: attachment.ReceivedAtUnix}}
+					ReceivedAtUnix: attachment.ReceivedAtUnix,
+				}}
 			case "attachments.claim":
 				response.Attachment = &attachment
 			}

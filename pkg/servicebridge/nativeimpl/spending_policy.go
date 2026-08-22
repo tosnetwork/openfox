@@ -43,7 +43,9 @@ type spendingPolicyNetwork struct {
 // be owner-only even though it contains no private key.
 func LoadSignedSpendingPolicy(path string) (servicebridge.SpendingPolicy, ed25519.PublicKey, error) {
 	if !secureConfigFile(path) {
-		return servicebridge.SpendingPolicy{}, nil, errors.New("nativeimpl: spending policy must be an owner-private absolute regular file")
+		return servicebridge.SpendingPolicy{}, nil, errors.New(
+			"nativeimpl: spending policy must be an owner-private absolute regular file",
+		)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil || len(raw) == 0 || len(raw) > 1<<20 {
@@ -70,15 +72,21 @@ func LoadSignedSpendingPolicy(path string) (servicebridge.SpendingPolicy, ed2551
 		}
 		allow[capability] = true
 	}
-	policy := servicebridge.SpendingPolicy{Asset: servicebridge.AssetIdentity{
-		Master: document.Asset.Master, WalletCodeHash: document.Asset.WalletCodeHash, Network: servicebridge.Network{
-			ID: document.Asset.Network.ID, GenesisRootHash: document.Asset.Network.GenesisRootHash,
-			GenesisFileHash: document.Asset.Network.GenesisFileHash,
-		},
-		Workchain: document.Asset.Workchain, MasterCodeHash: document.Asset.MasterCodeHash, Decimals: document.Asset.Decimals,
-	}, MaxAtomicPurchase: document.MaxAtomicPurchase, DailyBudgetAtomic: document.DailyBudgetAtomic,
+	policy := servicebridge.SpendingPolicy{
+		Asset: servicebridge.AssetIdentity{
+			Master:         document.Asset.Master,
+			WalletCodeHash: document.Asset.WalletCodeHash,
+			Network: servicebridge.Network{
+				ID: document.Asset.Network.ID, GenesisRootHash: document.Asset.Network.GenesisRootHash,
+				GenesisFileHash: document.Asset.Network.GenesisFileHash,
+			},
+			Workchain:      document.Asset.Workchain,
+			MasterCodeHash: document.Asset.MasterCodeHash,
+			Decimals:       document.Asset.Decimals,
+		}, MaxAtomicPurchase: document.MaxAtomicPurchase, DailyBudgetAtomic: document.DailyBudgetAtomic,
 		Window: time.Duration(document.WindowSeconds) * time.Second, Expiry: time.Unix(document.ExpiryUnix, 0).UTC(),
-		CapabilityAllow: allow, ConfirmationMode: document.ConfirmationMode, OwnerSignature: signature}
+		CapabilityAllow: allow, ConfirmationMode: document.ConfirmationMode, OwnerSignature: signature,
+	}
 	if err := servicebridge.VerifySpendingPolicySignature(policy, ed25519.PublicKey(publicKey)); err != nil {
 		return servicebridge.SpendingPolicy{}, nil, err
 	}

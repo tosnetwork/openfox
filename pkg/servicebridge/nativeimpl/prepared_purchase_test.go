@@ -22,32 +22,44 @@ func artifactPreparedPurchase(t *testing.T) *buyersdk.PreparedPurchase {
 	manifest := []byte{0xa1, 0x61, 0x61, 0x01}
 	manifestHash := sha256.Sum256(manifest)
 	manifestDigest := "sha256:" + hex.EncodeToString(manifestHash[:])
-	network := &nativev1.NetworkDomain{NetworkId: "tos-local",
-		GenesisRootHash: "sha256:" + strings.Repeat("1", 64), GenesisFileHash: "sha256:" + strings.Repeat("2", 64)}
+	network := &nativev1.NetworkDomain{
+		NetworkId:       "tos-local",
+		GenesisRootHash: "sha256:" + strings.Repeat("1", 64), GenesisFileHash: "sha256:" + strings.Repeat("2", 64),
+	}
 	walletCode := cell.BeginCell().MustStoreUInt(0xaaaa, 16).EndCell()
 	escrowCode := cell.BeginCell().MustStoreUInt(0xeeee, 16).EndCell()
-	terms := nativecore.EscrowTermsV1{BuyerAddress: "0:" + strings.Repeat("3", 64),
+	terms := nativecore.EscrowTermsV1{
+		BuyerAddress:    "0:" + strings.Repeat("3", 64),
 		ProviderAddress: "0:" + strings.Repeat("4", 64), FundingDeadline: uint64(time.Now().Add(time.Hour).Unix()),
-		RefundAvailableAt: uint64(time.Now().Add(2 * time.Hour).Unix())}
+		RefundAvailableAt: uint64(time.Now().Add(2 * time.Hour).Unix()),
+	}
 	termsCell, err := nativecore.BuildEscrowTermsCellV1(terms)
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport := nativecore.TransportBindingV1{SecurityMode: 0, MaxRequestBytes: 1 << 20,
-		BaseURL: "http://127.0.0.1:18080"}
+	transport := nativecore.TransportBindingV1{
+		SecurityMode: 0, MaxRequestBytes: 1 << 20,
+		BaseURL: "http://127.0.0.1:18080",
+	}
 	_, transportDigest, err := nativecore.BuildTransportBindingCellV1(transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, disputeDigest := nativecore.BuildObjectiveDisputePolicyCellV1()
-	asset := &nativev1.TOSAssetIdentityV1{Master: &nativev1.TOSContractIdentityV1{Workchain: 0,
-		AccountId: bytes.Repeat([]byte{0x55}, 32), CodeHash: "tvm-cell-sha256:" + strings.Repeat("6", 64)},
-		WalletCodeHash: cellHashDigest(walletCode), Decimals: 9}
-	proposal := &nativev1.QuoteProposalV1{ProposalId: "proposal-artifact", CapabilityId: "cap_" + strings.Repeat("7", 64),
+	asset := &nativev1.TOSAssetIdentityV1{
+		Master: &nativev1.TOSContractIdentityV1{
+			Workchain: 0,
+			AccountId: bytes.Repeat([]byte{0x55}, 32), CodeHash: "tvm-cell-sha256:" + strings.Repeat("6", 64),
+		},
+		WalletCodeHash: cellHashDigest(walletCode), Decimals: 9,
+	}
+	proposal := &nativev1.QuoteProposalV1{
+		ProposalId: "proposal-artifact", CapabilityId: "cap_" + strings.Repeat("7", 64),
 		CapabilityVersion: "1.0.0", ProviderAgentId: "agent_" + strings.Repeat("8", 64), ManifestDigest: manifestDigest,
 		TransportBindingDigest: transportDigest, EscrowTermsDigest: "sha256:" + hex.EncodeToString(termsCell.Hash()),
 		DisputePolicyDigest: disputeDigest, ExpiresAtUnixSeconds: terms.FundingDeadline,
-		MaximumPrice: &nativev1.MoneyV1{Asset: asset, AtomicAmount: "25000000"}}
+		MaximumPrice: &nativev1.MoneyV1{Asset: asset, AtomicAmount: "25000000"},
+	}
 	signer := bytes.Repeat([]byte{0xbb}, 32)
 	authorization, err := nativecore.BuildEscrowAuthorizationCellV1(signer)
 	if err != nil {
@@ -66,9 +78,11 @@ func artifactPreparedPurchase(t *testing.T) *buyersdk.PreparedPurchase {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &buyersdk.PreparedPurchase{Proposal: proposal, ManifestCBOR: manifest, ManifestDigest: manifestDigest,
+	return &buyersdk.PreparedPurchase{
+		Proposal: proposal, ManifestCBOR: manifest, ManifestDigest: manifestDigest,
 		QuoteCommitment: commitment, QuoteBOCBase64: identityQuoteBOC(quote), Escrow: identity,
-		AssetMasterAddress: master, BuyerWalletAddress: "0:" + strings.Repeat("9", 64), AmountAtomic: "25000000"}
+		AssetMasterAddress: master, BuyerWalletAddress: "0:" + strings.Repeat("9", 64), AmountAtomic: "25000000",
+	}
 }
 
 func identityQuoteBOC(quote *cell.Cell) string {
@@ -104,7 +118,10 @@ func TestPurchaseInputFromPreparedPurchaseUsesTypedEscrowPreimage(t *testing.T) 
 	}
 	if !proto.Equal(input.Proposal, purchase.Proposal) || !bytes.Equal(input.ManifestCBOR, purchase.ManifestCBOR) ||
 		input.EscrowTerms.BuyerAddress != state.BuyerAddress || input.EscrowTerms.ProviderAddress != state.ProviderAddress ||
-		!bytes.Equal(input.ExecutionSignerEd25519, state.ExecutionSignerEd25519) || input.TransportBinding != state.TransportBinding {
+		!bytes.Equal(
+			input.ExecutionSignerEd25519,
+			state.ExecutionSignerEd25519,
+		) || input.TransportBinding != state.TransportBinding {
 		t.Fatalf("input = %+v", input)
 	}
 }
@@ -148,11 +165,13 @@ func TestPreparedPurchaseArtifactRejectsUnknownEnvelopeField(t *testing.T) {
 }
 
 func TestPreparedEscrowDeploymentArtifactRoundTripAndIntegrity(t *testing.T) {
-	deployment := &buyersdk.PreparedEscrowDeployment{Schema: "tos.service.escrow-deployment.v1",
+	deployment := &buyersdk.PreparedEscrowDeployment{
+		Schema:        "tos.service.escrow-deployment.v1",
 		EscrowAddress: "0:" + strings.Repeat("1", 64), QuoteCommitment: "tvm-cell-sha256:" + strings.Repeat("2", 64),
 		StateInitBOCBase64: "te6ccgEBAQEAAgAAAA==", StateInitHash: "tvm-cell-sha256:" + strings.Repeat("3", 64),
 		AttachedNanoTOS: 100_000_000, MessageBOCBase64: "te6ccgEBAQEAAgAAAA==",
-		MessageHash: "tvm-cell-sha256:" + strings.Repeat("4", 64)}
+		MessageHash: "tvm-cell-sha256:" + strings.Repeat("4", 64),
+	}
 	encoded, err := MarshalPreparedEscrowDeployment(deployment)
 	if err != nil {
 		t.Fatal(err)

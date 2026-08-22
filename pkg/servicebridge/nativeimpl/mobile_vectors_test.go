@@ -8,8 +8,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 // The mobile buyer projection vectors are the shared iOS/Android ground truth.
@@ -101,7 +102,10 @@ func TestMobileBuyerVectorsMatchEscrowReader(t *testing.T) {
 			reader := projectionReader(c)
 
 			funding, fundingErr := reader.ResolveEscrow(context.Background(), escrowAddr)
-			settlement, settlementErr := reader.VerifySettlement(context.Background(), servicebridge.AcceptedQuote{EscrowAddress: escrowAddr})
+			settlement, settlementErr := reader.VerifySettlement(
+				context.Background(),
+				servicebridge.AcceptedQuote{EscrowAddress: escrowAddr},
+			)
 
 			if c.ExpectDecodeErr {
 				if fundingErr == nil {
@@ -121,7 +125,12 @@ func TestMobileBuyerVectorsMatchEscrowReader(t *testing.T) {
 			}
 			if settlement.Released != c.SettlementView.Released || settlement.Refunded != c.SettlementView.Refunded ||
 				settlement.ProviderCreditAtomic != atoi64(t, c.SettlementView.ProviderCreditAtomic) {
-				t.Fatalf("case %s: settlement view mismatch\n got:  %+v\n want: %+v", c.Name, settlement, c.SettlementView)
+				t.Fatalf(
+					"case %s: settlement view mismatch\n got:  %+v\n want: %+v",
+					c.Name,
+					settlement,
+					c.SettlementView,
+				)
 			}
 		})
 	}

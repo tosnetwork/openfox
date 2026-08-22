@@ -58,7 +58,10 @@ func TestMobilePurchasePhaseVectors(t *testing.T) {
 	}
 
 	for _, c := range vectors.Transitions {
-		if got := servicebridge.CanAdvance(servicebridge.Phase(c.From), servicebridge.Phase(c.To)); got != c.CanAdvance {
+		if got := servicebridge.CanAdvance(
+			servicebridge.Phase(c.From),
+			servicebridge.Phase(c.To),
+		); got != c.CanAdvance {
 			t.Fatalf("%s->%s: CanAdvance got %v, want %v", c.From, c.To, got, c.CanAdvance)
 		}
 	}

@@ -8,11 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 // purchasePreparer is the narrow behaviour of *buyersdk.Buyer the session
@@ -22,7 +23,11 @@ import (
 // unit-testable without a live node.
 type purchasePreparer interface {
 	PreparePurchase(ctx context.Context, input buyersdk.PurchaseInput) (*buyersdk.PreparedPurchase, error)
-	FundPurchase(ctx context.Context, purchase *buyersdk.PreparedPurchase, requestKey string) (*toschain.FinalizedEscrowV1, error)
+	FundPurchase(
+		ctx context.Context,
+		purchase *buyersdk.PreparedPurchase,
+		requestKey string,
+	) (*toschain.FinalizedEscrowV1, error)
 }
 
 // BuyerSession implements the bridge's QuoteClient and CustodySigner by
@@ -56,13 +61,18 @@ func NewBuyerSession(preparer purchasePreparer, input buyersdk.PurchaseInput) (*
 // RequestQuote returns the non-canonical proposal projected from the negotiated
 // input. It refuses a proposal that does not match the requested capability so a
 // mismatched negotiation can never reach policy or funding.
-func (s *BuyerSession) RequestQuote(_ context.Context, ref servicebridge.CapabilityRef) (servicebridge.QuoteProposal, error) {
+func (s *BuyerSession) RequestQuote(
+	_ context.Context,
+	ref servicebridge.CapabilityRef,
+) (servicebridge.QuoteProposal, error) {
 	prop := s.input.Proposal
 	if prop.GetCapabilityId() != ref.CapabilityID || prop.GetProviderAgentId() != ref.AgentID ||
 		prop.GetCapabilityVersion() != ref.Version || prop.GetManifestDigest() != ref.ManifestDigest ||
 		ref.CapabilityClass == "" || ref.Network.ID == "" || ref.Network.GenesisRootHash == "" ||
 		ref.Network.GenesisFileHash == "" {
-		return servicebridge.QuoteProposal{}, errors.New("nativeimpl: negotiated proposal does not match the complete requested capability")
+		return servicebridge.QuoteProposal{}, errors.New(
+			"nativeimpl: negotiated proposal does not match the complete requested capability",
+		)
 	}
 	money := prop.GetMaximumPrice()
 	asset := money.GetAsset()
@@ -70,7 +80,9 @@ func (s *BuyerSession) RequestQuote(_ context.Context, ref servicebridge.Capabil
 	if asset == nil || master == nil || master.GetCodeHash() == "" || asset.GetWalletCodeHash() == "" ||
 		prop.GetTransportBindingDigest() == "" || prop.GetEscrowTermsDigest() == "" ||
 		prop.GetDisputePolicyDigest() == "" || prop.GetExpiresAtUnixSeconds() == 0 {
-		return servicebridge.QuoteProposal{}, errors.New("nativeimpl: negotiated proposal lacks complete purchase terms")
+		return servicebridge.QuoteProposal{}, errors.New(
+			"nativeimpl: negotiated proposal lacks complete purchase terms",
+		)
 	}
 	amount, err := atomicUint64(money.GetAtomicAmount())
 	if err != nil {
@@ -98,17 +110,24 @@ func (s *BuyerSession) RequestQuote(_ context.Context, ref servicebridge.Capabil
 // capability, asset route, and escrow derivation against finalized state and
 // returns the canonical Quote commitment and deterministic escrow. The prepared
 // purchase is remembered so funding operates on exactly it.
-func (s *BuyerSession) BuildAcceptedQuote(ctx context.Context, proposal servicebridge.QuoteProposal) (servicebridge.AcceptedQuote, error) {
+func (s *BuyerSession) BuildAcceptedQuote(
+	ctx context.Context,
+	proposal servicebridge.QuoteProposal,
+) (servicebridge.AcceptedQuote, error) {
 	expected, err := s.RequestQuote(ctx, proposal.Capability)
 	if err != nil || expected != proposal {
-		return servicebridge.AcceptedQuote{}, errors.New("nativeimpl: accepted Quote input differs from the negotiated proposal")
+		return servicebridge.AcceptedQuote{}, errors.New(
+			"nativeimpl: accepted Quote input differs from the negotiated proposal",
+		)
 	}
 	prepared, err := s.preparer.PreparePurchase(ctx, s.input)
 	if err != nil {
 		return servicebridge.AcceptedQuote{}, err
 	}
 	if prepared == nil || prepared.QuoteCommitment == "" || prepared.Escrow.Address == "" {
-		return servicebridge.AcceptedQuote{}, errors.New("nativeimpl: prepared purchase is missing its commitment or escrow")
+		return servicebridge.AcceptedQuote{}, errors.New(
+			"nativeimpl: prepared purchase is missing its commitment or escrow",
+		)
 	}
 	s.mu.Lock()
 	s.prepared[prepared.QuoteCommitment] = prepared

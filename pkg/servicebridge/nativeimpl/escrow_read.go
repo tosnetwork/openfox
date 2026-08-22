@@ -5,9 +5,10 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 // finalizedEscrowReader is the one finalized read the buyer trusts. A
@@ -49,7 +50,10 @@ func (r *EscrowSettlementReader) ResolveFinalizedExact(
 // not-found escrow is reported as not found (never as funded), and any amount
 // that is negative or does not fit an atomic uint64 fails closed rather than
 // wrapping.
-func (r *EscrowSettlementReader) ResolveEscrow(ctx context.Context, escrowAddress string) (servicebridge.EscrowState, error) {
+func (r *EscrowSettlementReader) ResolveEscrow(
+	ctx context.Context,
+	escrowAddress string,
+) (servicebridge.EscrowState, error) {
 	resolved, found, err := r.reader.ResolveFinalized(ctx, escrowAddress)
 	if err != nil {
 		return servicebridge.EscrowState{}, err
@@ -82,7 +86,10 @@ func (r *EscrowSettlementReader) ResolveEscrow(ctx context.Context, escrowAddres
 // status the escrow decoder already validated (ReleasePending requires
 // settled==funded and a bound Receipt; RefundPending requires settled==0). The
 // buyer's own wallet balance is a separate stablecoin read and is left zero here.
-func (r *EscrowSettlementReader) VerifySettlement(ctx context.Context, aq servicebridge.AcceptedQuote) (servicebridge.Settlement, error) {
+func (r *EscrowSettlementReader) VerifySettlement(
+	ctx context.Context,
+	aq servicebridge.AcceptedQuote,
+) (servicebridge.Settlement, error) {
 	if aq.EscrowAddress == "" {
 		return servicebridge.Settlement{}, errors.New("nativeimpl: accepted quote has no escrow address to settle")
 	}

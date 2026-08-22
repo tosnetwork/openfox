@@ -9,9 +9,10 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	"github.com/tosnetwork/tos-ai/pkg/agentpacketadapter"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentpacket"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 func newPacketTransport(t *testing.T) (*AgentPacketTaskTransport, ed25519.PublicKey) {

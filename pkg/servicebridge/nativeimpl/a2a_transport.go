@@ -8,8 +8,9 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	"github.com/tosnetwork/tos-ai/pkg/a2aadapter"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 // a2aMessageSender is the narrow behaviour of an a2aclient.Transport the
@@ -41,7 +42,11 @@ func NewA2ATaskTransport(sender a2aMessageSender) (*A2ATaskTransport, error) {
 // Dispatch delivers the bound Task over A2A. It handles only TransportA2A; the
 // bridge selects the transport, so an unexpected transport is a programming
 // error and fails closed rather than silently sending over the wrong channel.
-func (t *A2ATaskTransport) Dispatch(ctx context.Context, transport servicebridge.Transport, task servicebridge.Task) error {
+func (t *A2ATaskTransport) Dispatch(
+	ctx context.Context,
+	transport servicebridge.Transport,
+	task servicebridge.Task,
+) error {
 	if transport != servicebridge.TransportA2A {
 		return errors.New("nativeimpl: A2A task transport was asked to dispatch a non-A2A transport")
 	}
@@ -53,7 +58,14 @@ func (t *A2ATaskTransport) Dispatch(ctx context.Context, transport servicebridge
 	if err != nil {
 		return err
 	}
-	request, err := a2aadapter.NewTaskRequest(messageID, contextID, task.EscrowAddress, task.QuoteCommitment, task.ExecutionID, task.SourceArchive)
+	request, err := a2aadapter.NewTaskRequest(
+		messageID,
+		contextID,
+		task.EscrowAddress,
+		task.QuoteCommitment,
+		task.ExecutionID,
+		task.SourceArchive,
+	)
 	if err != nil {
 		return err
 	}

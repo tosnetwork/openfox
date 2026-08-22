@@ -89,7 +89,10 @@ func newSettler(t *testing.T, reader fakeFinalized) (*EscrowReleaseSettler, *fak
 }
 
 func TestSettlerReleasesFromFinalizedEscrow(t *testing.T) {
-	s, signer, sub := newSettler(t, fundedEscrow(nativecore.EscrowStatusFunded, "tvm-cell-sha256:"+hex64, "25000000", true))
+	s, signer, sub := newSettler(
+		t,
+		fundedEscrow(nativecore.EscrowStatusFunded, "tvm-cell-sha256:"+hex64, "25000000", true),
+	)
 	if err := s.Settle(context.Background(), sampleEvidence(), sampleOutcome()); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
@@ -114,7 +117,10 @@ func TestSettlerRejectsQuoteMismatch(t *testing.T) {
 }
 
 func TestSettlerRefusesUnfundedEscrow(t *testing.T) {
-	s, _, sub := newSettler(t, fundedEscrow(nativecore.EscrowStatusReleasePending, "tvm-cell-sha256:"+hex64, "25000000", true))
+	s, _, sub := newSettler(
+		t,
+		fundedEscrow(nativecore.EscrowStatusReleasePending, "tvm-cell-sha256:"+hex64, "25000000", true),
+	)
 	if err := s.Settle(context.Background(), sampleEvidence(), sampleOutcome()); err == nil {
 		t.Fatalf("an already-released escrow must not be released again")
 	}
@@ -124,7 +130,10 @@ func TestSettlerRefusesUnfundedEscrow(t *testing.T) {
 }
 
 func TestSettlerRefusesEscrowBoundToAnotherQuote(t *testing.T) {
-	s, _, sub := newSettler(t, fundedEscrow(nativecore.EscrowStatusFunded, "tvm-cell-sha256:"+"c"+hex64[1:], "25000000", true))
+	s, _, sub := newSettler(
+		t,
+		fundedEscrow(nativecore.EscrowStatusFunded, "tvm-cell-sha256:"+"c"+hex64[1:], "25000000", true),
+	)
 	if err := s.Settle(context.Background(), sampleEvidence(), sampleOutcome()); err == nil {
 		t.Fatalf("finalized escrow bound to a different quote must not release")
 	}

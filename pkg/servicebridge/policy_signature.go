@@ -56,15 +56,21 @@ func CanonicalSpendingPolicy(policy SpendingPolicy) ([]byte, error) {
 		capabilities = append(capabilities, capability)
 	}
 	sort.Strings(capabilities)
-	canonical := canonicalSpendingPolicy{Asset: canonicalPolicyAsset{
-		Master: policy.Asset.Master, WalletCodeHash: policy.Asset.WalletCodeHash, Network: canonicalPolicyNetwork{
-			ID: policy.Asset.Network.ID, GenesisRootHash: policy.Asset.Network.GenesisRootHash,
-			GenesisFileHash: policy.Asset.Network.GenesisFileHash,
-		},
-		Workchain: policy.Asset.Workchain, MasterCodeHash: policy.Asset.MasterCodeHash, Decimals: policy.Asset.Decimals,
-	}, MaxAtomicPurchase: policy.MaxAtomicPurchase, DailyBudgetAtomic: policy.DailyBudgetAtomic,
+	canonical := canonicalSpendingPolicy{
+		Asset: canonicalPolicyAsset{
+			Master:         policy.Asset.Master,
+			WalletCodeHash: policy.Asset.WalletCodeHash,
+			Network: canonicalPolicyNetwork{
+				ID: policy.Asset.Network.ID, GenesisRootHash: policy.Asset.Network.GenesisRootHash,
+				GenesisFileHash: policy.Asset.Network.GenesisFileHash,
+			},
+			Workchain:      policy.Asset.Workchain,
+			MasterCodeHash: policy.Asset.MasterCodeHash,
+			Decimals:       policy.Asset.Decimals,
+		}, MaxAtomicPurchase: policy.MaxAtomicPurchase, DailyBudgetAtomic: policy.DailyBudgetAtomic,
 		WindowSeconds: uint64(policy.Window / time.Second), ExpiryUnix: policy.Expiry.UTC().Unix(),
-		CapabilityAllow: capabilities, ConfirmationMode: policy.ConfirmationMode}
+		CapabilityAllow: capabilities, ConfirmationMode: policy.ConfirmationMode,
+	}
 	encoded, err := json.Marshal(canonical)
 	if err != nil {
 		return nil, err

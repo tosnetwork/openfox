@@ -5,10 +5,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 type fakeFinalized struct {
@@ -48,7 +49,8 @@ func TestResolveEscrowFundedView(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if !got.Found || got.FundedAtomic != 25000000 || got.SettledAtomic != 0 || got.AwaitingFunding || got.Checkpoint != 42 {
+	if !got.Found || got.FundedAtomic != 25000000 || got.SettledAtomic != 0 || got.AwaitingFunding ||
+		got.Checkpoint != 42 {
 		t.Fatalf("funded view wrong: %+v", got)
 	}
 }
@@ -114,7 +116,10 @@ func TestVerifySettlementPendingIsNeitherReleasedNorRefunded(t *testing.T) {
 }
 
 func TestVerifySettlementRequiresEscrowAddress(t *testing.T) {
-	r := newReader(t, fakeFinalized{found: true, state: &nativecore.EscrowStateV1{Status: nativecore.EscrowStatusFunded}})
+	r := newReader(
+		t,
+		fakeFinalized{found: true, state: &nativecore.EscrowStateV1{Status: nativecore.EscrowStatusFunded}},
+	)
 	if _, err := r.VerifySettlement(context.Background(), servicebridge.AcceptedQuote{}); err == nil {
 		t.Fatalf("settlement without an escrow address must fail closed")
 	}

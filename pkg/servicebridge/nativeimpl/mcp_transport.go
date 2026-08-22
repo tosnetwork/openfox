@@ -5,8 +5,9 @@ import (
 	"errors"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tosnetwork/openfox/pkg/servicebridge"
 	"github.com/tosnetwork/tos-ai/pkg/mcpadapter"
+
+	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
 // mcpToolCaller is the narrow behaviour of an mcp client session the dispatcher
@@ -35,11 +36,20 @@ func NewMCPTaskTransport(caller mcpToolCaller) (*MCPTaskTransport, error) {
 
 // Dispatch delivers the bound Task over MCP. It handles only TransportMCP and
 // fails closed on any other transport or an unbuildable task before calling.
-func (t *MCPTaskTransport) Dispatch(ctx context.Context, transport servicebridge.Transport, task servicebridge.Task) error {
+func (t *MCPTaskTransport) Dispatch(
+	ctx context.Context,
+	transport servicebridge.Transport,
+	task servicebridge.Task,
+) error {
 	if transport != servicebridge.TransportMCP {
 		return errors.New("nativeimpl: MCP task transport was asked to dispatch a non-MCP transport")
 	}
-	input, err := mcpadapter.PrepareInput(task.EscrowAddress, task.QuoteCommitment, task.ExecutionID, task.SourceArchive)
+	input, err := mcpadapter.PrepareInput(
+		task.EscrowAddress,
+		task.QuoteCommitment,
+		task.ExecutionID,
+		task.SourceArchive,
+	)
 	if err != nil {
 		return err
 	}

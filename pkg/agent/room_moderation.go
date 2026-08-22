@@ -26,8 +26,8 @@ func (al *AgentLoop) processRoomModeration(msg bus.InboundMessage) error {
 	sessionKey := resolveScopeKey(al.allocateRouteSession(route, msg).SessionKey, msg.SessionKey)
 	if control.Action == "hide" {
 		if _, active := al.activeTurnStates.Load(sessionKey); active {
-			if err := al.HardAbort(sessionKey); err != nil {
-				return fmt.Errorf("cancel active turn before room hide: %w", err)
+			if abortErr := al.HardAbort(sessionKey); abortErr != nil {
+				return fmt.Errorf("cancel active turn before room hide: %w", abortErr)
 			}
 		}
 	}

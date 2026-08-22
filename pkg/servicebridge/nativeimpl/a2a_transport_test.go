@@ -7,6 +7,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+
 	"github.com/tosnetwork/openfox/pkg/servicebridge"
 )
 
@@ -16,7 +17,11 @@ type fakeA2ASender struct {
 	err        error
 }
 
-func (f *fakeA2ASender) SendMessage(_ context.Context, _ a2aclient.ServiceParams, req *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
+func (f *fakeA2ASender) SendMessage(
+	_ context.Context,
+	_ a2aclient.ServiceParams,
+	req *a2a.SendMessageRequest,
+) (a2a.SendMessageResult, error) {
 	f.gotRequest = req
 	return f.result, f.err
 }

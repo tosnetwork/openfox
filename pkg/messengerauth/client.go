@@ -20,7 +20,7 @@ import (
 
 const (
 	requestSchema  = "tos.messaging.local-request.v6"
-	responseSchema = "tos.messaging.local-response.v4"
+	responseSchema = "tos.messaging.local-response.v5"
 	maxFrameBytes  = 2 << 20
 	defaultTimeout = 30 * time.Second
 )

@@ -18,7 +18,7 @@ import (
 
 const (
 	requestSchema  = "tos.messaging.local-request.v6"
-	responseSchema = "tos.messaging.local-response.v4"
+	responseSchema = "tos.messaging.local-response.v5"
 	maxFrameBytes  = 2 << 20
 )
 
@@ -64,8 +64,14 @@ type pendingAttachment struct {
 }
 
 type attachmentScan struct {
-	ScannerID     string `json:"scanner_id"`
-	ScannerDigest string `json:"scanner_digest"`
+	ScannerID     string                   `json:"scanner_id"`
+	ScannerDigest string                   `json:"scanner_digest"`
+	Resources     []attachmentScanResource `json:"resources,omitempty"`
+}
+
+type attachmentScanResource struct {
+	Name   string `json:"name"`
+	Digest string `json:"digest"`
 }
 
 type admittedAttachment struct {
@@ -125,8 +131,16 @@ func validAdmittedAttachment(value admittedAttachment) bool {
 	previous := ""
 	for _, scan := range value.Scans {
 		if !scannerIDPattern.MatchString(scan.ScannerID) || scan.ScannerID <= previous ||
-			!digestPattern.MatchString(scan.ScannerDigest) {
+			!digestPattern.MatchString(scan.ScannerDigest) || len(scan.Resources) > 8 {
 			return false
+		}
+		previousResource := ""
+		for _, resource := range scan.Resources {
+			if !scannerResourcePattern.MatchString(resource.Name) || resource.Name <= previousResource ||
+				!digestPattern.MatchString(resource.Digest) {
+				return false
+			}
+			previousResource = resource.Name
 		}
 		previous = scan.ScannerID
 	}

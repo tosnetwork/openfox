@@ -28,15 +28,16 @@ const (
 )
 
 var (
-	agentPattern        = regexp.MustCompile(`^agent_[0-9a-f]{64}$`)
-	endpointPattern     = regexp.MustCompile(`^mep_[0-9a-f]{64}$`)
-	devicePattern       = regexp.MustCompile(`^dev_[0-9a-f]{64}$`)
-	eventPattern        = regexp.MustCompile(`^evt_[0-9a-f]{64}$`)
-	conversationPattern = regexp.MustCompile(`^conv_[0-9a-f]{64}$`)
-	roomPattern         = regexp.MustCompile(`^room_[0-9a-f]{64}$`)
-	hashPattern         = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	digestPattern       = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	scannerIDPattern    = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,63}$`)
+	agentPattern           = regexp.MustCompile(`^agent_[0-9a-f]{64}$`)
+	endpointPattern        = regexp.MustCompile(`^mep_[0-9a-f]{64}$`)
+	devicePattern          = regexp.MustCompile(`^dev_[0-9a-f]{64}$`)
+	eventPattern           = regexp.MustCompile(`^evt_[0-9a-f]{64}$`)
+	conversationPattern    = regexp.MustCompile(`^conv_[0-9a-f]{64}$`)
+	roomPattern            = regexp.MustCompile(`^room_[0-9a-f]{64}$`)
+	hashPattern            = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	digestPattern          = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	scannerIDPattern       = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,63}$`)
+	scannerResourcePattern = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,63}$`)
 )
 
 type wireEvent struct {

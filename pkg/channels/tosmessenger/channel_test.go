@@ -31,7 +31,11 @@ func TestChannelPublishesOnlyDaemonAdmittedAttachmentAndCompletesLease(t *testin
 		SenderDeviceID: "dev_" + strings.Repeat("c", 64), ConversationID: "conv_" + strings.Repeat("d", 64),
 		ReceivedAtUnix: 1_800_000_100, Filename: "note.txt", MediaType: "text/plain",
 		PlaintextDigest: "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: uint64(len(body)), Body: body,
-		Scans: []attachmentScan{{ScannerID: "reference-text", ScannerDigest: "sha256:" + strings.Repeat("e", 64)}}}
+		Scans: []attachmentScan{{ScannerID: "clamav", ScannerDigest: "sha256:" + strings.Repeat("e", 64),
+			Resources: []attachmentScanResource{
+				{Name: "clamscan", Digest: "sha256:" + strings.Repeat("1", 64)},
+				{Name: "daily.cvd", Digest: "sha256:" + strings.Repeat("2", 64)},
+			}}}}
 	path, operations, stop := serveAttachmentInbox(t, attachment)
 	defer stop()
 	messageBus := bus.NewMessageBus()
@@ -76,6 +80,21 @@ func TestChannelPublishesOnlyDaemonAdmittedAttachmentAndCompletesLease(t *testin
 	malformedScan.Scans[0].ScannerDigest = "sha256:" + strings.Repeat("E", 64)
 	if validAdmittedAttachment(malformedScan) {
 		t.Fatal("non-canonical scanner digest was accepted")
+	}
+	malformedResource := attachment
+	malformedResource.Scans = append([]attachmentScan(nil), attachment.Scans...)
+	malformedResource.Scans[0].Resources = append([]attachmentScanResource(nil), attachment.Scans[0].Resources...)
+	malformedResource.Scans[0].Resources[1].Digest = "sha256:" + strings.Repeat("F", 64)
+	if validAdmittedAttachment(malformedResource) {
+		t.Fatal("non-canonical scanner resource digest was accepted")
+	}
+	unsortedResources := attachment
+	unsortedResources.Scans = append([]attachmentScan(nil), attachment.Scans...)
+	unsortedResources.Scans[0].Resources = []attachmentScanResource{
+		attachment.Scans[0].Resources[1], attachment.Scans[0].Resources[0],
+	}
+	if validAdmittedAttachment(unsortedResources) {
+		t.Fatal("unsorted scanner resource evidence was accepted")
 	}
 }
 

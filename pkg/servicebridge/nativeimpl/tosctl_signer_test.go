@@ -55,8 +55,8 @@ func TestTOSCTLExecutionSignerValidatesCustodyOutput(t *testing.T) {
 	if err != nil || !ed25519.Verify(public, hash, signature) {
 		t.Fatalf("sign: %v", err)
 	}
-	if len(runner.args) != 8 || runner.args[0] != "wallet" || runner.args[3] != "sign" ||
-		runner.args[5] != "execution-signer" || runner.args[6] != "--message-hex" {
+	if len(runner.args) != 6 || runner.args[0] != "wallet" || runner.args[1] != "sign" ||
+		runner.args[3] != "execution-signer" || runner.args[4] != "--message-hex" {
 		t.Fatalf("unexpected tosctl command: %v", runner.args)
 	}
 }

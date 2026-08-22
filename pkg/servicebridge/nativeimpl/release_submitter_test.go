@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
@@ -195,5 +196,29 @@ func TestNewReleaseSubmitterRejectsInsecureConfig(t *testing.T) {
 		BinaryPath: binary, ConfigPath: config, WalletName: "w", ProviderAddress: providerAddr,
 	}); err == nil {
 		t.Fatalf("a group/other-accessible config must be rejected")
+	}
+}
+
+func TestPinnedReleaseRunnerRejectsExecutableSubstitutionAndPinsConfig(t *testing.T) {
+	binary, config := secureFiles(t)
+	if err := os.WriteFile(config, []byte(`{"network":"original"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := newPinnedReleaseRunner(binary, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte(`{"network":"substituted"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if string(runner.config) != `{"network":"original"}` {
+		t.Fatal("release runner did not pin configuration bytes")
+	}
+	if err := os.WriteFile(binary, []byte("#!/bin/false\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.run(context.Background(), binary, "wallet", "ls"); err == nil ||
+		!strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("substituted executable was not rejected: %v", err)
 	}
 }

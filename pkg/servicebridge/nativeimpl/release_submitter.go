@@ -3,6 +3,7 @@ package nativeimpl
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -66,9 +68,13 @@ func NewTOSCTLReleaseSubmitter(c TOSCTLReleaseSubmitterConfig) (*TOSCTLReleaseSu
 	if c.Timeout < time.Second || c.Timeout > 5*time.Minute {
 		return nil, errors.New("nativeimpl: invalid tosctl release submitter timeout")
 	}
+	runner, err := newPinnedReleaseRunner(c.BinaryPath, c.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
 	return &TOSCTLReleaseSubmitter{
 		binary: c.BinaryPath, config: c.ConfigPath, wallet: c.WalletName, provider: c.ProviderAddress,
-		attached: c.AttachedNanoTOS, timeout: c.Timeout, runner: execReleaseRunner{},
+		attached: c.AttachedNanoTOS, timeout: c.Timeout, runner: runner,
 	}, nil
 }
 
@@ -87,7 +93,7 @@ func (s *TOSCTLReleaseSubmitter) SubmitRelease(
 	bodyBOC := base64.StdEncoding.EncodeToString(releaseBody.ToBOC())
 	bodyHash := fmt.Sprintf("tvm-cell-sha256:%x", releaseBody.Hash())
 
-	preparedRaw, err := s.run(ctx, "wallet", "--config", s.config, "send", "--from", s.wallet,
+	preparedRaw, err := s.run(ctx, "wallet", "send", "--from", s.wallet,
 		"--to", escrowAddress, "--amount-nanotos", fmt.Sprint(s.attached), "--body-boc", bodyBOC, "--build-only")
 	if err != nil {
 		return errors.New("nativeimpl: tosctl could not prepare the escrow release")
@@ -124,7 +130,7 @@ func (s *TOSCTLReleaseSubmitter) SubmitRelease(
 	}
 	messageHash := fmt.Sprintf("tvm-cell-sha256:%x", message.Hash())
 
-	broadcastRaw, err := s.run(ctx, "wallet", "--config", s.config, "broadcast-prepared",
+	broadcastRaw, err := s.run(ctx, "wallet", "broadcast-prepared",
 		"--message-boc", prepared.MessageBOC, "--yes")
 	if err != nil {
 		return errors.New("nativeimpl: tosctl escrow release broadcast outcome is ambiguous")
@@ -155,14 +161,117 @@ func (s *TOSCTLReleaseSubmitter) run(ctx context.Context, args ...string) ([]byt
 	return s.runner.run(call, s.binary, args...)
 }
 
-type execReleaseRunner struct{}
+type releaseExecutableIdentity struct {
+	device, inode uint64
+	size          int64
+	digest        [sha256.Size]byte
+}
 
-func (execReleaseRunner) run(ctx context.Context, binary string, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, binary, args...)
+type execReleaseRunner struct {
+	identity releaseExecutableIdentity
+	config   []byte
+}
+
+func newPinnedReleaseRunner(binaryPath, configPath string) (*execReleaseRunner, error) {
+	if runtime.GOOS != "linux" {
+		return nil, errors.New("nativeimpl: descriptor-pinned tosctl custody is supported only on Linux")
+	}
+	executable, identity, err := openReleaseExecutable(binaryPath)
+	if err != nil {
+		return nil, err
+	}
+	_ = executable.Close()
+	config, err := os.ReadFile(configPath)
+	if err != nil || len(config) == 0 || len(config) > 2<<20 {
+		return nil, errors.New("nativeimpl: read bounded tosctl custody configuration")
+	}
+	return &execReleaseRunner{identity: identity, config: append([]byte(nil), config...)}, nil
+}
+
+func (r *execReleaseRunner) run(ctx context.Context, binary string, args ...string) ([]byte, error) {
+	if r == nil {
+		return nil, errors.New("nativeimpl: tosctl custody runner is unavailable")
+	}
+	executable, identity, err := openReleaseExecutable(binary)
+	if err != nil || identity != r.identity {
+		if executable != nil {
+			_ = executable.Close()
+		}
+		return nil, errors.New("nativeimpl: enrolled tosctl executable identity changed")
+	}
+	defer executable.Close()
+	config, err := pinnedReleaseDescriptor(r.config)
+	if err != nil {
+		return nil, err
+	}
+	defer config.Close()
+	args = append(args, "--config-fd", "3", "--config-format", "json")
+	command := exec.CommandContext(ctx, "/proc/self/fd/4", args...)
+	command.ExtraFiles = []*os.File{config, executable}
+	command.Env = []string{}
 	output := releaseCappedBuffer{limit: 1 << 20}
 	command.Stdout, command.Stderr = &output, &output
-	err := command.Run()
+	err = command.Run()
 	return output.Bytes(), err
+}
+
+func openReleaseExecutable(path string) (*os.File, releaseExecutableIdentity, error) {
+	pathInfo, err := os.Lstat(path)
+	if err != nil || !filepath.IsAbs(path) || filepath.Clean(path) != path || !pathInfo.Mode().IsRegular() ||
+		pathInfo.Mode()&os.ModeSymlink != 0 || pathInfo.Mode().Perm()&0o111 == 0 || pathInfo.Mode().Perm()&0o022 != 0 {
+		return nil, releaseExecutableIdentity{}, errors.New("nativeimpl: invalid tosctl executable")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, releaseExecutableIdentity{}, err
+	}
+	info, err := file.Stat()
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if err != nil || !ok || !os.SameFile(pathInfo, info) || (stat.Uid != 0 && stat.Uid != uint32(os.Geteuid())) {
+		file.Close()
+		return nil, releaseExecutableIdentity{}, errors.New("nativeimpl: tosctl executable identity is untrusted")
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		file.Close()
+		return nil, releaseExecutableIdentity{}, err
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	identity := releaseExecutableIdentity{device: uint64(stat.Dev), inode: stat.Ino, size: info.Size(), digest: digest}
+	if _, err := file.Seek(0, 0); err != nil {
+		file.Close()
+		return nil, releaseExecutableIdentity{}, err
+	}
+	return file, identity, nil
+}
+
+func pinnedReleaseDescriptor(raw []byte) (*os.File, error) {
+	file, err := os.CreateTemp("", "openfox-tosctl-config-*")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Remove(file.Name()); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if _, err := file.Write(raw); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 type releaseCappedBuffer struct {

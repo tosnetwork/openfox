@@ -44,9 +44,13 @@ func NewTOSCTLExecutionSigner(c TOSCTLExecutionSignerConfig) (*TOSCTLExecutionSi
 	if c.Timeout < time.Second || c.Timeout > 2*time.Minute {
 		return nil, errors.New("nativeimpl: invalid tosctl execution signer timeout")
 	}
+	runner, err := newPinnedReleaseRunner(c.BinaryPath, c.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
 	return &TOSCTLExecutionSigner{
 		binary: c.BinaryPath, config: c.ConfigPath, wallet: c.WalletName,
-		public: append(ed25519.PublicKey(nil), c.ExpectedPublicKey...), timeout: c.Timeout, runner: execReleaseRunner{},
+		public: append(ed25519.PublicKey(nil), c.ExpectedPublicKey...), timeout: c.Timeout, runner: runner,
 	}, nil
 }
 
@@ -56,7 +60,7 @@ func (s *TOSCTLExecutionSigner) SignSettlementIntent(ctx context.Context, intent
 	}
 	call, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	raw, err := s.runner.run(call, s.binary, "wallet", "--config", s.config, "sign", "--name", s.wallet,
+	raw, err := s.runner.run(call, s.binary, "wallet", "sign", "--name", s.wallet,
 		"--message-hex", hex.EncodeToString(intentHash))
 	if err != nil {
 		return nil, errors.New("nativeimpl: tosctl could not sign the settlement intent")

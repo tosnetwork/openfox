@@ -2,36 +2,62 @@ package cliprovider
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
-
-	"github.com/tosnetwork/openfox/pkg/isolation"
+	"sync"
 )
 
 // CodexCliProvider implements LLMProvider by wrapping the codex CLI as a subprocess.
 type CodexCliProvider struct {
 	command   string
 	workspace string
+	options   RuntimeOptions
+	sem       chan struct{}
+	initMu    sync.Mutex
 }
 
 // NewCodexCliProvider creates a new Codex CLI provider.
 func NewCodexCliProvider(workspace string) *CodexCliProvider {
+	return NewCodexCliProviderWithOptions(RuntimeOptions{Workspace: workspace})
+}
+
+// NewCodexCliProviderWithOptions creates a hardened one-shot Codex provider.
+func NewCodexCliProviderWithOptions(options RuntimeOptions) *CodexCliProvider {
+	options = options.normalized()
 	return &CodexCliProvider{
 		command:   "codex",
-		workspace: workspace,
+		workspace: options.Workspace,
+		options:   options,
+		sem:       make(chan struct{}, options.MaxConcurrentCalls),
 	}
 }
 
 // Chat implements LLMProvider.Chat by executing the codex CLI in non-interactive mode.
 func (p *CodexCliProvider) Chat(
-	ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]any,
+	ctx context.Context, messages []Message, tools []ToolDefinition, model string, _ map[string]any,
 ) (*LLMResponse, error) {
 	if p.command == "" {
 		return nil, fmt.Errorf("codex command not configured")
+	}
+	options, sem := p.runtime()
+	if err := options.validate(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := options.boundedContext(ctx)
+	defer cancel()
+	workspace, err := options.canonicalWorkspace()
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
 	prompt := p.buildPrompt(messages, tools)
@@ -39,50 +65,68 @@ func (p *CodexCliProvider) Chat(
 	args := []string{
 		"exec",
 		"--json",
-		"--dangerously-bypass-approvals-and-sandbox",
+		"--sandbox", options.Sandbox,
 		"--skip-git-repo-check",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--ignore-rules",
 		"--color", "never",
+	}
+	if !options.AllowNativeTools {
+		for _, feature := range disabledCodexNativeFeatures() {
+			args = append(args, "--disable", feature)
+		}
+		args = append(args, "-c", `web_search="disabled"`)
 	}
 	if model != "" && model != "codex-cli" {
 		args = append(args, "-m", model)
 	}
-	if p.workspace != "" {
-		args = append(args, "-C", p.workspace)
-	}
+	args = append(args, "-C", workspace)
 	args = append(args, "-") // read prompt from stdin
 
 	cmd := exec.CommandContext(ctx, p.command, args...)
-	cmd.Stdin = bytes.NewReader([]byte(prompt))
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	// Execute the CLI through the shared isolation wrapper so external provider
-	// processes honor the configured isolation policy.
-	err := isolation.Run(cmd)
+	configureCommandCancellation(cmd)
+	stdout, stderr, err := runCommandBounded(ctx, cmd, []byte(prompt), options.MaxOutputBytes)
+	if errors.Is(err, ErrOutputLimit) {
+		return nil, err
+	}
 
 	// Parse JSONL from stdout even if exit code is non-zero,
 	// because codex writes diagnostic noise to stderr (e.g. rollout errors)
 	// but still produces valid JSONL output.
-	if stdoutStr := stdout.String(); stdoutStr != "" {
-		resp, parseErr := p.parseJSONLEvents(stdoutStr)
+	if stdout != "" {
+		resp, parseErr := p.parseJSONLEvents(stdout)
 		if parseErr == nil && resp != nil && (resp.Content != "" || len(resp.ToolCalls) > 0) {
 			return resp, nil
 		}
 	}
 
 	if err != nil {
-		if ctx.Err() == context.Canceled {
+		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if stderrStr := stderr.String(); stderrStr != "" {
-			return nil, fmt.Errorf("codex cli error: %s", stderrStr)
+		if stderr != "" {
+			return nil, fmt.Errorf("codex cli error: %s", strings.TrimSpace(stderr))
 		}
 		return nil, fmt.Errorf("codex cli error: %w", err)
 	}
 
-	return p.parseJSONLEvents(stdout.String())
+	return p.parseJSONLEvents(stdout)
+}
+
+func (p *CodexCliProvider) runtime() (RuntimeOptions, chan struct{}) {
+	p.initMu.Lock()
+	defer p.initMu.Unlock()
+	options := p.options
+	if options.Workspace == "" {
+		options.Workspace = p.workspace
+	}
+	options = options.normalized()
+	p.options = options
+	if p.sem == nil {
+		p.sem = make(chan struct{}, options.MaxConcurrentCalls)
+	}
+	return options, p.sem
 }
 
 // GetDefaultModel returns the default model identifier.

@@ -389,21 +389,37 @@ func TestChat_SkipsModelFlagForEmptyModel(t *testing.T) {
 	}
 }
 
-func TestChat_EmptyWorkspaceDoesNotSetDir(t *testing.T) {
-	mockJSON := `{"type":"result","result":"ok","session_id":"s"}`
-	script := createMockCLI(t, mockJSON, "", 0)
-
+func TestChat_RejectsEmptyWorkspace(t *testing.T) {
 	p := NewClaudeCliProvider("")
-	p.command = script
-
-	resp, err := p.Chat(context.Background(), []Message{
+	_, err := p.Chat(context.Background(), []Message{
 		{Role: "user", Content: "Hello"},
 	}, nil, "", nil)
-	if err != nil {
-		t.Fatalf("Chat() with empty workspace error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "workspace is required") {
+		t.Fatalf("Chat() error = %v, want required-workspace error", err)
 	}
-	if resp.Content != "ok" {
-		t.Errorf("Content = %q, want %q", resp.Content, "ok")
+}
+
+func TestChat_UsesFailClosedClaudeFlags(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args.txt")
+	script := createArgCaptureCLI(t, argsFile)
+	p := NewClaudeCliProvider(t.TempDir())
+	p.command = script
+
+	if _, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "Hi"}}, nil, "", nil); err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	argsBytes, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(argsBytes)
+	for _, required := range []string{"--safe-mode", "--tools", "--permission-mode plan", "--no-session-persistence"} {
+		if !strings.Contains(args, required) {
+			t.Errorf("CLI args missing %q: %s", required, args)
+		}
+	}
+	if strings.Contains(args, "dangerously") {
+		t.Errorf("CLI args must not contain dangerous bypass flags: %s", args)
 	}
 }
 

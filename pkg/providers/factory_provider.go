@@ -8,6 +8,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,30 +18,6 @@ import (
 	"github.com/tosnetwork/openfox/pkg/providers/bedrock"
 	"github.com/tosnetwork/openfox/pkg/providers/common"
 )
-
-// createClaudeAuthProvider creates a Claude provider using OAuth credentials from auth store.
-func createClaudeAuthProvider() (LLMProvider, error) {
-	cred, err := getCredential("anthropic")
-	if err != nil {
-		return nil, fmt.Errorf("loading auth credentials: %w", err)
-	}
-	if cred == nil {
-		return nil, fmt.Errorf("no credentials for anthropic. Run: openfox auth login --provider anthropic")
-	}
-	return NewClaudeProviderWithTokenSource(cred.AccessToken, createClaudeTokenSource()), nil
-}
-
-// createCodexAuthProvider creates a Codex provider using OAuth credentials from auth store.
-func createCodexAuthProvider() (LLMProvider, error) {
-	cred, err := getCredential("openai")
-	if err != nil {
-		return nil, fmt.Errorf("loading auth credentials: %w", err)
-	}
-	if cred == nil {
-		return nil, fmt.Errorf("no credentials for openai. Run: openfox auth login --provider openai")
-	}
-	return NewCodexProviderWithTokenSource(cred.AccessToken, cred.AccountID, createCodexTokenSource()), nil
-}
 
 // ExtractProtocol extracts the effective protocol and model identifier from a
 // model configuration.
@@ -107,13 +84,14 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 
 	switch protocol {
 	case "openai":
-		// OpenAI with OAuth/token auth (Codex-style)
+		// Consumer ChatGPT OAuth credentials must stay inside the official Codex
+		// client boundary. OpenFox no longer impersonates Codex against an
+		// undocumented backend API.
 		if authMethod == "oauth" || authMethod == "token" {
-			provider, err := createCodexAuthProvider()
-			if err != nil {
-				return nil, "", err
-			}
-			return finalizeProviderFromConfig(provider, modelID, cfg)
+			return nil, "", fmt.Errorf(
+				"direct OpenAI OAuth is disabled; configure provider %q with auth_method %q and agent_backend.mode %q",
+				"codex-cli", "subscription", "app-server",
+			)
 		}
 		// OpenAI with API key
 		if cfg.APIKey() == "" && cfg.APIBase == "" {
@@ -274,12 +252,10 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 
 	case "anthropic":
 		if authMethod == "oauth" || authMethod == "token" {
-			// Use OAuth credentials from auth store
-			provider, err := createClaudeAuthProvider()
-			if err != nil {
-				return nil, "", err
-			}
-			return finalizeProviderFromConfig(provider, modelID, cfg)
+			return nil, "", fmt.Errorf(
+				"direct Anthropic consumer OAuth is disabled; configure provider %q with auth_method %q for local personal use",
+				"claude-cli", "subscription",
+			)
 		}
 		// Use API key with HTTP API
 		apiBase := common.NormalizeBaseURL(cfg.APIBase, "https://api.anthropic.com/v1", true)
@@ -335,18 +311,27 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 		return finalizeProviderFromConfig(NewAntigravityProvider(), modelID, cfg)
 
 	case "claude-cli":
-		workspace := cfg.Workspace
-		if workspace == "" {
-			workspace = "."
+		if err := validateSubscriptionAgentConfig(cfg, authMethod); err != nil {
+			return nil, "", err
 		}
-		return finalizeProviderFromConfig(NewClaudeCliProvider(workspace), modelID, cfg)
+		if mode := normalizedAgentBackendMode(cfg.AgentBackend.Mode); mode != "one-shot" {
+			return nil, "", fmt.Errorf("claude-cli supports only agent_backend.mode %q", "one-shot")
+		}
+		return finalizeProviderFromConfig(NewClaudeCliProviderWithOptions(runtimeOptionsFromConfig(cfg)), modelID, cfg)
 
 	case "codex-cli":
-		workspace := cfg.Workspace
-		if workspace == "" {
-			workspace = "."
+		if err := validateSubscriptionAgentConfig(cfg, authMethod); err != nil {
+			return nil, "", err
 		}
-		return finalizeProviderFromConfig(NewCodexCliProvider(workspace), modelID, cfg)
+		options := runtimeOptionsFromConfig(cfg)
+		switch normalizedAgentBackendMode(cfg.AgentBackend.Mode) {
+		case "one-shot":
+			return finalizeProviderFromConfig(NewCodexCliProviderWithOptions(options), modelID, cfg)
+		case "app-server":
+			return finalizeProviderFromConfig(NewCodexAppServerProvider(options), modelID, cfg)
+		default:
+			return nil, "", fmt.Errorf("unsupported codex-cli agent backend mode %q", cfg.AgentBackend.Mode)
+		}
 
 	case "github-copilot":
 		apiBase := cfg.APIBase
@@ -365,6 +350,51 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 
 	default:
 		return nil, "", fmt.Errorf("unknown protocol %q in model %q", protocol, cfg.Model)
+	}
+}
+
+func normalizedAgentBackendMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return "one-shot"
+	}
+	return mode
+}
+
+func validateSubscriptionAgentConfig(cfg *config.ModelConfig, authMethod string) error {
+	if err := cfg.AgentBackend.Validate(); err != nil {
+		return err
+	}
+	switch authMethod {
+	case "", "subscription":
+	default:
+		return fmt.Errorf("unsupported CLI auth_method %q", cfg.AuthMethod)
+	}
+	if authMethod == "subscription" && cfg.AgentBackend.SubscriptionUse != "local-personal" {
+		return fmt.Errorf(
+			"agent_backend.subscription_use must be %q when auth_method is %q",
+			"local-personal", "subscription",
+		)
+	}
+	if strings.TrimSpace(cfg.Workspace) == "" {
+		return fmt.Errorf("workspace is required for local full-agent providers")
+	}
+	if !filepath.IsAbs(cfg.Workspace) {
+		return fmt.Errorf("workspace must be an absolute path for local full-agent providers")
+	}
+	return nil
+}
+
+func runtimeOptionsFromConfig(cfg *config.ModelConfig) RuntimeOptions {
+	return RuntimeOptions{
+		Workspace:          cfg.Workspace,
+		Sandbox:            cfg.AgentBackend.Sandbox,
+		ApprovalPolicy:     cfg.AgentBackend.ApprovalPolicy,
+		AllowNativeTools:   cfg.AgentBackend.AllowNativeTools,
+		SubscriptionUse:    cfg.AgentBackend.SubscriptionUse,
+		MaxConcurrentCalls: cfg.AgentBackend.MaxConcurrentCalls,
+		MaxOutputBytes:     cfg.AgentBackend.MaxOutputBytes,
+		Timeout:            time.Duration(cfg.AgentBackend.TimeoutSeconds) * time.Second,
 	}
 }
 

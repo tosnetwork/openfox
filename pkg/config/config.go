@@ -862,9 +862,10 @@ type ModelConfig struct {
 	Fallbacks []string `json:"fallbacks,omitempty"` // Fallback model names for failover
 
 	// Special providers (CLI-based, OAuth, etc.)
-	AuthMethod  string `json:"auth_method,omitempty"`  // Authentication method: oauth, token
-	ConnectMode string `json:"connect_mode,omitempty"` // Connection mode: stdio, grpc
-	Workspace   string `json:"workspace,omitempty"`    // Workspace path for CLI-based providers
+	AuthMethod   string             `json:"auth_method,omitempty"`  // Authentication method: oauth, token
+	ConnectMode  string             `json:"connect_mode,omitempty"` // Connection mode: stdio, grpc
+	Workspace    string             `json:"workspace,omitempty"`    // Workspace path for CLI-based providers
+	AgentBackend AgentBackendConfig `json:"agent_backend,omitzero"` // Security and lifecycle policy for full-agent providers.
 
 	// Optional optimizations
 	RPM                 int                  `json:"rpm,omitempty"`              // Requests per minute limit
@@ -888,6 +889,33 @@ type ModelConfig struct {
 	// isVirtual marks this model as a virtual model generated from multi-key expansion.
 	// Virtual models should not be persisted to config files.
 	isVirtual bool
+}
+
+// AgentBackendConfig controls local full-agent runtimes such as Codex CLI and
+// Claude Code. These runtimes can execute tools themselves, so their policy is
+// deliberately separate from ordinary HTTP inference provider settings.
+type AgentBackendConfig struct {
+	// Mode is "one-shot" or "app-server". app-server is currently supported by Codex.
+	Mode string `json:"mode,omitempty"`
+	// Sandbox is limited to "read-only" or "workspace-write". Full access is
+	// intentionally unavailable through OpenFox provider configuration.
+	Sandbox string `json:"sandbox,omitempty"`
+	// ApprovalPolicy is currently required to be "never" for unattended calls;
+	// an interactive approval broker must be specified before adding other modes.
+	ApprovalPolicy string `json:"approval_policy,omitempty"`
+	// AllowNativeTools opts into the backend's own tools. It defaults to false so
+	// OpenFox remains the only tool loop and authorization boundary.
+	AllowNativeTools bool `json:"allow_native_tools,omitempty"`
+	// SubscriptionUse must be "local-personal" when a consumer subscription is
+	// reused. It documents that the authenticated CLI is local to its owner and
+	// must not be exposed as a multi-user proxy.
+	SubscriptionUse string `json:"subscription_use,omitempty"`
+	// MaxConcurrentCalls bounds simultaneous turns for one backend instance.
+	MaxConcurrentCalls int `json:"max_concurrent_calls,omitempty"`
+	// MaxOutputBytes bounds stdout/protocol data retained for one turn.
+	MaxOutputBytes int `json:"max_output_bytes,omitempty"`
+	// TimeoutSeconds is a hard deadline for one local backend operation.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 }
 
 // APIKey returns the first API key from apiKeys
@@ -928,6 +956,50 @@ func (c *ModelConfig) Validate() error {
 	// Reject consecutive slashes
 	if strings.Contains(c.Model, "//") {
 		return fmt.Errorf("model identifier must not contain //")
+	}
+	if err := c.AgentBackend.Validate(); err != nil {
+		return fmt.Errorf("agent_backend: %w", err)
+	}
+	return nil
+}
+
+// Validate rejects unsafe or ambiguous full-agent runtime policies. Defaults
+// are applied by the provider factory and therefore need no serialized fields.
+func (c AgentBackendConfig) Validate() error {
+	switch c.Mode {
+	case "", "one-shot", "app-server":
+	default:
+		return fmt.Errorf("mode must be one-shot or app-server")
+	}
+	switch c.Sandbox {
+	case "", "read-only", "workspace-write":
+	default:
+		return fmt.Errorf("sandbox must be read-only or workspace-write")
+	}
+	switch c.ApprovalPolicy {
+	case "", "never":
+	default:
+		return fmt.Errorf("approval_policy must be never until an interactive approval broker is configured")
+	}
+	switch c.SubscriptionUse {
+	case "", "local-personal":
+	default:
+		return fmt.Errorf("subscription_use must be local-personal")
+	}
+	if c.AllowNativeTools {
+		return fmt.Errorf("allow_native_tools requires an OpenFox approval broker and is not available yet")
+	}
+	if c.MaxConcurrentCalls < 0 || c.MaxConcurrentCalls > 16 {
+		return fmt.Errorf("max_concurrent_calls must be between 1 and 16 when set")
+	}
+	if c.MaxOutputBytes < 0 || c.MaxOutputBytes > 16*1024*1024 {
+		return fmt.Errorf("max_output_bytes must not exceed 16777216")
+	}
+	if c.MaxOutputBytes > 0 && c.MaxOutputBytes < 4096 {
+		return fmt.Errorf("max_output_bytes must be at least 4096 when set")
+	}
+	if c.TimeoutSeconds < 0 || c.TimeoutSeconds > 3600 {
+		return fmt.Errorf("timeout_seconds must be between 1 and 3600 when set")
 	}
 	return nil
 }
@@ -1895,6 +1967,7 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 				AuthMethod:          m.AuthMethod,
 				ConnectMode:         m.ConnectMode,
 				Workspace:           m.Workspace,
+				AgentBackend:        m.AgentBackend,
 				RPM:                 m.RPM,
 				MaxTokensField:      m.MaxTokensField,
 				RequestTimeout:      m.RequestTimeout,
@@ -1920,6 +1993,7 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 			AuthMethod:          m.AuthMethod,
 			ConnectMode:         m.ConnectMode,
 			Workspace:           m.Workspace,
+			AgentBackend:        m.AgentBackend,
 			RPM:                 m.RPM,
 			MaxTokensField:      m.MaxTokensField,
 			RequestTimeout:      m.RequestTimeout,

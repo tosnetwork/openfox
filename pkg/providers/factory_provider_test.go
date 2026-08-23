@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/openfox/pkg/auth"
 	"github.com/tosnetwork/openfox/pkg/config"
 )
 
@@ -682,6 +681,7 @@ func TestCreateProviderFromConfig_ClaudeCLI(t *testing.T) {
 	cfg := &config.ModelConfig{
 		ModelName: "test-claude-cli",
 		Model:     "claude-cli/claude-sonnet-4.6",
+		Workspace: t.TempDir(),
 	}
 
 	provider, modelID, err := CreateProviderFromConfig(cfg)
@@ -700,6 +700,7 @@ func TestCreateProviderFromConfig_CodexCLI(t *testing.T) {
 	cfg := &config.ModelConfig{
 		ModelName: "test-codex-cli",
 		Model:     "codex-cli/codex",
+		Workspace: t.TempDir(),
 	}
 
 	provider, modelID, err := CreateProviderFromConfig(cfg)
@@ -714,38 +715,53 @@ func TestCreateProviderFromConfig_CodexCLI(t *testing.T) {
 	}
 }
 
-func TestCreateProviderFromConfig_OpenAIMixedCaseAuthMethodUsesOAuthBranch(t *testing.T) {
-	origGetCredential := getCredential
-	getCredential = func(provider string) (*auth.AuthCredential, error) {
-		if provider != "openai" {
-			t.Fatalf("provider = %q, want %q", provider, "openai")
-		}
-		return &auth.AuthCredential{
-			AccessToken: "test-token",
-			AccountID:   "acct-test",
-			Provider:    "openai",
-			AuthMethod:  "oauth",
-		}, nil
+func TestCreateProviderFromConfig_CodexAppServer(t *testing.T) {
+	cfg := &config.ModelConfig{
+		ModelName:  "test-codex-subscription",
+		Provider:   "codex-cli",
+		Model:      "codex-cli",
+		AuthMethod: "subscription",
+		Workspace:  t.TempDir(),
+		AgentBackend: config.AgentBackendConfig{
+			Mode:            "app-server",
+			SubscriptionUse: "local-personal",
+		},
 	}
-	t.Cleanup(func() {
-		getCredential = origGetCredential
-	})
 
+	provider, _, err := CreateProviderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("CreateProviderFromConfig() error = %v", err)
+	}
+	if _, ok := provider.(*CodexAppServerProvider); !ok {
+		t.Fatalf("provider type = %T, want *CodexAppServerProvider", provider)
+	}
+}
+
+func TestCreateProviderFromConfig_SubscriptionRequiresLocalPersonalUse(t *testing.T) {
+	cfg := &config.ModelConfig{
+		ModelName:  "test-codex-subscription",
+		Provider:   "codex-cli",
+		Model:      "codex-cli",
+		AuthMethod: "subscription",
+		Workspace:  t.TempDir(),
+	}
+
+	_, _, err := CreateProviderFromConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "subscription_use") {
+		t.Fatalf("CreateProviderFromConfig() error = %v, want subscription-use rejection", err)
+	}
+}
+
+func TestCreateProviderFromConfig_RejectsDirectOpenAIOAuth(t *testing.T) {
 	cfg := &config.ModelConfig{
 		ModelName:  "test-openai-oauth",
 		Model:      "openai/gpt-5.4",
 		AuthMethod: "OAuth",
 	}
 
-	provider, modelID, err := CreateProviderFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("CreateProviderFromConfig() error = %v", err)
-	}
-	if provider == nil {
-		t.Fatal("CreateProviderFromConfig() returned nil provider")
-	}
-	if modelID != "gpt-5.4" {
-		t.Errorf("modelID = %q, want %q", modelID, "gpt-5.4")
+	_, _, err := CreateProviderFromConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "direct OpenAI OAuth is disabled") {
+		t.Fatalf("CreateProviderFromConfig() error = %v, want direct OAuth rejection", err)
 	}
 }
 

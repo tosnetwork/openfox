@@ -429,7 +429,7 @@ func TestCodexCliProvider_MockCLI_Success(t *testing.T) {
 
 	p := &CodexCliProvider{
 		command:   scriptPath,
-		workspace: "",
+		workspace: t.TempDir(),
 	}
 
 	messages := []Message{{Role: "user", Content: "Hello"}}
@@ -461,7 +461,7 @@ func TestCodexCliProvider_MockCLI_Error(t *testing.T) {
 
 	p := &CodexCliProvider{
 		command:   scriptPath,
-		workspace: "",
+		workspace: t.TempDir(),
 	}
 
 	messages := []Message{{Role: "user", Content: "Hello"}}
@@ -493,7 +493,7 @@ echo '{"type":"turn.completed"}'`
 
 	p := &CodexCliProvider{
 		command:   scriptPath,
-		workspace: "/tmp/test-workspace",
+		workspace: tmpDir,
 	}
 
 	messages := []Message{{Role: "user", Content: "test"}}
@@ -512,14 +512,17 @@ echo '{"type":"turn.completed"}'`
 	if !strings.Contains(args, "-m gpt-5.3-codex") {
 		t.Errorf("args should contain model flag, got: %s", args)
 	}
-	if !strings.Contains(args, "-C /tmp/test-workspace") {
+	if !strings.Contains(args, "-C "+tmpDir) {
 		t.Errorf("args should contain workspace flag, got: %s", args)
 	}
 	if !strings.Contains(args, "--json") {
 		t.Errorf("args should contain --json, got: %s", args)
 	}
-	if !strings.Contains(args, "--dangerously-bypass-approvals-and-sandbox") {
-		t.Errorf("args should contain bypass flag, got: %s", args)
+	if strings.Contains(args, "dangerously") {
+		t.Errorf("args must not contain dangerous bypass flags, got: %s", args)
+	}
+	if !strings.Contains(args, "--sandbox read-only") || !strings.Contains(args, "--ephemeral") {
+		t.Errorf("args should contain fail-closed sandbox flags, got: %s", args)
 	}
 }
 
@@ -538,7 +541,7 @@ func TestCodexCliProvider_MockCLI_ContextCancel(t *testing.T) {
 
 	p := &CodexCliProvider{
 		command:   scriptPath,
-		workspace: "",
+		workspace: t.TempDir(),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -576,7 +579,7 @@ func TestCodexCliProvider_Integration(t *testing.T) {
 
 	p := &CodexCliProvider{
 		command:   codexPath,
-		workspace: "",
+		workspace: t.TempDir(),
 	}
 
 	messages := []Message{

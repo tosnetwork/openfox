@@ -2,6 +2,7 @@ package providers
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/tosnetwork/openfox/pkg/config"
@@ -76,7 +77,7 @@ func TestCreateProvider_ClaudeCodec(t *testing.T) {
 	}
 }
 
-func TestCreateProvider_ClaudeCliDefaultWorkspace(t *testing.T) {
+func TestCreateProvider_ClaudeCliRejectsMissingWorkspace(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelList = []*config.ModelConfig{
 		{ModelName: "claude-cli", Model: "claude-cli/claude-sonnet"},
@@ -84,16 +85,8 @@ func TestCreateProvider_ClaudeCliDefaultWorkspace(t *testing.T) {
 	cfg.Agents.Defaults.ModelName = "claude-cli"
 	cfg.Agents.Defaults.Workspace = ""
 
-	provider, _, err := CreateProvider(cfg)
-	if err != nil {
-		t.Fatalf("CreateProvider error = %v", err)
-	}
-
-	cliProvider, ok := provider.(*ClaudeCliProvider)
-	if !ok {
-		t.Fatalf("returned %T, want *ClaudeCliProvider", provider)
-	}
-	if got := testProviderWorkspace(t, cliProvider); got != "." {
-		t.Errorf("workspace = %q, want %q (default)", got, ".")
+	_, _, err := CreateProvider(cfg)
+	if err == nil || !strings.Contains(err.Error(), "workspace is required") {
+		t.Fatalf("CreateProvider error = %v, want required-workspace error", err)
 	}
 }

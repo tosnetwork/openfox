@@ -82,8 +82,9 @@ func TestIntegration_RealCodexCLI_ParsesRealJSONL(t *testing.T) {
 	// Run codex directly and verify our parser handles real output
 	cmd := exec.Command("codex", "exec",
 		"--json",
-		"--dangerously-bypass-approvals-and-sandbox",
+		"--sandbox", "read-only",
 		"--skip-git-repo-check",
+		"--ephemeral",
 		"--color", "never",
 		"-C", t.TempDir(),
 		"-")

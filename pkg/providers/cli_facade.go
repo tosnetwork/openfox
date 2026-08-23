@@ -7,10 +7,16 @@ import (
 )
 
 type (
-	ClaudeCliProvider     = cliprovider.ClaudeCliProvider
-	CodexCliProvider      = cliprovider.CodexCliProvider
-	CodexCliAuth          = cliprovider.CodexCliAuth
-	GitHubCopilotProvider = cliprovider.GitHubCopilotProvider
+	AgentBackend             = cliprovider.AgentBackend
+	AgentBackendCapabilities = cliprovider.AgentBackendCapabilities
+	AgentTurnRequest         = cliprovider.AgentTurnRequest
+	AgentTurnResult          = cliprovider.AgentTurnResult
+	RuntimeOptions           = cliprovider.RuntimeOptions
+	ClaudeCliProvider        = cliprovider.ClaudeCliProvider
+	CodexCliProvider         = cliprovider.CodexCliProvider
+	CodexAppServerProvider   = cliprovider.CodexAppServerProvider
+	CodexCliAuth             = cliprovider.CodexCliAuth
+	GitHubCopilotProvider    = cliprovider.GitHubCopilotProvider
 )
 
 const CodexHomeEnvVar = cliprovider.CodexHomeEnvVar
@@ -19,8 +25,20 @@ func NewClaudeCliProvider(workspace string) *ClaudeCliProvider {
 	return cliprovider.NewClaudeCliProvider(workspace)
 }
 
+func NewClaudeCliProviderWithOptions(options RuntimeOptions) *ClaudeCliProvider {
+	return cliprovider.NewClaudeCliProviderWithOptions(options)
+}
+
 func NewCodexCliProvider(workspace string) *CodexCliProvider {
 	return cliprovider.NewCodexCliProvider(workspace)
+}
+
+func NewCodexCliProviderWithOptions(options RuntimeOptions) *CodexCliProvider {
+	return cliprovider.NewCodexCliProviderWithOptions(options)
+}
+
+func NewCodexAppServerProvider(options RuntimeOptions) *CodexAppServerProvider {
+	return cliprovider.NewCodexAppServerProvider(options)
 }
 
 func NewGitHubCopilotProvider(uri string, connectMode string, model string) (*GitHubCopilotProvider, error) {

@@ -1,38 +1,85 @@
 package cliprovider
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
-
-	"github.com/tosnetwork/openfox/pkg/isolation"
+	"sync"
 )
 
 // ClaudeCliProvider implements LLMProvider using the claude CLI as a subprocess.
 type ClaudeCliProvider struct {
 	command   string
 	workspace string
+	options   RuntimeOptions
+	sem       chan struct{}
+	initMu    sync.Mutex
 }
 
 // NewClaudeCliProvider creates a new Claude CLI provider.
 func NewClaudeCliProvider(workspace string) *ClaudeCliProvider {
+	return NewClaudeCliProviderWithOptions(RuntimeOptions{Workspace: workspace})
+}
+
+// NewClaudeCliProviderWithOptions creates a hardened Claude Code provider.
+func NewClaudeCliProviderWithOptions(options RuntimeOptions) *ClaudeCliProvider {
+	options = options.normalized()
 	return &ClaudeCliProvider{
 		command:   "claude",
-		workspace: workspace,
+		workspace: options.Workspace,
+		options:   options,
+		sem:       make(chan struct{}, options.MaxConcurrentCalls),
 	}
 }
 
 // Chat implements LLMProvider.Chat by executing the claude CLI.
 func (p *ClaudeCliProvider) Chat(
-	ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]any,
+	ctx context.Context, messages []Message, tools []ToolDefinition, model string, _ map[string]any,
 ) (*LLMResponse, error) {
+	options, sem := p.runtime()
+	if err := options.validate(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := options.boundedContext(ctx)
+	defer cancel()
+	if options.AllowNativeTools {
+		return nil, fmt.Errorf("claude-cli native tools are disabled: route tools through the OpenFox authorization loop")
+	}
+	if _, err := options.canonicalWorkspace(); err != nil {
+		return nil, err
+	}
+	// Claude Code subscription auth does not support --bare. Use an empty,
+	// short-lived cwd so repository CLAUDE.md files and project settings cannot
+	// silently become a second instruction channel. OpenFox tools retain the
+	// actual workspace authorization boundary.
+	sterileDir, err := os.MkdirTemp("", "openfox-claude-backend-")
+	if err != nil {
+		return nil, fmt.Errorf("create sterile claude-cli workspace: %w", err)
+	}
+	defer os.RemoveAll(sterileDir)
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
 	systemPrompt := p.buildSystemPrompt(messages, tools)
 	prompt := p.messagesToPrompt(messages)
 
-	args := []string{"-p", "--output-format", "json", "--dangerously-skip-permissions", "--no-chrome"}
+	args := []string{
+		"-p", "--output-format", "json",
+		"--safe-mode",
+		"--tools", "",
+		"--permission-mode", "plan",
+		"--setting-sources", "",
+		"--no-session-persistence",
+		"--no-chrome",
+	}
 	if systemPrompt != "" {
 		args = append(args, "--system-prompt", systemPrompt)
 	}
@@ -42,20 +89,18 @@ func (p *ClaudeCliProvider) Chat(
 	args = append(args, "-") // read from stdin
 
 	cmd := exec.CommandContext(ctx, p.command, args...)
-	if p.workspace != "" {
-		cmd.Dir = p.workspace
+	cmd.Dir = sterileDir
+	configureCommandCancellation(cmd)
+	stdout, stderr, err := runCommandBounded(ctx, cmd, []byte(prompt), options.MaxOutputBytes)
+	if errors.Is(err, ErrOutputLimit) {
+		return nil, err
 	}
-	cmd.Stdin = bytes.NewReader([]byte(prompt))
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	// Execute the CLI through the shared isolation wrapper so external provider
-	// processes honor the configured isolation policy.
-	if err := isolation.Run(cmd); err != nil {
-		stderrStr := strings.TrimSpace(stderr.String())
-		stdoutStr := strings.TrimSpace(stdout.String())
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		stderrStr := strings.TrimSpace(stderr)
+		stdoutStr := strings.TrimSpace(stdout)
 		switch {
 		case stderrStr != "" && stdoutStr != "":
 			return nil, fmt.Errorf("claude cli error: %w\nstderr: %s\nstdout: %s", err, stderrStr, stdoutStr)
@@ -68,7 +113,22 @@ func (p *ClaudeCliProvider) Chat(
 		}
 	}
 
-	return p.parseClaudeCliResponse(stdout.String())
+	return p.parseClaudeCliResponse(stdout)
+}
+
+func (p *ClaudeCliProvider) runtime() (RuntimeOptions, chan struct{}) {
+	p.initMu.Lock()
+	defer p.initMu.Unlock()
+	options := p.options
+	if options.Workspace == "" {
+		options.Workspace = p.workspace
+	}
+	options = options.normalized()
+	p.options = options
+	if p.sem == nil {
+		p.sem = make(chan struct{}, options.MaxConcurrentCalls)
+	}
+	return options, p.sem
 }
 
 // GetDefaultModel returns the default model identifier.

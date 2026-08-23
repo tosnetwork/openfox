@@ -93,6 +93,19 @@ pkg-config --modversion olm
 Alternatively, use `-tags goolm` to select mautrix's pure-Go backend. Do not
 use `nocrypto`: OpenFox's Matrix channel requires end-to-end encryption.
 
+Windows builds must use `goolm`: native libolm is a CGO C++ dependency and is
+not part of a portable Windows cross-compilation toolchain. The repository's
+Makefile supplies the correct tags and includes a gate that compiles every
+production package and every test package for Windows:
+
+```bash
+make windows-check
+```
+
+When this target is run from Linux or macOS, Windows test executables are
+compiled but not executed. Run the normal test suite on a Windows host to
+exercise Windows APIs such as Job Objects and `LockFileEx` at runtime.
+
 ```bash
 git clone https://github.com/tosnetwork/openfox.git
 cd openfox

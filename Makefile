@@ -1,4 +1,4 @@
-.PHONY: all build install uninstall clean help test integration-test build-all lint-docs
+.PHONY: all build install uninstall clean help test integration-test build-all windows-check lint-docs
 
 # Build variables
 BINARY_NAME=openfox
@@ -51,6 +51,14 @@ empty:=
 space:=$(empty) $(empty)
 GO_BUILD_TAGS_NO_GOOLM:=$(subst $(space),$(comma),$(strip $(filter-out goolm,$(subst $(comma),$(space),$(GO_BUILD_TAGS)))))
 GOFLAGS_NO_GOOLM?=-v -tags $(GO_BUILD_TAGS_NO_GOOLM)
+WINDOWS_CHECK_ARCH?=amd64
+ifeq ($(OS),Windows_NT)
+WINDOWS_TEST_EXEC=
+else
+# Cross-compiled test executables cannot run on the host. `go test` still
+# compiles every test binary before handing it to this successful executor.
+WINDOWS_TEST_EXEC=-exec=true
+endif
 
 # Patch MIPS LE ELF e_flags (offset 36) for NaN2008-only kernels (e.g. Ingenic X2600).
 #
@@ -333,6 +341,14 @@ build-all: generate
 	GOOS=netbsd GOARCH=amd64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-netbsd-amd64 ./$(CMD_DIR)
 	GOOS=netbsd GOARCH=arm64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-netbsd-arm64 ./$(CMD_DIR)
 	@echo "Core builds complete"
+
+## windows-check: Compile all Windows production and test packages with portable Matrix crypto
+windows-check: generate
+	@echo "Compiling all production packages for windows/$(WINDOWS_CHECK_ARCH)..."
+	@CGO_ENABLED=0 GOOS=windows GOARCH=$(WINDOWS_CHECK_ARCH) $(GO) build $(GOFLAGS) ./...
+	@echo "Compiling all test packages for windows/$(WINDOWS_CHECK_ARCH)..."
+	@CGO_ENABLED=0 GOOS=windows GOARCH=$(WINDOWS_CHECK_ARCH) $(GO) test $(GOFLAGS) -run '^$$' $(WINDOWS_TEST_EXEC) ./...
+	@echo "Windows production and test package compilation complete"
 
 ## install: Install openfox to system and copy builtin skills
 install: build

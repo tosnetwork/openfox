@@ -10,6 +10,33 @@ import (
 	"time"
 )
 
+func TestIntegration_RealCodexCLI_LocalPersonalSubscription(t *testing.T) {
+	if _, err := exec.LookPath("codex"); err != nil {
+		t.Skip("codex CLI not found in PATH")
+	}
+
+	p := NewCodexCliProviderWithOptions(RuntimeOptions{
+		Workspace:          t.TempDir(),
+		SubscriptionUse:    "local-personal",
+		OwnerChannel:       "integration",
+		OwnerSenderID:      "owner",
+		MaxConcurrentCalls: 1,
+		MaxOutputBytes:     1024 * 1024,
+		Timeout:            2 * time.Minute,
+	})
+	ctx := WithAgentBackendPrincipal(context.Background(), "integration", "owner")
+	resp, err := p.Chat(ctx, []Message{{
+		Role:    "user",
+		Content: "Do not use any tool. Reply with exactly OPENFOX_CODEX_CLI_OK.",
+	}}, nil, "", nil)
+	if err != nil {
+		t.Fatalf("Chat() with local personal subscription error = %v", err)
+	}
+	if strings.TrimSpace(resp.Content) != "OPENFOX_CODEX_CLI_OK" {
+		t.Fatalf("Chat() content = %q", resp.Content)
+	}
+}
+
 // TestIntegration_RealCodexCLI tests the CodexCliProvider with a real codex CLI.
 // Run with: go test -tags=integration ./pkg/providers/...
 func TestIntegration_RealCodexCLI(t *testing.T) {

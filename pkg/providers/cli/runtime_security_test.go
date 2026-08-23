@@ -72,3 +72,18 @@ func TestRuntimeOptionsRequireCanonicalWorkspace(t *testing.T) {
 		t.Fatal("canonicalWorkspace() accepted an empty workspace")
 	}
 }
+
+func TestRemoveEnvironmentPrefixes(t *testing.T) {
+	environment := removeEnvironmentPrefixes([]string{
+		"PATH=/bin", "ANTHROPIC_API_KEY=secret", "anthropic_auth_token=secret",
+		"CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CONFIG_DIR=/tmp/hostile", "HTTPS_PROXY=https://proxy.test",
+	}, "ANTHROPIC_", "CLAUDE_")
+	joined := strings.Join(environment, "\n")
+	if strings.Contains(strings.ToUpper(joined), "ANTHROPIC_") ||
+		strings.Contains(strings.ToUpper(joined), "CLAUDE_") {
+		t.Fatalf("credential override remained in environment: %q", joined)
+	}
+	if !strings.Contains(joined, "PATH=/bin") || !strings.Contains(joined, "HTTPS_PROXY=https://proxy.test") {
+		t.Fatalf("required process environment was removed: %q", joined)
+	}
+}

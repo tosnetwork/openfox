@@ -39,20 +39,28 @@ user.
 ## Codex app-server
 
 Codex app-server is launched over local stdio. Every process gets a temporary
-working directory and a sterile `CODEX_HOME`. OpenFox copies only `auth.json`
+working directory, strict configuration parsing, and a sterile `CODEX_HOME`. OpenFox copies only `auth.json`
 as opaque bytes with restrictive permissions. It does not copy `config.toml`,
 MCP configuration, plugins, hooks, skills, sessions, or project instructions.
+OpenAI API-key and alternate API endpoint environment overrides are removed;
+the opaque ChatGPT login copy is the only credential source.
+The Codex one-shot backend uses the same empty working directory, strict
+configuration, and sterile authentication home instead of exposing the real
+workspace to Codex. Its JSONL response parser rejects malformed, incomplete,
+failed, unknown, or native-execution event streams.
 
 `account/read` is interpreted according to the official protocol:
 `requiresOpenaiAuth` describes whether the selected provider requires OpenAI
-credentials; it does not mean credentials are absent. Authentication fails
-only when credentials are required and `account` is null. In
-`local-personal` mode, the returned account must be a `chatgpt` account.
+credentials; it does not mean credentials are absent. The generic health check
+fails when credentials are required and `account` is null. The stricter
+`local-personal` policy always requires a non-null `chatgpt` account, even if a
+different provider could otherwise run without OpenAI credentials.
 
 Ephemeral threads use a temporary directory, read-only sandboxing, no approval
-requests, and disabled native features. OpenFox also rejects MCP, plugin, hook,
-command execution, file change, or other native item events if the server
-nevertheless reports one.
+requests, disabled native features, no login shell, and an empty inherited
+tool environment. OpenFox also rejects MCP, plugin, hook, command execution,
+file change, or other native item events if the server nevertheless reports
+one.
 
 The protocol queue holds at most one decoded message. Protocol bytes are
 bounded for each operation. For one-shot processes, stdout and stderr share a
@@ -64,10 +72,14 @@ runtime, executable, or operating system consumes no additional memory.
 
 Claude Code currently uses non-interactive one-shot mode only. It runs from a
 temporary empty directory with native tools disabled, plan-only permissions,
-settings sources disabled, and session persistence disabled. This is a local
-personal integration. A multi-user or hosted product must use the Anthropic
-developer API or obtain the necessary vendor approval rather than proxying a
-consumer login.
+settings sources disabled, and session persistence disabled. Before each turn,
+OpenFox requires `claude auth status` to report a first-party Claude.ai Pro or
+Max subscription. All `ANTHROPIC_*` and `CLAUDE_*` environment overrides,
+including alternate configuration directories, API keys, gateways, Bedrock,
+Vertex, Foundry, and external OAuth tokens, are removed from the child process. This is
+a local personal integration. A multi-user or hosted product must use the
+Anthropic developer API or obtain the necessary vendor approval rather than
+proxying a consumer login.
 
 ## Acceptance evidence
 
@@ -75,14 +87,17 @@ The required regression gates are:
 
 1. authenticated ChatGPT account plus `requiresOpenaiAuth: true` succeeds;
 2. null account plus `requiresOpenaiAuth: true` fails;
-3. user Codex configuration is absent from the sterile home;
-4. MCP/plugin/hook and native execution notifications fail closed;
-5. omitted subscription mode or owner identity is rejected;
-6. non-owner and unlabelled internal calls are rejected;
-7. stdout and stderr cannot retain more than their shared budget;
-8. canonical workspace assertions compare canonical paths;
-9. timeout cleanup covers descendants on Unix and Windows; and
-10. provider tests, race tests, vet, and platform compilation are reported
+3. null account plus `requiresOpenaiAuth: false` still fails in personal mode;
+4. Claude personal mode requires first-party Claude.ai Pro or Max status;
+5. user Codex configuration is absent from the sterile home;
+6. MCP/plugin/hook and native execution notifications fail closed, and the
+   one-shot JSONL parser rejects native, malformed, failed, or incomplete streams;
+7. omitted subscription mode or owner identity is rejected;
+8. non-owner and unlabelled internal calls are rejected;
+9. stdout and stderr cannot retain more than their shared budget;
+10. canonical workspace assertions compare canonical paths;
+11. timeout cleanup covers descendants on Unix and Windows; and
+12. provider tests, race tests, vet, and platform compilation are reported
     accurately, including unrelated repository/environment failures.
 
 ## Operational limitations

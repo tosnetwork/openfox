@@ -55,6 +55,21 @@ func (p *ClaudeCliProvider) Chat(
 	if _, err := options.canonicalWorkspace(); err != nil {
 		return nil, err
 	}
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	// A local-personal subscription must not be silently replaced by an API
+	// key, LLM gateway, Bedrock, Vertex, or Foundry environment override.
+	claudeEnv := removeEnvironmentPrefixes(os.Environ(), "ANTHROPIC_", "CLAUDE_")
+	claudeEnv = replaceEnvironmentValue(claudeEnv, "DISABLE_AUTOUPDATER", "1")
+	if options.SubscriptionUse == "local-personal" {
+		if err := verifyClaudePersonalSubscription(ctx, p.command, claudeEnv, options.MaxOutputBytes); err != nil {
+			return nil, err
+		}
+	}
 	// Claude Code subscription auth does not support --bare. Use an empty,
 	// short-lived cwd so repository CLAUDE.md files and project settings cannot
 	// silently become a second instruction channel. OpenFox tools retain the
@@ -64,12 +79,6 @@ func (p *ClaudeCliProvider) Chat(
 		return nil, fmt.Errorf("create sterile claude-cli workspace: %w", err)
 	}
 	defer os.RemoveAll(sterileDir)
-	select {
-	case sem <- struct{}{}:
-		defer func() { <-sem }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
 
 	systemPrompt := p.buildSystemPrompt(messages, tools)
 	prompt := p.messagesToPrompt(messages)
@@ -93,6 +102,7 @@ func (p *ClaudeCliProvider) Chat(
 
 	cmd := exec.CommandContext(ctx, p.command, args...)
 	cmd.Dir = sterileDir
+	cmd.Env = claudeEnv
 	configureCommandCancellation(cmd)
 	stdout, stderr, err := runCommandBounded(ctx, cmd, []byte(prompt), options.MaxOutputBytes)
 	if errors.Is(err, ErrOutputLimit) {
@@ -117,6 +127,39 @@ func (p *ClaudeCliProvider) Chat(
 	}
 
 	return p.parseClaudeCliResponse(stdout)
+}
+
+func verifyClaudePersonalSubscription(
+	ctx context.Context, command string, environment []string, maxOutputBytes int,
+) error {
+	cmd := exec.CommandContext(ctx, command, "auth", "status", "--json")
+	cmd.Env = environment
+	configureCommandCancellation(cmd)
+	stdout, stderr, err := runCommandBounded(ctx, cmd, nil, min(maxOutputBytes, 64*1024))
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if strings.TrimSpace(stderr) != "" {
+			return fmt.Errorf("check Claude Code subscription authentication: %s", strings.TrimSpace(stderr))
+		}
+		return fmt.Errorf("check Claude Code subscription authentication: %w", err)
+	}
+	var status struct {
+		LoggedIn         bool   `json:"loggedIn"`
+		AuthMethod       string `json:"authMethod"`
+		APIProvider      string `json:"apiProvider"`
+		SubscriptionType string `json:"subscriptionType"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		return fmt.Errorf("decode Claude Code authentication status: %w", err)
+	}
+	subscriptionType := strings.ToLower(strings.TrimSpace(status.SubscriptionType))
+	if !status.LoggedIn || status.AuthMethod != "claude.ai" || status.APIProvider != "firstParty" ||
+		(subscriptionType != "pro" && subscriptionType != "max") {
+		return fmt.Errorf("local-personal Claude backend requires an authenticated Claude.ai Pro or Max subscription")
+	}
+	return nil
 }
 
 func (p *ClaudeCliProvider) runtime() (RuntimeOptions, chan struct{}) {

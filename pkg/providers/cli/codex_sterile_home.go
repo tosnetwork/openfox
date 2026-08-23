@@ -12,7 +12,7 @@ import (
 
 const maxCodexAuthFileBytes = 1024 * 1024
 
-// configureSterileCodexHome gives app-server an empty configuration root while
+// configureSterileCodexHome gives Codex backends an empty configuration root while
 // copying only the opaque authentication file. User config.toml, MCP servers,
 // plugins, hooks, skills, and session state are deliberately not inherited.
 func configureSterileCodexHome(cmd *exec.Cmd, runtimeDir string) error {
@@ -31,7 +31,10 @@ func configureSterileCodexHome(cmd *exec.Cmd, runtimeDir string) error {
 	if err := copyCodexAuthFile(authPath, filepath.Join(codexHome, "auth.json")); err != nil {
 		return err
 	}
-	cmd.Env = replaceEnvironmentValue(cmd.Environ(), CodexHomeEnvVar, codexHome)
+	environment := removeEnvironmentPrefixes(
+		cmd.Environ(), "OPENAI_", "AZURE_OPENAI_", "CODEX_API_KEY",
+	)
+	cmd.Env = replaceEnvironmentValue(environment, CodexHomeEnvVar, codexHome)
 	return nil
 }
 
@@ -73,7 +76,8 @@ func replaceEnvironmentValue(environment []string, key, value string) []string {
 	prefix := key + "="
 	result := make([]string, 0, len(environment)+1)
 	for _, item := range environment {
-		if !strings.HasPrefix(item, prefix) {
+		itemKey, _, _ := strings.Cut(item, "=")
+		if !strings.EqualFold(itemKey, key) {
 			result = append(result, item)
 		}
 	}

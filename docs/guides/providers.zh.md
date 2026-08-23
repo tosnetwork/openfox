@@ -197,9 +197,10 @@ OpenFox 可以复用同一台机器上已经登录的 Codex CLI 或 Claude Code�
 - `workspace` 在执行时必填；OpenFox 会解析符号链接并要求它指向真实目录。
 - OpenFox 不开放 danger/full-access 模式。默认只读；Codex 最多只能配置为 `workspace-write`。
 - 在 OpenFox 具备交互式审批代理之前，Codex/Claude 的原生工具必须保持关闭（`allow_native_tools: false`）。OpenFox 还会拒绝 app-server 发出的 MCP、plugin、hook 和原生执行事件，形成第二层失败关闭检查。
-- Codex `app-server` 使用官方本地 stdio 协议、隔离的临时线程、短期空工作目录，以及只包含 `auth.json` 不透明副本的无菌 `CODEX_HOME`；不会加载用户配置、MCP、插件、hook、skill 或项目指令。
+- Codex `app-server` 使用官方本地 stdio 协议、隔离的临时线程、严格配置解析、短期空工作目录，以及只包含 `auth.json` 不透明副本的无菌 `CODEX_HOME`；不会加载用户配置、MCP、插件、hook、skill 或项目指令，同时移除 OpenAI API Key 和替代 API 端点环境覆盖。个人模式必须得到非空 ChatGPT 账户，强制使用 ChatGPT 登录，关闭 login shell，并让任何意外启用的原生命令只能看到空的继承环境。
+- Codex `one-shot` 使用同样的严格配置、ChatGPT 登录、空工作目录和无菌 `CODEX_HOME` 边界；其 JSONL 解析器会拒绝格式错误、未完成、失败、未知或原生执行事件流，不会接受部分输出。
 - `owner_principal` 必填，并与已认证入站消息的 `channel` 和 `sender_id` 匹配。缺少可信运行时身份的请求会被拒绝；OpenFox 自身的后台任务也默认被拒绝，只有显式开启 `allow_internal` 后才能调用。
-- Claude 目前只支持 `one-shot`，而且始终禁用自身工具。Anthropic 消费者登录只能用于本机个人用途，不能作为共享或多用户推理代理。
+- Claude 目前只支持 `one-shot`，而且始终禁用自身工具。每次个人模式调用前，OpenFox 都要求 Claude Code 报告第一方 Claude.ai Pro 或 Max 订阅，并从子进程环境中移除全部 `ANTHROPIC_*` 和 `CLAUDE_*` 覆盖，包括 API Key、网关、云 provider、替代配置目录和外部 OAuth token 选择器。Anthropic 消费者登录只能用于本机个人用途，不能作为共享或多用户推理代理。
 - Claude 订阅认证不能使用 Claude Code 仅支持 API Key 的 `--bare` 模式，因此 OpenFox 会在短期空目录中运行它并禁用 settings sources，避免项目 `CLAUDE.md` 和设置成为隐藏指令通道。
 - `provider: openai|anthropic` 搭配 `auth_method: oauth|token` 会被拒绝。直连 HTTP API 请使用 API Key；个人订阅请使用上述本地 CLI provider。
 - CLI 与 OpenFox 应由同一个 OS 用户运行，妥善保护 CLI 凭证目录，也不要把后端协议监听到网络端口。

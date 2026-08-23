@@ -423,6 +423,45 @@ func TestChat_UsesFailClosedClaudeFlags(t *testing.T) {
 	}
 }
 
+func TestVerifyClaudePersonalSubscription(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock CLI scripts are not supported on Windows")
+	}
+	for _, test := range []struct {
+		name    string
+		status  string
+		wantErr bool
+	}{
+		{
+			name:   "Claude Max",
+			status: `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}`,
+		},
+		{
+			name:    "developer API",
+			status:  `{"loggedIn":true,"authMethod":"apiKey","apiProvider":"firstParty","subscriptionType":""}`,
+			wantErr: true,
+		},
+		{
+			name:    "free account",
+			status:  `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"free"}`,
+			wantErr: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			command := filepath.Join(dir, "claude")
+			script := "#!/bin/sh\necho '" + test.status + "'\n"
+			if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			err := verifyClaudePersonalSubscription(context.Background(), command, os.Environ(), 4096)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("verifyClaudePersonalSubscription() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
 // --- messagesToPrompt tests ---
 
 func TestMessagesToPrompt_SingleUser(t *testing.T) {

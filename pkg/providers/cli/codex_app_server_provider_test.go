@@ -97,6 +97,46 @@ while read -r ignored; do :; done
 	}
 }
 
+func TestCodexAppServerProvider_LocalPersonalRequiresChatGPTAccount(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock app-server scripts are not supported on Windows")
+	}
+	for _, test := range []struct {
+		name    string
+		account string
+	}{
+		{name: "no provider credentials", account: `null,"requiresOpenaiAuth":false`},
+		{name: "developer API key", account: `{"type":"apiKey"},"requiresOpenaiAuth":true`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			command := filepath.Join(dir, "codex")
+			script := `#!/bin/sh
+read -r initialize
+echo '{"id":1,"result":{"userAgent":"mock"}}'
+read -r initialized
+read -r account_read
+echo '{"id":2,"result":{"account":` + test.account + `}}'
+while read -r ignored; do :; done
+`
+			if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			p := NewCodexAppServerProvider(RuntimeOptions{
+				Workspace: t.TempDir(), SubscriptionUse: "local-personal",
+				OwnerChannel: "test", OwnerSenderID: "owner",
+			})
+			p.command = command
+			t.Cleanup(p.Close)
+
+			err := p.Start(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "ChatGPT account") {
+				t.Fatalf("Start() error = %v, want ChatGPT account rejection", err)
+			}
+		})
+	}
+}
+
 func TestCodexAppServerCapabilitiesDefaultToNoNativeTools(t *testing.T) {
 	p := NewCodexAppServerProvider(RuntimeOptions{Workspace: t.TempDir()})
 	caps := p.Capabilities()
@@ -110,11 +150,39 @@ func TestCodexAppServerCapabilitiesDefaultToNoNativeTools(t *testing.T) {
 
 func TestValidateAppServerMessageRejectsNativeIntegration(t *testing.T) {
 	for _, msg := range []appServerMessage{
+		{},
 		{Method: "mcpServer/startupStatus/updated"},
+		{Method: "item/commandExecution/outputDelta"},
+		{Method: "item/fileChange/outputDelta"},
+		{Method: "item/started", Params: []byte(`{"item":{"type":"commandExecution"}}`)},
 		{Method: "item/completed", Params: []byte(`{"item":{"type":"commandExecution"}}`)},
 	} {
 		if err := validateAppServerMessage(msg); err == nil {
 			t.Fatalf("validateAppServerMessage(%q) accepted native integration", msg.Method)
 		}
+	}
+	for _, method := range []string{
+		"item/agentMessage/delta", "item/reasoning/textDelta", "item/reasoning/summaryTextDelta", "item/plan/delta",
+	} {
+		if err := validateAppServerMessage(appServerMessage{Method: method}); err != nil {
+			t.Fatalf("validateAppServerMessage(%q) rejected safe delta: %v", method, err)
+		}
+	}
+	for _, itemType := range []string{"userMessage", "agentMessage", "reasoning", "plan", "contextCompaction"} {
+		msg := appServerMessage{Method: "item/completed", Params: []byte(`{"item":{"type":"` + itemType + `"}}`)}
+		if err := validateAppServerMessage(msg); err != nil {
+			t.Fatalf("validateAppServerMessage(%q) rejected safe item: %v", itemType, err)
+		}
+	}
+}
+
+func TestSecureCodexThreadConfigRemovesNativeExecutionEnvironment(t *testing.T) {
+	config := secureCodexThreadConfig(false)
+	if config["forced_login_method"] != "chatgpt" || config["allow_login_shell"] != false {
+		t.Fatalf("unexpected authentication or login-shell policy: %#v", config)
+	}
+	environment, ok := config["shell_environment_policy"].(map[string]any)
+	if !ok || environment["inherit"] != "none" || environment["experimental_use_profile"] != false {
+		t.Fatalf("unexpected shell environment policy: %#v", environment)
 	}
 }

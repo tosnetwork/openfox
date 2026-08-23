@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,6 +115,24 @@ func (o RuntimeOptions) canonicalWorkspace() (string, error) {
 		return "", fmt.Errorf("agent backend workspace is not a directory")
 	}
 	return canonical, nil
+}
+
+func removeEnvironmentPrefixes(environment []string, prefixes ...string) []string {
+	result := make([]string, 0, len(environment))
+	for _, item := range environment {
+		key, _, _ := strings.Cut(item, "=")
+		remove := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(strings.ToUpper(key), strings.ToUpper(prefix)) {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 type boundedCollector struct {

@@ -110,7 +110,14 @@ func (p *CodexAppServerProvider) startLocked(ctx context.Context) error {
 		return err
 	}
 
-	args := []string{"app-server", "--listen", "stdio://"}
+	args := []string{"app-server", "--strict-config", "--listen", "stdio://"}
+	args = append(args,
+		"-c", `forced_login_method="chatgpt"`,
+		"-c", `allow_login_shell=false`,
+		"-c", `shell_environment_policy.inherit="none"`,
+		"-c", `shell_environment_policy.ignore_default_excludes=false`,
+		"-c", `shell_environment_policy.experimental_use_profile=false`,
+	)
 	if !p.options.AllowNativeTools {
 		for _, feature := range disabledCodexNativeFeatures() {
 			args = append(args, "--disable", feature)
@@ -238,11 +245,15 @@ func (p *CodexAppServerProvider) healthLocked(ctx context.Context) error {
 	if err := json.Unmarshal(response.Result, &payload); err != nil {
 		return fmt.Errorf("decode codex account/read response: %w", err)
 	}
-	accountMissing := len(payload.Account) == 0 || string(payload.Account) == "null"
+	accountValue := strings.TrimSpace(string(payload.Account))
+	accountMissing := accountValue == "" || accountValue == "null"
 	if payload.RequiresOpenAIAuth && accountMissing {
 		return fmt.Errorf("codex CLI is not authenticated; log in with the official Codex CLI")
 	}
-	if p.options.SubscriptionUse == "local-personal" && !accountMissing {
+	if p.options.SubscriptionUse == "local-personal" {
+		if accountMissing {
+			return fmt.Errorf("local-personal Codex backend requires an authenticated ChatGPT account")
+		}
 		var account struct {
 			Type string `json:"type"`
 		}
@@ -471,12 +482,22 @@ func (p *CodexAppServerProvider) readLoop(
 }
 
 func validateAppServerMessage(msg appServerMessage) error {
+	if len(msg.ID) == 0 && msg.Method == "" {
+		return fmt.Errorf("codex app-server emitted a message without an id or method")
+	}
 	for _, prefix := range []string{"mcpServer/", "plugin/", "hook/"} {
 		if strings.HasPrefix(msg.Method, prefix) {
 			return fmt.Errorf("codex app-server attempted prohibited native integration %q", msg.Method)
 		}
 	}
-	if msg.Method != "item/completed" {
+	switch msg.Method {
+	case "item/agentMessage/delta", "item/reasoning/textDelta", "item/reasoning/summaryTextDelta", "item/plan/delta":
+		return nil
+	case "item/started", "item/completed":
+	default:
+		if strings.HasPrefix(msg.Method, "item/") {
+			return fmt.Errorf("codex app-server attempted prohibited native item event %q", msg.Method)
+		}
 		return nil
 	}
 	var payload struct {
@@ -488,7 +509,7 @@ func validateAppServerMessage(msg appServerMessage) error {
 		return fmt.Errorf("decode codex completed item: %w", err)
 	}
 	switch payload.Item.Type {
-	case "", "agentMessage", "reasoning":
+	case "userMessage", "agentMessage", "reasoning", "plan", "contextCompaction":
 		return nil
 	default:
 		return fmt.Errorf("codex app-server attempted prohibited native item %q", payload.Item.Type)
@@ -593,7 +614,17 @@ func secureCodexThreadConfig(allowNativeTools bool) map[string]any {
 	for _, feature := range disabledCodexNativeFeatures() {
 		features[feature] = false
 	}
-	return map[string]any{"features": features, "web_search": "disabled"}
+	return map[string]any{
+		"allow_login_shell":   false,
+		"features":            features,
+		"forced_login_method": "chatgpt",
+		"shell_environment_policy": map[string]any{
+			"experimental_use_profile": false,
+			"ignore_default_excludes":  false,
+			"inherit":                  "none",
+		},
+		"web_search": "disabled",
+	}
 }
 
 func buildCodexPrompt(messages []Message, tools []ToolDefinition) string {

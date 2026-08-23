@@ -80,6 +80,19 @@ Prerequisites:
 - Go 1.25+
 - Node.js 22+ and pnpm 10.33.0+ for Web UI / launcher builds
 
+The Makefile builds Matrix encryption with the pure-Go `goolm` backend and
+does not require CGO. If you run untagged commands such as `go build ./...` or
+`go test ./...` on Debian/Ubuntu, mautrix selects its native libolm backend;
+install the C/C++ toolchain and development headers first:
+
+```bash
+sudo apt-get install libolm-dev
+pkg-config --modversion olm
+```
+
+Alternatively, use `-tags goolm` to select mautrix's pure-Go backend. Do not
+use `nocrypto`: OpenFox's Matrix channel requires end-to-end encryption.
+
 ```bash
 git clone https://github.com/tosnetwork/openfox.git
 cd openfox

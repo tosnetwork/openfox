@@ -96,6 +96,7 @@ type ResponseTerms struct {
 type SignedTerms struct {
 	SignedGiftID, ExactBOCDigest, SenderAgentAccount, DestinationAddress, AmountAtomic, DeploymentID, FeeReserveAtomic string
 	Seqno, ValidUntil                                                                                                  uint32
+	ControllerEpoch                                                                                                    uint64
 	ExactSignedBOC                                                                                                     []byte
 }
 type FinalityResult struct{ State State }
@@ -147,12 +148,14 @@ type CustodyReview struct {
 	DestinationAddress, AmountAtomic, FeeReserveAtomic                                        string
 	RequestDigest, ResponseDigest, UnsignedTransferDigest                                     string
 	GlobalID                                                                                  int32
+	ControllerEpoch                                                                           uint64
 	Seqno, ValidUntil                                                                         uint32
 }
 type OwnerReview struct {
-	Action, IntentID, SignedGiftID, RecipientAgentID, Network, AmountAtomic, DestinationAddress, SenderAgentAccount, OwnerWallet, ControllerKeyID string
-	FeeReserveAtomic, RequestDigest, ResponseDigest, UnsignedTransferDigest                                                                       string
-	GlobalID                                                                                                                                      int32
-	Seqno, ValidUntil, RequestedValidUntil, ResponseNotAfter                                                                                      uint32
-	FundsLocked                                                                                                                                   bool
+	Action, IntentID, SignedGiftID, RecipientAgentID, Network, AmountAtomic, DestinationAddress, SenderAgentAccount, OwnerWallet, ControllerKeyID, DeploymentID string
+	FeeReserveAtomic, RequestDigest, ResponseDigest, UnsignedTransferDigest                                                                                     string
+	GlobalID                                                                                                                                                    int32
+	ControllerEpoch                                                                                                                                             uint64
+	Seqno, ValidUntil, RequestedValidUntil, ResponseNotAfter                                                                                                    uint32
+	FundsLocked                                                                                                                                                 bool
 }

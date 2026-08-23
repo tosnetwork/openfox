@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -22,7 +23,7 @@ import (
 	protocolgift "github.com/tosnetwork/tos-service-protocol/pkg/agentgift"
 )
 
-const rustGiftBOC = "te6ccgEBAgEAngABRYn+KilTiIOnywCgAoCoCN4Z7XsCssCJyXflkVH/tJT1qpgMAQDraBHWua8LFa3hp88GhvnJDugSt7nnpk8/Xdmt4rCU2q4Qt9iyCefqc46FM/rqhfM9wZ5YJtYcff4PfNl/2YxYAkFHUAQAAAAqAAAAAHc1lACABERERERERERERERERERERERERERERERERERERERERERIdzWUAQ=="
+const rustGiftBOC = "te6ccgEBAgEApgABRYn/gcFMuh/DSQZFasqNaT3ITOt7HHKnDMUAP9yhpWvoLEIMAQD7qWXpKJPScATturw4khEH749KXPRHgxeHEe/xQnydpujylIqd7JfcJr42YcyR+CxCy9kgme+pEhmIeRPzWqBYBUFHUAQAAAAqAAAAAAAAAAAAAAAAdzWUAIAEREREREREREREREREREREREREREREREREREREREREREh3NZQB"
 
 type fixtureGiftChain struct {
 	account     protocolgift.FinalizedAgentAccount
@@ -107,6 +108,36 @@ func (r agentStatusRunner) run(context.Context, string, ...string) ([]byte, erro
 	return append([]byte(nil), r.raw...), nil
 }
 
+func TestDecodePreparedActionBindsTOSCTLDeploymentGeneration(t *testing.T) {
+	boc := []byte("canonical-fixture-boc")
+	digest := sha256.Sum256(boc)
+	deploymentID := "sha256:" + strings.Repeat("55", 32)
+	value := preparedAction{
+		Schema:               "tosctl.agent-account.prepared-action.v1",
+		ActionID:             strings.Repeat("11", 32),
+		Action:               "agent-native-send",
+		Account:              "-1:" + strings.Repeat("22", 32),
+		DeploymentID:         deploymentID,
+		ControllerEpoch:      7,
+		Seqno:                9,
+		NetworkGlobalID:      -3,
+		ValidUntil:           2_000_000_000,
+		ExactSignedBOC:       base64.StdEncoding.EncodeToString(boc),
+		ExactSignedBOCDigest: "sha256:" + hex.EncodeToString(digest[:]),
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodePreparedAction(raw, value.ActionID, value.Action, value.Account, deploymentID, value.ControllerEpoch, value.Seqno, value.NetworkGlobalID, value.ValidUntil)
+	if err != nil || !bytes.Equal(decoded, boc) {
+		t.Fatalf("tosctl-shaped prepared action did not round trip: %x %v", decoded, err)
+	}
+	if _, err := decodePreparedAction(raw, value.ActionID, value.Action, value.Account, strings.TrimPrefix(deploymentID, "sha256:"), value.ControllerEpoch, value.Seqno, value.NetworkGlobalID, value.ValidUntil); err == nil {
+		t.Fatal("bare-hex deployment ID was accepted across the tosctl/OpenFox boundary")
+	}
+}
+
 func (c *runtimeMessengerCaller) Call(_ context.Context, request localapi.Request) (localapi.Response, error) {
 	switch request.Op {
 	case localapi.OpPendingAgentGifts:
@@ -154,7 +185,8 @@ func TestAgentGiftMessengerUsesOnlyDaemonOwnedDirectApplicationAPI(t *testing.T)
 func TestTOSCTLCustodyConsumesCompleteStrictAgentAccountStatus(t *testing.T) {
 	matched := true
 	seqno := uint32(7)
-	value := agentAccountStatus{Wallet: "agent", Address: "-1:" + strings.Repeat("a", 64), State: "active", Balance: "2.000000000", CodeHash: strings.TrimPrefix(protocolgift.AgentAccountCodeHash, "tvm-cell-sha256:"), TemplateMatches: &matched, Owner: "-1:" + strings.Repeat("b", 64), ControllerPublicKey: strings.Repeat("c", 64), DeploymentID: strings.Repeat("d", 64), Seqno: &seqno, MatchesProfile: &matched}
+	epoch := uint64(3)
+	value := agentAccountStatus{Wallet: "agent", Address: "-1:" + strings.Repeat("a", 64), State: "active", Balance: "2.000000000", CodeHash: strings.TrimPrefix(protocolgift.AgentAccountCodeHash, "tvm-cell-sha256:"), TemplateMatches: &matched, Owner: "-1:" + strings.Repeat("b", 64), ControllerPublicKey: strings.Repeat("c", 64), DeploymentID: strings.Repeat("d", 64), ControllerEpoch: &epoch, Seqno: &seqno, MatchesProfile: &matched}
 	raw, _ := json.Marshal(value)
 	custody := &TOSCTLGiftCustody{config: TOSCTLGiftCustodyConfig{BinaryPath: "/tosctl", ConfigPath: "/config", WalletName: value.Wallet, OwnerWallet: value.Owner, Timeout: time.Second}, runner: agentStatusRunner{raw: raw}}
 	address, err := custody.SenderAccount(context.Background())
@@ -394,7 +426,7 @@ func fixtureChain(t *testing.T) *fixtureGiftChain {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fixtureGiftChain{account: protocolgift.FinalizedAgentAccount{Active: true, Address: "-1:1514a9c441d3e58050014054046f0cf6bd81596044e4bbf2c8a8ffda4a7ad54c", OwnerAddress: "-1:" + strings.Repeat("1", 64), CodeHash: protocolgift.AgentAccountCodeHash, DeploymentID: "sha256:" + strings.Repeat("d", 64), GlobalID: 42, TVMVersion: protocolgift.MinimumAgentAccountTVMVersion, ControllerPublicKey: ed25519.PublicKey(public), Seqno: 0, BalanceAtomic: 2_000_000_000, MaxPerTxAtomic: 2_000_000_000, DailyRemainingAtomic: 2_000_000_000, DefaultTaskTimeoutSecs: 3_600}}
+	return &fixtureGiftChain{account: protocolgift.FinalizedAgentAccount{Active: true, Address: "-1:c0e0a65d0fe1a48322b56546b49ee42675bd8e39538662801fee50d2b5f41621", OwnerAddress: "-1:" + strings.Repeat("1", 64), CodeHash: protocolgift.AgentAccountCodeHash, DeploymentID: "sha256:" + strings.Repeat("d", 64), GlobalID: 42, TVMVersion: protocolgift.MinimumAgentAccountTVMVersion, ControllerPublicKey: ed25519.PublicKey(public), ControllerEpoch: 0, Seqno: 0, BalanceAtomic: 2_000_000_000, MaxPerTxAtomic: 2_000_000_000, DailyRemainingAtomic: 2_000_000_000, DefaultTaskTimeoutSecs: 3_600}}
 }
 
 func TestAgentGiftProtocolConsumesRustFixtureAndRejectsExchangeSubstitution(t *testing.T) {
@@ -441,7 +473,7 @@ func (r *recordingConfirmer) ConfirmAgentGift(_ context.Context, review openfoxg
 func TestOwnerAuthorizerHashesOnlyTheCompleteConfirmedReview(t *testing.T) {
 	confirmer := &recordingConfirmer{}
 	authorizer, _ := NewAgentGiftOwnerAuthorizer(confirmer)
-	review := openfoxgift.OwnerReview{Action: "send", IntentID: strings.Repeat("a", 64), RecipientAgentID: "agent_" + strings.Repeat("b", 64), Network: "tos-fixture", GlobalID: 42, AmountAtomic: "1000000000", DestinationAddress: "0:" + strings.Repeat("2", 64), SenderAgentAccount: "-1:" + strings.Repeat("3", 64), OwnerWallet: "-1:" + strings.Repeat("4", 64), ControllerKeyID: "controller:test", FeeReserveAtomic: "1000000", Seqno: 7, ValidUntil: 2_000_000_000, RequestDigest: "sha256:" + strings.Repeat("5", 64), ResponseDigest: "sha256:" + strings.Repeat("6", 64), UnsignedTransferDigest: "sha256:" + strings.Repeat("7", 64), FundsLocked: false}
+	review := openfoxgift.OwnerReview{Action: "send", IntentID: strings.Repeat("a", 64), RecipientAgentID: "agent_" + strings.Repeat("b", 64), Network: "tos-fixture", GlobalID: 42, AmountAtomic: "1000000000", DestinationAddress: "0:" + strings.Repeat("2", 64), SenderAgentAccount: "-1:" + strings.Repeat("3", 64), OwnerWallet: "-1:" + strings.Repeat("4", 64), ControllerKeyID: "controller:test", DeploymentID: "sha256:" + strings.Repeat("d", 64), ControllerEpoch: 9, FeeReserveAtomic: "1000000", Seqno: 7, ValidUntil: 2_000_000_000, RequestDigest: "sha256:" + strings.Repeat("5", 64), ResponseDigest: "sha256:" + strings.Repeat("6", 64), UnsignedTransferDigest: "sha256:" + strings.Repeat("7", 64), FundsLocked: false}
 	digest, err := authorizer.Authorize(context.Background(), review)
 	if err != nil || digest == "" || confirmer.review.Seqno != 7 || confirmer.review.FeeReserveAtomic != "1000000" || confirmer.review.FundsLocked {
 		t.Fatalf("incomplete owner review: %+v %v", confirmer.review, err)
@@ -507,8 +539,8 @@ func (c *fixtureGiftCustody) PrepareNativeGift(_ context.Context, request openfo
 	}
 	requestDigest, _ := protocolgift.RequestDigest(req)
 	responseDigest, _ := protocolgift.ResponseDigest(res)
-	unsignedDigest, _ := protocolgift.UnsignedTransferDigest(protocolgift.UnsignedTransferV1{Network: req.Network, GlobalID: req.GlobalID, SenderAgentAccount: req.SenderAgentAccount, Seqno: c.chain.account.Seqno, ValidUntil: res.ResponseNotAfter, DestinationAddress: res.DestinationAddress, AmountAtomic: req.AmountAtomic, SendMode: 3, Bounce: false})
-	return openfoxgift.CustodyReview{Network: req.Network, GlobalID: req.GlobalID, RecipientAgentID: req.RecipientAgentID, SenderAgentAccount: req.SenderAgentAccount, OwnerWallet: c.chain.account.OwnerAddress, ControllerKeyID: "controller:fixture", DeploymentID: c.chain.account.DeploymentID, DestinationAddress: res.DestinationAddress, AmountAtomic: req.AmountAtomic, FeeReserveAtomic: "1000000", RequestDigest: requestDigest, ResponseDigest: responseDigest, UnsignedTransferDigest: unsignedDigest, Seqno: c.chain.account.Seqno, ValidUntil: res.ResponseNotAfter}, nil
+	unsignedDigest, _ := protocolgift.UnsignedTransferDigest(protocolgift.UnsignedTransferV1{Network: req.Network, GlobalID: req.GlobalID, SenderAgentAccount: req.SenderAgentAccount, DeploymentID: c.chain.account.DeploymentID, ControllerEpoch: c.chain.account.ControllerEpoch, Seqno: c.chain.account.Seqno, ValidUntil: res.ResponseNotAfter, DestinationAddress: res.DestinationAddress, AmountAtomic: req.AmountAtomic, SendMode: 3, Bounce: false})
+	return openfoxgift.CustodyReview{Network: req.Network, GlobalID: req.GlobalID, RecipientAgentID: req.RecipientAgentID, SenderAgentAccount: req.SenderAgentAccount, OwnerWallet: c.chain.account.OwnerAddress, ControllerKeyID: "controller:fixture", DeploymentID: c.chain.account.DeploymentID, DestinationAddress: res.DestinationAddress, AmountAtomic: req.AmountAtomic, FeeReserveAtomic: "1000000", RequestDigest: requestDigest, ResponseDigest: responseDigest, UnsignedTransferDigest: unsignedDigest, ControllerEpoch: c.chain.account.ControllerEpoch, Seqno: c.chain.account.Seqno, ValidUntil: res.ResponseNotAfter}, nil
 }
 func (c *fixtureGiftCustody) SignNativeGift(_ context.Context, request openfoxgift.SignRequest) ([]byte, error) {
 	if request.OwnerAuthorizationDigest == "" || request.UnsignedTransferDigest == "" {

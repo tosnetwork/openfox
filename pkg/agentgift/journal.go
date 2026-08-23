@@ -40,6 +40,7 @@ type Record struct {
 	OwnerWallet                     string        `json:"owner_wallet,omitempty"`
 	ControllerKeyID                 string        `json:"controller_key_id,omitempty"`
 	DeploymentID                    string        `json:"deployment_id,omitempty"`
+	ControllerEpoch                 uint64        `json:"controller_epoch,omitempty"`
 	FeeReserveAtomic                string        `json:"fee_reserve_atomic,omitempty"`
 	CancellationAuthorizationDigest string        `json:"cancellation_authorization_digest,omitempty"`
 	SignedGiftID                    string        `json:"signed_gift_id,omitempty"`

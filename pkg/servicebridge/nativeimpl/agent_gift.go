@@ -174,7 +174,7 @@ func (p *AgentGiftProtocol) VerifySignedOffer(ctx context.Context, requestRaw, r
 	if err != nil {
 		return openfoxgift.SignedTerms{}, err
 	}
-	return openfoxgift.SignedTerms{SignedGiftID: parsed.SignedGiftID, ExactBOCDigest: parsed.ExactBOCDigest, SenderAgentAccount: parsed.SenderAgentAccount, DestinationAddress: parsed.DestinationAddress, AmountAtomic: strconv.FormatUint(parsed.AmountAtomic, 10), DeploymentID: account.DeploymentID, FeeReserveAtomic: strconv.FormatUint(p.feeReserve, 10), Seqno: parsed.Seqno, ValidUntil: parsed.ValidUntil, ExactSignedBOC: append([]byte(nil), offer.ExactSignedBOC...)}, nil
+	return openfoxgift.SignedTerms{SignedGiftID: parsed.SignedGiftID, ExactBOCDigest: parsed.ExactBOCDigest, SenderAgentAccount: parsed.SenderAgentAccount, DestinationAddress: parsed.DestinationAddress, AmountAtomic: strconv.FormatUint(parsed.AmountAtomic, 10), DeploymentID: account.DeploymentID, FeeReserveAtomic: strconv.FormatUint(p.feeReserve, 10), ControllerEpoch: parsed.ControllerEpoch, Seqno: parsed.Seqno, ValidUntil: parsed.ValidUntil, ExactSignedBOC: append([]byte(nil), offer.ExactSignedBOC...)}, nil
 }
 
 type AgentGiftRecipientAuthority interface {
@@ -310,7 +310,7 @@ func (c *TOSCTLGiftCustody) SenderAccount(ctx context.Context) (string, error) {
 		return "", errors.New("nativeimpl: tosctl could not resolve the Agent Account")
 	}
 	var value agentAccountStatus
-	if decodeStrictJSON(raw, &value) != nil || value.Wallet != c.config.WalletName || value.Address == "" || value.State != "active" || value.CodeHash != strings.TrimPrefix(protocolgift.AgentAccountCodeHash, "tvm-cell-sha256:") || value.TemplateMatches == nil || !*value.TemplateMatches || value.MatchesProfile == nil || !*value.MatchesProfile || value.Owner != c.config.OwnerWallet || value.DeploymentID == "" || value.Seqno == nil {
+	if decodeStrictJSON(raw, &value) != nil || value.Wallet != c.config.WalletName || value.Address == "" || value.State != "active" || value.CodeHash != strings.TrimPrefix(protocolgift.AgentAccountCodeHash, "tvm-cell-sha256:") || value.TemplateMatches == nil || !*value.TemplateMatches || value.MatchesProfile == nil || !*value.MatchesProfile || value.Owner != c.config.OwnerWallet || value.DeploymentID == "" || value.ControllerEpoch == nil || value.Seqno == nil {
 		return "", errors.New("nativeimpl: invalid tosctl Agent Account status")
 	}
 	return value.Address, nil
@@ -326,6 +326,7 @@ type agentAccountStatus struct {
 	Owner                  string  `json:"owner"`
 	ControllerPublicKey    string  `json:"controller_pubkey"`
 	DeploymentID           string  `json:"deployment_id"`
+	ControllerEpoch        *uint64 `json:"controller_epoch"`
 	Seqno                  *uint32 `json:"seqno"`
 	MaxPerTx               *uint64 `json:"max_per_tx"`
 	DailyLimit             *uint64 `json:"daily_limit"`
@@ -355,7 +356,7 @@ func (c *TOSCTLGiftCustody) PrepareNativeGift(ctx context.Context, request openf
 	}
 	requestDigest, _ := protocolgift.RequestDigest(addressRequest)
 	responseDigest, _ := protocolgift.ResponseDigest(response)
-	unsigned := protocolgift.UnsignedTransferV1{Network: addressRequest.Network, GlobalID: addressRequest.GlobalID, SenderAgentAccount: addressRequest.SenderAgentAccount, Seqno: account.Seqno, ValidUntil: validUntil, DestinationAddress: response.DestinationAddress, AmountAtomic: addressRequest.AmountAtomic, SendMode: protocolgift.AgentNativeSendMode, Bounce: false}
+	unsigned := protocolgift.UnsignedTransferV1{Network: addressRequest.Network, GlobalID: addressRequest.GlobalID, SenderAgentAccount: addressRequest.SenderAgentAccount, DeploymentID: account.DeploymentID, ControllerEpoch: account.ControllerEpoch, Seqno: account.Seqno, ValidUntil: validUntil, DestinationAddress: response.DestinationAddress, AmountAtomic: addressRequest.AmountAtomic, SendMode: protocolgift.AgentNativeSendMode, Bounce: false}
 	unsignedDigest, err := protocolgift.UnsignedTransferDigest(unsigned)
 	if err != nil {
 		return openfoxgift.CustodyReview{}, err
@@ -363,7 +364,7 @@ func (c *TOSCTLGiftCustody) PrepareNativeGift(ctx context.Context, request openf
 	if account.OwnerAddress != c.config.OwnerWallet {
 		return openfoxgift.CustodyReview{}, errors.New("nativeimpl: finalized Agent Account owner mismatch")
 	}
-	return openfoxgift.CustodyReview{Network: addressRequest.Network, GlobalID: addressRequest.GlobalID, RecipientAgentID: addressRequest.RecipientAgentID, SenderAgentAccount: addressRequest.SenderAgentAccount, OwnerWallet: c.config.OwnerWallet, ControllerKeyID: c.config.ControllerKeyID, DeploymentID: account.DeploymentID, DestinationAddress: response.DestinationAddress, AmountAtomic: addressRequest.AmountAtomic, FeeReserveAtomic: strconv.FormatUint(c.config.FeeReserveAtomic, 10), RequestDigest: requestDigest, ResponseDigest: responseDigest, UnsignedTransferDigest: unsignedDigest, Seqno: account.Seqno, ValidUntil: validUntil}, nil
+	return openfoxgift.CustodyReview{Network: addressRequest.Network, GlobalID: addressRequest.GlobalID, RecipientAgentID: addressRequest.RecipientAgentID, SenderAgentAccount: addressRequest.SenderAgentAccount, OwnerWallet: c.config.OwnerWallet, ControllerKeyID: c.config.ControllerKeyID, DeploymentID: account.DeploymentID, DestinationAddress: response.DestinationAddress, AmountAtomic: addressRequest.AmountAtomic, FeeReserveAtomic: strconv.FormatUint(c.config.FeeReserveAtomic, 10), RequestDigest: requestDigest, ResponseDigest: responseDigest, UnsignedTransferDigest: unsignedDigest, ControllerEpoch: account.ControllerEpoch, Seqno: account.Seqno, ValidUntil: validUntil}, nil
 }
 
 func (c *TOSCTLGiftCustody) SignNativeGift(ctx context.Context, request openfoxgift.SignRequest) ([]byte, error) {
@@ -374,7 +375,7 @@ func (c *TOSCTLGiftCustody) SignNativeGift(ctx context.Context, request openfoxg
 	if request.UnsignedTransferDigest != review.UnsignedTransferDigest {
 		return nil, errors.New("nativeimpl: changed unsigned transfer after owner review")
 	}
-	authorization := protocolgift.OwnerAuthorizationV1{Network: review.Network, GlobalID: review.GlobalID, GiftIntentID: request.IntentID, RecipientAgentID: review.RecipientAgentID, SenderAgentAccount: review.SenderAgentAccount, OwnerWallet: review.OwnerWallet, ControllerKeyID: review.ControllerKeyID, DestinationAddress: review.DestinationAddress, AmountAtomic: review.AmountAtomic, Seqno: review.Seqno, ValidUntil: review.ValidUntil, FeeReserveAtomic: review.FeeReserveAtomic, AddressRequestDigest: review.RequestDigest, AddressResponseDigest: review.ResponseDigest}
+	authorization := protocolgift.OwnerAuthorizationV1{Network: review.Network, GlobalID: review.GlobalID, GiftIntentID: request.IntentID, RecipientAgentID: review.RecipientAgentID, SenderAgentAccount: review.SenderAgentAccount, OwnerWallet: review.OwnerWallet, ControllerKeyID: review.ControllerKeyID, DeploymentID: review.DeploymentID, ControllerEpoch: review.ControllerEpoch, DestinationAddress: review.DestinationAddress, AmountAtomic: review.AmountAtomic, Seqno: review.Seqno, ValidUntil: review.ValidUntil, FeeReserveAtomic: review.FeeReserveAtomic, AddressRequestDigest: review.RequestDigest, AddressResponseDigest: review.ResponseDigest}
 	wantAuthorization, err := protocolgift.OwnerAuthorizationDigest(authorization)
 	if err != nil || request.OwnerAuthorizationDigest != wantAuthorization {
 		return nil, errors.New("nativeimpl: owner authorization does not bind the prepared Gift")
@@ -383,7 +384,7 @@ func (c *TOSCTLGiftCustody) SignNativeGift(ctx context.Context, request openfoxg
 	if err != nil {
 		return nil, err
 	}
-	return decodePreparedAction(raw, request.IntentID, "agent-native-send", review.SenderAgentAccount, review.Seqno, review.GlobalID, review.ValidUntil)
+	return decodePreparedAction(raw, request.IntentID, "agent-native-send", review.SenderAgentAccount, review.DeploymentID, review.ControllerEpoch, review.Seqno, review.GlobalID, review.ValidUntil)
 }
 
 func (c *TOSCTLGiftCustody) CancelSeqno(ctx context.Context, request openfoxgift.CancelRequest) ([]byte, error) {
@@ -394,11 +395,11 @@ func (c *TOSCTLGiftCustody) CancelSeqno(ctx context.Context, request openfoxgift
 	if err != nil {
 		return nil, err
 	}
-	boc, err := decodePreparedAction(raw, request.IntentID, "agent-cancel-seqno", request.SenderAgentAccount, request.Seqno, request.GlobalID, request.ValidUntil)
+	account, chainTime, err := c.chain.FinalizedAgentAccount(ctx, request.SenderAgentAccount)
 	if err != nil {
 		return nil, err
 	}
-	account, chainTime, err := c.chain.FinalizedAgentAccount(ctx, request.SenderAgentAccount)
+	boc, err := decodePreparedAction(raw, request.IntentID, "agent-cancel-seqno", request.SenderAgentAccount, account.DeploymentID, account.ControllerEpoch, request.Seqno, request.GlobalID, request.ValidUntil)
 	if err != nil {
 		return nil, err
 	}
@@ -549,6 +550,7 @@ func (a *AgentGiftOwnerAuthorizer) Authorize(ctx context.Context, review openfox
 			Network: review.Network, GlobalID: review.GlobalID, GiftIntentID: review.IntentID,
 			RecipientAgentID: review.RecipientAgentID, SenderAgentAccount: review.SenderAgentAccount,
 			OwnerWallet: review.OwnerWallet, ControllerKeyID: review.ControllerKeyID,
+			DeploymentID: review.DeploymentID, ControllerEpoch: review.ControllerEpoch,
 			DestinationAddress: review.DestinationAddress, AmountAtomic: review.AmountAtomic,
 			Seqno: review.Seqno, ValidUntil: review.ValidUntil, FeeReserveAtomic: review.FeeReserveAtomic,
 			AddressRequestDigest: review.RequestDigest, AddressResponseDigest: review.ResponseDigest,
@@ -558,6 +560,7 @@ func (a *AgentGiftOwnerAuthorizer) Authorize(ctx context.Context, review openfox
 			Network: review.Network, GlobalID: review.GlobalID, GiftIntentID: review.IntentID,
 			SignedGiftID: review.SignedGiftID, RecipientAgentID: review.RecipientAgentID,
 			SenderAgentAccount: review.SenderAgentAccount, DestinationAddress: review.DestinationAddress,
+			DeploymentID: review.DeploymentID, ControllerEpoch: review.ControllerEpoch,
 			AmountAtomic: review.AmountAtomic, Seqno: review.Seqno, ValidUntil: review.ValidUntil,
 			AddressRequestDigest: review.RequestDigest, AddressResponseDigest: review.ResponseDigest,
 		})
@@ -583,6 +586,8 @@ type preparedAction struct {
 	ActionID             string `json:"action_id"`
 	Action               string `json:"action"`
 	Account              string `json:"account"`
+	DeploymentID         string `json:"deployment_id"`
+	ControllerEpoch      uint64 `json:"controller_epoch"`
 	Seqno                uint32 `json:"seqno"`
 	NetworkGlobalID      int32  `json:"network_global_id"`
 	ValidUntil           uint32 `json:"valid_until"`
@@ -590,16 +595,16 @@ type preparedAction struct {
 	ExactSignedBOCDigest string `json:"exact_signed_boc_digest"`
 }
 
-func decodePreparedAction(raw []byte, actionID, action, account string, seqno uint32, globalID int32, validUntil uint32) ([]byte, error) {
+func decodePreparedAction(raw []byte, actionID, action, account, deploymentID string, controllerEpoch uint64, seqno uint32, globalID int32, validUntil uint32) ([]byte, error) {
 	var value preparedAction
-	if decodeStrictJSON(raw, &value) != nil || value.Account != account || value.Seqno != seqno || value.NetworkGlobalID != globalID || value.ValidUntil != validUntil {
+	if decodeStrictJSON(raw, &value) != nil || value.Account != account || value.DeploymentID != deploymentID || value.ControllerEpoch != controllerEpoch || value.Seqno != seqno || value.NetworkGlobalID != globalID || value.ValidUntil != validUntil {
 		return nil, errors.New("nativeimpl: tosctl prepared action conflicts with owner review")
 	}
 	return validatePreparedAction(value, actionID, action)
 }
 
 func validatePreparedAction(value preparedAction, actionID, action string) ([]byte, error) {
-	if value.Schema != "tosctl.agent-account.prepared-action.v1" || value.ActionID != actionID || value.Action != action || value.Account == "" || value.ValidUntil == 0 {
+	if value.Schema != "tosctl.agent-account.prepared-action.v1" || value.ActionID != actionID || value.Action != action || value.Account == "" || value.DeploymentID == "" || value.ValidUntil == 0 {
 		return nil, errors.New("nativeimpl: invalid tosctl prepared action identity")
 	}
 	boc, err := base64.StdEncoding.DecodeString(value.ExactSignedBOC)

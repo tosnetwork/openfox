@@ -159,6 +159,7 @@ func (s *Service) Authorize(ctx context.Context, intent string) (Record, error) 
 			v.OwnerWallet = prepared.OwnerWallet
 			v.ControllerKeyID = prepared.ControllerKeyID
 			v.DeploymentID = prepared.DeploymentID
+			v.ControllerEpoch = prepared.ControllerEpoch
 			v.FeeReserveAtomic = prepared.FeeReserveAtomic
 			v.UnsignedTransferDigest = prepared.UnsignedTransferDigest
 			v.Seqno = prepared.Seqno
@@ -170,7 +171,7 @@ func (s *Service) Authorize(ctx context.Context, intent string) (Record, error) 
 			return Record{}, err
 		}
 	}
-	digest, err := s.owner.Authorize(ctx, OwnerReview{Action: "send", IntentID: intent, RecipientAgentID: record.RecipientAgentID, Network: record.Network, GlobalID: record.GlobalID, AmountAtomic: record.AmountAtomic, DestinationAddress: record.DestinationAddress, SenderAgentAccount: record.SenderAgentAccount, OwnerWallet: record.OwnerWallet, ControllerKeyID: record.ControllerKeyID, FeeReserveAtomic: record.FeeReserveAtomic, Seqno: record.Seqno, ValidUntil: record.ValidUntil, RequestDigest: record.RequestDigest, ResponseDigest: record.ResponseDigest, UnsignedTransferDigest: record.UnsignedTransferDigest, RequestedValidUntil: record.RequestedValidUntil, ResponseNotAfter: record.ResponseNotAfter, FundsLocked: false})
+	digest, err := s.owner.Authorize(ctx, OwnerReview{Action: "send", IntentID: intent, RecipientAgentID: record.RecipientAgentID, Network: record.Network, GlobalID: record.GlobalID, AmountAtomic: record.AmountAtomic, DestinationAddress: record.DestinationAddress, SenderAgentAccount: record.SenderAgentAccount, OwnerWallet: record.OwnerWallet, ControllerKeyID: record.ControllerKeyID, DeploymentID: record.DeploymentID, FeeReserveAtomic: record.FeeReserveAtomic, ControllerEpoch: record.ControllerEpoch, Seqno: record.Seqno, ValidUntil: record.ValidUntil, RequestDigest: record.RequestDigest, ResponseDigest: record.ResponseDigest, UnsignedTransferDigest: record.UnsignedTransferDigest, RequestedValidUntil: record.RequestedValidUntil, ResponseNotAfter: record.ResponseNotAfter, FundsLocked: false})
 	if err != nil {
 		return Record{}, err
 	}
@@ -218,7 +219,7 @@ func (s *Service) Sign(ctx context.Context, intent, greeting string) (Record, er
 		return Record{}, err
 	}
 	terms, err := s.protocol.VerifySignedOffer(ctx, record.CanonicalRequest, record.CanonicalResponse, offer)
-	if err != nil || terms.SignedGiftID != signedID || terms.Seqno != record.Seqno || terms.ValidUntil != record.ValidUntil || terms.DeploymentID != record.DeploymentID || terms.SenderAgentAccount != record.SenderAgentAccount || terms.DestinationAddress != record.DestinationAddress || terms.AmountAtomic != record.AmountAtomic || terms.FeeReserveAtomic != record.FeeReserveAtomic {
+	if err != nil || terms.SignedGiftID != signedID || terms.ControllerEpoch != record.ControllerEpoch || terms.Seqno != record.Seqno || terms.ValidUntil != record.ValidUntil || terms.DeploymentID != record.DeploymentID || terms.SenderAgentAccount != record.SenderAgentAccount || terms.DestinationAddress != record.DestinationAddress || terms.AmountAtomic != record.AmountAtomic || terms.FeeReserveAtomic != record.FeeReserveAtomic {
 		return Record{}, errors.New("custody BOC failed independent Gift verification")
 	}
 	return s.journal.Update(intent, func(v *Record) error {
@@ -228,6 +229,7 @@ func (s *Service) Sign(ctx context.Context, intent, greeting string) (Record, er
 		v.CanonicalOffer = append([]byte(nil), offer...)
 		v.SignedGiftID = terms.SignedGiftID
 		v.ExactBOCDigest = terms.ExactBOCDigest
+		v.ControllerEpoch = terms.ControllerEpoch
 		v.Seqno = terms.Seqno
 		v.ValidUntil = terms.ValidUntil
 		v.DisplayMessage = greeting
@@ -408,6 +410,7 @@ func (s *Service) ObserveAndBroadcastOffer(ctx context.Context, intent string, o
 			v.Seqno = terms.Seqno
 			v.ValidUntil = terms.ValidUntil
 			v.DeploymentID = terms.DeploymentID
+			v.ControllerEpoch = terms.ControllerEpoch
 			v.FeeReserveAtomic = terms.FeeReserveAtomic
 			v.ExactSignedBOC = nil
 			v.UpdatedAtUnix = s.now().UTC().Unix()
@@ -514,7 +517,7 @@ func (s *Service) Cancel(ctx context.Context, intent string) (Record, error) {
 	}
 	var err error
 	if record.PendingEffect == EffectNone && len(record.ExactCancellationBOC) == 0 {
-		digest, err := s.owner.Authorize(ctx, OwnerReview{Action: "cancel", IntentID: intent, SignedGiftID: record.SignedGiftID, RecipientAgentID: record.RecipientAgentID, Network: record.Network, GlobalID: record.GlobalID, AmountAtomic: record.AmountAtomic, DestinationAddress: record.DestinationAddress, SenderAgentAccount: record.SenderAgentAccount, Seqno: record.Seqno, ValidUntil: record.ValidUntil, RequestDigest: record.RequestDigest, ResponseDigest: record.ResponseDigest, RequestedValidUntil: record.RequestedValidUntil, ResponseNotAfter: record.ResponseNotAfter, FundsLocked: false})
+		digest, err := s.owner.Authorize(ctx, OwnerReview{Action: "cancel", IntentID: intent, SignedGiftID: record.SignedGiftID, RecipientAgentID: record.RecipientAgentID, Network: record.Network, GlobalID: record.GlobalID, AmountAtomic: record.AmountAtomic, DestinationAddress: record.DestinationAddress, SenderAgentAccount: record.SenderAgentAccount, DeploymentID: record.DeploymentID, ControllerEpoch: record.ControllerEpoch, Seqno: record.Seqno, ValidUntil: record.ValidUntil, RequestDigest: record.RequestDigest, ResponseDigest: record.ResponseDigest, RequestedValidUntil: record.RequestedValidUntil, ResponseNotAfter: record.ResponseNotAfter, FundsLocked: false})
 		if err != nil || digest == "" {
 			return Record{}, errors.New("owner cancellation authorization failed")
 		}

@@ -156,6 +156,11 @@ OpenFox 可以复用同一台机器上已经登录的 Codex CLI 或 Claude Code�
         "approval_policy": "never",
         "allow_native_tools": false,
         "subscription_use": "local-personal",
+        "owner_principal": {
+          "channel": "telegram",
+          "sender_id": "your-authenticated-sender-id"
+        },
+        "allow_internal": false,
         "max_concurrent_calls": 1,
         "max_output_bytes": 4194304,
         "timeout_seconds": 300
@@ -173,6 +178,11 @@ OpenFox 可以复用同一台机器上已经登录的 Codex CLI 或 Claude Code�
         "approval_policy": "never",
         "allow_native_tools": false,
         "subscription_use": "local-personal",
+        "owner_principal": {
+          "channel": "telegram",
+          "sender_id": "your-authenticated-sender-id"
+        },
+        "allow_internal": false,
         "max_concurrent_calls": 1,
         "max_output_bytes": 4194304,
         "timeout_seconds": 300
@@ -186,15 +196,16 @@ OpenFox 可以复用同一台机器上已经登录的 Codex CLI 或 Claude Code�
 
 - `workspace` 在执行时必填；OpenFox 会解析符号链接并要求它指向真实目录。
 - OpenFox 不开放 danger/full-access 模式。默认只读；Codex 最多只能配置为 `workspace-write`。
-- 在 OpenFox 具备交互式审批代理之前，Codex/Claude 的原生工具必须保持关闭（`allow_native_tools: false`）。模型以结构化文本提出 OpenFox 工具调用，由 OpenFox 继续作为唯一授权与执行边界。
-- Codex `app-server` 使用官方本地 stdio 协议、隔离的临时线程和短期空工作目录，避免仓库 `AGENTS.md` 成为隐藏指令通道；兼容场景仍可选 `one-shot`，并会显式忽略本地 rules/config。
+- 在 OpenFox 具备交互式审批代理之前，Codex/Claude 的原生工具必须保持关闭（`allow_native_tools: false`）。OpenFox 还会拒绝 app-server 发出的 MCP、plugin、hook 和原生执行事件，形成第二层失败关闭检查。
+- Codex `app-server` 使用官方本地 stdio 协议、隔离的临时线程、短期空工作目录，以及只包含 `auth.json` 不透明副本的无菌 `CODEX_HOME`；不会加载用户配置、MCP、插件、hook、skill 或项目指令。
+- `owner_principal` 必填，并与已认证入站消息的 `channel` 和 `sender_id` 匹配。缺少可信运行时身份的请求会被拒绝；OpenFox 自身的后台任务也默认被拒绝，只有显式开启 `allow_internal` 后才能调用。
 - Claude 目前只支持 `one-shot`，而且始终禁用自身工具。Anthropic 消费者登录只能用于本机个人用途，不能作为共享或多用户推理代理。
 - Claude 订阅认证不能使用 Claude Code 仅支持 API Key 的 `--bare` 模式，因此 OpenFox 会在短期空目录中运行它并禁用 settings sources，避免项目 `CLAUDE.md` 和设置成为隐藏指令通道。
 - `provider: openai|anthropic` 搭配 `auth_method: oauth|token` 会被拒绝。直连 HTTP API 请使用 API Key；个人订阅请使用上述本地 CLI provider。
 - CLI 与 OpenFox 应由同一个 OS 用户运行，妥善保护 CLI 凭证目录，也不要把后端协议监听到网络端口。
 - 如果启用了 OpenFox 全局子进程隔离，隔离后的 home 默认没有厂商登录状态。只把必需的凭证目录以只读方式显式暴露进去，或者改用 API Key 推理；不要暴露整个宿主机 home 目录。
 
-`agent_backend.mode` 可取 `one-shot` 或 `app-server`（后者仅 Codex）；`sandbox` 可取 `read-only` 或 `workspace-write`；`approval_policy` 当前只允许 `never`；`allow_native_tools` 当前必须为 `false`。默认最多保留 4 MiB 输出，可配置范围为 4 KiB 到 16 MiB。每次操作默认有 5 分钟硬超时；`timeout_seconds` 可配置为 1 到 3600 秒。
+`agent_backend.mode` 可取 `one-shot` 或 `app-server`（后者仅 Codex）；`sandbox` 可取 `read-only` 或 `workspace-write`；`approval_policy` 当前只允许 `never`；`allow_native_tools` 当前必须为 `false`。stdout 与 stderr 共用一个保留字节预算；app-server 协议数据按操作单独限制，队列最多保留一条消息。每次操作默认有 5 分钟硬超时；`timeout_seconds` 可配置为 1 到 3600 秒。
 
 不需要流式时请省略 `streaming` 配置块。写 `"streaming": {"enabled": false}` 是可选的，手写或生成配置时都不需要。
 
@@ -302,7 +313,12 @@ OpenFox 按下面的规则解析 `provider` 和最终发给上游的模型 ID：
     "sandbox": "read-only",
     "approval_policy": "never",
     "allow_native_tools": false,
-    "subscription_use": "local-personal"
+    "subscription_use": "local-personal",
+    "owner_principal": {
+      "channel": "telegram",
+      "sender_id": "your-authenticated-sender-id"
+    },
+    "allow_internal": false
   }
 }
 ```

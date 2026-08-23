@@ -1,10 +1,18 @@
 package providers
 
 import (
-	"time"
+	"context"
 
 	cliprovider "github.com/tosnetwork/openfox/pkg/providers/cli"
 )
+
+func WithAgentBackendPrincipal(ctx context.Context, channel, senderID string) context.Context {
+	return cliprovider.WithAgentBackendPrincipal(ctx, channel, senderID)
+}
+
+func WithInternalAgentBackendPrincipal(ctx context.Context) context.Context {
+	return cliprovider.WithInternalAgentBackendPrincipal(ctx)
+}
 
 type (
 	AgentBackend             = cliprovider.AgentBackend
@@ -15,7 +23,6 @@ type (
 	ClaudeCliProvider        = cliprovider.ClaudeCliProvider
 	CodexCliProvider         = cliprovider.CodexCliProvider
 	CodexAppServerProvider   = cliprovider.CodexAppServerProvider
-	CodexCliAuth             = cliprovider.CodexCliAuth
 	GitHubCopilotProvider    = cliprovider.GitHubCopilotProvider
 )
 
@@ -43,14 +50,6 @@ func NewCodexAppServerProvider(options RuntimeOptions) *CodexAppServerProvider {
 
 func NewGitHubCopilotProvider(uri string, connectMode string, model string) (*GitHubCopilotProvider, error) {
 	return cliprovider.NewGitHubCopilotProvider(uri, connectMode, model)
-}
-
-func ReadCodexCliCredentials() (accessToken, accountID string, expiresAt time.Time, err error) {
-	return cliprovider.ReadCodexCliCredentials()
-}
-
-func CreateCodexCliTokenSource() func() (string, string, error) {
-	return cliprovider.CreateCodexCliTokenSource()
 }
 
 func NormalizeToolCall(tc ToolCall) ToolCall {

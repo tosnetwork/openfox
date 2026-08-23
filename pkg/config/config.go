@@ -910,12 +910,26 @@ type AgentBackendConfig struct {
 	// reused. It documents that the authenticated CLI is local to its owner and
 	// must not be exposed as a multi-user proxy.
 	SubscriptionUse string `json:"subscription_use,omitempty"`
+	// OwnerPrincipal is the only external caller allowed to consume a personal
+	// subscription. It is matched against trusted inbound runtime context.
+	OwnerPrincipal AgentBackendPrincipalConfig `json:"owner_principal,omitzero"`
+	// AllowInternal permits OpenFox's own scheduler and maintenance calls.
+	AllowInternal bool `json:"allow_internal,omitempty"`
 	// MaxConcurrentCalls bounds simultaneous turns for one backend instance.
 	MaxConcurrentCalls int `json:"max_concurrent_calls,omitempty"`
 	// MaxOutputBytes bounds stdout/protocol data retained for one turn.
 	MaxOutputBytes int `json:"max_output_bytes,omitempty"`
 	// TimeoutSeconds is a hard deadline for one local backend operation.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+}
+
+type AgentBackendPrincipalConfig struct {
+	Channel  string `json:"channel,omitempty"`
+	SenderID string `json:"sender_id,omitempty"`
+}
+
+func (c AgentBackendPrincipalConfig) IsZero() bool {
+	return strings.TrimSpace(c.Channel) == "" && strings.TrimSpace(c.SenderID) == ""
 }
 
 // APIKey returns the first API key from apiKeys
@@ -988,6 +1002,11 @@ func (c AgentBackendConfig) Validate() error {
 	}
 	if c.AllowNativeTools {
 		return fmt.Errorf("allow_native_tools requires an OpenFox approval broker and is not available yet")
+	}
+	ownerChannelMissing := strings.TrimSpace(c.OwnerPrincipal.Channel) == ""
+	ownerSenderMissing := strings.TrimSpace(c.OwnerPrincipal.SenderID) == ""
+	if ownerChannelMissing != ownerSenderMissing {
+		return fmt.Errorf("owner_principal requires both channel and sender_id")
 	}
 	if c.MaxConcurrentCalls < 0 || c.MaxConcurrentCalls > 16 {
 		return fmt.Errorf("max_concurrent_calls must be between 1 and 16 when set")

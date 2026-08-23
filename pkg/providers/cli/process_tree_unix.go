@@ -21,6 +21,8 @@ func configureCommandCancellation(cmd *exec.Cmd) {
 	cmd.Cancel = func() error { return killProcessTree(cmd) }
 }
 
+func attachProcessTree(cmd *exec.Cmd) error { return nil }
+
 func killProcessTree(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return os.ErrProcessDone

@@ -365,16 +365,17 @@ func validateSubscriptionAgentConfig(cfg *config.ModelConfig, authMethod string)
 	if err := cfg.AgentBackend.Validate(); err != nil {
 		return err
 	}
-	switch authMethod {
-	case "", "subscription":
-	default:
+	if authMethod != "subscription" {
 		return fmt.Errorf("unsupported CLI auth_method %q", cfg.AuthMethod)
 	}
-	if authMethod == "subscription" && cfg.AgentBackend.SubscriptionUse != "local-personal" {
+	if cfg.AgentBackend.SubscriptionUse != "local-personal" {
 		return fmt.Errorf(
 			"agent_backend.subscription_use must be %q when auth_method is %q",
 			"local-personal", "subscription",
 		)
+	}
+	if cfg.AgentBackend.OwnerPrincipal.IsZero() {
+		return fmt.Errorf("agent_backend.owner_principal is required for a local-personal subscription")
 	}
 	if strings.TrimSpace(cfg.Workspace) == "" {
 		return fmt.Errorf("workspace is required for local full-agent providers")
@@ -392,6 +393,9 @@ func runtimeOptionsFromConfig(cfg *config.ModelConfig) RuntimeOptions {
 		ApprovalPolicy:     cfg.AgentBackend.ApprovalPolicy,
 		AllowNativeTools:   cfg.AgentBackend.AllowNativeTools,
 		SubscriptionUse:    cfg.AgentBackend.SubscriptionUse,
+		OwnerChannel:       strings.TrimSpace(cfg.AgentBackend.OwnerPrincipal.Channel),
+		OwnerSenderID:      strings.TrimSpace(cfg.AgentBackend.OwnerPrincipal.SenderID),
+		AllowInternal:      cfg.AgentBackend.AllowInternal,
 		MaxConcurrentCalls: cfg.AgentBackend.MaxConcurrentCalls,
 		MaxOutputBytes:     cfg.AgentBackend.MaxOutputBytes,
 		Timeout:            time.Duration(cfg.AgentBackend.TimeoutSeconds) * time.Second,

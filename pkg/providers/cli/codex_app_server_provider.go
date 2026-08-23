@@ -29,6 +29,7 @@ type CodexAppServerProvider struct {
 	stdin  io.WriteCloser
 	events chan appServerMessage
 	done   chan error
+	stop   chan struct{}
 	nextID int64
 	stderr *boundedCollector
 	// sterileDir prevents repository instructions from becoming a hidden
@@ -114,10 +115,7 @@ func (p *CodexAppServerProvider) startLocked(ctx context.Context) error {
 		for _, feature := range disabledCodexNativeFeatures() {
 			args = append(args, "--disable", feature)
 		}
-		args = append(args,
-			"-c", `web_search="disabled"`,
-			"-c", `mcp_servers={}`,
-		)
+		args = append(args, "-c", `web_search="disabled"`)
 	}
 	sterileDir, err := os.MkdirTemp("", "openfox-codex-backend-")
 	if err != nil {
@@ -132,6 +130,9 @@ func (p *CodexAppServerProvider) startLocked(ctx context.Context) error {
 	}()
 	cmd := exec.Command(p.command, args...)
 	cmd.Dir = sterileDir
+	if err := configureSterileCodexHome(cmd, sterileDir); err != nil {
+		return err
+	}
 	configureProcessGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -148,16 +149,22 @@ func (p *CodexAppServerProvider) startLocked(ctx context.Context) error {
 	if err := isolation.Start(cmd); err != nil {
 		return fmt.Errorf("start codex app-server: %w", err)
 	}
+	if err := attachProcessTree(cmd); err != nil {
+		_ = cmd.Process.Kill()
+		return fmt.Errorf("attach codex app-server process tree: %w", err)
+	}
 
 	p.cmd = cmd
 	p.stdin = stdin
-	events := make(chan appServerMessage, 256)
+	events := make(chan appServerMessage, 1)
 	done := make(chan error, 1)
+	stop := make(chan struct{})
 	p.events = events
 	p.done = done
-	p.stderr = newBoundedCollector(64 * 1024)
+	p.stop = stop
+	p.stderr = newBoundedCollector(min(64*1024, p.options.MaxOutputBytes))
 	go func() { _, _ = io.Copy(p.stderr, stderr) }()
-	go p.readLoop(stdout, cmd, events, done)
+	go p.readLoop(stdout, cmd, events, done, stop)
 
 	p.nextID++
 	initID := p.nextID
@@ -225,19 +232,35 @@ func (p *CodexAppServerProvider) healthLocked(ctx context.Context) error {
 		return fmt.Errorf("codex account/read: %w", err)
 	}
 	var payload struct {
-		RequiresOpenAIAuth bool `json:"requiresOpenaiAuth"`
+		Account            json.RawMessage `json:"account"`
+		RequiresOpenAIAuth bool            `json:"requiresOpenaiAuth"`
 	}
 	if err := json.Unmarshal(response.Result, &payload); err != nil {
 		return fmt.Errorf("decode codex account/read response: %w", err)
 	}
-	if payload.RequiresOpenAIAuth {
+	accountMissing := len(payload.Account) == 0 || string(payload.Account) == "null"
+	if payload.RequiresOpenAIAuth && accountMissing {
 		return fmt.Errorf("codex CLI is not authenticated; log in with the official Codex CLI")
+	}
+	if p.options.SubscriptionUse == "local-personal" && !accountMissing {
+		var account struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(payload.Account, &account); err != nil {
+			return fmt.Errorf("decode codex account: %w", err)
+		}
+		if account.Type != "chatgpt" {
+			return fmt.Errorf("local-personal Codex backend requires a ChatGPT account")
+		}
 	}
 	return nil
 }
 
 func (p *CodexAppServerProvider) RunTurn(ctx context.Context, req AgentTurnRequest) (*AgentTurnResult, error) {
 	if err := p.options.validate(); err != nil {
+		return nil, err
+	}
+	if err := p.options.authorizePrincipal(ctx); err != nil {
 		return nil, err
 	}
 	ctx, cancel := p.options.boundedContext(ctx)
@@ -325,6 +348,9 @@ func (p *CodexAppServerProvider) RunTurn(ctx context.Context, req AgentTurnReque
 
 	var content string
 	retained := 0
+	if p.stderr != nil {
+		retained = p.stderr.Len()
+	}
 	handleMessage := func(msg appServerMessage) (*AgentTurnResult, bool, error) {
 		retained += len(msg.Params) + len(msg.Result)
 		if retained > p.options.MaxOutputBytes {
@@ -391,6 +417,10 @@ func (p *CodexAppServerProvider) Close() {
 }
 
 func (p *CodexAppServerProvider) stopLocked() {
+	if p.stop != nil {
+		close(p.stop)
+		p.stop = nil
+	}
 	if p.stdin != nil {
 		_ = p.stdin.Close()
 	}
@@ -408,22 +438,61 @@ func (p *CodexAppServerProvider) stopLocked() {
 }
 
 func (p *CodexAppServerProvider) readLoop(
-	stdout io.Reader, cmd *exec.Cmd, events chan<- appServerMessage, done chan<- error,
+	stdout io.Reader, cmd *exec.Cmd, events chan<- appServerMessage, done chan<- error, stop <-chan struct{},
 ) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), p.options.MaxOutputBytes)
 	for scanner.Scan() {
 		var msg appServerMessage
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			continue
+			_ = killProcessTree(cmd)
+			_ = cmd.Wait()
+			done <- fmt.Errorf("decode codex app-server message: %w", err)
+			return
 		}
-		events <- msg
+		if err := validateAppServerMessage(msg); err != nil {
+			_ = killProcessTree(cmd)
+			_ = cmd.Wait()
+			done <- err
+			return
+		}
+		select {
+		case events <- msg:
+		case <-stop:
+			_ = cmd.Wait()
+			return
+		}
 	}
 	err := scanner.Err()
 	if waitErr := cmd.Wait(); err == nil {
 		err = waitErr
 	}
 	done <- err
+}
+
+func validateAppServerMessage(msg appServerMessage) error {
+	for _, prefix := range []string{"mcpServer/", "plugin/", "hook/"} {
+		if strings.HasPrefix(msg.Method, prefix) {
+			return fmt.Errorf("codex app-server attempted prohibited native integration %q", msg.Method)
+		}
+	}
+	if msg.Method != "item/completed" {
+		return nil
+	}
+	var payload struct {
+		Item struct {
+			Type string `json:"type"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(msg.Params, &payload); err != nil {
+		return fmt.Errorf("decode codex completed item: %w", err)
+	}
+	switch payload.Item.Type {
+	case "", "agentMessage", "reasoning":
+		return nil
+	default:
+		return fmt.Errorf("codex app-server attempted prohibited native item %q", payload.Item.Type)
+	}
 }
 
 func (p *CodexAppServerProvider) sendLocked(value any) error {
@@ -477,7 +546,9 @@ func (p *CodexAppServerProvider) waitForResponseLocked(
 			return appServerMessage{}, ErrOutputLimit
 		}
 		if len(msg.ID) > 0 && msg.Method != "" {
-			_ = p.rejectServerRequestLocked(msg)
+			if err := p.rejectServerRequestLocked(msg); err != nil {
+				return appServerMessage{}, err
+			}
 			continue
 		}
 		if strings.TrimSpace(string(msg.ID)) == want {
@@ -509,7 +580,8 @@ func (p *CodexAppServerProvider) rejectServerRequestLocked(msg appServerMessage)
 func disabledCodexNativeFeatures() []string {
 	return []string{
 		"shell_tool", "unified_exec", "js_repl", "browser_use", "computer_use",
-		"apps", "plugins", "multi_agent", "code_mode", "image_generation",
+		"apps", "plugins", "multi_agent", "code_mode", "code_mode_host", "hooks",
+		"image_generation", "skill_mcp_dependency_install",
 	}
 }
 
@@ -521,11 +593,7 @@ func secureCodexThreadConfig(allowNativeTools bool) map[string]any {
 	for _, feature := range disabledCodexNativeFeatures() {
 		features[feature] = false
 	}
-	return map[string]any{
-		"features":    features,
-		"web_search":  "disabled",
-		"mcp_servers": map[string]any{},
-	}
+	return map[string]any{"features": features, "web_search": "disabled"}
 }
 
 func buildCodexPrompt(messages []Message, tools []ToolDefinition) string {

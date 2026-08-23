@@ -300,7 +300,7 @@ func (m *legacyContextManager) retryLLMCall(
 		resp, err = func() (*providers.LLMResponse, error) {
 			defer m.al.activeRequestsDec()
 			return agent.Provider.Chat(
-				ctx,
+				providers.WithInternalAgentBackendPrincipal(ctx),
 				[]providers.Message{{Role: "user", Content: prompt}},
 				nil,
 				agent.Model,

@@ -44,6 +44,9 @@ func (p *ClaudeCliProvider) Chat(
 	if err := options.validate(); err != nil {
 		return nil, err
 	}
+	if err := options.authorizePrincipal(ctx); err != nil {
+		return nil, err
+	}
 	ctx, cancel := options.boundedContext(ctx)
 	defer cancel()
 	if options.AllowNativeTools {

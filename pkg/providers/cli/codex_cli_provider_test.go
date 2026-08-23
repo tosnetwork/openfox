@@ -508,11 +508,15 @@ echo '{"type":"turn.completed"}'`
 		t.Fatalf("reading args: %v", err)
 	}
 	args := string(argsData)
+	canonicalWorkspace, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatalf("canonicalize expected workspace: %v", err)
+	}
 
 	if !strings.Contains(args, "-m gpt-5.3-codex") {
 		t.Errorf("args should contain model flag, got: %s", args)
 	}
-	if !strings.Contains(args, "-C "+tmpDir) {
+	if !strings.Contains(args, "-C "+canonicalWorkspace) {
 		t.Errorf("args should contain workspace flag, got: %s", args)
 	}
 	if !strings.Contains(args, "--json") {

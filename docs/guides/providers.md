@@ -162,6 +162,11 @@ Log in with the vendor CLI first, then use one of these entries:
         "approval_policy": "never",
         "allow_native_tools": false,
         "subscription_use": "local-personal",
+        "owner_principal": {
+          "channel": "telegram",
+          "sender_id": "your-authenticated-sender-id"
+        },
+        "allow_internal": false,
         "max_concurrent_calls": 1,
         "max_output_bytes": 4194304,
         "timeout_seconds": 300
@@ -179,6 +184,11 @@ Log in with the vendor CLI first, then use one of these entries:
         "approval_policy": "never",
         "allow_native_tools": false,
         "subscription_use": "local-personal",
+        "owner_principal": {
+          "channel": "telegram",
+          "sender_id": "your-authenticated-sender-id"
+        },
+        "allow_internal": false,
         "max_concurrent_calls": 1,
         "max_output_bytes": 4194304,
         "timeout_seconds": 300
@@ -192,15 +202,16 @@ Security and product boundaries:
 
 - `workspace` is mandatory at execution time, is canonicalized, and must resolve to an existing directory.
 - OpenFox never enables danger/full-access modes. The default is read-only; `workspace-write` is the maximum configurable Codex sandbox.
-- Native Codex/Claude tools are currently required to remain disabled (`allow_native_tools: false`) until OpenFox has an interactive approval broker. The model describes OpenFox tool calls as structured text, and OpenFox remains the authorization and execution boundary.
-- Codex `app-server` uses the official local stdio protocol, isolated ephemeral threads, and a short-lived empty working directory so repository `AGENTS.md` files cannot become a hidden instruction channel. `one-shot` remains available for compatibility and explicitly ignores local rules/config.
+- Native Codex/Claude tools are currently required to remain disabled (`allow_native_tools: false`) until OpenFox has an interactive approval broker. OpenFox rejects app-server MCP/plugin/hook and native-execution events as a second fail-closed check.
+- Codex `app-server` uses the official local stdio protocol, isolated ephemeral threads, a short-lived empty working directory, and a sterile `CODEX_HOME` containing only an opaque copy of `auth.json`. User configuration, MCP servers, plugins, hooks, skills, and project instructions are not loaded.
+- `owner_principal` is mandatory and is matched against authenticated inbound `channel` and `sender_id` metadata. Requests without that trusted runtime identity are denied. OpenFox-owned background work is denied unless `allow_internal` is explicitly enabled.
 - Claude currently supports `one-shot` only and always disables its native tools. Anthropic's consumer login is for local personal use; do not expose it as a shared or multi-user inference proxy.
 - Because Claude subscription auth cannot use Claude Code's `--bare` API-key mode, OpenFox runs it from a short-lived empty directory with settings sources disabled. This prevents project `CLAUDE.md` files and settings from becoming a hidden instruction channel.
 - `provider: openai|anthropic` with `auth_method: oauth|token` is rejected. Use an API key for direct HTTP APIs or the local CLI providers above for a personal subscription.
 - Keep the CLI and OpenFox under the same OS user, protect the CLI credential store, and do not bind the backend protocol to a network socket.
 - If global OpenFox subprocess isolation is enabled, the isolated home directory does not automatically contain vendor login state. Explicitly expose only the required credential directory as read-only, or use API-key inference instead; never expose a whole host home directory.
 
-`agent_backend.mode` accepts `one-shot` or `app-server` (Codex only). `sandbox` accepts `read-only` or `workspace-write`; `approval_policy` currently accepts only `never`; `allow_native_tools` currently must be `false`. Output is retained up to 4 MiB by default and can be configured from 4 KiB through 16 MiB. Every operation has a five-minute default hard deadline; `timeout_seconds` accepts 1 through 3600 seconds.
+`agent_backend.mode` accepts `one-shot` or `app-server` (Codex only). `sandbox` accepts `read-only` or `workspace-write`; `approval_policy` currently accepts only `never`; `allow_native_tools` currently must be `false`. The output limit is one shared retained-byte budget across stdout and stderr; app-server protocol data is bounded separately per operation and its queue holds at most one message. Every operation has a five-minute default hard deadline; `timeout_seconds` accepts 1 through 3600 seconds.
 
 When streaming is disabled, omit the `streaming` block. Writing `"streaming": {"enabled": false}` is optional and not needed in generated or hand-written config.
 

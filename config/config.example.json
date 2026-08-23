@@ -57,6 +57,11 @@
         "approval_policy": "never",
         "allow_native_tools": false,
         "subscription_use": "local-personal",
+        "owner_principal": {
+          "channel": "telegram",
+          "sender_id": "your-authenticated-sender-id"
+        },
+        "allow_internal": false,
         "max_concurrent_calls": 1,
         "max_output_bytes": 4194304,
         "timeout_seconds": 300

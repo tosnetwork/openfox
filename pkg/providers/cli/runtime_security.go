@@ -30,6 +30,9 @@ type RuntimeOptions struct {
 	ApprovalPolicy     string
 	AllowNativeTools   bool
 	SubscriptionUse    string
+	OwnerChannel       string
+	OwnerSenderID      string
+	AllowInternal      bool
 	MaxConcurrentCalls int
 	MaxOutputBytes     int
 	Timeout            time.Duration
@@ -67,6 +70,9 @@ func (o RuntimeOptions) validate() error {
 	}
 	if o.SubscriptionUse != "" && o.SubscriptionUse != "local-personal" {
 		return fmt.Errorf("unsupported subscription use %q", o.SubscriptionUse)
+	}
+	if o.SubscriptionUse == "local-personal" && (o.OwnerChannel == "" || o.OwnerSenderID == "") {
+		return fmt.Errorf("local-personal agent backend requires an owner principal")
 	}
 	if o.MaxConcurrentCalls < 1 || o.MaxConcurrentCalls > 16 {
 		return fmt.Errorf("max concurrent calls must be between 1 and 16")
@@ -113,25 +119,56 @@ func (o RuntimeOptions) canonicalWorkspace() (string, error) {
 type boundedCollector struct {
 	mu        sync.Mutex
 	buf       bytes.Buffer
-	remaining int
+	budget    *byteBudget
 	truncated bool
 }
 
 func newBoundedCollector(limit int) *boundedCollector {
-	return &boundedCollector{remaining: limit}
+	return newBoundedCollectorWithBudget(newByteBudget(limit))
+}
+
+func newBoundedCollectorWithBudget(budget *byteBudget) *boundedCollector {
+	return &boundedCollector{budget: budget}
+}
+
+type byteBudget struct {
+	mu        sync.Mutex
+	remaining int
+	truncated bool
+}
+
+func newByteBudget(limit int) *byteBudget {
+	return &byteBudget{remaining: limit}
+}
+
+func (b *byteBudget) take(size int) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if size > b.remaining {
+		size = b.remaining
+		b.truncated = true
+	}
+	b.remaining -= size
+	return size
+}
+
+func (b *byteBudget) Truncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.truncated
 }
 
 func (w *boundedCollector) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	original := len(p)
-	if len(p) > w.remaining {
-		p = p[:w.remaining]
+	retained := w.budget.take(len(p))
+	if retained < len(p) {
+		p = p[:retained]
 		w.truncated = true
 	}
 	if len(p) > 0 {
 		_, _ = w.buf.Write(p)
-		w.remaining -= len(p)
 	}
 	return original, nil
 }
@@ -145,7 +182,13 @@ func (w *boundedCollector) String() string {
 func (w *boundedCollector) Truncated() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.truncated
+	return w.truncated || w.budget.Truncated()
+}
+
+func (w *boundedCollector) Len() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Len()
 }
 
 // runCommandBounded drains stdout and stderr even after the retention limit is
@@ -168,9 +211,14 @@ func runCommandBounded(ctx context.Context, cmd *exec.Cmd, input []byte, maxOutp
 	if err := isolationStart(cmd); err != nil {
 		return "", "", err
 	}
+	if err := attachProcessTree(cmd); err != nil {
+		_ = cmd.Process.Kill()
+		return "", "", fmt.Errorf("attach agent backend process tree: %w", err)
+	}
 
-	stdout := newBoundedCollector(maxOutputBytes)
-	stderr := newBoundedCollector(maxOutputBytes)
+	budget := newByteBudget(maxOutputBytes)
+	stdout := newBoundedCollectorWithBudget(budget)
+	stderr := newBoundedCollectorWithBudget(budget)
 	done := make(chan struct{}, 2)
 	copyPipe := func(dst io.Writer, src io.Reader) {
 		_, _ = io.Copy(dst, src)

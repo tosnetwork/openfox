@@ -21,7 +21,7 @@ read -r initialize
 echo '{"id":1,"result":{"userAgent":"mock"}}'
 read -r initialized
 read -r account_read
-echo '{"id":2,"result":{"account":{"type":"chatgpt"},"requiresOpenaiAuth":false}}'
+echo '{"id":2,"result":{"account":{"type":"chatgpt","email":"owner@example.test"},"requiresOpenaiAuth":true}}'
 read -r thread_start
 echo '{"id":3,"result":{"thread":{"id":"thread-openfox"}}}'
 read -r turn_start
@@ -38,11 +38,15 @@ while read -r ignored; do :; done
 }
 
 func TestCodexAppServerProvider_RunTurn(t *testing.T) {
-	p := NewCodexAppServerProvider(RuntimeOptions{Workspace: t.TempDir()})
+	p := NewCodexAppServerProvider(RuntimeOptions{
+		Workspace: t.TempDir(), SubscriptionUse: "local-personal",
+		OwnerChannel: "test", OwnerSenderID: "owner",
+	})
 	p.command = createMockCodexAppServer(t)
 	t.Cleanup(p.Close)
 
-	result, err := p.RunTurn(context.Background(), AgentTurnRequest{Prompt: "hello"})
+	ctx := WithAgentBackendPrincipal(context.Background(), "test", "owner")
+	result, err := p.RunTurn(ctx, AgentTurnRequest{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("RunTurn() error = %v", err)
 	}
@@ -101,5 +105,16 @@ func TestCodexAppServerCapabilitiesDefaultToNoNativeTools(t *testing.T) {
 	}
 	if caps.Sandbox != "read-only" {
 		t.Errorf("Sandbox = %q, want read-only", caps.Sandbox)
+	}
+}
+
+func TestValidateAppServerMessageRejectsNativeIntegration(t *testing.T) {
+	for _, msg := range []appServerMessage{
+		{Method: "mcpServer/startupStatus/updated"},
+		{Method: "item/completed", Params: []byte(`{"item":{"type":"commandExecution"}}`)},
+	} {
+		if err := validateAppServerMessage(msg); err == nil {
+			t.Fatalf("validateAppServerMessage(%q) accepted native integration", msg.Method)
+		}
 	}
 }

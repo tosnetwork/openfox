@@ -190,9 +190,11 @@ func TestCreateProviderReturnsCodexCliProviderForCodexCode(t *testing.T) {
 	cfg.Agents.Defaults.ModelName = "test-codex"
 	cfg.ModelList = []*config.ModelConfig{
 		{
-			ModelName: "test-codex",
-			Model:     "codex-cli/codex-model",
-			Workspace: "/tmp/workspace",
+			ModelName:    "test-codex",
+			Model:        "codex-cli/codex-model",
+			AuthMethod:   "subscription",
+			Workspace:    "/tmp/workspace",
+			AgentBackend: testPersonalAgentBackend(),
 		},
 	}
 
@@ -211,9 +213,11 @@ func TestCreateProviderReturnsClaudeCliProviderForClaudeCli(t *testing.T) {
 	cfg.Agents.Defaults.ModelName = "test-claude-cli"
 	cfg.ModelList = []*config.ModelConfig{
 		{
-			ModelName: "test-claude-cli",
-			Model:     "claude-cli/claude-sonnet",
-			Workspace: "/tmp/workspace",
+			ModelName:    "test-claude-cli",
+			Model:        "claude-cli/claude-sonnet",
+			AuthMethod:   "subscription",
+			Workspace:    "/tmp/workspace",
+			AgentBackend: testPersonalAgentBackend(),
 		},
 	}
 

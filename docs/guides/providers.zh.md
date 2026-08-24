@@ -121,6 +121,9 @@
 | `api_keys` | string[] | 是* | 认证密钥。多个密钥可按请求轮换。本地 provider（Ollama、LM Studio、VLLM）不需要 |
 | `api_base` | string | 否 | 覆盖默认的 API 端点 URL |
 | `proxy` | string | 否 | 此模型条目的 HTTP 代理 URL |
+| `auth_method` | string | 否 | 认证模式。`subscription` 只用于本机 `codex-cli` 或 `claude-cli` provider。 |
+| `workspace` | string | 是* | 本地完整 Agent provider 必须指定的现有工作目录。 |
+| `agent_backend` | object | 是* | 本地完整 Agent provider 的生命周期与安全策略，见下文。 |
 | `user_agent` | string | 否 | 自定义 `User-Agent` 请求头（支持 OpenAI 兼容、Gemini、Anthropic 和 Azure provider） |
 | `request_timeout` | int | 否 | 请求超时时间（秒），默认值因 provider 而异 |
 | `streaming.enabled` | bool | 否 | 是否允许此模型条目尝试 provider 流式请求，默认 `false`。它只表达模型/端点能力 opt-in，实际还需要当前 channel 的 `settings.streaming.enabled` 同时开启 |
@@ -131,6 +134,79 @@
 | `rpm` | int | 否 | 每分钟请求速率限制 |
 | `fallbacks` | string[] | 否 | 自动故障转移的备用模型名称 |
 | `enabled` | bool | 否 | 是否启用此模型条目（默认：`true`） |
+
+#### 使用本机订阅的 Agent（无需 API Key）
+
+OpenFox 可以复用同一台机器上已经登录的 Codex CLI 或 Claude Code。它们是完整 Agent 运行时，而不是普通推理 API，因此由独立的 `agent_backend` 安全策略约束。
+
+先使用厂商 CLI 完成本机登录，再添加以下配置之一：
+
+```json
+{
+  "model_list": [
+    {
+      "model_name": "codex-subscription",
+      "provider": "codex-cli",
+      "model": "codex-cli",
+      "auth_method": "subscription",
+      "workspace": "/absolute/path/to/openfox-workspace",
+      "agent_backend": {
+        "mode": "app-server",
+        "sandbox": "read-only",
+        "approval_policy": "never",
+        "allow_native_tools": false,
+        "subscription_use": "local-personal",
+        "owner_principal": {
+          "channel": "telegram",
+          "sender_id": "your-authenticated-sender-id"
+        },
+        "allow_internal": false,
+        "max_concurrent_calls": 1,
+        "max_output_bytes": 4194304,
+        "timeout_seconds": 300
+      }
+    },
+    {
+      "model_name": "claude-subscription",
+      "provider": "claude-cli",
+      "model": "claude-code",
+      "auth_method": "subscription",
+      "workspace": "/absolute/path/to/openfox-workspace",
+      "agent_backend": {
+        "mode": "one-shot",
+        "sandbox": "read-only",
+        "approval_policy": "never",
+        "allow_native_tools": false,
+        "subscription_use": "local-personal",
+        "owner_principal": {
+          "channel": "telegram",
+          "sender_id": "your-authenticated-sender-id"
+        },
+        "allow_internal": false,
+        "max_concurrent_calls": 1,
+        "max_output_bytes": 4194304,
+        "timeout_seconds": 300
+      }
+    }
+  ]
+}
+```
+
+安全和产品边界：
+
+- `workspace` 在执行时必填；OpenFox 会解析符号链接并要求它指向真实目录。
+- OpenFox 不开放 danger/full-access 模式。默认只读；Codex 最多只能配置为 `workspace-write`。
+- 在 OpenFox 具备交互式审批代理之前，Codex/Claude 的原生工具必须保持关闭（`allow_native_tools: false`）。OpenFox 还会拒绝 app-server 发出的 MCP、plugin、hook 和原生执行事件，形成第二层失败关闭检查。
+- Codex `app-server` 使用官方本地 stdio 协议、隔离的临时线程、严格配置解析、短期空工作目录，以及只包含 `auth.json` 不透明副本的无菌 `CODEX_HOME`；不会加载用户配置、MCP、插件、hook、skill 或项目指令，同时移除 OpenAI API Key 和替代 API 端点环境覆盖。个人模式必须得到非空 ChatGPT 账户，强制使用 ChatGPT 登录，关闭 login shell，并让任何意外启用的原生命令只能看到空的继承环境。
+- Codex `one-shot` 使用同样的严格配置、ChatGPT 登录、空工作目录和无菌 `CODEX_HOME` 边界；其 JSONL 解析器会拒绝格式错误、未完成、失败、未知或原生执行事件流，不会接受部分输出。
+- `owner_principal` 必填，并与已认证入站消息的 `channel` 和 `sender_id` 匹配。缺少可信运行时身份的请求会被拒绝；OpenFox 自身的后台任务也默认被拒绝，只有显式开启 `allow_internal` 后才能调用。
+- Claude 目前只支持 `one-shot`，而且始终禁用自身工具。每次个人模式调用前，OpenFox 都要求 Claude Code 报告第一方 Claude.ai Pro 或 Max 订阅，并从子进程环境中移除全部 `ANTHROPIC_*` 和 `CLAUDE_*` 覆盖，包括 API Key、网关、云 provider、替代配置目录和外部 OAuth token 选择器。Anthropic 消费者登录只能用于本机个人用途，不能作为共享或多用户推理代理。
+- Claude 订阅认证不能使用 Claude Code 仅支持 API Key 的 `--bare` 模式，因此 OpenFox 会在短期空目录中运行它并禁用 settings sources，避免项目 `CLAUDE.md` 和设置成为隐藏指令通道。
+- `provider: openai|anthropic` 搭配 `auth_method: oauth|token` 会被拒绝。直连 HTTP API 请使用 API Key；个人订阅请使用上述本地 CLI provider。
+- CLI 与 OpenFox 应由同一个 OS 用户运行，妥善保护 CLI 凭证目录，也不要把后端协议监听到网络端口。
+- 如果启用了 OpenFox 全局子进程隔离，隔离后的 home 默认没有厂商登录状态。只把必需的凭证目录以只读方式显式暴露进去，或者改用 API Key 推理；不要暴露整个宿主机 home 目录。
+
+`agent_backend.mode` 可取 `one-shot` 或 `app-server`（后者仅 Codex）；`sandbox` 可取 `read-only` 或 `workspace-write`；`approval_policy` 当前只允许 `never`；`allow_native_tools` 当前必须为 `false`。stdout 与 stderr 共用一个保留字节预算；app-server 协议数据按操作单独限制，队列最多保留一条消息。每次操作默认有 5 分钟硬超时；`timeout_seconds` 可配置为 1 到 3600 秒。
 
 不需要流式时请省略 `streaming` 配置块。写 `"streaming": {"enabled": false}` 是可选的，手写或生成配置时都不需要。
 
@@ -224,18 +300,31 @@ OpenFox 按下面的规则解析 `provider` 和最终发给上游的模型 ID：
 }
 ```
 
-**Anthropic (使用 OAuth)**
+**Anthropic（使用本机 Claude 订阅）**
 
 ```json
 {
   "model_name": "claude-sonnet-4.6",
-  "provider": "anthropic",
-  "model": "claude-sonnet-4.6",
-  "auth_method": "oauth"
+  "provider": "claude-cli",
+  "model": "claude-code",
+  "auth_method": "subscription",
+  "workspace": "/absolute/path/to/openfox-workspace",
+  "agent_backend": {
+    "mode": "one-shot",
+    "sandbox": "read-only",
+    "approval_policy": "never",
+    "allow_native_tools": false,
+    "subscription_use": "local-personal",
+    "owner_principal": {
+      "channel": "telegram",
+      "sender_id": "your-authenticated-sender-id"
+    },
+    "allow_internal": false
+  }
 }
 ```
 
-> 运行 `openfox auth login --provider anthropic` 来设置 OAuth 凭证。
+> 先用 Claude Code 官方 CLI 完成本机登录。OpenFox 不会读取或转发消费者 OAuth token。
 
 **Anthropic Messages API（原生格式）**
 
@@ -427,7 +516,7 @@ OpenFox 按协议族路由 Provider：
 - OpenAI 兼容协议：OpenRouter、OpenAI 兼容网关、Groq、智谱、vLLM 风格端点。
 - Gemini 原生协议：Google Gemini 通过原生 `models/*:generateContent` 和 `models/*:streamGenerateContent` 端点接入。
 - Anthropic 协议：Claude 原生 API 行为。
-- Codex/OAuth 路径：OpenAI OAuth/Token 认证路由。
+- 本地完整 Agent 协议：经过安全约束的 Codex CLI/app-server 与 Claude Code 进程，凭证始终留在厂商 CLI 边界内。
 
 这使得运行时保持轻量，同时让新的 OpenAI 兼容后端基本只需配置操作（`api_base` + `api_keys`）。
 

@@ -30,8 +30,8 @@ ingress are rejected.
 Build the two commands on each host from the recorded OpenFox commit:
 
 ```sh
-GOWORK=off go build -tags goolm -o /usr/local/bin/openfox-messenger-agent ./cmd/openfox-messenger-agent
-GOWORK=off go build -tags goolm -o /usr/local/bin/openfox-messenger-evidence ./cmd/openfox-messenger-evidence
+GOWORK=off go build -tags goolm,stdjson -o /usr/local/bin/openfox-messenger-agent ./cmd/openfox-messenger-agent
+GOWORK=off go build -tags goolm,stdjson -o /usr/local/bin/openfox-messenger-evidence ./cmd/openfox-messenger-evidence
 ```
 
 Create the local private directories explicitly:

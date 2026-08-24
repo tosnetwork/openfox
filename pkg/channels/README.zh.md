@@ -1265,8 +1265,8 @@ Manager 创建单一 `http.Server`，自动发现和注册：
 
 为新 channel 添加测试时：
 ```bash
-go test ./pkg/channels/matrix/ -v              # 子包测试
-go test ./pkg/channels/ -run TestSpecific -v    # 框架测试
+go test -tags goolm,stdjson ./pkg/channels/matrix/ -v              # 子包测试
+go test -tags goolm,stdjson ./pkg/channels/ -run TestSpecific -v    # 框架测试
 make test                                       # 全量测试
 ```
 

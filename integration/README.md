@@ -90,7 +90,7 @@ Optional fields:
 Example:
 
 ```bash
-TEST_COMMAND='go test ./pkg/mcp -run TestIntegration_RealConfiguredServer -v'
+TEST_COMMAND='go test -tags=goolm,stdjson,integration ./pkg/mcp -run TestIntegration_RealConfiguredServer -v'
 ```
 
 ## Running Integration Tests Locally
@@ -207,11 +207,11 @@ In `suite.env`, point `TEST_COMMAND` at the Go test you want CI to run.
 Examples:
 
 ```bash
-TEST_COMMAND='go test ./pkg/mcp -run TestIntegration_RealConfiguredServer -v'
+TEST_COMMAND='go test -tags=goolm,stdjson,integration ./pkg/mcp -run TestIntegration_RealConfiguredServer -v'
 ```
 
 ```bash
-TEST_COMMAND='go test ./pkg/somepkg -run TestIntegration_MyScenario -v'
+TEST_COMMAND='go test -tags=goolm,stdjson,integration ./pkg/somepkg -run TestIntegration_MyScenario -v'
 ```
 
 You can also run multiple tests if they share the same environment, but keep suites cohesive and easy to diagnose when they fail.

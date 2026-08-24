@@ -182,7 +182,7 @@ Credential patterns in OpenFox are:
 | NVIDIA NIM | `nvidia` | API key in `model_list[].api_keys` |
 | Cerebras | `cerebras` | API key in `model_list[].api_keys` |
 | Azure OpenAI | `azure` | `api_key` in `model_list`, or Microsoft Entra ID if built with `azidentity` support |
-| AWS Bedrock | `bedrock` | AWS credentials plus Bedrock-enabled build (`go build -tags bedrock`) |
+| AWS Bedrock | `bedrock` | AWS credentials plus Bedrock-enabled build (`go build -tags goolm,stdjson,bedrock`) |
 | Antigravity | `antigravity` | OAuth helper via `openfox auth login --provider antigravity` |
 | GitHub Copilot | `github-copilot` | External Copilot gRPC endpoint, default `localhost:4321` |
 | Ollama | `ollama` | Local endpoint, no API key required |

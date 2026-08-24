@@ -237,6 +237,41 @@ func TestModelConfig_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid hardened agent backend",
+			config: ModelConfig{
+				ModelName: "codex-local",
+				Model:     "codex-cli/codex-cli",
+				AgentBackend: AgentBackendConfig{
+					Mode:               "app-server",
+					Sandbox:            "read-only",
+					ApprovalPolicy:     "never",
+					SubscriptionUse:    "local-personal",
+					MaxConcurrentCalls: 1,
+					MaxOutputBytes:     4096,
+					TimeoutSeconds:     300,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "reject native backend tools without approval broker",
+			config: ModelConfig{
+				ModelName:    "codex-unsafe",
+				Model:        "codex-cli/codex-cli",
+				AgentBackend: AgentBackendConfig{AllowNativeTools: true},
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject full access agent sandbox",
+			config: ModelConfig{
+				ModelName:    "codex-unsafe",
+				Model:        "codex-cli/codex-cli",
+				AgentBackend: AgentBackendConfig{Sandbox: "danger-full-access"},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

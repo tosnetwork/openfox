@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/bus"
 	"github.com/tosnetwork/openfox/pkg/config"
 	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
 	"github.com/tosnetwork/openfox/pkg/logger"
@@ -489,7 +490,11 @@ func (al *AgentLoop) askSideQuestion(
 				applyThinkingOption(callOpts, provider, settings, false, agent.ID)
 			}
 		}
-		return provider.Chat(ctx, callMessages, nil, model, callOpts)
+		var inbound *bus.InboundContext
+		if opts != nil {
+			inbound = opts.Dispatch.InboundContext
+		}
+		return provider.Chat(withAgentBackendPrincipal(ctx, inbound), callMessages, nil, model, callOpts)
 	}
 
 	turnCtx := newTurnContext(nil, nil, nil)

@@ -45,6 +45,30 @@
       "thinking_level": "high"
     },
     {
+      "_comment": "No API key: first log in with the official Codex CLI. Keep this local and personal.",
+      "model_name": "codex-subscription",
+      "provider": "codex-cli",
+      "model": "codex-cli",
+      "auth_method": "subscription",
+      "workspace": "/absolute/path/to/openfox-workspace",
+      "agent_backend": {
+        "mode": "app-server",
+        "sandbox": "read-only",
+        "approval_policy": "never",
+        "allow_native_tools": false,
+        "subscription_use": "local-personal",
+        "owner_principal": {
+          "channel": "telegram",
+          "sender_id": "your-authenticated-sender-id"
+        },
+        "allow_internal": false,
+        "max_concurrent_calls": 1,
+        "max_output_bytes": 4194304,
+        "timeout_seconds": 300
+      },
+      "enabled": false
+    },
+    {
       "_comment": "Anthropic Messages API - use native format for direct Anthropic API access",
       "model_name": "claude-opus-4-6",
       "model": "anthropic-messages/claude-opus-4-6",

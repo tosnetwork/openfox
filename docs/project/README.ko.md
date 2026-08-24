@@ -411,7 +411,7 @@ OpenFox는 `model_list` 설정을 통해 30개 이상의 LLM 프로바이더를 
 | [Antigravity](https://console.cloud.google.com/) | `antigravity/` | OAuth | Google Cloud AI |
 | [AWS Bedrock](https://console.aws.amazon.com/bedrock)* | `bedrock/` | AWS 자격 증명 | AWS에서 Claude, Llama, Mistral 사용 |
 
-> \* AWS Bedrock은 빌드 태그 `go build -tags bedrock`이 필요합니다. 모든 AWS 파티션(aws, aws-cn, aws-us-gov)에서 엔드포인트를 자동 해석하려면 `api_base`를 리전명(예: `us-east-1`)으로 설정하세요. 전체 엔드포인트 URL을 직접 사용할 경우에는 환경 변수 또는 AWS config/profile을 통해 `AWS_REGION`도 함께 설정해야 합니다.
+> \* AWS Bedrock은 빌드 태그 `go build -tags goolm,stdjson,bedrock`이 필요합니다. 모든 AWS 파티션(aws, aws-cn, aws-us-gov)에서 엔드포인트를 자동 해석하려면 `api_base`를 리전명(예: `us-east-1`)으로 설정하세요. 전체 엔드포인트 URL을 직접 사용할 경우에는 환경 변수 또는 AWS config/profile을 통해 `AWS_REGION`도 함께 설정해야 합니다.
 
 <details>
 <summary><b>로컬 배포(Ollama, vLLM 등)</b></summary>

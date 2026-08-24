@@ -1,9 +1,9 @@
 package providers
 
 import (
+	"strings"
 	"testing"
 
-	"github.com/tosnetwork/openfox/pkg/auth"
 	"github.com/tosnetwork/openfox/pkg/config"
 )
 
@@ -190,9 +190,11 @@ func TestCreateProviderReturnsCodexCliProviderForCodexCode(t *testing.T) {
 	cfg.Agents.Defaults.ModelName = "test-codex"
 	cfg.ModelList = []*config.ModelConfig{
 		{
-			ModelName: "test-codex",
-			Model:     "codex-cli/codex-model",
-			Workspace: "/tmp/workspace",
+			ModelName:    "test-codex",
+			Model:        "codex-cli/codex-model",
+			AuthMethod:   "subscription",
+			Workspace:    "/tmp/workspace",
+			AgentBackend: testPersonalAgentBackend(),
 		},
 	}
 
@@ -211,9 +213,11 @@ func TestCreateProviderReturnsClaudeCliProviderForClaudeCli(t *testing.T) {
 	cfg.Agents.Defaults.ModelName = "test-claude-cli"
 	cfg.ModelList = []*config.ModelConfig{
 		{
-			ModelName: "test-claude-cli",
-			Model:     "claude-cli/claude-sonnet",
-			Workspace: "/tmp/workspace",
+			ModelName:    "test-claude-cli",
+			Model:        "claude-cli/claude-sonnet",
+			AuthMethod:   "subscription",
+			Workspace:    "/tmp/workspace",
+			AgentBackend: testPersonalAgentBackend(),
 		},
 	}
 
@@ -227,19 +231,7 @@ func TestCreateProviderReturnsClaudeCliProviderForClaudeCli(t *testing.T) {
 	}
 }
 
-func TestCreateProviderReturnsClaudeProviderForAnthropicOAuth(t *testing.T) {
-	originalGetCredential := getCredential
-	t.Cleanup(func() { getCredential = originalGetCredential })
-
-	getCredential = func(provider string) (*auth.AuthCredential, error) {
-		if provider != "anthropic" {
-			t.Fatalf("provider = %q, want anthropic", provider)
-		}
-		return &auth.AuthCredential{
-			AccessToken: "anthropic-token",
-		}, nil
-	}
-
+func TestCreateProviderRejectsDirectAnthropicOAuth(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.ModelName = "test-claude-oauth"
 	cfg.ModelList = []*config.ModelConfig{
@@ -250,15 +242,10 @@ func TestCreateProviderReturnsClaudeProviderForAnthropicOAuth(t *testing.T) {
 		},
 	}
 
-	provider, _, err := CreateProvider(cfg)
-	if err != nil {
-		t.Fatalf("CreateProvider() error = %v", err)
+	_, _, err := CreateProvider(cfg)
+	if err == nil || !strings.Contains(err.Error(), "direct Anthropic consumer OAuth is disabled") {
+		t.Fatalf("CreateProvider() error = %v, want direct OAuth rejection", err)
 	}
-
-	if _, ok := provider.(*ClaudeProvider); !ok {
-		t.Fatalf("provider type = %T, want *ClaudeProvider", provider)
-	}
-	// TODO: Test custom APIBase when createClaudeAuthProvider supports it
 }
 
 func TestCreateProviderReturnsCodexProviderForOpenAIOAuth(t *testing.T) {

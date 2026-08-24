@@ -63,6 +63,6 @@ AgentLoop (agent.go)
 
 ## Verification Results
 
-- ✅ `go build ./pkg/agent/...` - Pass
-- ✅ `go vet ./pkg/agent/...` - No warnings
-- ✅ `go test ./pkg/agent/... -skip "TestSeahorse|TestGlobalSkillFileContentChange"` - Pass
+- ✅ `go build -tags goolm,stdjson ./pkg/agent/...` - Pass
+- ✅ `go vet -tags goolm,stdjson ./pkg/agent/...` - No warnings
+- ✅ `go test -tags goolm,stdjson ./pkg/agent/... -skip "TestSeahorse|TestGlobalSkillFileContentChange"` - Pass

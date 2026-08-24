@@ -118,7 +118,6 @@ func TestParseJSONLEvents_MultipleMessages(t *testing.T) {
 	p := &CodexCliProvider{}
 	events := `{"type":"turn.started"}
 {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"First part."}}
-{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"ls","status":"completed"}}
 {"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Second part."}}
 {"type":"turn.completed"}`
 
@@ -161,54 +160,38 @@ func TestParseJSONLEvents_TurnFailed(t *testing.T) {
 	}
 }
 
-func TestParseJSONLEvents_ErrorWithContent(t *testing.T) {
+func TestParseJSONLEvents_ErrorWithContentFailsClosed(t *testing.T) {
 	p := &CodexCliProvider{}
-	// If there's an error but also content, return the content (partial success)
 	events := `{"type":"turn.started"}
 {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Partial result."}}
 {"type":"error","message":"connection reset"}
 {"type":"turn.failed","error":{"message":"connection reset"}}`
 
-	resp, err := p.parseJSONLEvents(events)
-	if err != nil {
-		t.Fatalf("should not error when content exists: %v", err)
-	}
-	if resp.Content != "Partial result." {
-		t.Errorf("Content = %q, want %q", resp.Content, "Partial result.")
+	if _, err := p.parseJSONLEvents(events); err == nil {
+		t.Fatal("partial content from a failed turn was accepted")
 	}
 }
 
 func TestParseJSONLEvents_EmptyOutput(t *testing.T) {
 	p := &CodexCliProvider{}
-	resp, err := p.parseJSONLEvents("")
-	if err != nil {
-		t.Fatalf("empty output should not error: %v", err)
-	}
-	if resp.Content != "" {
-		t.Errorf("Content = %q, want empty", resp.Content)
+	if _, err := p.parseJSONLEvents(""); err == nil {
+		t.Fatal("empty output was accepted as a completed turn")
 	}
 }
 
-func TestParseJSONLEvents_MalformedLines(t *testing.T) {
+func TestParseJSONLEvents_MalformedLinesFailClosed(t *testing.T) {
 	p := &CodexCliProvider{}
 	events := `not json at all
 {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Good line."}}
 another bad line
 {"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}`
 
-	resp, err := p.parseJSONLEvents(events)
-	if err != nil {
-		t.Fatalf("should skip malformed lines: %v", err)
-	}
-	if resp.Content != "Good line." {
-		t.Errorf("Content = %q, want %q", resp.Content, "Good line.")
-	}
-	if resp.Usage == nil || resp.Usage.TotalTokens != 15 {
-		t.Errorf("Usage.TotalTokens = %v, want 15", resp.Usage)
+	if _, err := p.parseJSONLEvents(events); err == nil {
+		t.Fatal("malformed JSONL was accepted")
 	}
 }
 
-func TestParseJSONLEvents_CommandExecution(t *testing.T) {
+func TestParseJSONLEvents_CommandExecutionFailsClosed(t *testing.T) {
 	p := &CodexCliProvider{}
 	events := `{"type":"turn.started"}
 {"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}
@@ -216,13 +199,23 @@ func TestParseJSONLEvents_CommandExecution(t *testing.T) {
 {"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Found 2 files."}}
 {"type":"turn.completed"}`
 
-	resp, err := p.parseJSONLEvents(events)
-	if err != nil {
-		t.Fatalf("parseJSONLEvents() error: %v", err)
+	if _, err := p.parseJSONLEvents(events); err == nil {
+		t.Fatal("native command execution was accepted")
 	}
-	// command_execution items should be skipped; only agent_message text is returned
-	if resp.Content != "Found 2 files." {
-		t.Errorf("Content = %q, want %q", resp.Content, "Found 2 files.")
+}
+
+func TestParseJSONLEvents_AllowsDisabledCodeModeWarningOnly(t *testing.T) {
+	p := &CodexCliProvider{}
+	safe := `{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable the host to use it."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"ok"}}
+{"type":"turn.completed"}`
+	if _, err := p.parseJSONLEvents(safe); err != nil {
+		t.Fatalf("fail-closed code-mode warning rejected: %v", err)
+	}
+	unsafe := `{"type":"item.completed","item":{"id":"item_0","type":"error","message":"native feature configuration was ignored"}}
+{"type":"turn.completed"}`
+	if _, err := p.parseJSONLEvents(unsafe); err == nil {
+		t.Fatal("unexpected item-level error was accepted")
 	}
 }
 
@@ -429,7 +422,7 @@ func TestCodexCliProvider_MockCLI_Success(t *testing.T) {
 
 	p := &CodexCliProvider{
 		command:   scriptPath,
-		workspace: "",
+		workspace: t.TempDir(),
 	}
 
 	messages := []Message{{Role: "user", Content: "Hello"}}
@@ -461,7 +454,7 @@ func TestCodexCliProvider_MockCLI_Error(t *testing.T) {
 
 	p := &CodexCliProvider{
 		command:   scriptPath,
-		workspace: "",
+		workspace: t.TempDir(),
 	}
 
 	messages := []Message{{Role: "user", Content: "Hello"}}
@@ -484,6 +477,8 @@ func TestCodexCliProvider_MockCLI_WithModel(t *testing.T) {
 	script := `#!/bin/bash
 # Write args to a file for verification
 echo "$@" > "` + filepath.Join(tmpDir, "args.txt") + `"
+echo "$PWD" > "` + filepath.Join(tmpDir, "cwd.txt") + `"
+echo "$CODEX_HOME" > "` + filepath.Join(tmpDir, "codex-home.txt") + `"
 echo '{"type":"item.completed","item":{"id":"1","type":"agent_message","text":"ok"}}'
 echo '{"type":"turn.completed"}'`
 
@@ -493,7 +488,7 @@ echo '{"type":"turn.completed"}'`
 
 	p := &CodexCliProvider{
 		command:   scriptPath,
-		workspace: "/tmp/test-workspace",
+		workspace: tmpDir,
 	}
 
 	messages := []Message{{Role: "user", Content: "test"}}
@@ -508,18 +503,48 @@ echo '{"type":"turn.completed"}'`
 		t.Fatalf("reading args: %v", err)
 	}
 	args := string(argsData)
-
 	if !strings.Contains(args, "-m gpt-5.3-codex") {
 		t.Errorf("args should contain model flag, got: %s", args)
 	}
-	if !strings.Contains(args, "-C /tmp/test-workspace") {
-		t.Errorf("args should contain workspace flag, got: %s", args)
+	fields := strings.Fields(args)
+	var cliWorkspace string
+	for index := range fields {
+		if fields[index] == "-C" && index+1 < len(fields) {
+			cliWorkspace = fields[index+1]
+			break
+		}
 	}
-	if !strings.Contains(args, "--json") {
+	if cliWorkspace == "" || !filepath.IsAbs(cliWorkspace) || cliWorkspace == tmpDir {
+		t.Fatalf("Codex did not receive an isolated absolute workspace: %q", args)
+	}
+	childCWD, err := os.ReadFile(filepath.Join(tmpDir, "cwd.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	childHome, err := os.ReadFile(filepath.Join(tmpDir, "codex-home.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(childCWD)) != cliWorkspace {
+		t.Fatalf("child cwd = %q, want %q", childCWD, cliWorkspace)
+	}
+	if strings.TrimSpace(string(childHome)) != filepath.Join(cliWorkspace, "codex-home") {
+		t.Fatalf("child CODEX_HOME = %q, want sterile home under %q", childHome, cliWorkspace)
+	}
+	if _, err := os.Stat(cliWorkspace); !os.IsNotExist(err) {
+		t.Fatalf("temporary Codex workspace was not removed: %v", err)
+	}
+	if !strings.Contains(args, "--strict-config") || !strings.Contains(args, "--json") {
 		t.Errorf("args should contain --json, got: %s", args)
 	}
-	if !strings.Contains(args, "--dangerously-bypass-approvals-and-sandbox") {
-		t.Errorf("args should contain bypass flag, got: %s", args)
+	if strings.Contains(args, "dangerously") {
+		t.Errorf("args must not contain dangerous bypass flags, got: %s", args)
+	}
+	if !strings.Contains(args, "--sandbox read-only") || !strings.Contains(args, "--ephemeral") {
+		t.Errorf("args should contain fail-closed sandbox flags, got: %s", args)
+	}
+	if !strings.Contains(args, "forced_login_method") || !strings.Contains(args, "shell_environment_policy.inherit") {
+		t.Errorf("args should force ChatGPT auth and an empty tool environment, got: %s", args)
 	}
 }
 
@@ -538,7 +563,7 @@ func TestCodexCliProvider_MockCLI_ContextCancel(t *testing.T) {
 
 	p := &CodexCliProvider{
 		command:   scriptPath,
-		workspace: "",
+		workspace: t.TempDir(),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -576,7 +601,7 @@ func TestCodexCliProvider_Integration(t *testing.T) {
 
 	p := &CodexCliProvider{
 		command:   codexPath,
-		workspace: "",
+		workspace: t.TempDir(),
 	}
 
 	messages := []Message{

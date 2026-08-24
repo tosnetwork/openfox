@@ -1,4 +1,4 @@
-.PHONY: all build install uninstall clean help test integration-test build-all lint-docs
+.PHONY: all build install uninstall clean help test integration-test build-all check-build-tags windows-check lint-docs
 
 # Build variables
 BINARY_NAME=openfox
@@ -36,7 +36,10 @@ GO?=go
 WEB_GO?=$(GO)
 CGO_ENABLED?=0
 GO_BUILD_TAGS?=goolm,stdjson
-GOFLAGS?=-v -tags $(GO_BUILD_TAGS)
+GOFLAGS?=-v
+# Internal composed flags are not caller-overridable: callers may extend
+# GOFLAGS and GO_BUILD_TAGS, but cannot remove the mandatory tags afterward.
+override GO_BUILD_FLAGS := $(GOFLAGS) -tags $(GO_BUILD_TAGS)
 GOCACHE?=$(CURDIR)/.cache/go-build
 GOMODCACHE?=$(CURDIR)/.cache/go-mod
 GOTOOLCHAIN?=auto
@@ -49,8 +52,31 @@ export GOWORK
 comma:=,
 empty:=
 space:=$(empty) $(empty)
-GO_BUILD_TAGS_NO_GOOLM:=$(subst $(space),$(comma),$(strip $(filter-out goolm,$(subst $(comma),$(space),$(GO_BUILD_TAGS)))))
-GOFLAGS_NO_GOOLM?=-v -tags $(GO_BUILD_TAGS_NO_GOOLM)
+ifneq ($(words $(GO_BUILD_TAGS)),1)
+$(error GO_BUILD_TAGS must be a comma-separated list without whitespace)
+endif
+override GO_BUILD_TAG_LIST := $(strip $(subst $(comma),$(space),$(GO_BUILD_TAGS)))
+ifeq ($(filter goolm,$(GO_BUILD_TAG_LIST)),)
+$(error GO_BUILD_TAGS must include goolm; OpenFox does not support another Matrix crypto backend)
+endif
+ifeq ($(filter stdjson,$(GO_BUILD_TAG_LIST)),)
+$(error GO_BUILD_TAGS must include stdjson; OpenFox supported builds use the standard JSON backend)
+endif
+ifneq ($(filter nocrypto,$(GO_BUILD_TAG_LIST)),)
+$(error GO_BUILD_TAGS must not include nocrypto; supported OpenFox Matrix builds require E2EE)
+endif
+# Matrix is excluded from linux/mipsle at the source boundary, so that target
+# removes the otherwise mandatory crypto tag instead of selecting a fallback.
+override GO_BUILD_TAGS_MIPSLE := $(subst $(space),$(comma),$(strip $(filter-out goolm,$(subst $(comma),$(space),$(GO_BUILD_TAGS)))))
+override GO_BUILD_FLAGS_MIPSLE := $(GOFLAGS) -tags $(GO_BUILD_TAGS_MIPSLE)
+WINDOWS_CHECK_ARCH?=amd64
+ifeq ($(OS),Windows_NT)
+WINDOWS_TEST_EXEC=
+else
+# Cross-compiled test executables cannot run on the host. `go test` still
+# compiles every test binary before handing it to this successful executor.
+WINDOWS_TEST_EXEC=-exec=true
+endif
 
 # Patch MIPS LE ELF e_flags (offset 36) for NaN2008-only kernels (e.g. Ingenic X2600).
 #
@@ -195,10 +221,10 @@ generate:
 	@echo "Run generate..."
 ifeq ($(OS),Windows_NT)
 	@$(POWERSHELL) "if (Test-Path -LiteralPath './$(CMD_DIR)/workspace') { Remove-Item -LiteralPath './$(CMD_DIR)/workspace' -Recurse -Force }"
-	@$(POWERSHELL) "$$env:GOOS=''; $$env:GOARCH=''; $(GO) generate ./..."
+	@$(POWERSHELL) "$$env:GOOS=''; $$env:GOARCH=''; $(GO) generate $(GO_BUILD_FLAGS) ./..."
 else
 	@rm -r ./$(CMD_DIR)/workspace 2>/dev/null || true
-	@GOOS=$$($(GO) env GOHOSTOS) GOARCH=$$($(GO) env GOHOSTARCH) $(GO) generate ./...
+	@GOOS=$$($(GO) env GOHOSTOS) GOARCH=$$($(GO) env GOHOSTARCH) $(GO) generate $(GO_BUILD_FLAGS) ./...
 endif
 	@echo "Run generate complete"
 
@@ -207,11 +233,11 @@ build: generate
 	@echo "Building $(BINARY_NAME)$(EXT) for $(PLATFORM)/$(ARCH)..."
 ifeq ($(OS),Windows_NT)
 	@$(POWERSHELL) "New-Item -ItemType Directory -Force -Path '$(BUILD_DIR)' | Out-Null"
-	@$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_PATH)$(EXT) ./$(CMD_DIR)
+	@$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_PATH)$(EXT) ./$(CMD_DIR)
 	@$(POWERSHELL) "Copy-Item -LiteralPath '$(BINARY_PATH)$(EXT)' -Destination '$(BUILD_DIR)/$(BINARY_NAME)$(EXT)' -Force"
 else
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=$(PLATFORM) GOARCH=$(ARCH) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_PATH)$(EXT) ./$(CMD_DIR)
+	@GOOS=$(PLATFORM) GOARCH=$(ARCH) $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_PATH)$(EXT) ./$(CMD_DIR)
 	@echo "Build complete: $(BINARY_PATH)$(EXT)"
 	@$(LNCMD) $(BINARY_NAME)-$(PLATFORM)-$(ARCH)$(EXT) $(BUILD_DIR)/$(BINARY_NAME)$(EXT)
 endif
@@ -248,11 +274,11 @@ build-whatsapp-native: generate
 	GOOS=linux GOARCH=arm64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 ./$(CMD_DIR)
 	GOOS=linux GOARCH=loong64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-loong64 ./$(CMD_DIR)
 	GOOS=linux GOARCH=riscv64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-riscv64 ./$(CMD_DIR)
-	GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build -tags $(GO_BUILD_TAGS_NO_GOOLM),whatsapp_native -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-mipsle ./$(CMD_DIR)
+	GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build -tags $(GO_BUILD_TAGS_MIPSLE),whatsapp_native -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-mipsle ./$(CMD_DIR)
 	$(call PATCH_MIPS_FLAGS,$(BUILD_DIR)/$(BINARY_NAME)-linux-mipsle)
 	GOOS=darwin GOARCH=arm64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./$(CMD_DIR)
 	GOOS=windows GOARCH=amd64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe ./$(CMD_DIR)
-## @$(GO) build $(GOFLAGS) -tags whatsapp_native -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) ./$(CMD_DIR)
+## @$(GO) build $(GO_BUILD_FLAGS) -tags whatsapp_native -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) ./$(CMD_DIR)
 	@echo "Build complete"
 ##	@ln -sf $(BINARY_NAME)-$(PLATFORM)-$(ARCH) $(BUILD_DIR)/$(BINARY_NAME)
 
@@ -260,21 +286,21 @@ build-whatsapp-native: generate
 build-linux-arm: generate
 	@echo "Building for linux/arm (GOARM=7)..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=linux GOARCH=arm GOARM=7 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm ./$(CMD_DIR)
+	GOOS=linux GOARCH=arm GOARM=7 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm ./$(CMD_DIR)
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY_NAME)-linux-arm"
 
 ## build-linux-arm64: Build for Linux ARM64 (e.g. Raspberry Pi Zero 2 W 64-bit)
 build-linux-arm64: generate
 	@echo "Building for linux/arm64..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=linux GOARCH=arm64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 ./$(CMD_DIR)
+	GOOS=linux GOARCH=arm64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 ./$(CMD_DIR)
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64"
 
 ## build-linux-mipsle: Build for Linux MIPS32 LE
 build-linux-mipsle: generate
 	@echo "Building for linux/mipsle (softfloat)..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build $(GOFLAGS_NO_GOOLM) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-mipsle ./$(CMD_DIR)
+	GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build $(GO_BUILD_FLAGS_MIPSLE) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-mipsle ./$(CMD_DIR)
 	$(call PATCH_MIPS_FLAGS,$(BUILD_DIR)/$(BINARY_NAME)-linux-mipsle)
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY_NAME)-linux-mipsle"
 
@@ -319,20 +345,43 @@ build-pi-zero: build-linux-arm build-linux-arm64
 build-all: generate
 	@echo "Building for multiple platforms..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 ./$(CMD_DIR)
-	GOOS=linux GOARCH=arm GOARM=7 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm ./$(CMD_DIR)
-	GOOS=linux GOARCH=arm64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 ./$(CMD_DIR)
+	GOOS=linux GOARCH=amd64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 ./$(CMD_DIR)
+	GOOS=linux GOARCH=arm GOARM=7 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm ./$(CMD_DIR)
+	GOOS=linux GOARCH=arm64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 ./$(CMD_DIR)
 	@$(PTY_PATCH_LOONG64)
-	GOOS=linux GOARCH=loong64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-loong64 ./$(CMD_DIR)
-	GOOS=linux GOARCH=riscv64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-riscv64 ./$(CMD_DIR)
-	GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build $(GOFLAGS_NO_GOOLM) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-mipsle ./$(CMD_DIR)
+	GOOS=linux GOARCH=loong64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-loong64 ./$(CMD_DIR)
+	GOOS=linux GOARCH=riscv64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-riscv64 ./$(CMD_DIR)
+	GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build $(GO_BUILD_FLAGS_MIPSLE) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-mipsle ./$(CMD_DIR)
 	$(call PATCH_MIPS_FLAGS,$(BUILD_DIR)/$(BINARY_NAME)-linux-mipsle)
-	GOOS=linux GOARCH=arm GOARM=7 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-armv7 ./$(CMD_DIR)
-	GOOS=darwin GOARCH=arm64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./$(CMD_DIR)
-	GOOS=windows GOARCH=amd64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe ./$(CMD_DIR)
-	GOOS=netbsd GOARCH=amd64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-netbsd-amd64 ./$(CMD_DIR)
-	GOOS=netbsd GOARCH=arm64 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-netbsd-arm64 ./$(CMD_DIR)
+	GOOS=linux GOARCH=arm GOARM=7 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-armv7 ./$(CMD_DIR)
+	GOOS=darwin GOARCH=arm64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./$(CMD_DIR)
+	GOOS=windows GOARCH=amd64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe ./$(CMD_DIR)
+	GOOS=netbsd GOARCH=amd64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-netbsd-amd64 ./$(CMD_DIR)
+	GOOS=netbsd GOARCH=arm64 $(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-netbsd-arm64 ./$(CMD_DIR)
 	@echo "Core builds complete"
+
+## check-build-tags: Verify mandatory Matrix build tags cannot be bypassed
+check-build-tags:
+	@echo "Checking mandatory Matrix build-tag gates..."
+	@$(MAKE) --no-print-directory -n generate GO_BUILD_FLAGS=-v | grep -q -- '-tags goolm,stdjson'
+	@$(MAKE) --no-print-directory -n generate GOFLAGS=-tags=nocrypto | grep -q -- '-tags=nocrypto -tags goolm,stdjson'
+	@! $(MAKE) --no-print-directory -n generate GO_BUILD_TAGS=goolm >/dev/null 2>&1
+	@! $(MAKE) --no-print-directory -n generate GO_BUILD_TAGS=goolm,stdjson,nocrypto >/dev/null 2>&1
+	@! $(MAKE) --no-print-directory -n generate GO_BUILD_TAGS=stdjson GO_BUILD_TAG_LIST=goolm,stdjson >/dev/null 2>&1
+	@! $(MAKE) --no-print-directory -n generate GO_BUILD_TAGS='goolm -tags=nocrypto' >/dev/null 2>&1
+	@$(MAKE) --no-print-directory -n build-linux-mipsle GO_BUILD_FLAGS_MIPSLE='-tags goolm' | grep -q -- 'go build -v -tags stdjson'
+	@$(MAKE) -C web --no-print-directory -n test GO_BUILD_FLAGS=-v | grep -q -- 'go test -v -tags goolm,stdjson'
+	@! $(MAKE) -C web --no-print-directory -n test GO_BUILD_TAGS=goolm,stdjson,nocrypto >/dev/null 2>&1
+	@! $(MAKE) -C web --no-print-directory -n test GO_BUILD_TAGS=stdjson GO_BUILD_TAG_LIST=goolm,stdjson >/dev/null 2>&1
+	@echo "Mandatory Matrix build-tag gates: OK"
+
+## windows-check: Compile all Windows production and test packages with portable Matrix crypto
+windows-check: generate
+	@echo "Compiling all production packages for windows/$(WINDOWS_CHECK_ARCH)..."
+	@CGO_ENABLED=0 GOOS=windows GOARCH=$(WINDOWS_CHECK_ARCH) $(GO) build $(GO_BUILD_FLAGS) ./...
+	@echo "Compiling all test packages for windows/$(WINDOWS_CHECK_ARCH)..."
+	@CGO_ENABLED=0 GOOS=windows GOARCH=$(WINDOWS_CHECK_ARCH) $(GO) test $(GO_BUILD_FLAGS) -run '^$$' $(WINDOWS_TEST_EXEC) ./...
+	@echo "Windows production and test package compilation complete"
 
 ## install: Install openfox to system and copy builtin skills
 install: build
@@ -372,13 +421,13 @@ endif
 
 ## vet: Run go vet for static analysis
 vet: generate
-	@packages="$$($(GO) list $(GOFLAGS) ./...)" && \
-		$(GO) vet $(GOFLAGS) $$(printf '%s\n' "$$packages" | grep -v '^github.com/tosnetwork/openfox/web/')
-	@cd web/backend && $(WEB_GO) vet ./...
+	@packages="$$($(GO) list $(GO_BUILD_FLAGS) ./...)" && \
+		$(GO) vet $(GO_BUILD_FLAGS) $$(printf '%s\n' "$$packages" | grep -v '^github.com/tosnetwork/openfox/web/')
+	@cd web/backend && $(WEB_GO) vet $(GO_BUILD_FLAGS) ./...
 
 ## test: Test Go code
 test: generate
-	@$(GO) test $(GOFLAGS) $$($(GO) list $(GOFLAGS) ./... | grep -v github.com/tosnetwork/openfox/web/)
+	@$(GO) test $(GO_BUILD_FLAGS) $$($(GO) list $(GO_BUILD_FLAGS) ./... | grep -v github.com/tosnetwork/openfox/web/)
 	@cd web && make test
 
 ## integration-test: Run Docker-backed integration test suites
@@ -412,8 +461,8 @@ update-deps:
 	@$(GO) get -u ./...
 	@$(GO) mod tidy
 
-## check: Run deps, fmt, vet, tests, and docs consistency checks
-check: deps fmt vet test lint-docs
+## check: Run deps, fmt, vet, tests, and consistency checks
+check: deps check-build-tags fmt vet test lint-docs
 
 ## run: Build and run openfox
 run: build
@@ -472,7 +521,7 @@ build-macos-app:build-launcher
 mem:
 	@echo "Building membench..."
 	@mkdir -p $(BUILD_DIR)
-	@$(GO) build -o $(BUILD_DIR)/membench ./cmd/membench
+	@$(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/membench ./cmd/membench
 	@echo "Build complete: $(BUILD_DIR)/membench"
 	@if [ ! -f $(BUILD_DIR)/memdata/locomo10.json ]; then \
 		echo "Downloading LOCOMO dataset..."; \

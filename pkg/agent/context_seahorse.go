@@ -72,7 +72,7 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 func providerToCompleteFn(provider providers.LLMProvider, model string) seahorse.CompleteFn {
 	return func(ctx context.Context, prompt string, opts seahorse.CompleteOptions) (string, error) {
 		resp, err := provider.Chat(
-			ctx,
+			providers.WithInternalAgentBackendPrincipal(ctx),
 			[]providers.Message{{Role: "user", Content: prompt}},
 			nil, // no tools for summarization
 			model,

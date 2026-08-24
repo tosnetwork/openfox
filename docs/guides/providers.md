@@ -126,6 +126,9 @@ This design also enables **multi-agent support** with flexible provider selectio
 | `api_keys` | string[] | Yes* | API key(s) for authentication. Multiple keys enable per-request rotation. Not required for local providers (Ollama, LM Studio, VLLM)                                                                                                        |
 | `api_base` | string | No | Override the default API endpoint URL                                                                                                                                                                                                       |
 | `proxy` | string | No | HTTP proxy URL for this model entry                                                                                                                                                                                                         |
+| `auth_method` | string | No | Authentication mode. Use `subscription` only with local `codex-cli` or `claude-cli` providers. |
+| `workspace` | string | Yes* | Existing workspace directory required by local full-agent providers. |
+| `agent_backend` | object | Yes* | Lifecycle and security policy for local full-agent providers; see below. |
 | `user_agent` | string | No | Custom `User-Agent` header sent with API requests (supported by OpenAI-compatible, Gemini, Anthropic, and Azure providers)                                                                                                                  |
 | `request_timeout` | int | No | Request timeout in seconds (default varies by provider)                                                                                                                                                                                     |
 | `max_tokens_field` | string | No | Override the max tokens field name in request body (e.g., `max_completion_tokens` for o1 models)                                                                                                                                            |
@@ -137,6 +140,79 @@ This design also enables **multi-agent support** with flexible provider selectio
 | `rpm` | int | No | Per-minute request rate limit                                                                                                                                                                                                               |
 | `fallbacks` | string[] | No | Fallback model names for automatic failover                                                                                                                                                                                                 |
 | `enabled` | bool | No | Whether this model entry is active (default: `true`)                                                                                                                                                                                        |
+
+#### Local subscription-backed agents (no API key)
+
+OpenFox can use an already authenticated Codex CLI or Claude Code installation on the same machine. These are full agent runtimes, not ordinary inference APIs, so OpenFox applies a separate `agent_backend` security policy.
+
+Log in with the vendor CLI first, then use one of these entries:
+
+```json
+{
+  "model_list": [
+    {
+      "model_name": "codex-subscription",
+      "provider": "codex-cli",
+      "model": "codex-cli",
+      "auth_method": "subscription",
+      "workspace": "/absolute/path/to/openfox-workspace",
+      "agent_backend": {
+        "mode": "app-server",
+        "sandbox": "read-only",
+        "approval_policy": "never",
+        "allow_native_tools": false,
+        "subscription_use": "local-personal",
+        "owner_principal": {
+          "channel": "telegram",
+          "sender_id": "your-authenticated-sender-id"
+        },
+        "allow_internal": false,
+        "max_concurrent_calls": 1,
+        "max_output_bytes": 4194304,
+        "timeout_seconds": 300
+      }
+    },
+    {
+      "model_name": "claude-subscription",
+      "provider": "claude-cli",
+      "model": "claude-code",
+      "auth_method": "subscription",
+      "workspace": "/absolute/path/to/openfox-workspace",
+      "agent_backend": {
+        "mode": "one-shot",
+        "sandbox": "read-only",
+        "approval_policy": "never",
+        "allow_native_tools": false,
+        "subscription_use": "local-personal",
+        "owner_principal": {
+          "channel": "telegram",
+          "sender_id": "your-authenticated-sender-id"
+        },
+        "allow_internal": false,
+        "max_concurrent_calls": 1,
+        "max_output_bytes": 4194304,
+        "timeout_seconds": 300
+      }
+    }
+  ]
+}
+```
+
+Security and product boundaries:
+
+- `workspace` is mandatory at execution time, is canonicalized, and must resolve to an existing directory.
+- OpenFox never enables danger/full-access modes. The default is read-only; `workspace-write` is the maximum configurable Codex sandbox.
+- Native Codex/Claude tools are currently required to remain disabled (`allow_native_tools: false`) until OpenFox has an interactive approval broker. OpenFox rejects app-server MCP/plugin/hook and native-execution events as a second fail-closed check.
+- Codex `app-server` uses the official local stdio protocol, isolated ephemeral threads, strict configuration parsing, a short-lived empty working directory, and a sterile `CODEX_HOME` containing only an opaque copy of `auth.json`. User configuration, MCP servers, plugins, hooks, skills, and project instructions are not loaded; OpenAI API-key and alternate endpoint environment overrides are removed. Personal mode requires a non-null ChatGPT account, forces ChatGPT login, disables login shells, and gives any unexpected native command an empty inherited environment.
+- Codex `one-shot` uses the same strict configuration, ChatGPT login, empty working directory, and sterile `CODEX_HOME` boundaries. Its JSONL parser rejects malformed, incomplete, failed, unknown, or native-execution event streams instead of accepting partial output.
+- `owner_principal` is mandatory and is matched against authenticated inbound `channel` and `sender_id` metadata. Requests without that trusted runtime identity are denied. OpenFox-owned background work is denied unless `allow_internal` is explicitly enabled.
+- Claude currently supports `one-shot` only and always disables its native tools. Before each personal turn, OpenFox requires Claude Code to report a first-party Claude.ai Pro or Max subscription and removes all `ANTHROPIC_*` and `CLAUDE_*` overrides from the child environment, including API-key, gateway, cloud-provider, alternate configuration directory, and external OAuth-token selectors. Anthropic's consumer login is for local personal use; do not expose it as a shared or multi-user inference proxy.
+- Because Claude subscription auth cannot use Claude Code's `--bare` API-key mode, OpenFox runs it from a short-lived empty directory with settings sources disabled. This prevents project `CLAUDE.md` files and settings from becoming a hidden instruction channel.
+- `provider: openai|anthropic` with `auth_method: oauth|token` is rejected. Use an API key for direct HTTP APIs or the local CLI providers above for a personal subscription.
+- Keep the CLI and OpenFox under the same OS user, protect the CLI credential store, and do not bind the backend protocol to a network socket.
+- If global OpenFox subprocess isolation is enabled, the isolated home directory does not automatically contain vendor login state. Explicitly expose only the required credential directory as read-only, or use API-key inference instead; never expose a whole host home directory.
+
+`agent_backend.mode` accepts `one-shot` or `app-server` (Codex only). `sandbox` accepts `read-only` or `workspace-write`; `approval_policy` currently accepts only `never`; `allow_native_tools` currently must be `false`. The output limit is one shared retained-byte budget across stdout and stderr; app-server protocol data is bounded separately per operation and its queue holds at most one message. Every operation has a five-minute default hard deadline; `timeout_seconds` accepts 1 through 3600 seconds.
 
 When streaming is disabled, omit the `streaming` block. Writing `"streaming": {"enabled": false}` is optional and not needed in generated or hand-written config.
 
@@ -533,7 +609,7 @@ OpenFox routes providers by protocol family:
 - OpenAI-compatible protocol: OpenRouter, OpenAI-compatible gateways, Groq, Zhipu, and vLLM-style endpoints.
 - Gemini native protocol: Google Gemini via the native `models/*:generateContent` and `models/*:streamGenerateContent` endpoints.
 - Anthropic protocol: Claude-native API behavior.
-- Codex/OAuth path: OpenAI OAuth/token authentication route.
+- Local full-agent protocol: hardened Codex CLI/app-server and Claude Code processes, with credentials retained inside the vendor CLI boundary.
 
 This keeps the runtime lightweight while making new OpenAI-compatible backends mostly a config operation (`api_base` + `api_keys`).
 

@@ -17,13 +17,17 @@ jobs:
           go-version-file: go.mod
 
       - name: Run go generate
-        run: go generate ./...
+        run: go generate -tags goolm,stdjson ./...
+
+      - name: Verify mandatory Matrix build tags
+        run: make check-build-tags
 
       - name: Golangci Lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.10.1
           args: --build-tags=goolm,stdjson
+          only-new-issues: true
 
   vuln_check:
     name: Security Check
@@ -60,7 +64,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Run go generate
-        run: go generate ./...
+        run: go generate -tags goolm,stdjson ./...
 
       - name: Run go test
         run: go test -tags goolm,stdjson ./...

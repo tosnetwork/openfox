@@ -155,7 +155,7 @@ openfox gateway
 
 OpenFox は 2 つの WhatsApp 接続方式をサポートしています：
 
-- **ネイティブ（推奨）：** プロセス内で [whatsmeow](https://github.com/tulir/whatsmeow) を使用。独立した Bridge は不要です。`"use_native": true` に設定し、`bridge_url` を空にします。初回実行時に WhatsApp で QR コードをスキャン（リンクデバイス）。セッションはワークスペース配下（例: `workspace/whatsapp/`）に保存されます。ネイティブチャネルは**オプション**ビルドで、`-tags whatsapp_native` でコンパイルします（例: `make build-whatsapp-native` または `go build -tags whatsapp_native ./cmd/...`）。
+- **ネイティブ（推奨）：** プロセス内で [whatsmeow](https://github.com/tulir/whatsmeow) を使用。独立した Bridge は不要です。`"use_native": true` に設定し、`bridge_url` を空にします。初回実行時に WhatsApp で QR コードをスキャン（リンクデバイス）。セッションはワークスペース配下（例: `workspace/whatsapp/`）に保存されます。ネイティブチャネルは**オプション**ビルドで、`-tags goolm,stdjson,whatsapp_native` でコンパイルします（例: `make build-whatsapp-native` または `go build -tags goolm,stdjson,whatsapp_native ./cmd/...`）。
 - **Bridge：** 外部 WebSocket Bridge に接続。`bridge_url`（例: `ws://localhost:3001`）を設定し、`use_native` を false のままにします。
 
 **設定（ネイティブ）**

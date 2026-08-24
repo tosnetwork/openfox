@@ -389,21 +389,76 @@ func TestChat_SkipsModelFlagForEmptyModel(t *testing.T) {
 	}
 }
 
-func TestChat_EmptyWorkspaceDoesNotSetDir(t *testing.T) {
-	mockJSON := `{"type":"result","result":"ok","session_id":"s"}`
-	script := createMockCLI(t, mockJSON, "", 0)
-
+func TestChat_RejectsEmptyWorkspace(t *testing.T) {
 	p := NewClaudeCliProvider("")
-	p.command = script
-
-	resp, err := p.Chat(context.Background(), []Message{
+	_, err := p.Chat(context.Background(), []Message{
 		{Role: "user", Content: "Hello"},
 	}, nil, "", nil)
-	if err != nil {
-		t.Fatalf("Chat() with empty workspace error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "workspace is required") {
+		t.Fatalf("Chat() error = %v, want required-workspace error", err)
 	}
-	if resp.Content != "ok" {
-		t.Errorf("Content = %q, want %q", resp.Content, "ok")
+}
+
+func TestChat_UsesFailClosedClaudeFlags(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args.txt")
+	script := createArgCaptureCLI(t, argsFile)
+	p := NewClaudeCliProvider(t.TempDir())
+	p.command = script
+
+	if _, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "Hi"}}, nil, "", nil); err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	argsBytes, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(argsBytes)
+	for _, required := range []string{"--safe-mode", "--tools", "--permission-mode plan", "--no-session-persistence"} {
+		if !strings.Contains(args, required) {
+			t.Errorf("CLI args missing %q: %s", required, args)
+		}
+	}
+	if strings.Contains(args, "dangerously") {
+		t.Errorf("CLI args must not contain dangerous bypass flags: %s", args)
+	}
+}
+
+func TestVerifyClaudePersonalSubscription(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock CLI scripts are not supported on Windows")
+	}
+	for _, test := range []struct {
+		name    string
+		status  string
+		wantErr bool
+	}{
+		{
+			name:   "Claude Max",
+			status: `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}`,
+		},
+		{
+			name:    "developer API",
+			status:  `{"loggedIn":true,"authMethod":"apiKey","apiProvider":"firstParty","subscriptionType":""}`,
+			wantErr: true,
+		},
+		{
+			name:    "free account",
+			status:  `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"free"}`,
+			wantErr: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			command := filepath.Join(dir, "claude")
+			script := "#!/bin/sh\necho '" + test.status + "'\n"
+			if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			err := verifyClaudePersonalSubscription(context.Background(), command, os.Environ(), 4096)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("verifyClaudePersonalSubscription() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
 	}
 }
 

@@ -405,7 +405,7 @@ OpenFox menyokong 30+ penyedia LLM melalui konfigurasi `model_list`. Gunakan for
 | [Antigravity](https://console.cloud.google.com/) | `antigravity/` | OAuth | Google Cloud AI |
 | [AWS Bedrock](https://console.aws.amazon.com/bedrock)* | `bedrock/` | Kelayakan AWS | Claude, Llama, Mistral pada AWS |
 
-> \* AWS Bedrock memerlukan tag binaan: `go build -tags bedrock`. Tetapkan `api_base` kepada nama rantau (cth. `us-east-1`) untuk resolusi endpoint automatik merentasi semua partition AWS. Apabila menggunakan URL endpoint penuh, anda juga perlu mengkonfigurasi `AWS_REGION` melalui pemboleh ubah persekitaran.
+> \* AWS Bedrock memerlukan tag binaan: `go build -tags goolm,stdjson,bedrock`. Tetapkan `api_base` kepada nama rantau (cth. `us-east-1`) untuk resolusi endpoint automatik merentasi semua partition AWS. Apabila menggunakan URL endpoint penuh, anda juga perlu mengkonfigurasi `AWS_REGION` melalui pemboleh ubah persekitaran.
 
 <details>
 <summary><b>Deployment tempatan (Ollama, vLLM, dll.)</b></summary>

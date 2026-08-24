@@ -2,87 +2,149 @@ package cliprovider
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
-
-	"github.com/tosnetwork/openfox/pkg/isolation"
+	"sync"
 )
 
 // CodexCliProvider implements LLMProvider by wrapping the codex CLI as a subprocess.
 type CodexCliProvider struct {
 	command   string
 	workspace string
+	options   RuntimeOptions
+	sem       chan struct{}
+	initMu    sync.Mutex
 }
 
 // NewCodexCliProvider creates a new Codex CLI provider.
 func NewCodexCliProvider(workspace string) *CodexCliProvider {
+	return NewCodexCliProviderWithOptions(RuntimeOptions{Workspace: workspace})
+}
+
+// NewCodexCliProviderWithOptions creates a hardened one-shot Codex provider.
+func NewCodexCliProviderWithOptions(options RuntimeOptions) *CodexCliProvider {
+	options = options.normalized()
 	return &CodexCliProvider{
 		command:   "codex",
-		workspace: workspace,
+		workspace: options.Workspace,
+		options:   options,
+		sem:       make(chan struct{}, options.MaxConcurrentCalls),
 	}
 }
 
 // Chat implements LLMProvider.Chat by executing the codex CLI in non-interactive mode.
 func (p *CodexCliProvider) Chat(
-	ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]any,
+	ctx context.Context, messages []Message, tools []ToolDefinition, model string, _ map[string]any,
 ) (*LLMResponse, error) {
 	if p.command == "" {
 		return nil, fmt.Errorf("codex command not configured")
 	}
+	options, sem := p.runtime()
+	if err := options.validate(); err != nil {
+		return nil, err
+	}
+	if err := options.authorizePrincipal(ctx); err != nil {
+		return nil, err
+	}
+	ctx, cancel := options.boundedContext(ctx)
+	defer cancel()
+	if _, err := options.canonicalWorkspace(); err != nil {
+		return nil, err
+	}
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	sterileDir, err := os.MkdirTemp("", "openfox-codex-cli-backend-")
+	if err != nil {
+		return nil, fmt.Errorf("create sterile codex-cli workspace: %w", err)
+	}
+	defer os.RemoveAll(sterileDir)
 
 	prompt := p.buildPrompt(messages, tools)
 
 	args := []string{
 		"exec",
+		"--strict-config",
 		"--json",
-		"--dangerously-bypass-approvals-and-sandbox",
+		"--sandbox", options.Sandbox,
 		"--skip-git-repo-check",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--ignore-rules",
 		"--color", "never",
+		"-c", `forced_login_method="chatgpt"`,
+		"-c", `allow_login_shell=false`,
+		"-c", `shell_environment_policy.inherit="none"`,
+		"-c", `shell_environment_policy.ignore_default_excludes=false`,
+		"-c", `shell_environment_policy.experimental_use_profile=false`,
+	}
+	if !options.AllowNativeTools {
+		for _, feature := range disabledCodexNativeFeatures() {
+			args = append(args, "--disable", feature)
+		}
+		args = append(args, "-c", `web_search="disabled"`)
 	}
 	if model != "" && model != "codex-cli" {
 		args = append(args, "-m", model)
 	}
-	if p.workspace != "" {
-		args = append(args, "-C", p.workspace)
-	}
+	args = append(args, "-C", sterileDir)
 	args = append(args, "-") // read prompt from stdin
 
 	cmd := exec.CommandContext(ctx, p.command, args...)
-	cmd.Stdin = bytes.NewReader([]byte(prompt))
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	// Execute the CLI through the shared isolation wrapper so external provider
-	// processes honor the configured isolation policy.
-	err := isolation.Run(cmd)
+	cmd.Dir = sterileDir
+	if err = configureSterileCodexHome(cmd, sterileDir); err != nil {
+		return nil, err
+	}
+	configureCommandCancellation(cmd)
+	stdout, stderr, err := runCommandBounded(ctx, cmd, []byte(prompt), options.MaxOutputBytes)
+	if errors.Is(err, ErrOutputLimit) {
+		return nil, err
+	}
 
 	// Parse JSONL from stdout even if exit code is non-zero,
 	// because codex writes diagnostic noise to stderr (e.g. rollout errors)
 	// but still produces valid JSONL output.
-	if stdoutStr := stdout.String(); stdoutStr != "" {
-		resp, parseErr := p.parseJSONLEvents(stdoutStr)
+	if stdout != "" {
+		resp, parseErr := p.parseJSONLEvents(stdout)
 		if parseErr == nil && resp != nil && (resp.Content != "" || len(resp.ToolCalls) > 0) {
 			return resp, nil
 		}
 	}
 
 	if err != nil {
-		if ctx.Err() == context.Canceled {
+		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if stderrStr := stderr.String(); stderrStr != "" {
-			return nil, fmt.Errorf("codex cli error: %s", stderrStr)
+		if stderr != "" {
+			return nil, fmt.Errorf("codex cli error: %s", strings.TrimSpace(stderr))
 		}
 		return nil, fmt.Errorf("codex cli error: %w", err)
 	}
 
-	return p.parseJSONLEvents(stdout.String())
+	return p.parseJSONLEvents(stdout)
+}
+
+func (p *CodexCliProvider) runtime() (RuntimeOptions, chan struct{}) {
+	p.initMu.Lock()
+	defer p.initMu.Unlock()
+	options := p.options
+	if options.Workspace == "" {
+		options.Workspace = p.workspace
+	}
+	options = options.normalized()
+	p.options = options
+	if p.sem == nil {
+		p.sem = make(chan struct{}, options.MaxConcurrentCalls)
+	}
+	return options, p.sem
 }
 
 // GetDefaultModel returns the default model identifier.
@@ -146,6 +208,7 @@ type codexEventItem struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
+	Message  string `json:"message,omitempty"`
 	Command  string `json:"command,omitempty"`
 	Status   string `json:"status,omitempty"`
 	ExitCode *int   `json:"exit_code,omitempty"`
@@ -167,8 +230,10 @@ func (p *CodexCliProvider) parseJSONLEvents(output string) (*LLMResponse, error)
 	var contentParts []string
 	var usage *UsageInfo
 	var lastError string
+	turnCompleted := false
 
 	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 64*1024), p.options.normalized().MaxOutputBytes)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -177,15 +242,20 @@ func (p *CodexCliProvider) parseJSONLEvents(output string) (*LLMResponse, error)
 
 		var event codexEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue // skip malformed lines
+			return nil, fmt.Errorf("decode codex cli event: %w", err)
 		}
 
 		switch event.Type {
-		case "item.completed":
-			if event.Item != nil && event.Item.Type == "agent_message" && event.Item.Text != "" {
+		case "thread.started", "turn.started":
+		case "item.started", "item.updated", "item.completed":
+			if err := validateCodexExecItem(event.Item); err != nil {
+				return nil, err
+			}
+			if event.Type == "item.completed" && event.Item.Type == "agent_message" && event.Item.Text != "" {
 				contentParts = append(contentParts, event.Item.Text)
 			}
 		case "turn.completed":
+			turnCompleted = true
 			if event.Usage != nil {
 				promptTokens := event.Usage.InputTokens + event.Usage.CachedInputTokens
 				usage = &UsageInfo{
@@ -200,11 +270,19 @@ func (p *CodexCliProvider) parseJSONLEvents(output string) (*LLMResponse, error)
 			if event.Error != nil {
 				lastError = event.Error.Message
 			}
+		default:
+			return nil, fmt.Errorf("codex cli emitted unsupported event %q", event.Type)
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan codex cli events: %w", err)
+	}
 
-	if lastError != "" && len(contentParts) == 0 {
+	if lastError != "" {
 		return nil, fmt.Errorf("codex cli: %s", lastError)
+	}
+	if !turnCompleted {
+		return nil, fmt.Errorf("codex cli stream ended without a completed turn")
 	}
 
 	content := strings.Join(contentParts, "\n")
@@ -224,4 +302,26 @@ func (p *CodexCliProvider) parseJSONLEvents(output string) (*LLMResponse, error)
 		FinishReason: finishReason,
 		Usage:        usage,
 	}, nil
+}
+
+func validateCodexExecItem(item *codexEventItem) error {
+	if item == nil {
+		return fmt.Errorf("codex cli emitted an item event without an item")
+	}
+	switch item.Type {
+	case "agent_message", "reasoning", "todo_list":
+		return nil
+	case "error":
+		// Current Codex versions surface this explicit fail-closed state as a
+		// non-fatal error item when the code-mode host feature is disabled.
+		if strings.HasPrefix(
+			strings.TrimSpace(item.Message),
+			"Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed",
+		) {
+			return nil
+		}
+		return fmt.Errorf("codex cli reported item error: %s", strings.TrimSpace(item.Message))
+	default:
+		return fmt.Errorf("codex cli attempted prohibited native item %q", item.Type)
+	}
 }

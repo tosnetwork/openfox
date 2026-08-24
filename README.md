@@ -80,6 +80,33 @@ Prerequisites:
 - Go 1.25+
 - Node.js 22+ and pnpm 10.33.0+ for Web UI / launcher builds
 
+OpenFox officially supports only the pure-Go `goolm` backend for Matrix
+end-to-end encryption. On targets that include Matrix, repository build, test,
+CI, container, and release commands supply the `goolm` build tag and do not
+require CGO. Targets that exclude Matrix at the source boundary do not select
+another crypto backend. Use the supported entry points:
+
+```bash
+make build
+make test
+```
+
+When invoking the Go tool directly, callers must pass `-tags goolm,stdjson`.
+Untagged builds may select an unsupported upstream crypto backend. Do not use
+`nocrypto`: OpenFox's Matrix channel requires end-to-end encryption, and the
+supported Makefile entry points reject that tag.
+
+The repository includes a gate that compiles every production package and
+every test package for Windows with `goolm`:
+
+```bash
+make windows-check
+```
+
+When this target is run from Linux or macOS, Windows test executables are
+compiled but not executed. Run the normal test suite on a Windows host to
+exercise Windows APIs such as Job Objects and `LockFileEx` at runtime.
+
 ```bash
 git clone https://github.com/tosnetwork/openfox.git
 cd openfox

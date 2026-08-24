@@ -177,7 +177,9 @@ func (p *Pipeline) CallLLM(
 		messagesForCall []providers.Message,
 		toolDefsForCall []providers.ToolDefinition,
 	) (*providers.LLMResponse, error) {
-		providerCtx, providerCancel := context.WithCancel(turnCtx)
+		providerCtx, providerCancel := context.WithCancel(
+			withAgentBackendPrincipal(turnCtx, ts.opts.Dispatch.InboundContext),
+		)
 		ts.setProviderCancel(providerCancel)
 		defer func() {
 			providerCancel()
@@ -243,7 +245,10 @@ func (p *Pipeline) CallLLM(
 			candidateThinking := thinkingSettingsFromModelConfig(candidateCfg)
 			applyThinkingOption(callOpts, candidateProvider, candidateThinking, true, ts.agent.ID)
 			exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
-			return candidateProvider.Chat(ctx, messagesForCall, candidateTools, candidate.Model, callOpts)
+			return candidateProvider.Chat(
+				withAgentBackendPrincipal(ctx, ts.opts.Dispatch.InboundContext),
+				messagesForCall, candidateTools, candidate.Model, callOpts,
+			)
 		}
 
 		if len(exec.activeCandidates) > 1 && p.Fallback != nil {

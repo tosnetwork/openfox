@@ -2,6 +2,7 @@ package providers
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/tosnetwork/openfox/pkg/config"
@@ -23,10 +24,22 @@ func testProviderWorkspace(t *testing.T, provider any) string {
 	return field.String()
 }
 
+func testPersonalAgentBackend() config.AgentBackendConfig {
+	return config.AgentBackendConfig{
+		SubscriptionUse: "local-personal",
+		OwnerPrincipal: config.AgentBackendPrincipalConfig{
+			Channel: "test", SenderID: "owner",
+		},
+	}
+}
+
 func TestCreateProvider_ClaudeCli(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelList = []*config.ModelConfig{
-		{ModelName: "claude-sonnet-4.6", Model: "claude-cli/claude-sonnet-4.6", Workspace: "/test/ws"},
+		{
+			ModelName: "claude-sonnet-4.6", Model: "claude-cli/claude-sonnet-4.6",
+			AuthMethod: "subscription", Workspace: "/test/ws", AgentBackend: testPersonalAgentBackend(),
+		},
 	}
 	cfg.Agents.Defaults.ModelName = "claude-sonnet-4.6"
 
@@ -47,7 +60,10 @@ func TestCreateProvider_ClaudeCli(t *testing.T) {
 func TestCreateProvider_ClaudeCode(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelList = []*config.ModelConfig{
-		{ModelName: "claude-code", Model: "claude-cli/claude-code"},
+		{
+			ModelName: "claude-code", Model: "claude-cli/claude-code",
+			AuthMethod: "subscription", AgentBackend: testPersonalAgentBackend(),
+		},
 	}
 	cfg.Agents.Defaults.ModelName = "claude-code"
 
@@ -63,7 +79,10 @@ func TestCreateProvider_ClaudeCode(t *testing.T) {
 func TestCreateProvider_ClaudeCodec(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelList = []*config.ModelConfig{
-		{ModelName: "claudecode", Model: "claude-cli/claudecode"},
+		{
+			ModelName: "claudecode", Model: "claude-cli/claudecode",
+			AuthMethod: "subscription", AgentBackend: testPersonalAgentBackend(),
+		},
 	}
 	cfg.Agents.Defaults.ModelName = "claudecode"
 
@@ -76,24 +95,19 @@ func TestCreateProvider_ClaudeCodec(t *testing.T) {
 	}
 }
 
-func TestCreateProvider_ClaudeCliDefaultWorkspace(t *testing.T) {
+func TestCreateProvider_ClaudeCliRejectsMissingWorkspace(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelList = []*config.ModelConfig{
-		{ModelName: "claude-cli", Model: "claude-cli/claude-sonnet"},
+		{
+			ModelName: "claude-cli", Model: "claude-cli/claude-sonnet",
+			AuthMethod: "subscription", AgentBackend: testPersonalAgentBackend(),
+		},
 	}
 	cfg.Agents.Defaults.ModelName = "claude-cli"
 	cfg.Agents.Defaults.Workspace = ""
 
-	provider, _, err := CreateProvider(cfg)
-	if err != nil {
-		t.Fatalf("CreateProvider error = %v", err)
-	}
-
-	cliProvider, ok := provider.(*ClaudeCliProvider)
-	if !ok {
-		t.Fatalf("returned %T, want *ClaudeCliProvider", provider)
-	}
-	if got := testProviderWorkspace(t, cliProvider); got != "." {
-		t.Errorf("workspace = %q, want %q (default)", got, ".")
+	_, _, err := CreateProvider(cfg)
+	if err == nil || !strings.Contains(err.Error(), "workspace is required") {
+		t.Fatalf("CreateProvider error = %v, want required-workspace error", err)
 	}
 }

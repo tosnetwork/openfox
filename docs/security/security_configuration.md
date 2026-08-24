@@ -546,7 +546,7 @@ web:
 Run the security configuration tests:
 
 ```bash
-go test ./pkg/config -run TestSecurityConfig
+go test -tags goolm,stdjson ./pkg/config -run TestSecurityConfig
 ```
 
 ## Troubleshooting

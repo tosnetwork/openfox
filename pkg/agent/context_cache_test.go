@@ -604,7 +604,7 @@ description: delete-me-v1
 // TestConcurrentBuildSystemPromptWithCache verifies that multiple goroutines
 // can safely call BuildSystemPromptWithCache concurrently without producing
 // empty results, panics, or data races.
-// Run with: go test -race ./pkg/agent/ -run TestConcurrentBuildSystemPromptWithCache
+// Run with: go test -tags goolm,stdjson -race ./pkg/agent/ -run TestConcurrentBuildSystemPromptWithCache
 func TestConcurrentBuildSystemPromptWithCache(t *testing.T) {
 	tmpDir := setupWorkspace(t, map[string]string{
 		"AGENT.md":             "# Agent\nConcurrency test agent.",

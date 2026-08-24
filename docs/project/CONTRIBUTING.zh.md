@@ -71,8 +71,8 @@ make check       # 完整的提交前检查：deps + fmt + vet + test
 
 ```bash
 make test                                    # 运行所有测试
-go test -run TestName -v ./pkg/session/      # 运行单个测试
-go test -bench=. -benchmem -run='^$' ./...  # 运行基准测试
+go test -tags goolm,stdjson -run TestName -v ./pkg/session/      # 运行单个测试
+go test -tags goolm,stdjson -bench=. -benchmem -run='^$' ./...  # 运行基准测试
 ```
 
 ### 代码风格

@@ -21,7 +21,7 @@ import (
 //
 // Run with:
 //
-//	go test -tags=integration ./pkg/mcp -run TestIntegration_RealConfiguredServer -v
+//	go test -tags=goolm,stdjson,integration ./pkg/mcp -run TestIntegration_RealConfiguredServer -v
 //
 // Minimum configuration:
 //

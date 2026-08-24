@@ -11,7 +11,7 @@ import (
 )
 
 // NewWhatsAppNativeChannel returns an error when the binary was not built with -tags whatsapp_native.
-// Build with: go build -tags whatsapp_native ./cmd/...
+// Build with: go build -tags goolm,stdjson,whatsapp_native ./cmd/...
 func NewWhatsAppNativeChannel(
 	bc *config.Channel,
 	name string,

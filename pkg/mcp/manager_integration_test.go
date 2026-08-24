@@ -19,7 +19,7 @@ import (
 	"github.com/tosnetwork/openfox/pkg/config"
 )
 
-// Run with: go test -tags=integration ./pkg/mcp
+// Run with: go test -tags=goolm,stdjson,integration ./pkg/mcp
 func TestIntegration_StreamableHTTPCompatibility(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

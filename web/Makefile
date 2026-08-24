@@ -7,13 +7,22 @@ WEB_GO?=$(GO)
 CGO_ENABLED?=0
 GO_BUILD_TAGS?=goolm,stdjson
 GOFLAGS?=-v
-GO_BUILD_FLAGS=$(GOFLAGS) -tags $(GO_BUILD_TAGS)
+override GO_BUILD_FLAGS := $(GOFLAGS) -tags $(GO_BUILD_TAGS)
 comma:=,
 empty:=
 space:=$(empty) $(empty)
-GO_BUILD_TAG_LIST:=$(strip $(subst $(comma),$(space),$(GO_BUILD_TAGS)))
+ifneq ($(words $(GO_BUILD_TAGS)),1)
+$(error GO_BUILD_TAGS must be a comma-separated list without whitespace)
+endif
+override GO_BUILD_TAG_LIST := $(strip $(subst $(comma),$(space),$(GO_BUILD_TAGS)))
 ifeq ($(filter goolm,$(GO_BUILD_TAG_LIST)),)
 $(error GO_BUILD_TAGS must include goolm; OpenFox does not support another Matrix crypto backend)
+endif
+ifeq ($(filter stdjson,$(GO_BUILD_TAG_LIST)),)
+$(error GO_BUILD_TAGS must include stdjson; OpenFox supported builds use the standard JSON backend)
+endif
+ifneq ($(filter nocrypto,$(GO_BUILD_TAG_LIST)),)
+$(error GO_BUILD_TAGS must not include nocrypto; supported OpenFox Matrix builds require E2EE)
 endif
 GOCACHE?=$(abspath ../.cache/go-build)
 GOMODCACHE?=$(abspath ../.cache/go-mod)

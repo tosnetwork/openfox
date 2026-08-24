@@ -38,7 +38,7 @@ func TestIntegration_RealCodexCLI_LocalPersonalSubscription(t *testing.T) {
 }
 
 // TestIntegration_RealCodexCLI tests the CodexCliProvider with a real codex CLI.
-// Run with: go test -tags=integration ./pkg/providers/...
+// Run with: go test -tags=goolm,stdjson,integration ./pkg/providers/...
 func TestIntegration_RealCodexCLI(t *testing.T) {
 	path, err := exec.LookPath("codex")
 	if err != nil {

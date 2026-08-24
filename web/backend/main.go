@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	go build -o openfox-web ./web/backend/
+//	go build -tags goolm,stdjson -o openfox-web ./web/backend/
 //	./openfox-web [config.json]
 //	./openfox-web -public config.json
 

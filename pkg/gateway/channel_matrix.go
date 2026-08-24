@@ -15,6 +15,8 @@ import (
 	// - freebsd/arm: modernc.org/libc v1.67.6 fails to compile due to broken
 	//   generated 32-bit FreeBSD code (size_t/uint64 and int32/int64 mismatches
 	//   in libc_freebsd.go).
+	// - android/*: the Android core and launcher bundle does not ship the Matrix
+	//   channel or its sqlite-backed E2EE state.
 	//
 	// This means Matrix is currently unavailable on those targets. The proper
 	// long-term fix is to split Matrix basic support from its E2EE/sqlite-backed

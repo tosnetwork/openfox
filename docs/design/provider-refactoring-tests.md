@@ -110,20 +110,20 @@ pkg/
 
 ```bash
 # Run all tests
-go test ./pkg/... -v
+go test -tags goolm,stdjson ./pkg/... -v
 
 # Run with data race detection
-go test ./pkg/... -race
+go test -tags goolm,stdjson ./pkg/... -race
 
 # Run specific package tests
-go test ./pkg/config -v
-go test ./pkg/providers -v
+go test -tags goolm,stdjson ./pkg/config -v
+go test -tags goolm,stdjson ./pkg/providers -v
 
 # Run E2E tests
-go test ./pkg/providers -run TestE2E -v
+go test -tags goolm,stdjson ./pkg/providers -run TestE2E -v
 
 # Run performance tests
-go test ./pkg/providers -bench=. -benchmem
+go test -tags goolm,stdjson ./pkg/providers -bench=. -benchmem
 ```
 
 ---

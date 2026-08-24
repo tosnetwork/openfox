@@ -1267,8 +1267,8 @@ Existing test files:
 
 To add tests for a new channel:
 ```bash
-go test ./pkg/channels/matrix/ -v              # Sub-package tests
-go test ./pkg/channels/ -run TestSpecific -v    # Framework tests
+go test -tags goolm,stdjson ./pkg/channels/matrix/ -v              # Sub-package tests
+go test -tags goolm,stdjson ./pkg/channels/ -run TestSpecific -v    # Framework tests
 make test                                       # Full test suite
 ```
 

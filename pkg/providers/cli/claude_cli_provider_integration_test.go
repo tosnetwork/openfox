@@ -38,7 +38,7 @@ func TestIntegration_RealClaudeCLI_LocalPersonalSubscription(t *testing.T) {
 }
 
 // TestIntegration_RealClaudeCLI tests the ClaudeCliProvider with a real claude CLI.
-// Run with: go test -tags=integration ./pkg/providers/...
+// Run with: go test -tags=goolm,stdjson,integration ./pkg/providers/...
 func TestIntegration_RealClaudeCLI(t *testing.T) {
 	// Check if claude CLI is available
 	path, err := exec.LookPath("claude")

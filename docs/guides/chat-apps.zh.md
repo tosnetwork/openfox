@@ -163,7 +163,7 @@ openfox gateway
 
 OpenFox 支持两种 WhatsApp 连接方式：
 
-- **原生（推荐）：** 进程内使用 [whatsmeow](https://github.com/tulir/whatsmeow)，无需独立 Bridge。设置 `"use_native": true` 并留空 `bridge_url`。首次运行时用 WhatsApp 扫描 QR 码（关联设备）。会话存储在工作区下（如 `workspace/whatsapp/`）。原生渠道为**可选**构建，使用 `-tags whatsapp_native` 编译（如 `make build-whatsapp-native` 或 `go build -tags whatsapp_native ./cmd/...`）。
+- **原生（推荐）：** 进程内使用 [whatsmeow](https://github.com/tulir/whatsmeow)，无需独立 Bridge。设置 `"use_native": true` 并留空 `bridge_url`。首次运行时用 WhatsApp 扫描 QR 码（关联设备）。会话存储在工作区下（如 `workspace/whatsapp/`）。原生渠道为**可选**构建，使用 `-tags goolm,stdjson,whatsapp_native` 编译（如 `make build-whatsapp-native` 或 `go build -tags goolm,stdjson,whatsapp_native ./cmd/...`）。
 - **Bridge：** 连接外部 WebSocket Bridge。设置 `bridge_url`（如 `ws://localhost:3001`），保持 `use_native` 为 false。
 
 **配置（原生）**

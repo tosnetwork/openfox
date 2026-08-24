@@ -63,6 +63,6 @@ AgentLoop (agent.go)
 
 ## 验证结果
 
-- ✅ `go build ./pkg/agent/...` - 通过
-- ✅ `go vet ./pkg/agent/...` - 无警告
-- ✅ `go test ./pkg/agent/... -skip "TestSeahorse|TestGlobalSkillFileContentChange"` - 通过
+- ✅ `go build -tags goolm,stdjson ./pkg/agent/...` - 通过
+- ✅ `go vet -tags goolm,stdjson ./pkg/agent/...` - 无警告
+- ✅ `go test -tags goolm,stdjson ./pkg/agent/... -skip "TestSeahorse|TestGlobalSkillFileContentChange"` - 通过

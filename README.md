@@ -81,9 +81,10 @@ Prerequisites:
 - Node.js 22+ and pnpm 10.33.0+ for Web UI / launcher builds
 
 OpenFox officially supports only the pure-Go `goolm` backend for Matrix
-end-to-end encryption. Repository build, test, CI, container, and release
-commands supply the `goolm` build tag and do not require CGO. Use the supported
-entry points:
+end-to-end encryption. On targets that include Matrix, repository build, test,
+CI, container, and release commands supply the `goolm` build tag and do not
+require CGO. Targets that exclude Matrix at the source boundary do not select
+another crypto backend. Use the supported entry points:
 
 ```bash
 make build
@@ -92,7 +93,8 @@ make test
 
 When invoking the Go tool directly, callers must pass `-tags goolm,stdjson`.
 Untagged builds may select an unsupported upstream crypto backend. Do not use
-`nocrypto`: OpenFox's Matrix channel requires end-to-end encryption.
+`nocrypto`: OpenFox's Matrix channel requires end-to-end encryption, and the
+supported Makefile entry points reject that tag.
 
 The repository includes a gate that compiles every production package and
 every test package for Windows with `goolm`:

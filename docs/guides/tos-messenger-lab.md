@@ -177,7 +177,7 @@ evidence.
 Build and inspect a deployment plan first:
 
 ```sh
-GOWORK=off go build -o /tmp/openfox-messenger-lab-deploy \
+GOWORK=off go build -tags goolm,stdjson -o /tmp/openfox-messenger-lab-deploy \
   ./cmd/openfox-messenger-lab-deploy
 
 /tmp/openfox-messenger-lab-deploy -check -replace-units \

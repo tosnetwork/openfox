@@ -6,7 +6,7 @@
 // Copyright (c) 2026 OpenFox contributors
 
 // Package bedrock provides a stub implementation when built without the bedrock tag.
-// To enable AWS Bedrock support, build with: go build -tags bedrock
+// To enable AWS Bedrock support, build with: go build -tags goolm,stdjson,bedrock
 package bedrock
 
 import (

@@ -46,8 +46,8 @@ Useful focused commands include:
 
 ```bash
 make test
-go test -run TestName -v ./pkg/session/
-go test -bench=. -benchmem -run='^$' ./...
+go test -tags goolm,stdjson -run TestName -v ./pkg/session/
+go test -tags goolm,stdjson -bench=. -benchmem -run='^$' ./...
 make fmt
 make vet
 make lint

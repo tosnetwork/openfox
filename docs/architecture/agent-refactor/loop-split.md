@@ -69,7 +69,7 @@ The `turnState`, `turnExecution`, `Control`, `ToolControl`, and `LLMPhase` types
 
 All existing tests pass. The 5 failing tests (`TestGlobalSkillFileContentChange` and 4 Seahorse tests) are pre-existing failures unrelated to this refactor.
 
-Build status: `go build ./pkg/agent/...` passes with no errors.
+Build status: `go build -tags goolm,stdjson ./pkg/agent/...` passes with no errors.
 
 ## See Also
 

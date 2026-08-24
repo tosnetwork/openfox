@@ -50,7 +50,9 @@ func (p *ClaudeCliProvider) Chat(
 	ctx, cancel := options.boundedContext(ctx)
 	defer cancel()
 	if options.AllowNativeTools {
-		return nil, fmt.Errorf("claude-cli native tools are disabled: route tools through the OpenFox authorization loop")
+		return nil, fmt.Errorf(
+			"claude-cli native tools are disabled: route tools through the OpenFox authorization loop",
+		)
 	}
 	if _, err := options.canonicalWorkspace(); err != nil {
 		return nil, err

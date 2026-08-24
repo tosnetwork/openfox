@@ -5,9 +5,9 @@ import "context"
 // AgentBackend is the lifecycle boundary for a local full-agent runtime. It is
 // intentionally distinct from a stateless HTTP inference provider.
 type AgentBackend interface {
-	Start(context.Context) error
-	Health(context.Context) error
-	RunTurn(context.Context, AgentTurnRequest) (*AgentTurnResult, error)
+	Start(ctx context.Context) error
+	Health(ctx context.Context) error
+	RunTurn(ctx context.Context, req AgentTurnRequest) (*AgentTurnResult, error)
 	Capabilities() AgentBackendCapabilities
 	Close()
 }

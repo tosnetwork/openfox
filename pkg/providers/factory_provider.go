@@ -253,7 +253,7 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 	case "anthropic":
 		if authMethod == "oauth" || authMethod == "token" {
 			return nil, "", fmt.Errorf(
-				"direct Anthropic consumer OAuth is disabled; configure provider %q with auth_method %q for local personal use",
+				"direct Anthropic consumer OAuth is disabled; use provider %q with auth_method %q",
 				"claude-cli", "subscription",
 			)
 		}

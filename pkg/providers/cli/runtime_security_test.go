@@ -27,7 +27,12 @@ func TestRunCommandBoundedSharesBudgetAcrossStreams(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell test is not supported on Windows")
 	}
-	cmd := exec.CommandContext(context.Background(), "sh", "-c", "head -c 3072 /dev/zero | tr '\\0' o; head -c 3072 /dev/zero | tr '\\0' e >&2")
+	cmd := exec.CommandContext(
+		context.Background(),
+		"sh",
+		"-c",
+		"head -c 3072 /dev/zero | tr '\\0' o; head -c 3072 /dev/zero | tr '\\0' e >&2",
+	)
 	stdout, stderr, err := runCommandBounded(context.Background(), cmd, nil, 4096)
 	if !errors.Is(err, ErrOutputLimit) {
 		t.Fatalf("error = %v, want ErrOutputLimit", err)

@@ -137,7 +137,7 @@ func (p *CodexAppServerProvider) startLocked(ctx context.Context) error {
 	}()
 	cmd := exec.Command(p.command, args...)
 	cmd.Dir = sterileDir
-	if err := configureSterileCodexHome(cmd, sterileDir); err != nil {
+	if err = configureSterileCodexHome(cmd, sterileDir); err != nil {
 		return err
 	}
 	configureProcessGroup(cmd)
@@ -335,7 +335,7 @@ func (p *CodexAppServerProvider) RunTurn(ctx context.Context, req AgentTurnReque
 
 	p.nextID++
 	turnReqID := p.nextID
-	if err := p.sendLocked(map[string]any{
+	err = p.sendLocked(map[string]any{
 		"id":     turnReqID,
 		"method": "turn/start",
 		"params": map[string]any{
@@ -343,7 +343,8 @@ func (p *CodexAppServerProvider) RunTurn(ctx context.Context, req AgentTurnReque
 			"input":          []map[string]any{{"type": "text", "text": req.Prompt}},
 			"approvalPolicy": p.options.ApprovalPolicy,
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		p.stopLocked()
 		return nil, err
 	}
@@ -694,4 +695,5 @@ func parseTurnCompleted(raw json.RawMessage, threadID string) (status, turnID, m
 }
 
 var _ AgentBackend = (*CodexAppServerProvider)(nil)
+
 var _ LLMProvider = (*CodexAppServerProvider)(nil)

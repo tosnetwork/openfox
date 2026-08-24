@@ -27,6 +27,7 @@ jobs:
         with:
           version: v2.10.1
           args: --build-tags=goolm,stdjson
+          only-new-issues: true
 
   vuln_check:
     name: Security Check

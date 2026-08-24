@@ -36,7 +36,10 @@ func testPersonalAgentBackend() config.AgentBackendConfig {
 func TestCreateProvider_ClaudeCli(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelList = []*config.ModelConfig{
-		{ModelName: "claude-sonnet-4.6", Model: "claude-cli/claude-sonnet-4.6", AuthMethod: "subscription", Workspace: "/test/ws", AgentBackend: testPersonalAgentBackend()},
+		{
+			ModelName: "claude-sonnet-4.6", Model: "claude-cli/claude-sonnet-4.6",
+			AuthMethod: "subscription", Workspace: "/test/ws", AgentBackend: testPersonalAgentBackend(),
+		},
 	}
 	cfg.Agents.Defaults.ModelName = "claude-sonnet-4.6"
 
@@ -57,7 +60,10 @@ func TestCreateProvider_ClaudeCli(t *testing.T) {
 func TestCreateProvider_ClaudeCode(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelList = []*config.ModelConfig{
-		{ModelName: "claude-code", Model: "claude-cli/claude-code", AuthMethod: "subscription", AgentBackend: testPersonalAgentBackend()},
+		{
+			ModelName: "claude-code", Model: "claude-cli/claude-code",
+			AuthMethod: "subscription", AgentBackend: testPersonalAgentBackend(),
+		},
 	}
 	cfg.Agents.Defaults.ModelName = "claude-code"
 
@@ -73,7 +79,10 @@ func TestCreateProvider_ClaudeCode(t *testing.T) {
 func TestCreateProvider_ClaudeCodec(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelList = []*config.ModelConfig{
-		{ModelName: "claudecode", Model: "claude-cli/claudecode", AuthMethod: "subscription", AgentBackend: testPersonalAgentBackend()},
+		{
+			ModelName: "claudecode", Model: "claude-cli/claudecode",
+			AuthMethod: "subscription", AgentBackend: testPersonalAgentBackend(),
+		},
 	}
 	cfg.Agents.Defaults.ModelName = "claudecode"
 
@@ -89,7 +98,10 @@ func TestCreateProvider_ClaudeCodec(t *testing.T) {
 func TestCreateProvider_ClaudeCliRejectsMissingWorkspace(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ModelList = []*config.ModelConfig{
-		{ModelName: "claude-cli", Model: "claude-cli/claude-sonnet", AuthMethod: "subscription", AgentBackend: testPersonalAgentBackend()},
+		{
+			ModelName: "claude-cli", Model: "claude-cli/claude-sonnet",
+			AuthMethod: "subscription", AgentBackend: testPersonalAgentBackend(),
+		},
 	}
 	cfg.Agents.Defaults.ModelName = "claude-cli"
 	cfg.Agents.Defaults.Workspace = ""

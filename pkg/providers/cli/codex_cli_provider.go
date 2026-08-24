@@ -100,7 +100,7 @@ func (p *CodexCliProvider) Chat(
 
 	cmd := exec.CommandContext(ctx, p.command, args...)
 	cmd.Dir = sterileDir
-	if err := configureSterileCodexHome(cmd, sterileDir); err != nil {
+	if err = configureSterileCodexHome(cmd, sterileDir); err != nil {
 		return nil, err
 	}
 	configureCommandCancellation(cmd)

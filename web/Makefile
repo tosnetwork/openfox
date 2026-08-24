@@ -6,7 +6,15 @@ GO?=go
 WEB_GO?=$(GO)
 CGO_ENABLED?=0
 GO_BUILD_TAGS?=goolm,stdjson
-GOFLAGS?=-v -tags $(GO_BUILD_TAGS)
+GOFLAGS?=-v
+GO_BUILD_FLAGS=$(GOFLAGS) -tags $(GO_BUILD_TAGS)
+comma:=,
+empty:=
+space:=$(empty) $(empty)
+GO_BUILD_TAG_LIST:=$(strip $(subst $(comma),$(space),$(GO_BUILD_TAGS)))
+ifeq ($(filter goolm,$(GO_BUILD_TAG_LIST)),)
+$(error GO_BUILD_TAGS must include goolm; OpenFox does not support another Matrix crypto backend)
+endif
 GOCACHE?=$(abspath ../.cache/go-build)
 GOMODCACHE?=$(abspath ../.cache/go-mod)
 GOTOOLCHAIN?=local
@@ -132,7 +140,7 @@ dev-frontend:
 
 # Start backend dev server
 dev-backend:
-	cd $(BACKEND_DIR) && OPENFOX_BINARY="$(OPENFOX_BINARY)" ${WEB_GO} run -ldflags "$(LAUNCHER_LDFLAGS)" . $(BACKEND_ARGS)
+	cd $(BACKEND_DIR) && OPENFOX_BINARY="$(OPENFOX_BINARY)" ${WEB_GO} run $(GO_BUILD_FLAGS) -ldflags "$(LAUNCHER_LDFLAGS)" . $(BACKEND_ARGS)
 
 # Build frontend and embed into Go binary
 build: build-frontend
@@ -141,7 +149,7 @@ ifeq ($(OS),Windows_NT)
 else
 	@mkdir -p "$$(dirname "$(OUTPUT)")"
 endif
-	${WEB_GO} build $(GOFLAGS) -ldflags "$(LAUNCHER_LDFLAGS)" -o "$(OUTPUT)" ./$(BACKEND_DIR)/
+	${WEB_GO} build $(GO_BUILD_FLAGS) -ldflags "$(LAUNCHER_LDFLAGS)" -o "$(OUTPUT)" ./$(BACKEND_DIR)/
 
 # Build launcher for Android ARM64 (frontend must already be built)
 build-android-arm64: build-frontend
@@ -186,16 +194,16 @@ ifeq ($(OS),Windows_NT)
 else
 	@mkdir -p "$$(dirname "$(OPENFOX_BINARY)")"
 endif
-	@$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o "$(OPENFOX_BINARY)" ../cmd/openfox
+	@$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o "$(OPENFOX_BINARY)" ../cmd/openfox
 
 # Run all tests
 test:
-	cd $(BACKEND_DIR) && ${WEB_GO} test ./...
+	cd $(BACKEND_DIR) && ${WEB_GO} test $(GO_BUILD_FLAGS) ./...
 	cd $(FRONTEND_DIR) && pnpm lint
 
 # Lint and format
 lint:
-	cd $(BACKEND_DIR) && ${WEB_GO} vet ./...
+	cd $(BACKEND_DIR) && ${WEB_GO} vet $(GO_BUILD_FLAGS) ./...
 	cd $(FRONTEND_DIR) && pnpm check
 
 # Clean build artifacts

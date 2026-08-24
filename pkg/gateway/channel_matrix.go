@@ -6,9 +6,9 @@ import (
 	// Matrix currently pulls in mautrix crypto and modernc sqlite transitively.
 	//
 	// We exclude it on:
-	// - linux/mipsle: mautrix crypto falls back to libolm when the `goolm` build
-	//   tag is unavailable, and modernc.org/sqlite/modernc.org/libc also lacks a
-	//   working build path for our mipsle + softfloat target.
+	// - linux/mipsle: the supported `goolm` crypto backend and
+	//   modernc.org/sqlite/modernc.org/libc lack a working build path for our
+	//   mipsle + softfloat target.
 	// - netbsd/*: modernc.org/sqlite v1.46.1 fails to compile due to broken
 	//   generated mutex code on NetBSD (for example sqlite_netbsd_amd64.go calls
 	//   mu.enter/mu.leave, but the generated mutex type does not define them).

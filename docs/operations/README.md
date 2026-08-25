@@ -7,8 +7,9 @@
   measured three-hour financial, evolution, infrastructure, and operator
   findings.
 - [Bounded Adaptive Earning Campaigns](bounded-adaptive-earning-campaigns.md):
-  gated Campaign 1--6 objectives, conditions, experiment prompts, causal
-  acceptance thresholds, and stop rules for constrained earning evolution.
+  gated Campaign 1--6 plus trusted-capability and mobile-control objectives,
+  conditions, experiment prompts, causal acceptance thresholds, and stop rules
+  for constrained earning evolution.
 
 Operational docs for debugging, diagnosis, and production troubleshooting.
 

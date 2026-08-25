@@ -11,5 +11,6 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Hook System Guide](hooks/README.md): current hook architecture and protocol details.
 - [Agent Refactor](agent-refactor/README.md): notes and checkpoints for the agent refactor work.
 - [Autonomous Earning Agent Implementation Plan](../design/autonomous-earning-agent.md): current-state gap analysis and a phased design for discovering, executing, and settling profitable work under owner policy.
+- [Trusted Capabilities and Mobile Owner Control Plane](../design/trusted-capabilities-and-mobile-control-plane.md): reuse-first Skills/MCP sourcing, maintained finance and market-insight Skills, and authority-aware Web/iOS/Android controls.
 
 For proposal-style or exploratory docs, also see [`../design/`](../design/).

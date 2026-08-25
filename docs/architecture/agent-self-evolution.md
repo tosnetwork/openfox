@@ -10,6 +10,20 @@ The cold path groups related task records, checks the configured success thresho
 
 The apply path validates generated `SKILL.md` content before writing. Invalid drafts are rejected before a skill directory or file is created.
 
+## Relationship to Capability Sourcing
+
+The current self-evolution implementation does not search Skills registries or
+MCP catalogs before drafting, and it does not establish publisher trust,
+artifact provenance, permission safety, or comparative capability fitness.
+Those are target behaviors, not current guarantees.
+
+The target sourcing policy is reuse-first: use an exact already admitted
+capability, then evaluate candidates from owner-approved Skills or MCP sources,
+and create a local candidate only when no external candidate passes. Evolution
+must not edit an installed third-party Skill in place or turn a marketplace
+result into trusted runtime authority. See [Trusted Capabilities and Mobile
+Owner Control Plane](../design/trusted-capabilities-and-mobile-control-plane.md).
+
 ## Safety Considerations
 
 Evolution creates a persistent feedback loop: user input can become a task record, task records can be clustered into an LLM-generated draft, and an accepted draft can become `SKILL.md` content that is loaded into future agent prompts. Treat generated skill content as prompt-sensitive material, especially in `apply` mode.

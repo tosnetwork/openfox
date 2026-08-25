@@ -164,6 +164,17 @@ func (manager *PublicationManager) IntentByDigest(digest string) (commerce.Signe
 	return commerce.SignedAgentIntent{}, false
 }
 
+// PublicationByObjectID returns the issuer's exact durable record so a crash
+// recovery path can resume or reuse one immutable publication instead of
+// inventing a second semantic Intent.
+func (manager *PublicationManager) PublicationByObjectID(objectID string) (PublicationRecord, bool) {
+	if manager == nil || objectID == "" {
+		return PublicationRecord{}, false
+	}
+	record, found := manager.doc.Records[objectID]
+	return record, found
+}
+
 // MaintainSupply publishes a new deterministic service object or creates the
 // next issuer-linked revision only when its signed payload/economics changed.
 // Timestamps alone never create a revision, which keeps an autonomous loop

@@ -82,7 +82,7 @@ func normalizeDeployableDescription(body string) string {
 		}
 		value := strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
 		value = cleanDeployableDescription(value)
-		lines[i] = "description: " + value
+		lines[i] = "description: " + yamlQuotedScalar(value)
 		break
 	}
 	return strings.Join(lines, "\n")

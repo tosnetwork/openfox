@@ -664,8 +664,22 @@ func runCommand() *cobra.Command {
 					paymentBuilder := openfoxearning.DirectPaymentRequestBuilder{OwnerID: cfg.Earning.OwnerID,
 						AgentID: cfg.Earning.AgentID, ExternalAdapters: map[string]openfoxearning.ExternalAdapterIdentity{}}
 					if cfg.Earning.Gates.Execution {
+						workspace := cfg.WorkspacePath()
+						if err := os.MkdirAll(workspace, 0o700); err != nil {
+							return err
+						}
+						learningCapability := ""
+						if len(cfg.Earning.Capabilities) == 1 {
+							learningCapability = cfg.Earning.Capabilities[0].Identifier
+						}
+						learning, learningErr := openfoxearning.NewEvolutionExecutionLearningRecorder(
+							cfg.Evolution, workspace, cfg.Earning.AgentID, llm, model, learningCapability)
+						if learningErr != nil {
+							return learningErr
+						}
 						engagementAutonomy.Runners = openfoxearning.AgreementRunnerFactoryFunc(func(record openfoxearning.EngagementRecord) (openfoxearning.AgreementRunner, error) {
-							return openfoxearning.LLMTaskRunner{Provider: llm, Model: model, Agreement: record.Agreement.Body, OutputDirectory: outputDirectory}, nil
+							return openfoxearning.LLMTaskRunner{Provider: llm, Model: model, Agreement: record.Agreement.Body,
+								OutputDirectory: outputDirectory, SkillWorkspace: workspace, Learning: learning}, nil
 						})
 						engagementAutonomy.Delivery = openfoxearning.MessengerDeliverySink{Messenger: &openfoxearning.MessengerSink{Client: messenger}}
 					}

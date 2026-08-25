@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/tosnetwork/openfox/pkg/config"
@@ -413,12 +414,16 @@ func buildSkillDocument(name, description, body string) string {
 	return strings.Join([]string{
 		"---",
 		"name: " + strings.TrimSpace(name),
-		"description: " + strings.TrimSpace(description),
+		"description: " + yamlQuotedScalar(description),
 		"---",
 		"",
 		strings.TrimSpace(body),
 		"",
 	}, "\n")
+}
+
+func yamlQuotedScalar(value string) string {
+	return strconv.Quote(strings.TrimSpace(value))
 }
 
 func titleCaseSkillName(name string) string {

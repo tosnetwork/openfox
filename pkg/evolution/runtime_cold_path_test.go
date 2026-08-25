@@ -1229,7 +1229,7 @@ func TestRuntime_RunColdPathOnce_RegeneratesAfterQuarantinedDraft(t *testing.T) 
 		Store:  store,
 		DraftGenerator: stubDraftGenerator{
 			draft: evolution.SkillDraft{
-				ID:              "draft-new",
+				ID:              "draft-old",
 				TargetSkillName: "weather",
 				DraftType:       evolution.DraftTypeShortcut,
 				ChangeKind:      evolution.ChangeKindAppend,
@@ -1254,8 +1254,8 @@ func TestRuntime_RunColdPathOnce_RegeneratesAfterQuarantinedDraft(t *testing.T) 
 	if len(drafts) != 2 {
 		t.Fatalf("len(drafts) = %d, want 2", len(drafts))
 	}
-	if drafts[1].ID != "draft-new" {
-		t.Fatalf("drafts[1].ID = %q, want draft-new", drafts[1].ID)
+	if drafts[0].Status != evolution.DraftStatusQuarantined || drafts[1].ID != "draft-old-attempt-2" {
+		t.Fatalf("draft history was overwritten: %+v", drafts)
 	}
 }
 

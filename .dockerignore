@@ -3,6 +3,7 @@
 .git
 .gitignore
 build/
+.cache/
 .openfox/
 config/
 .env

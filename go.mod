@@ -1,6 +1,6 @@
 module github.com/tosnetwork/openfox
 
-go 1.26.5
+go 1.26.6
 
 require (
 	fyne.io/systray v1.12.2

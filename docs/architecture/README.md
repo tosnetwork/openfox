@@ -10,5 +10,6 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Agent Self-Evolution](agent-self-evolution.md): learning records, draft generation, application modes, and state layout.
 - [Hook System Guide](hooks/README.md): current hook architecture and protocol details.
 - [Agent Refactor](agent-refactor/README.md): notes and checkpoints for the agent refactor work.
+- [Autonomous Earning Agent Implementation Plan](../design/autonomous-earning-agent.md): current-state gap analysis and a phased design for discovering, executing, and settling profitable work under owner policy.
 
 For proposal-style or exploratory docs, also see [`../design/`](../design/).

@@ -483,6 +483,7 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 		}
 
 		draft = rt.finalizeDraft(workspace, rule, matches, evidence, draft)
+		draft.ID = nextDraftAttemptID(draft, existingDrafts)
 		draftSaved := false
 		logger.DebugCF("evolution", "Finalized skill draft", map[string]any{
 			"workspace":    workspace,
@@ -526,6 +527,28 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 		"run_id":             runID,
 	})
 	return rt.runLifecycleMaintenance(workspace, store, runID)
+}
+
+func nextDraftAttemptID(draft SkillDraft, existing []SkillDraft) string {
+	base := strings.TrimSpace(draft.ID)
+	if base == "" {
+		return base
+	}
+	occupied := make(map[string]bool, len(existing))
+	for _, prior := range existing {
+		if prior.WorkspaceID == draft.WorkspaceID {
+			occupied[prior.ID] = true
+		}
+	}
+	if !occupied[base] {
+		return base
+	}
+	for attempt := 2; ; attempt++ {
+		candidate := fmt.Sprintf("%s-attempt-%d", base, attempt)
+		if !occupied[candidate] {
+			return candidate
+		}
+	}
 }
 
 func (rt *Runtime) recordsForColdPathInputs(

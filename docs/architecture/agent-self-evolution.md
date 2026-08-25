@@ -45,3 +45,4 @@ When `evolution.enabled` is false, `mode` is treated as disabled at runtime.
 By default, evolution state is stored under the workspace. `state_dir` can redirect that state to another directory. The state includes learning records, clustered pattern records, drafts, and skill profiles.
 
 For user-facing configuration fields, see the [Configuration Guide](../guides/configuration.md#agent-self-evolution).
+Earning executions have stricter disclosure and reuse rules; see [Autonomous Earning Evolution](../guides/autonomous-earning-evolution.md).

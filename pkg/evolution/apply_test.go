@@ -103,9 +103,28 @@ func TestApplier_CreateDraftRendersDeployableSkillWithoutLearningTrace(t *testin
 	}
 	if !strings.Contains(
 		content,
-		"description: Perform mathematical calculations by applying specific theorems and their associated rules.",
+		`description: "Perform mathematical calculations by applying specific theorems and their associated rules."`,
 	) {
 		t.Fatalf("deployed skill did not clean description:\n%s", content)
+	}
+}
+
+func TestApplierAcceptsGeneratedDescriptionContainingColon(t *testing.T) {
+	workspace := t.TempDir()
+	generator := evolution.NewDefaultDraftGenerator(workspace)
+	draft, err := generator.GenerateDraft(context.Background(), evolution.LearningRecord{
+		ID: "rule-colon", Kind: evolution.RecordKindPattern, WorkspaceID: workspace,
+		Summary:       "Reusable earning capability localization task: preserve protocol identifiers",
+		TaskRecordIDs: []string{"task-1", "task-2"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+		return time.Unix(1_700_000_000, 0).UTC()
+	})
+	if err := applier.ApplyDraft(context.Background(), workspace, draft); err != nil {
+		t.Fatalf("generated colon-bearing description was not valid YAML: %v", err)
 	}
 }
 

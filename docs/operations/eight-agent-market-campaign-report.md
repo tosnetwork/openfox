@@ -48,6 +48,37 @@ or process failure domains.
 The Storage Provider produced retention plans and receipt designs. The
 campaign did not mislabel text as a remotely stored replica.
 
+## Agent assessments of TOS Network
+
+The eight OpenFox instances did not hold an open-ended group conversation or
+produce a collective endorsement of TOS Network. They expressed their views
+operationally: by publishing and selecting Intents, accepting or declining
+work, producing role-specific reports, applying evidence standards, and
+settling payments. The result was closer to eight specialist departments
+conducting a technical health assessment than to Agents informally praising
+the network.
+
+| Agent | Assessment expressed through the campaign |
+|---|---|
+| Security Auditor | The authorization direction is sound, but safe operation depends on exact signed-digest binding, atomic state transitions, replay resistance, writer fencing, and durable audit evidence. Conversation text must never be treated as authorization. |
+| Software Builder | Generic Agreements and stable action identities are suitable foundations for automated work, provided amounts, digests, retries, and predecessor lineages are generated deterministically across implementations and restarts. |
+| Evidence Verifier | Claims without supplied evidence must fail. It returned FAIL when Carrier independence, network identity, exact transfer, destination credit, quorum views, or reorganization-window evidence was absent instead of inferring success from surrounding context. |
+| Storage Provider | TOS can organize content-retention work through content addressing, receipts, expiry, retrieval proofs, and deletion evidence. A plan or schema is not proof that bytes were stored, so the Agent refused to claim an unavailable replica. |
+| Data Curator | Decentralized discovery should merge immutable objects using issuer, revision lineage, provenance, and source-local cursors without inventing a global market head. Search should use bounded first-stage metadata filtering before selective detail retrieval. |
+| Localization Writer | Agreement, obligation, settlement adapter, evidence, Carrier, and writer fence can form a stable vocabulary for Agent commerce. Implementations must preserve protocol identifiers, never guess payment destinations, and suppress duplicate settlement through idempotency. |
+| Transaction Operator | Transaction ambiguity is an unknown outcome, not a failure that authorizes a replacement transaction. Reliable TOS operation needs chain-identity checks, endpoint quorum, exact simulation, balance and fee preflight, stable action identity, query-before-retry recovery, and discoverable gas-sponsorship and relay services. |
+| Guarantor Analyst | The tested local three-node, direct-postpaid Agreement carried high provider risk because it lacked pre-funding, conditional custody, objective acceptance, an adjudication forum, and independently verifiable guarantee capacity. It recommended bounded collateralized guarantees or escrow before unsecured execution. |
+
+Collectively, the Agents treated TOS as a credible protocol skeleton for
+signed discovery, Agreement-bound execution, evidence, and value transfer,
+but not as finished public infrastructure. Their strongest requests were for
+independent Carrier failure domains, public-network finality evidence,
+discoverable transaction sponsorship and relay, real storage and retrieval
+Adapters, and collateralized guarantor Agents. Their behavior was deliberately
+conservative: missing evidence caused failure, insufficient economics caused
+decline, ambiguous payment caused query rather than replay, and unavailable
+physical infrastructure was never claimed as completed work.
+
 ## Economic result
 
 All amounts below are TOS. `Maximum cost` is the conservative amount admitted

@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"math/big"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -145,6 +146,32 @@ func (settings EarningSettings) Validate() error {
 	for _, capability := range settings.Capabilities {
 		if capability.Namespace == "" || capability.Identifier == "" || capability.Version == "" || !earningDigestPattern.MatchString(capability.EvidenceDigest) {
 			return errors.New("earning capability configuration is invalid")
+		}
+		if capability.Offer != nil {
+			offer := capability.Offer
+			minimum, minimumOK := new(big.Int).SetString(offer.MinimumRevenueAtomic, 10)
+			maximum, maximumOK := new(big.Int).SetString(offer.MaximumRevenueAtomic, 10)
+			cost, costOK := new(big.Int).SetString(offer.MaximumUnitCostAtomic, 10)
+			if offer.AssetNamespace == "" || offer.AssetIdentifier == "" || offer.Unit == "" ||
+				!canonicalEconomicInteger(offer.MinimumRevenueAtomic) || !canonicalEconomicInteger(offer.MaximumRevenueAtomic) ||
+				!canonicalEconomicInteger(offer.MaximumUnitCostAtomic) || !minimumOK || !maximumOK || !costOK ||
+				minimum.Cmp(maximum) > 0 || cost.Cmp(maximum) > 0 ||
+				!containsSortedConfig(settings.SettlementAdapters, offer.SettlementAdapterURI) ||
+				len(offer.TaxonomyPrefixes) == 0 || len(offer.TaxonomyPrefixes) > 16 || !sort.StringsAreSorted(offer.TaxonomyPrefixes) ||
+				len(offer.RequiredKeywords) > 32 || !sort.StringsAreSorted(offer.RequiredKeywords) ||
+				offer.MinimumTTLSeconds < 60 || offer.MaximumTTLSeconds < offer.MinimumTTLSeconds || offer.MaximumTTLSeconds > 90*86400 {
+				return errors.New("earning capability offer policy is invalid or unbounded")
+			}
+			for index, prefix := range offer.TaxonomyPrefixes {
+				if prefix == "" || index > 0 && offer.TaxonomyPrefixes[index-1] == prefix {
+					return errors.New("earning capability offer taxonomy is invalid or duplicated")
+				}
+			}
+			for index, keyword := range offer.RequiredKeywords {
+				if keyword == "" || index > 0 && offer.RequiredKeywords[index-1] == keyword {
+					return errors.New("earning capability offer keywords are invalid or duplicated")
+				}
+			}
 		}
 		capabilityKeys = append(capabilityKeys, capability.Namespace+"\x00"+capability.Identifier+"\x00"+capability.Version)
 	}

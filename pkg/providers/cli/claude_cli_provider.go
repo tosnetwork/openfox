@@ -89,7 +89,10 @@ func (p *ClaudeCliProvider) Chat(
 		"-p", "--output-format", "json",
 		"--safe-mode",
 		"--tools", "",
-		"--permission-mode", "plan",
+		// No native tools are exposed, so the default permission mode cannot
+		// create a side effect. Avoid plan mode because its hidden planning
+		// instruction leaks into otherwise tool-free deliverables.
+		"--permission-mode", "default",
 		"--setting-sources", "",
 		"--no-session-persistence",
 		"--no-chrome",

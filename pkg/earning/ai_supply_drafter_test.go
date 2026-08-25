@@ -17,7 +17,13 @@ func TestLLMSupplyDrafterCannotExceedInventory(t *testing.T) {
 			EvidenceDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", RevocationGeneration: 1, ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())}},
 		SupportedSettlementAdapters: []string{"tos.payment.direct.v1"}}
 	drafter := LLMSupplyDrafter{Provider: provider, NetworkID: "tos:test", AgentID: "agent:supply", Audience: "public:indexable",
-		SettlementParameters: map[string][]byte{"tos.payment.direct.v1": []byte("tos1supply")}, Now: func() time.Time { return now }}
+		SettlementParameters: map[string][]byte{"tos.payment.direct.v1": []byte("tos1supply")},
+		OfferPolicies: []SupplyOfferPolicy{{CapabilityNamespace: "skill", CapabilityIdentifier: "source-review",
+			AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "total", MinimumRevenueAtomic: "100",
+			MaximumRevenueAtomic: "200", MaximumUnitCostAtomic: "100", SettlementAdapterURI: "tos.payment.direct.v1",
+			TaxonomyPrefixes: []string{"tos.taxonomy.v1/service/security"}, RequiredKeywords: []string{"security"},
+			MinimumTTLSeconds: 3600, MaximumTTLSeconds: 7200}},
+		Now: func() time.Time { return now }}
 	draft, err := drafter.DraftSupply(context.Background(), inventory)
 	if err != nil || draft.Body.Payload.DiscoveryCard.IntentModes[0] != commerce.IntentOffer || draft.Economics.RevenueAtomic != "150" {
 		t.Fatalf("draft=%+v err=%v", draft, err)
@@ -29,5 +35,18 @@ func TestLLMSupplyDrafterCannotExceedInventory(t *testing.T) {
 	bad.Capabilities = nil
 	if _, err := drafter.DraftSupply(context.Background(), bad); err == nil {
 		t.Fatal("model advertised an unavailable capability")
+	}
+}
+
+func TestStrictModelJSONObjectAcceptsOnlyBareOrExactFence(t *testing.T) {
+	for _, input := range []string{`{"ok":true}`, "```json\n{\"ok\":true}\n```"} {
+		if _, err := strictModelJSONObject(input); err != nil {
+			t.Fatalf("exact object rejected: %v", err)
+		}
+	}
+	for _, input := range []string{"here is JSON:\n{\"ok\":true}", "```json\n{\"ok\":true}\n```\nextra", "```json\n{}\n```\n```"} {
+		if _, err := strictModelJSONObject(input); err == nil {
+			t.Fatalf("non-exact wrapper accepted: %q", input)
+		}
 	}
 }

@@ -189,12 +189,19 @@ func openPublicationRuntime(ctx context.Context) (*publicationRuntime, error) {
 			}
 			runtime.DirectorySinks = append(runtime.DirectorySinks, sink)
 			engine.PublicationSinks[carrier.ID] = sink
+			engine.Collector.Carriers = append(engine.Collector.Carriers,
+				openfoxearning.DirectoryCarrier{CarrierID: carrier.ID, Directory: carrier.Directory})
 		} else {
 			sink, openErr := openfoxearning.NewHTTPPublicationSink(carrier.ID, carrier.Endpoint, carrier.RelayToken.String(), 30*time.Second)
 			if openErr != nil {
 				return fail(openErr)
 			}
 			engine.PublicationSinks[carrier.ID] = sink
+			reader, openErr := openfoxearning.NewHTTPCarrier(carrier.ID, carrier.Endpoint, carrier.ReadToken.String(), 30*time.Second)
+			if openErr != nil {
+				return fail(openErr)
+			}
+			engine.Collector.Carriers = append(engine.Collector.Carriers, reader)
 		}
 		runtime.CarrierIDs = append(runtime.CarrierIDs, carrier.ID)
 	}
@@ -749,7 +756,7 @@ func runCommand() *cobra.Command {
 					}
 					manager.Drafter = openfoxearning.LLMSupplyDrafter{Provider: llm, Model: model, NetworkID: publication.NetworkID,
 						AgentID: cfg.Earning.AgentID, Audience: publication.AllowedAudiences[0],
-						SettlementParameters: settlementParameters}
+						SettlementParameters: settlementParameters, OfferPolicies: configuredSupplyOfferPolicies(cfg.Earning)}
 					if agreementAutonomy != nil {
 						negotiator := openfoxearning.DemandApplicationNegotiator{Publications: manager,
 							Engine: engine, Inventory: collector.Inventory, Fence: fenceSource,
@@ -870,6 +877,25 @@ func configuredSettlementParameters(input map[string]string) map[string][]byte {
 		result[adapter] = []byte(parameters)
 	}
 	return result
+}
+
+func configuredSupplyOfferPolicies(settings config.EarningSettings) []openfoxearning.SupplyOfferPolicy {
+	policies := make([]openfoxearning.SupplyOfferPolicy, 0, len(settings.Capabilities))
+	for _, capability := range settings.Capabilities {
+		if capability.Offer == nil {
+			continue
+		}
+		offer := capability.Offer
+		policies = append(policies, openfoxearning.SupplyOfferPolicy{
+			CapabilityNamespace: capability.Namespace, CapabilityIdentifier: capability.Identifier,
+			AssetNamespace: offer.AssetNamespace, AssetIdentifier: offer.AssetIdentifier, Unit: offer.Unit,
+			MinimumRevenueAtomic: offer.MinimumRevenueAtomic, MaximumRevenueAtomic: offer.MaximumRevenueAtomic,
+			MaximumUnitCostAtomic: offer.MaximumUnitCostAtomic, SettlementAdapterURI: offer.SettlementAdapterURI,
+			TaxonomyPrefixes:  append([]string(nil), offer.TaxonomyPrefixes...),
+			RequiredKeywords:  append([]string(nil), offer.RequiredKeywords...),
+			MinimumTTLSeconds: offer.MinimumTTLSeconds, MaximumTTLSeconds: offer.MaximumTTLSeconds})
+	}
+	return policies
 }
 
 func configuredCarriers(settings config.EarningSettings) ([]openfoxearning.Carrier, error) {

@@ -413,7 +413,7 @@ func TestChat_UsesFailClosedClaudeFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := string(argsBytes)
-	for _, required := range []string{"--safe-mode", "--tools", "--permission-mode plan", "--no-session-persistence"} {
+	for _, required := range []string{"--safe-mode", "--tools", "--permission-mode default", "--no-session-persistence"} {
 		if !strings.Contains(args, required) {
 			t.Errorf("CLI args missing %q: %s", required, args)
 		}

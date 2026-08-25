@@ -48,15 +48,16 @@ type PublicationPolicy struct {
 }
 
 type PublicationRecord struct {
-	ObjectID          string                               `json:"object_id"`
-	Latest            commerce.SignedAgentIntent           `json:"latest"`
-	LatestDigest      string                               `json:"latest_digest"`
-	Economics         PublicationEconomics                 `json:"economics"`
-	CarrierActions    map[string]commerce.ActionResolution `json:"carrier_actions"`
-	WithdrawalActions map[string]commerce.ActionResolution `json:"withdrawal_actions,omitempty"`
-	RevisionCount     uint32                               `json:"revision_count"`
-	Status            string                               `json:"status"`
-	UpdatedAtUnix     uint64                               `json:"updated_at_unix"`
+	ObjectID          string                                `json:"object_id"`
+	Latest            commerce.SignedAgentIntent            `json:"latest"`
+	LatestDigest      string                                `json:"latest_digest"`
+	Economics         PublicationEconomics                  `json:"economics"`
+	CarrierActions    map[string]commerce.ActionResolution  `json:"carrier_actions"`
+	WithdrawalActions map[string]commerce.ActionResolution  `json:"withdrawal_actions,omitempty"`
+	PendingWithdrawal *commerce.SignedAgentIntentWithdrawal `json:"pending_withdrawal,omitempty"`
+	RevisionCount     uint32                                `json:"revision_count"`
+	Status            string                                `json:"status"`
+	UpdatedAtUnix     uint64                                `json:"updated_at_unix"`
 }
 
 type publicationJournal struct {
@@ -287,12 +288,32 @@ func (manager *PublicationManager) Withdraw(ctx context.Context, objectID, reaso
 		return record, errors.New("publication is not active")
 	}
 	now := manager.now().UTC()
-	withdrawal, err := commerce.SignIntentWithdrawal(commerce.AgentIntentWithdrawalBody{SchemaVersion: 1,
-		NetworkID: record.Latest.Body.NetworkID, IssuerAgentID: record.Latest.Body.IssuerAgentID, Audience: record.Latest.Body.Audience,
-		ObjectID: objectID, IntentRevision: record.Latest.Body.Revision, IntentDigest: record.LatestDigest, ReasonCode: reason,
-		CreatedAtUnix: uint64(now.Unix()), ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())}, manager.IdentityKey)
-	if err != nil {
-		return record, err
+	if record.CarrierActions == nil {
+		record.CarrierActions = map[string]commerce.ActionResolution{}
+	}
+	if record.WithdrawalActions == nil {
+		record.WithdrawalActions = map[string]commerce.ActionResolution{}
+	}
+	if record.Status == "withdrawing" && len(record.WithdrawalActions) == 0 {
+		recovered, recoverErr := manager.recoverPendingWithdrawal(ctx, record, reason, now)
+		if recoverErr != nil {
+			return record, recoverErr
+		}
+		if recovered != nil && (record.PendingWithdrawal == nil || recovered.Body.CreatedAtUnix < record.PendingWithdrawal.Body.CreatedAtUnix) {
+			record.PendingWithdrawal = recovered
+		}
+	}
+	if record.PendingWithdrawal == nil {
+		withdrawal, err := commerce.SignIntentWithdrawal(commerce.AgentIntentWithdrawalBody{SchemaVersion: 1,
+			NetworkID: record.Latest.Body.NetworkID, IssuerAgentID: record.Latest.Body.IssuerAgentID, Audience: record.Latest.Body.Audience,
+			ObjectID: objectID, IntentRevision: record.Latest.Body.Revision, IntentDigest: record.LatestDigest, ReasonCode: reason,
+			CreatedAtUnix: uint64(now.Unix()), ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())}, manager.IdentityKey)
+		if err != nil {
+			return record, err
+		}
+		record.PendingWithdrawal = &withdrawal
+	} else if record.PendingWithdrawal.Body.ReasonCode != reason {
+		return record, errors.New("withdrawal retry conflicts with the journaled reason")
 	}
 	carriers := make([]string, 0, len(record.CarrierActions))
 	for carrier := range record.CarrierActions {
@@ -300,6 +321,9 @@ func (manager *PublicationManager) Withdraw(ctx context.Context, objectID, reaso
 	}
 	sort.Strings(carriers)
 	record.Status = "withdrawing"
+	// Persist the exact signed tombstone before the first external effect. A
+	// crash or ambiguous response must retry these same bytes, never sign a
+	// second withdrawal with a different timestamp and semantic action ID.
 	if err := manager.storeRecord(record, false); err != nil {
 		return record, err
 	}
@@ -307,7 +331,7 @@ func (manager *PublicationManager) Withdraw(ctx context.Context, objectID, reaso
 		if prior, ok := record.WithdrawalActions[carrier]; ok && (prior.State == commerce.ActionTerminal || prior.State == commerce.ActionAccepted) {
 			continue
 		}
-		resolution, withdrawErr := manager.Engine.WithdrawIntent(ctx, carrier, withdrawal, policyRevision, fence)
+		resolution, withdrawErr := manager.Engine.WithdrawIntent(ctx, carrier, *record.PendingWithdrawal, policyRevision, fence)
 		if withdrawErr != nil {
 			return record, withdrawErr
 		}
@@ -325,6 +349,43 @@ func (manager *PublicationManager) Withdraw(ctx context.Context, objectID, reaso
 		return record, err
 	}
 	return record, nil
+}
+
+// recoverPendingWithdrawal repairs journals written by older versions that
+// marked a record as withdrawing before retaining the exact signed tombstone.
+// Carrier operation streams are non-authoritative transport evidence: a
+// candidate is adopted only after issuer verification and an exact match to
+// the locally authoritative publication record and requested reason.
+func (manager *PublicationManager) recoverPendingWithdrawal(ctx context.Context, record PublicationRecord, reason string,
+	now time.Time) (*commerce.SignedAgentIntentWithdrawal, error) {
+	var selected *commerce.SignedAgentIntentWithdrawal
+	selectedDigest := ""
+	for _, carrier := range manager.Engine.Collector.Carriers {
+		results, err := carrier.Search(ctx, IntentQuery{MaximumResults: 1000})
+		if err != nil {
+			continue
+		}
+		for _, result := range results {
+			candidate := result.Withdrawal
+			if candidate == nil || candidate.Body.ObjectID != record.ObjectID ||
+				candidate.Body.IntentRevision != record.Latest.Body.Revision || candidate.Body.IntentDigest != record.LatestDigest ||
+				candidate.Body.ReasonCode != reason || candidate.Body.NetworkID != record.Latest.Body.NetworkID ||
+				candidate.Body.IssuerAgentID != record.Latest.Body.IssuerAgentID || candidate.Body.Audience != record.Latest.Body.Audience ||
+				commerce.VerifyIntentWithdrawal(*candidate, manager.Engine.Collector.Authority, now) != nil {
+				continue
+			}
+			digest, err := commerce.IntentWithdrawalDigest(candidate.Body)
+			if err != nil {
+				continue
+			}
+			if selected == nil || candidate.Body.CreatedAtUnix < selected.Body.CreatedAtUnix ||
+				candidate.Body.CreatedAtUnix == selected.Body.CreatedAtUnix && digest < selectedDigest {
+				copy := *candidate
+				selected, selectedDigest = &copy, digest
+			}
+		}
+	}
+	return selected, nil
 }
 
 func (manager *PublicationManager) Records() []PublicationRecord {
@@ -521,6 +582,10 @@ func clonePublicationRecords(input map[string]PublicationRecord) map[string]Publ
 	for key, value := range input {
 		value.CarrierActions = cloneResolutions(value.CarrierActions)
 		value.WithdrawalActions = cloneResolutions(value.WithdrawalActions)
+		if value.PendingWithdrawal != nil {
+			copy := *value.PendingWithdrawal
+			value.PendingWithdrawal = &copy
+		}
 		result[key] = value
 	}
 	return result
@@ -554,6 +619,15 @@ func (manager *PublicationManager) load() error {
 	var document publicationJournal
 	if json.Unmarshal(raw, &document) != nil || document.Schema != publicationJournalSchema || document.Revision == 0 || document.Records == nil {
 		return errors.New("publication journal is invalid")
+	}
+	for objectID, record := range document.Records {
+		if record.CarrierActions == nil {
+			record.CarrierActions = map[string]commerce.ActionResolution{}
+		}
+		if record.WithdrawalActions == nil {
+			record.WithdrawalActions = map[string]commerce.ActionResolution{}
+		}
+		document.Records[objectID] = record
 	}
 	manager.doc = document
 	return nil

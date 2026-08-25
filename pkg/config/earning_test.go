@@ -51,3 +51,25 @@ func TestSharedEarningAuthorityRequiresCompleteMTLSIdentity(t *testing.T) {
 		t.Fatal("shared Authority accepted a relative client key path")
 	}
 }
+
+func TestEarningCapabilityOfferIsOwnerBounded(t *testing.T) {
+	settings := EarningSettings{Enabled: true, Mode: "observe", ObserveOnly: true, StateDir: "/tmp/openfox-earning",
+		OwnerID: "owner", AgentID: "agent", AuthorityID: "authority",
+		MandateDigest:           "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TrustedIntentIssuerKeys: map[string]string{"agent": "ed25519:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		Policy:                  EarningPolicySettings{MinimumExpectedProfitAtomic: "1", MaximumLossAtomic: "10"},
+		SettlementAdapters:      []string{"tos.payment.direct.v1"}}
+	settings.Capabilities = []EarningCapabilitySettings{{Namespace: "tos.skill", Identifier: "review", Version: "1.0.0",
+		EvidenceDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Offer: &EarningCapabilityOfferSettings{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos",
+			MinimumRevenueAtomic: "100", MaximumRevenueAtomic: "200", MaximumUnitCostAtomic: "50",
+			SettlementAdapterURI: "tos.payment.direct.v1", TaxonomyPrefixes: []string{"tos.taxonomy.v1/service/review"},
+			RequiredKeywords: []string{"review"}, MinimumTTLSeconds: 60, MaximumTTLSeconds: 3600}}}
+	if err := settings.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	settings.Capabilities[0].Offer.MaximumRevenueAtomic = "0200"
+	if err := settings.Validate(); err == nil {
+		t.Fatal("non-canonical owner offer amount was accepted")
+	}
+}

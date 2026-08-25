@@ -1052,10 +1052,28 @@ type EarningCarrierSettings struct {
 }
 
 type EarningCapabilitySettings struct {
-	Namespace      string `json:"namespace"`
-	Identifier     string `json:"identifier"`
-	Version        string `json:"version"`
-	EvidenceDigest string `json:"evidence_digest"`
+	Namespace      string                          `json:"namespace"`
+	Identifier     string                          `json:"identifier"`
+	Version        string                          `json:"version"`
+	EvidenceDigest string                          `json:"evidence_digest"`
+	Offer          *EarningCapabilityOfferSettings `json:"offer,omitempty"`
+}
+
+// EarningCapabilityOfferSettings is an owner-authored economic envelope for
+// AI-drafted supply. The model may describe and price a READY capability only
+// inside these bounds; it cannot invent an asset, settlement route, or price.
+type EarningCapabilityOfferSettings struct {
+	AssetNamespace        string   `json:"asset_namespace"`
+	AssetIdentifier       string   `json:"asset_identifier"`
+	Unit                  string   `json:"unit"`
+	MinimumRevenueAtomic  string   `json:"minimum_revenue_atomic"`
+	MaximumRevenueAtomic  string   `json:"maximum_revenue_atomic"`
+	MaximumUnitCostAtomic string   `json:"maximum_unit_cost_atomic"`
+	SettlementAdapterURI  string   `json:"settlement_adapter_uri"`
+	TaxonomyPrefixes      []string `json:"taxonomy_prefixes"`
+	RequiredKeywords      []string `json:"required_keywords,omitempty"`
+	MinimumTTLSeconds     uint32   `json:"minimum_ttl_seconds"`
+	MaximumTTLSeconds     uint32   `json:"maximum_ttl_seconds"`
 }
 
 type EarningResourceSettings struct {

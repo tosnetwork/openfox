@@ -89,6 +89,39 @@ func TestPublicationManagerEnforcesPricingRevisionAndWithdrawal(t *testing.T) {
 	if err != nil || withdrawn.Status != "withdrawn" {
 		t.Fatalf("withdraw=%+v err=%v", withdrawn, err)
 	}
+	originalWithdrawalDigest, err := commerce.IntentWithdrawalDigest(withdrawn.PendingWithdrawal.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the legacy crash window: the Carrier retained the exact signed
+	// tombstone but the local journal retained neither it nor its resolution.
+	legacy := withdrawn
+	legacy.Status = "withdrawing"
+	legacy.PendingWithdrawal = nil
+	legacy.WithdrawalActions = nil
+	if err := manager.storeRecord(legacy, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manager, err = OpenPublicationManager(publicationDirectory, engine, staticInventory{value: inventory}, issuerKey, PublicationPolicy{
+		MinimumTTL: time.Minute, MaximumTTL: 24 * time.Hour, MinimumMarginPPM: 200_000, MaximumPriceChangePPM: 250_000,
+		MaximumActive: 2, MaximumRevisionsPerObject: 3, MaximumPublicationsPerPeriod: 4, Period: time.Hour,
+		AllowedAudiences: []string{"public:indexable"}, AllowDemand: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	manager.now = func() time.Time { return now }
+	recovered, err := manager.Withdraw(context.Background(), revision.Body.ObjectID, "capacity-unavailable", 1, fence)
+	if err != nil || recovered.Status != "withdrawn" || recovered.PendingWithdrawal == nil || len(recovered.WithdrawalActions) != 1 {
+		t.Fatalf("recovered withdrawal=%+v err=%v", recovered, err)
+	}
+	recoveredDigest, err := commerce.IntentWithdrawalDigest(recovered.PendingWithdrawal.Body)
+	if err != nil || recoveredDigest != originalWithdrawalDigest {
+		t.Fatalf("recovered a different signed withdrawal: got %q want %q err=%v", recoveredDigest, originalWithdrawalDigest, err)
+	}
 	page, err := (DirectoryCarrier{CarrierID: "carrier:directory", Directory: carrierDirectory}).Search(context.Background(), IntentQuery{MaximumResults: 10})
 	if err != nil || len(page) != 3 || page[0].Intent.Body.Revision != 1 || page[1].Intent.Body.Revision != 2 || page[2].Withdrawal == nil ||
 		page[2].Withdrawal.Body.IntentDigest != revised.LatestDigest { // Consumers, not the Carrier, apply the signed tombstone.

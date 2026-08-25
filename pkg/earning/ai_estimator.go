@@ -65,13 +65,17 @@ func (estimator LLMEconomicEstimator) EstimateWithContent(ctx context.Context, i
 	if err != nil {
 		return EconomicEstimate{}, err
 	}
-	response, err := estimator.Provider.Chat(ctx, []providers.Message{{Role: "system", Content: system},
+	response, err := estimator.Provider.Chat(providers.WithInternalAgentBackendPrincipal(ctx), []providers.Message{{Role: "system", Content: system},
 		{Role: "user", Content: string(promptInput)}}, nil, estimator.model(), map[string]any{"temperature": 0, "max_tokens": 1200})
 	if err != nil || response == nil || len(response.Content) == 0 || len(response.Content) > 32<<10 || len(response.ToolCalls) != 0 {
 		return EconomicEstimate{}, errors.New("AI economic analysis failed or attempted a tool call")
 	}
 	var model modelEconomicEstimate
-	decoder := json.NewDecoder(bytes.NewReader([]byte(response.Content)))
+	object, err := strictModelJSONObject(response.Content)
+	if err != nil {
+		return EconomicEstimate{}, errors.New("AI economic analysis is not a strict JSON object")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(object))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&model) != nil || decoder.Decode(&struct{}{}) != io.EOF || len(model.Rationale) == 0 || len(model.Rationale) > 4096 ||
 		model.ValiditySeconds == 0 || model.ValiditySeconds > 3600 {

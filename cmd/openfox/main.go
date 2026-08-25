@@ -21,6 +21,7 @@ import (
 	"github.com/tosnetwork/openfox/cmd/openfox/internal/cliui"
 	configcmd "github.com/tosnetwork/openfox/cmd/openfox/internal/config"
 	"github.com/tosnetwork/openfox/cmd/openfox/internal/cron"
+	earningcmd "github.com/tosnetwork/openfox/cmd/openfox/internal/earning"
 	"github.com/tosnetwork/openfox/cmd/openfox/internal/gateway"
 	"github.com/tosnetwork/openfox/cmd/openfox/internal/mcp"
 	"github.com/tosnetwork/openfox/cmd/openfox/internal/migrate"
@@ -135,6 +136,7 @@ openfox --no-color status`,
 		gateway.NewGatewayCommand(),
 		status.NewStatusCommand(),
 		cron.NewCronCommand(),
+		earningcmd.NewCommand(),
 		mcp.NewMCPCommand(),
 		migrate.NewMigrateCommand(),
 		skills.NewSkillsCommand(),

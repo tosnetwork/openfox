@@ -41,6 +41,7 @@ func TestNewOpenfoxCommand(t *testing.T) {
 		"auth",
 		"config",
 		"cron",
+		"earning",
 		"gateway",
 		"mcp",
 		"migrate",

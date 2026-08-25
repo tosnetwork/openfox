@@ -695,6 +695,17 @@ func (t *scriptedTransport) Write(ctx context.Context, msg jsonrpc.Message) erro
 	}
 
 	switch req.Method {
+	case "server/discover":
+		// Current MCP clients probe the new discovery method before falling
+		// back to the legacy initialize handshake. This scripted legacy server
+		// must reject that probe with the protocol-defined error, rather than
+		// closing the connection and making the reconnect test nondeterministic.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case t.incoming <- &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: "server/discover is unsupported"}}:
+			return nil
+		}
 	case "initialize":
 		payload, err := json.Marshal(&sdkmcp.InitializeResult{
 			ProtocolVersion: "2025-11-25",

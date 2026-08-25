@@ -2,12 +2,23 @@
 
 ## Status
 
-- Document type: design proposal and implementation plan
-- Status: proposed, non-normative
+- Document type: historical design proposal and implementation plan
+- Status: implemented baseline, retained as non-normative design history
 - Target repository: `tosnetwork/openfox`
 - Scope: an owner-controlled agent that discovers paid work, competes for it,
   executes it with approved skills, settles payment, and operates continuously
   under bounded economic policy
+
+The current `main` branch now contains the generic earning runtime described by
+this plan, plus autonomous supply publication, multi-source discovery,
+Agreement coordination, bounded execution, billing, direct and escrow
+settlement paths, accounting, and disclosure-safe skill evolution. Consequently,
+the current-state audit and gap tables below describe the repository at the
+time this proposal was written; they are not a current release-readiness claim.
+See [Autonomous Earning Evolution](../guides/autonomous-earning-evolution.md),
+[Eight-Agent Market Campaign](../operations/eight-agent-market-campaign.md),
+and its [measured campaign report](../operations/eight-agent-market-campaign-report.md)
+for the implemented behavior and evidence boundary.
 
 This document turns OpenFox's autonomous-earning product promise into a
 concrete implementation plan. It complements the ecosystem-level
@@ -19,8 +30,8 @@ work.
 
 ## Executive Summary
 
-OpenFox does not yet implement the complete loop described in the project
-README:
+At the time this plan was written, OpenFox did not yet implement the complete
+loop described in the project README:
 
 ```text
 discover paid demand

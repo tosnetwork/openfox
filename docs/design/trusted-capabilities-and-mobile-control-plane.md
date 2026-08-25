@@ -6,6 +6,13 @@ exist today, but trusted capability procurement, the finance/market built-ins,
 and the mobile OpenFox operator experience described here are not implemented
 end to end
 
+**Constitutional alignment:** provisionally `PARTIAL` against the published,
+unratified Agentic Internet Constitution Founding Draft 0.5. The exact scope,
+authority map, interim `apply` restriction, protocol boundary, blockers, and
+review triggers are recorded in the [Agentic Internet Constitution
+Applicability and Compliance
+Record](../architecture/agentic-internet-constitution-compliance.md).
+
 This design adds three product rules to OpenFox's bounded adaptive earning
 architecture:
 
@@ -61,6 +68,23 @@ OpenFox trust metadata is therefore an additional local control layer, not a
 fork of either interoperability standard. The exact supported standards,
 runtime implementation, and test vectors must be pinned in each release and
 campaign manifest rather than following a floating `latest` label.
+
+### Protocol and product boundary
+
+Owner-specific source preferences, local rankings, sandbox profiles, UI
+layout, notifications, schedules, and derived projections may remain OpenFox
+product policy. They are not normative protocol facts. Shared Intent,
+Agreement, delegation, authority, semantic-action, Receipt, dispute, and
+settlement meanings remain governed by the applicable version of
+`tos-service-spec`; OpenFox and its databases cannot redefine them.
+
+If a capability identity, admission, attestation, mobile command, approval,
+revocation, report, or event object must cross implementations or is presented
+as a TOS or Agentic Internet protocol, it must enter the proper normative
+process. That process must provide a public versioned schema, authority and
+domain rules, positive and negative vectors, compatibility and extension
+policy, licensing, and independent implementation evidence. A private OpenFox
+API may not become an ecosystem standard by convenience.
 
 ## Capability Supply Model
 
@@ -171,6 +195,23 @@ Installation and connection are distinct from execution admission. The
 runtime evaluates the pinned capability, current revocation state, policy,
 Agreement, task data class, remaining budget, and requested side effects again
 for every execution.
+
+### Promotion is a separate authority
+
+A successful sandbox run, campaign threshold, model recommendation, registry
+attestation, or deterministic content scan does not authorize promotion. A
+candidate-specific `PromotionAuthority` must bind the candidate identity and
+digest, source and data classification, frozen evaluation and retained
+alternative, primary and harm results, independent verifier, exact before-and-
+after permissions, owner-policy revision, approving authority, scope, expiry,
+activation, revocation, and rollback.
+
+The generating model, task content, candidate, catalog, and self-evolution
+runtime cannot issue that authority. Until this record and its enforcement are
+implemented and tested, `evolution.mode=apply` is prohibited for autonomous
+earning, production, and consequential workflows. Existing Skills and MCP
+servers are `UNVERIFIED_LEGACY` for this target design until re-admitted; they
+do not inherit trust from prior installation or successful use.
 
 ### Updates, forks, self-development, and revocation
 
@@ -418,6 +459,9 @@ flowchart LR
   `UNVERIFIED_LEGACY` until re-admitted.
 - Record every registry search, candidate, rejection, install, MCP connection,
   execution, update, and revocation.
+- Enforce the interim prohibition on `evolution.mode=apply` for earning,
+  production, and consequential profiles until candidate-specific promotion
+  authority is available.
 
 `PASS` requires a complete inventory, no silent version changes, and safe
 disable/restart behavior for a revoked capability.
@@ -511,3 +555,5 @@ plane.
    second factor, or a second human approval?
 7. Which report fields and task events may cross push, cloud relay, analytics,
    export, and backup boundaries?
+8. Who is the named OpenFox constitutional compliance owner, and what review
+   cycle and Major Surface scope will apply after ratification?

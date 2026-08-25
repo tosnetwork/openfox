@@ -20,7 +20,10 @@ See [Autonomous Earning Evolution](../guides/autonomous-earning-evolution.md),
 and its [measured campaign report](../operations/eight-agent-market-campaign-report.md)
 for the implemented behavior and evidence boundary. The next target is defined
 separately in [Trusted Capabilities and Mobile Owner Control
-Plane](trusted-capabilities-and-mobile-control-plane.md).
+Plane](trusted-capabilities-and-mobile-control-plane.md), with its provisional
+constitutional scope and blocked gates in the [Agentic Internet Constitution
+Applicability and Compliance
+Record](../architecture/agentic-internet-constitution-compliance.md).
 
 This document turns OpenFox's autonomous-earning product promise into a
 concrete implementation plan. It complements the ecosystem-level

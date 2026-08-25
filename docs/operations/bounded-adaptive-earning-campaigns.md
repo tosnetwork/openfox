@@ -3,6 +3,13 @@
 **Status:** experiment plan; Campaign 0 is complete, and Campaigns 1--6 have
 not yet been executed
 
+**Constitutional alignment:** provisionally `PARTIAL` against the published,
+unratified Agentic Internet Constitution Founding Draft 0.5. See the
+[applicability and compliance
+record](../architecture/agentic-internet-constitution-compliance.md). This
+playbook is not an activation, authority-expansion, protocol-conformance,
+security, deployment, or production-readiness decision.
+
 This playbook turns OpenFox's first autonomous earning campaign into a
 constrained learning program. The goal is not to reward activity, transaction
 count, or self-reported revenue. The goal is to determine whether one bounded
@@ -85,6 +92,10 @@ Before exposing any evaluation Intent, record and hash a manifest containing:
   permission/admission digest, and revocation snapshot;
 - task-pool commitment, eligibility rules, randomization seed commitment,
   treatment allocation procedure, primary metric, thresholds, and stop rules;
+- statistical analysis-plan digest, minimum detectable effect or justified
+  precision target, prospective power or sample rationale, missing-data and
+  exclusion rules, confidence-interval method, multiplicity treatment, and
+  analysis-code digest;
 - Carrier, Messenger, storage, TOS endpoint, verifier, and operator failure
   domains; and
 - evidence locations, retention policy, confidentiality classification, and
@@ -150,6 +161,14 @@ denominator is positive; otherwise the manifest must specify an absolute
 threshold before the run. No campaign may choose the more favorable formula
 after seeing results.
 
+The numeric sample counts in Campaigns 1, 2, and 6 are safety and evidence
+floors, not a substitute for prospective power or precision analysis. If the
+pre-registered effect cannot be distinguished with the committed sample and
+method, the campaign is `INCONCLUSIVE`; it MUST NOT lower the threshold, change
+the analysis, pool unregistered rounds, or promote on a favorable secondary
+metric. The independent verifier must be able to reproduce the result from the
+committed analysis code and evidence without campaign-private state.
+
 ## Progression gates
 
 | Campaign | Question | Authority or budget increase on pass |
@@ -164,6 +183,15 @@ after seeing results.
 A later campaign may begin only after the previous one is `PASS`. Rerunning a
 failed or inconclusive campaign uses a new manifest and new unseen evaluation
 set; it does not overwrite the earlier result.
+
+A `PASS` is evidence submitted to a separate promotion decision, never the
+promotion authority itself. The campaign, model, candidate Skill, success
+threshold, or automated runner MUST NOT activate the proposed change. A valid
+`PromotionAuthority` must bind the exact candidate and digest, approving owner
+or accountable authority, policy revision, tested scope, activation condition,
+expiry, revocation, and rollback path. Until that mechanism passes its own
+tests, consequential and earning workflows MUST keep self-evolution in
+`observe`, or in `draft` with independent review; `apply` is prohibited.
 
 ## Cross-cutting Gate S — trusted capability sourcing
 
@@ -464,6 +492,12 @@ escrow path. Confirm that a Gift remains separate from both.
 - Begin only when both the Agreement-bound direct adapter and the selected TOS
   escrow adapter have passed their own local conformance prerequisites;
   otherwise record `BLOCKED` without substituting a mock success.
+- Pin the exact normative specification, profile, schema/vector version,
+  implementation commit, network, contract or adapter identity, signer and
+  custody boundary, and required finality view. Local or three-node acceptance
+  cannot satisfy a public-testnet, cross-host, independent-operator, external-
+  security, or production-acceptance gate still required by that selected
+  profile.
 - Inject restart, duplicate delivery, delayed finality, ambiguous submission,
   insufficient funding, expired terms, and one-party-requests-escrow cases.
 - The stronger mutually supported mode wins when either party requires it. If

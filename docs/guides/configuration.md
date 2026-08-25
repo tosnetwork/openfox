@@ -99,6 +99,15 @@ The `evolution` block controls OpenFox's self-evolution runtime. When enabled, t
 
 Use `observe` first if you want to inspect learning records without generating skill changes. Use `draft` when you want OpenFox to prepare reviewable improvements. Use `apply` only when you are comfortable letting accepted drafts update workspace skills.
 
+> **Constitutional interim restriction:** `apply` is not an allowed mode for
+> autonomous earning, production, or any workflow capable of a Consequential
+> Action until the candidate-specific `PromotionAuthority` and independent
+> promotion gates in the [compliance
+> record](../architecture/agentic-internet-constitution-compliance.md) are
+> implemented and validated. Keep those workflows in `observe`, or use `draft`
+> with review and an explicit bounded owner decision outside the learning
+> system. Merely setting `mode: "apply"` is not candidate-specific approval.
+
 ### Request Context Policy
 
 `turn_profile` is an optional request context policy under `agents.defaults.turn_profile`. Leave it unset or set `"enabled": false` to keep OpenFox's normal behavior. When `"enabled": true`, the same policy applies to every new turn.

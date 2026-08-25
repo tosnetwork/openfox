@@ -32,6 +32,26 @@ The current local scanner is a narrow guardrail, not a complete safety boundary.
 
 In `apply` mode, accepted drafts can update workspace skills automatically. Existing skills are backed up before replacement, but recovery is manual: an operator must restore the desired backup if an applied skill should be rolled back.
 
+### Interim constitutional restriction
+
+Until OpenFox implements and validates the candidate-specific
+`PromotionAuthority` described in the [Agentic Internet Constitution
+Applicability and Compliance
+Record](agentic-internet-constitution-compliance.md), `evolution.mode=apply`
+MUST NOT be enabled for autonomous earning, production, or any workflow capable
+of a Consequential Action. A broad owner configuration is not a separate
+promotion decision for every generated Skill version. The permitted posture
+for those workflows is `observe`, or `draft` followed by independent review and
+an explicit bounded owner decision outside the learning system.
+
+This restriction does not claim that current `apply` mode expands formal tool
+permissions. It recognizes that automatically changing instructions loaded
+into later Agent turns is itself an adaptive promotion. The generating model,
+task content, success threshold, registry, or candidate MUST NOT approve that
+promotion. Existing use of `apply` must remain isolated from real custody,
+external obligations, production credentials, and irreversible effects until
+the gate passes.
+
 ## Modes
 
 | Mode | Behavior |

@@ -8,6 +8,7 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Routing System](routing-system.md): agent dispatch, session policy selection, and light/heavy model routing. ([ZH](routing-system.zh.md))
 - [Runtime Events](runtime-events.md): runtime event envelope, centralized event logging, filters, and examples. ([ZH](runtime-events.zh.md))
 - [Agent Self-Evolution](agent-self-evolution.md): learning records, draft generation, application modes, and state layout.
+- [Agentic Internet Constitution Applicability and Compliance Record](agentic-internet-constitution-compliance.md): provisional `PARTIAL` mapping, authority boundaries, interim controls, and blocked gates for PR #16.
 - [Hook System Guide](hooks/README.md): current hook architecture and protocol details.
 - [Agent Refactor](agent-refactor/README.md): notes and checkpoints for the agent refactor work.
 - [Autonomous Earning Agent Implementation Plan](../design/autonomous-earning-agent.md): current-state gap analysis and a phased design for discovering, executing, and settling profitable work under owner policy.

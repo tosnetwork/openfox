@@ -52,8 +52,12 @@ func TestPaidDemandCustodyAuthorizerBindsExactEffectAndFencesTakeover(t *testing
 		NetworkGlobalID: -3, Destination: "0:" + strings.Repeat("2", 64), AmountNanoTOS: 100_000_000,
 		BodyHash: "tvm-cell-sha256:" + strings.Repeat("6", 64), StateInitHashOrZero: zeroDigest(),
 		ExpiresAtUnix: uint64(now.Add(30 * time.Minute).Unix())}
+	networkDomain := &commerce.CustodyNetworkDomain{NetworkID: request.NetworkID, GlobalID: request.NetworkGlobalID,
+		ZeroStateRootHash: "sha256:" + strings.Repeat("8", 64),
+		ZeroStateFileHash: "sha256:" + strings.Repeat("9", 64), WorkchainID: 0}
 	adapter := PaidDemandCustodyAuthorizer{Engine: &Engine{OwnerID: "owner-1", AgentID: "agent-1",
-		MandateDigest: testDigest, Authority: authority, Gates: FeatureGates{TOSEscrow: true}}, Fence: fence, PolicyRevision: 7}
+		MandateDigest: testDigest, Authority: authority, Gates: FeatureGates{TOSEscrow: true}}, Fence: fence,
+		PolicyRevision: 7, NetworkDomain: networkDomain}
 	signed, err := adapter.AuthorizeCustodyEffect(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +66,10 @@ func TestPaidDemandCustodyAuthorizerBindsExactEffectAndFencesTakeover(t *testing
 		signed.ObligationID != request.ObligationID || signed.BodyHash != request.BodyHash || signed.WriterGeneration != fence.Body.WriterGeneration {
 		t.Fatalf("custody effect binding changed: %+v", signed)
 	}
-	if err := commerce.VerifyCustodyEffectAuthorization(signed,
+	if signed.SchemaVersion != 2 || signed.NetworkDomain == nil || *signed.NetworkDomain != *networkDomain {
+		t.Fatalf("custody effect omitted its exact network domain: %+v", signed)
+	}
+	if err := commerce.VerifyRelayCustodyEffectAuthorization(signed,
 		custodyEffectPinnedKey{key: key.Public().(ed25519.PublicKey)}, now); err != nil {
 		t.Fatalf("verify custody effect: %v", err)
 	}
@@ -71,6 +78,14 @@ func TestPaidDemandCustodyAuthorizerBindsExactEffectAndFencesTakeover(t *testing
 	if err := commerce.VerifyCustodyEffectAuthorization(mutated,
 		custodyEffectPinnedKey{key: key.Public().(ed25519.PublicKey)}, now); err == nil {
 		t.Fatal("destination substitution retained authorization")
+	}
+	mutated = signed
+	changedDomain := *mutated.NetworkDomain
+	changedDomain.WorkchainID = -1
+	mutated.NetworkDomain = &changedDomain
+	if err := commerce.VerifyRelayCustodyEffectAuthorization(mutated,
+		custodyEffectPinnedKey{key: key.Public().(ed25519.PublicKey)}, now); err == nil {
+		t.Fatal("target-workchain substitution retained authorization")
 	}
 	if _, err := authority.AcquireWriter(context.Background(), "runtime-b", []string{"escrow.transition"}, time.Hour); err != nil {
 		t.Fatal(err)

@@ -2,10 +2,12 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -37,9 +39,9 @@ func (settings EarningSettings) Validate() error {
 		return errors.New("earning economic policy is invalid")
 	}
 	anyGate := settings.Gates.Publication || settings.Gates.Contact || settings.Gates.Agreement || settings.Gates.Execution ||
-		settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow
+		settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow || settings.Gates.AgentRelay
 	if !settings.Enabled {
-		if anyGate || mode != "off" {
+		if anyGate || mode != "off" || !reflect.DeepEqual(settings.AgentRelay, EarningAgentRelaySettings{}) {
 			return errors.New("disabled earning configuration cannot enable side-effect gates")
 		}
 		return nil
@@ -54,7 +56,7 @@ func (settings EarningSettings) Validate() error {
 		return errors.New("side-effect earning modes cannot set observe_only")
 	}
 	if mode == "contact" && (settings.Gates.Agreement || settings.Gates.Execution || settings.Gates.DirectPayment ||
-		settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow) {
+		settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow || settings.Gates.AgentRelay) {
 		return errors.New("contact mode cannot enable Agreement, execution, or settlement")
 	}
 	if mode == "trusted" && (settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow) {
@@ -303,11 +305,15 @@ func (settings EarningSettings) Validate() error {
 	if settings.Gates.Agreement && !settings.Gates.Contact {
 		return errors.New("Agreement automation requires authenticated contact transport")
 	}
+	if err := validateEarningAgentRelay(settings); err != nil {
+		return err
+	}
 	if settings.Gates.DirectPayment {
 		payment := settings.TOSPayment
 		if !payment.Enabled || !filepath.IsAbs(payment.Executable) || !filepath.IsAbs(payment.ConfigPath) ||
 			!filepath.IsAbs(payment.EvidenceDirectory) || payment.Wallet == "" || payment.SourceAccount == "" || payment.NetworkGlobalID == 0 ||
-			payment.FeeReserveNanoTOS == 0 || len(payment.QuorumConfigPaths) < 2 || payment.MaximumTransactions > 100000 ||
+			!validRelayNetworkSettings(payment.Network) || payment.Network.GlobalID != payment.NetworkGlobalID ||
+			payment.FeeReserveNanoTOS == 0 || len(payment.QuorumConfigPaths) < 2 || payment.MaximumTransactions > 10_000 ||
 			payment.ResolveAttempts > 1000 || payment.ResolveIntervalMS > 60000 {
 			return errors.New("direct payment gate requires bounded TOS custody configuration")
 		}
@@ -346,7 +352,8 @@ func (settings EarningSettings) Validate() error {
 			!earningRawWC0Pattern.MatchString(escrow.BuyerAddress) || !earningRawWC0Pattern.MatchString(escrow.ProviderWallet) ||
 			!earningRawWC0Pattern.MatchString(escrow.RelayerAddress) || escrow.ActionWallet == "" ||
 			escrow.ProviderActionWallet == "" || escrow.DeploymentWallet == "" ||
-			escrow.NetworkGlobalID == 0 || escrow.DeploymentNanoTOS == 0 || escrow.DeploymentNanoTOS > 1_000_000_000 ||
+			escrow.NetworkGlobalID == 0 || escrow.NetworkWorkchainID != 0 ||
+			escrow.DeploymentNanoTOS == 0 || escrow.DeploymentNanoTOS > 1_000_000_000 ||
 			escrow.ActionNanoTOS == 0 || escrow.ActionNanoTOS > 1_000_000_000 || escrow.FeeReserveNanoTOS == 0 ||
 			escrow.FeeReserveNanoTOS > 1_000_000_000 || escrow.MaximumPurchases == 0 ||
 			!canonicalEconomicInteger(escrow.MaximumPerPurchaseAtomic) || !canonicalEconomicInteger(escrow.MaximumTotalAtomic) ||
@@ -429,6 +436,334 @@ func (settings EarningSettings) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validateEarningAgentRelay(settings EarningSettings) error {
+	relay := settings.AgentRelay
+	if !relay.Enabled {
+		if settings.Gates.AgentRelay || !reflect.DeepEqual(relay, EarningAgentRelaySettings{}) {
+			return errors.New("disabled Agent relay cannot retain active trust, chain, or journal configuration")
+		}
+		return nil
+	}
+	if !settings.Gates.AgentRelay || !settings.Gates.Agreement || !settings.Gates.Execution || settings.ObserveOnly {
+		return errors.New("Agent relay requires its explicit gate plus Agreement and execution gates")
+	}
+	if relay.Role != "client" && relay.Role != "provider" && relay.Role != "both" {
+		return errors.New("Agent relay role must be client, provider, or both")
+	}
+	if relay.AssuranceLevel != "trusted-local" && relay.AssuranceLevel != "authorized-single-provider" &&
+		relay.AssuranceLevel != "autonomous-decentralized" {
+		return errors.New("Agent relay assurance level must be trusted-local, authorized-single-provider, or autonomous-decentralized")
+	}
+	if !canonicalAbsoluteRelayPath(relay.OfferIntentFile) || relay.HTTPTimeoutMillis < 1000 || relay.HTTPTimeoutMillis > 60_000 ||
+		relay.MaximumHTTPBytes < 64<<10 || relay.MaximumHTTPBytes > 1<<20 {
+		return errors.New("Agent relay Intent path or bounded HTTP policy is invalid")
+	}
+	client, provider := relay.Role == "client" || relay.Role == "both", relay.Role == "provider" || relay.Role == "both"
+	paths := map[string]bool{}
+	for _, path := range []string{relay.ClientAttemptJournalDirectory, relay.ClientRouteJournalDirectory,
+		relay.ClientTerminalAccountingDirectory, relay.ProviderJournalDirectory} {
+		if path == "" {
+			continue
+		}
+		if !canonicalAbsoluteRelayPath(path) || paths[path] {
+			return errors.New("Agent relay journals must be distinct canonical absolute directories")
+		}
+		paths[path] = true
+	}
+	if client {
+		if relay.ClientAttemptJournalDirectory == "" || relay.ClientRouteJournalDirectory == "" ||
+			relay.ClientTerminalAccountingDirectory == "" ||
+			!completeRelayClientTLS(relay.ClientTLS) || !validRelayProvenanceSettings(relay.ProviderProvenance) {
+			return errors.New("Agent relay client requires mTLS, SPKI-bound provenance, separate journals, and owner policy")
+		}
+	} else if relay.ClientAttemptJournalDirectory != "" || relay.ClientRouteJournalDirectory != "" ||
+		relay.ClientTerminalAccountingDirectory != "" ||
+		!reflect.DeepEqual(relay.ClientTLS, EarningAgentRelayClientTLSSettings{}) ||
+		!reflect.DeepEqual(relay.ProviderProvenance, EarningAgentRelayProvenanceSettings{}) {
+		return errors.New("Agent relay provider-only role cannot retain client routes or trust policy")
+	}
+	if provider {
+		if relay.ProviderJournalDirectory == "" || !completeRelayProviderTLS(relay.ProviderTLS) ||
+			relay.TerminalRetentionSeconds == 0 || relay.TerminalRetentionSeconds > 365*86400 ||
+			relay.MaximumProtectedRecords == 0 || relay.MaximumProtectedRecords > 512 ||
+			relay.QuoteLifetimeSeconds == 0 || relay.QuoteLifetimeSeconds > 300 ||
+			!validRelayFixedPricing(relay) || !validRelayAdmissionSettings(relay.AdmissionLimits, relay.MaximumProtectedRecords) {
+			return errors.New("Agent relay provider requires mTLS, durable retention, and bounded owner admission policy")
+		}
+	} else if relay.ProviderJournalDirectory != "" || !reflect.DeepEqual(relay.ProviderTLS, EarningAgentRelayProviderTLSSettings{}) ||
+		relay.TerminalRetentionSeconds != 0 || relay.MaximumProtectedRecords != 0 || relay.QuoteLifetimeSeconds != 0 ||
+		!reflect.DeepEqual(relay.RelayFee, EarningAgentRelayAssetAmountSettings{}) ||
+		!reflect.DeepEqual(relay.SponsorshipFee, EarningAgentRelayAssetAmountSettings{}) ||
+		!reflect.DeepEqual(relay.AdmissionLimits, EarningAgentRelayAdmissionSettings{}) {
+		return errors.New("Agent relay client-only role cannot retain provider custody or admission configuration")
+	}
+	if !validRelayTOSSettings(relay.TOS) || !validRelayOwnerPolicySettings(relay.OwnerPolicy) {
+		return errors.New("Agent relay requires a strict-majority RPC set and the complete TOS network domain")
+	}
+	if !ownerPolicyContainsRelayNetwork(relay.OwnerPolicy.NetworkDomains, relay.TOS.Network) {
+		return errors.New("Agent relay owner policy does not contain the exact TOS RPC network pin")
+	}
+	hasSponsorshipMode := false
+	hasRelayMode := false
+	for _, mode := range relay.OwnerPolicy.Modes {
+		if (mode == "sponsor_only" || mode == "sponsor_and_relay") && !settings.Gates.DirectPayment {
+			return errors.New("Agent relay sponsorship modes require the direct-payment custody gate")
+		}
+		hasSponsorshipMode = hasSponsorshipMode || mode == "sponsor_only" || mode == "sponsor_and_relay"
+		hasRelayMode = hasRelayMode || mode == "relay_exact" || mode == "sponsor_and_relay"
+	}
+	if !validRelayTerminalProfileSettings(relay, hasRelayMode, hasSponsorshipMode) {
+		return errors.New("Agent relay terminal profiles do not cover every configured service component and assurance")
+	}
+	if hasSponsorshipMode {
+		if !validRelaySponsorshipReleaseSettings(relay) {
+			return errors.New("Agent relay sponsorship requires an exact owner-pinned release evidence profile")
+		}
+		payment := settings.TOSPayment
+		if !payment.Enabled || payment.Network != relay.TOS.Network ||
+			payment.NetworkGlobalID != relay.TOS.Network.GlobalID || payment.MaximumTransactions > 10_000 {
+			return errors.New("Agent relay sponsorship custody must use the exact relay network and bounded evidence history")
+		}
+	} else if relay.SponsorshipReleaseEvidenceClass != "" || relay.SponsorshipReleaseProfileURI != "" ||
+		relay.SponsorshipReleaseProfileDigest != "" {
+		return errors.New("relay-only Agent relay configuration cannot retain sponsorship release policy")
+	}
+	return nil
+}
+
+func validRelaySponsorshipReleaseSettings(relay EarningAgentRelaySettings) bool {
+	if !earningDigestPattern.MatchString(relay.SponsorshipReleaseProfileDigest) ||
+		relay.SponsorshipReleaseProfileURI == "" || len(relay.SponsorshipReleaseProfileURI) > 256 ||
+		strings.TrimSpace(relay.SponsorshipReleaseProfileURI) != relay.SponsorshipReleaseProfileURI {
+		return false
+	}
+	switch relay.SponsorshipReleaseEvidenceClass {
+	case "observed_unproven":
+		if relay.AssuranceLevel == "autonomous-decentralized" ||
+			relay.SponsorshipReleaseProfileURI != "agreement-payment-rpc-corroboration.v1" ||
+			len(relay.OwnerPolicy.FinalityProfiles) == 0 {
+			return false
+		}
+		// The lower-assurance sponsorship terminal predicate is not inferred
+		// from the nonterminal release class. At least one exact profile must
+		// explicitly bind client-owned corroboration. A combined mode may also
+		// advertise a separate relay terminal profile.
+		found := false
+		for _, profile := range relay.OwnerPolicy.FinalityProfiles {
+			found = found || profile.ProfileURI == "tos.sponsorship.client-corroborated-terminal.v1" &&
+				profile.TerminalEvidenceClass == "client_corroborated"
+		}
+		return found
+	case "validator_finality":
+		for _, profile := range relay.OwnerPolicy.FinalityProfiles {
+			if profile.ProfileURI == relay.SponsorshipReleaseProfileURI &&
+				profile.ProfileDigest == relay.SponsorshipReleaseProfileDigest &&
+				profile.TerminalEvidenceClass == "validator_finality" {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func validRelayTerminalProfileSettings(relay EarningAgentRelaySettings,
+	hasRelayMode, hasSponsorshipMode bool) bool {
+	hasRelayTerminal, hasSponsorshipTerminal := !hasRelayMode, !hasSponsorshipMode
+	for _, profile := range relay.OwnerPolicy.FinalityProfiles {
+		if hasRelayMode && (profile.TerminalEvidenceClass == "validator_finality" ||
+			profile.TerminalEvidenceClass == "provider_corroborated" &&
+				relay.AssuranceLevel != "autonomous-decentralized") {
+			hasRelayTerminal = true
+		}
+		if hasSponsorshipMode {
+			switch relay.SponsorshipReleaseEvidenceClass {
+			case "validator_finality":
+				hasSponsorshipTerminal = hasSponsorshipTerminal ||
+					profile.TerminalEvidenceClass == "validator_finality" &&
+						profile.ProfileURI == relay.SponsorshipReleaseProfileURI &&
+						profile.ProfileDigest == relay.SponsorshipReleaseProfileDigest
+			case "observed_unproven":
+				hasSponsorshipTerminal = hasSponsorshipTerminal ||
+					profile.TerminalEvidenceClass == "client_corroborated" &&
+						profile.ProfileURI == "tos.sponsorship.client-corroborated-terminal.v1"
+			}
+		}
+	}
+	return hasRelayTerminal && hasSponsorshipTerminal
+}
+
+func canonicalAbsoluteRelayPath(path string) bool {
+	return filepath.IsAbs(path) && filepath.Clean(path) == path
+}
+
+func completeRelayClientTLS(settings EarningAgentRelayClientTLSSettings) bool {
+	return canonicalAbsoluteRelayPath(settings.CAFile) && canonicalAbsoluteRelayPath(settings.ClientCertFile) &&
+		canonicalAbsoluteRelayPath(settings.ClientKeyFile)
+}
+
+func completeRelayProviderTLS(settings EarningAgentRelayProviderTLSSettings) bool {
+	host, _, err := net.SplitHostPort(settings.Listen)
+	return err == nil && host != "" && canonicalAbsoluteRelayPath(settings.ServerCertFile) &&
+		canonicalAbsoluteRelayPath(settings.ServerKeyFile) && canonicalAbsoluteRelayPath(settings.ClientCAFile)
+}
+
+func validRelayProvenanceSettings(value EarningAgentRelayProvenanceSettings) bool {
+	parsed, err := url.Parse(value.EndpointOrigin)
+	return len(value.ProviderAgentID) > 0 && len(value.ProviderAgentID) <= 256 &&
+		earningDigestPattern.MatchString(value.IntentDigest) && earningDigestPattern.MatchString(value.ProfileDigest) &&
+		earningDigestPattern.MatchString(value.CertificateSPKIDigest) &&
+		earningDigestPattern.MatchString(value.ImplementationEvidenceHash) &&
+		value.OperatorDomain != "" && len(value.OperatorDomain) <= 256 && strings.TrimSpace(value.OperatorDomain) == value.OperatorDomain &&
+		value.FailureDomain != "" && len(value.FailureDomain) <= 256 && strings.TrimSpace(value.FailureDomain) == value.FailureDomain &&
+		err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Path == "" &&
+		parsed.RawQuery == "" && parsed.Fragment == "" && value.EndpointOrigin == "https://"+strings.ToLower(parsed.Host)
+}
+
+func validRelayTOSSettings(value EarningAgentRelayTOSSettings) bool {
+	if !validRelayNetworkSettings(value.Network) || len(value.RPCEndpoints) < 3 || len(value.RPCEndpoints) > 8 ||
+		value.Quorum <= uint32(len(value.RPCEndpoints))/2 || value.Quorum > uint32(len(value.RPCEndpoints)) ||
+		value.QueryTimeoutMillis < 100 || value.QueryTimeoutMillis > 30_000 || value.MaximumResponseBytes == 0 ||
+		value.MaximumResponseBytes > 16<<20 || value.ReadinessMaximumAgeSeconds == 0 ||
+		value.ReadinessMaximumAgeSeconds > 3600 {
+		return false
+	}
+	seenEndpoint, seenAuthority := map[string]bool{}, map[string]bool{}
+	for _, endpoint := range value.RPCEndpoints {
+		parsed, err := url.Parse(endpoint)
+		if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+			(parsed.Scheme != "https" && !(parsed.Scheme == "http" && earningLoopback(parsed.Hostname()))) ||
+			seenEndpoint[endpoint] || seenAuthority[strings.ToLower(parsed.Host)] {
+			return false
+		}
+		seenEndpoint[endpoint], seenAuthority[strings.ToLower(parsed.Host)] = true, true
+	}
+	return true
+}
+
+func validRelayNetworkSettings(value EarningAgentRelayNetworkSettings) bool {
+	return value.NetworkID != "" && len(value.NetworkID) <= 128 && strings.TrimSpace(value.NetworkID) == value.NetworkID &&
+		earningDigestPattern.MatchString(value.ZeroStateRootHash) && earningDigestPattern.MatchString(value.ZeroStateFileHash)
+}
+
+func ownerPolicyContainsRelayNetwork(values []EarningAgentRelayNetworkSettings, wanted EarningAgentRelayNetworkSettings) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func validRelayOwnerPolicySettings(value EarningAgentRelayOwnerPolicySettings) bool {
+	if len(value.NetworkDomains) == 0 || len(value.NetworkDomains) > 64 || len(value.Modes) == 0 || len(value.Modes) > 3 ||
+		len(value.TransactionProfiles) == 0 || len(value.TransactionProfiles) > 32 || len(value.FinalityProfiles) == 0 ||
+		len(value.FinalityProfiles) > 16 || value.MaximumSignedBytes == 0 || value.MaximumSignedBytes > 64<<10 ||
+		len(value.MaximumServiceFees) == 0 || len(value.MaximumServiceFees) > 16 {
+		return false
+	}
+	previous := ""
+	for _, network := range value.NetworkDomains {
+		key := fmt.Sprintf("%s\x00%011d\x00%s\x00%s\x00%011d", network.NetworkID, network.GlobalID,
+			network.ZeroStateRootHash, network.ZeroStateFileHash, network.WorkchainID)
+		if !validRelayNetworkSettings(network) || key <= previous {
+			return false
+		}
+		previous = key
+	}
+	previous = ""
+	for _, mode := range value.Modes {
+		if mode != "relay_exact" && mode != "sponsor_only" && mode != "sponsor_and_relay" || mode <= previous {
+			return false
+		}
+		previous = mode
+	}
+	previous = ""
+	for _, profile := range value.TransactionProfiles {
+		key := profile.ProfileURI + "\x00" + profile.ProfileDigest
+		if profile.ProfileURI == "" || len(profile.ProfileURI) > 256 || !earningDigestPattern.MatchString(profile.ProfileDigest) ||
+			profile.MaximumSignedBytes == 0 || profile.MaximumSignedBytes > value.MaximumSignedBytes ||
+			!profile.InspectableSourceSequence || !profile.InspectableTransactionExpiry || key <= previous {
+			return false
+		}
+		previous = key
+	}
+	previous = ""
+	for _, profile := range value.FinalityProfiles {
+		key := profile.ProfileURI + "\x00" + profile.ProfileDigest
+		if profile.ProfileURI == "" || len(profile.ProfileURI) > 256 || !earningDigestPattern.MatchString(profile.ProfileDigest) ||
+			(profile.TerminalEvidenceClass != "validator_finality" &&
+				profile.TerminalEvidenceClass != "provider_corroborated" &&
+				profile.TerminalEvidenceClass != "client_corroborated") ||
+			profile.MinimumConfirmationDepth == 0 || profile.MinimumObservers == 0 || profile.MinimumOperatorDomains == 0 ||
+			profile.MinimumOperatorDomains > profile.MinimumObservers || profile.MaximumResolutionSeconds == 0 ||
+			profile.MaximumResolutionSeconds > 86400 || profile.ReorgWindowSeconds > profile.MaximumResolutionSeconds || key <= previous {
+			return false
+		}
+		previous = key
+	}
+	previous = ""
+	for _, amount := range value.MaximumServiceFees {
+		key := amount.Asset.AssetNamespace + "\x00" + amount.Asset.AssetIdentifier + "\x00" + amount.Asset.Unit
+		if amount.Asset.AssetNamespace == "" || amount.Asset.AssetIdentifier == "" || amount.Asset.Unit == "" ||
+			!canonicalEconomicInteger(amount.AmountAtomic) || key <= previous {
+			return false
+		}
+		previous = key
+	}
+	return true
+}
+
+func validRelayAdmissionSettings(value EarningAgentRelayAdmissionSettings, maximumProtected uint32) bool {
+	return value.MaximumQuoteReservations > 0 && value.MaximumQuoteReservations <= 2048 &&
+		value.MaximumActiveExecutions > 0 && value.MaximumActiveExecutions <= maximumProtected &&
+		value.MaximumActivePerRequester > 0 && value.MaximumActivePerRequester <= value.MaximumActiveExecutions &&
+		value.MaximumQuoteRequestsPerWindow > 0 && value.MaximumQuoteRequestsPerWindow <= 100_000 &&
+		value.MaximumQuoteRequestsPerRequesterWindow > 0 &&
+		value.MaximumQuoteRequestsPerRequesterWindow <= value.MaximumQuoteRequestsPerWindow &&
+		value.MaximumQuoteRequestsPerRequesterWindow <= 10_000 &&
+		value.QuoteRequestWindowSeconds > 0 && value.QuoteRequestWindowSeconds <= 86400
+}
+
+func validRelayFixedPricing(relay EarningAgentRelaySettings) bool {
+	left, right := relay.RelayFee, relay.SponsorshipFee
+	if left.Asset != right.Asset || left.Asset.AssetNamespace == "" || left.Asset.AssetIdentifier == "" || left.Asset.Unit == "" ||
+		!canonicalEconomicInteger(left.AmountAtomic) || !canonicalEconomicInteger(right.AmountAtomic) {
+		return false
+	}
+	var maximum string
+	for _, candidate := range relay.OwnerPolicy.MaximumServiceFees {
+		if candidate.Asset == left.Asset {
+			maximum = candidate.AmountAtomic
+			break
+		}
+	}
+	limit, limitOK := new(big.Int).SetString(maximum, 10)
+	relayAmount, relayOK := new(big.Int).SetString(left.AmountAtomic, 10)
+	sponsorAmount, sponsorOK := new(big.Int).SetString(right.AmountAtomic, 10)
+	if !limitOK || !relayOK || !sponsorOK {
+		return false
+	}
+	for _, mode := range relay.OwnerPolicy.Modes {
+		amount := new(big.Int)
+		switch mode {
+		case "relay_exact":
+			amount.Set(relayAmount)
+		case "sponsor_only":
+			amount.Set(sponsorAmount)
+		case "sponsor_and_relay":
+			amount.Add(relayAmount, sponsorAmount)
+		default:
+			return false
+		}
+		if amount.Cmp(limit) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func containsSortedConfig(values []string, value string) bool {

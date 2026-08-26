@@ -695,6 +695,7 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 		payment := &TOSCTLPaymentSink{Authority: authority, Executable: mustEnv(t, "OPENFOX_TOSCTL"),
 			ConfigPath: mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG"), Wallet: entry.Wallet, SourceAccount: entry.Target,
 			NetworkGlobalID: 3, FeeReserveNanoTOS: 50_000_000,
+			RelayNetworkDomain:  liveTOSCustodyNetworkDomain(t, "tos:local-three-node", 3),
 			QuorumConfigPaths:   []string{mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_2"), mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_3")},
 			MaximumTransactions: 1000, VaultURL: mustEnv(t, "OPENFOX_TOS_VAULT_URL"),
 			EvidenceDirectory: filepath.Join(root, "campaign", "payment-evidence", entry.Name), ResolveAttempts: 60, ResolveInterval: time.Second}

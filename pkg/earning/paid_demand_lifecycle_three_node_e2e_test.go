@@ -103,6 +103,8 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 	network := &nativev1.NetworkDomain{NetworkId: "tos:local-three-node",
 		GenesisRootHash: "sha256:c1219a54e2535252bd31275b962f70e605b5f22f6cd09b615f203082a5eb1308",
 		GenesisFileHash: "sha256:22b2a7bcc471c3da0ddaea29ff9df2611ff6081198969989703e728ff98fa130"}
+	custodyNetwork := &commerce.CustodyNetworkDomain{NetworkID: network.NetworkId, GlobalID: 3,
+		ZeroStateRootHash: network.GenesisRootHash, ZeroStateFileHash: network.GenesisFileHash, WorkchainID: 0}
 	endpoints := []string{mustEnv(t, "OPENFOX_TOS_RPC_1"), mustEnv(t, "OPENFOX_TOS_RPC_2"), mustEnv(t, "OPENFOX_TOS_RPC_3")}
 	chain, err := toschain.New(toschain.Config{Network: network.NetworkId, Endpoints: endpoints, Quorum: 3})
 	if err != nil {
@@ -320,7 +322,8 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		BuyerAddress: threeNodeBuyerAccount, AssetWalletCode: walletCode,
 		BudgetLimits:   buyersdk.BudgetLimits{Window: time.Hour, MaxPurchases: 2, MaxPerPurchaseAtomic: "10000000", MaxTotalAtomic: "20000000"},
 		EscrowResolver: escrowResolver, ProviderOfferResolver: offerAuthorities, EscrowCode: escrowCode, Deployer: deployer,
-		ActionSender: buyerSender, EffectAuthorizer: PaidDemandCustodyAuthorizer{Engine: buyerEngine, Fence: buyerFence, PolicyRevision: 1},
+		ActionSender: buyerSender, EffectAuthorizer: PaidDemandCustodyAuthorizer{Engine: buyerEngine, Fence: buyerFence,
+			PolicyRevision: 1, NetworkDomain: custodyNetwork},
 		OwnerID: buyerEngine.OwnerID, AgentID: buyerID, CallerID: buyerID, NetworkGlobalID: 3, ActionNanoTOS: 100_000_000,
 		PollInterval: time.Second, FinalityTimeout: 20 * time.Second})
 	if err != nil {
@@ -414,7 +417,8 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 	settlement := PaidDemandProviderSettlement{Engine: providerEngine, Store: store, Network: network, PublicTerms: public,
 		EscrowResolver: escrowResolver, AssetResolver: assetResolver, OfferAuthorities: offerAuthorities,
 		EscrowCode: escrowCode, AssetWalletCode: walletCode, ExecutionKey: executionKey, ActionSender: providerSender,
-		Authorizer:      PaidDemandCustodyAuthorizer{Engine: providerEngine, Fence: providerFence, PolicyRevision: 1},
+		Authorizer: PaidDemandCustodyAuthorizer{Engine: providerEngine, Fence: providerFence,
+			PolicyRevision: 1, NetworkDomain: custodyNetwork},
 		NetworkGlobalID: 3, ActionNanoTOS: 100_000_000, PollInterval: time.Second, FinalityTimeout: 2 * time.Minute}
 	settled, err := settlement.ResolveReceivable(ctx, settling, 1, providerFence)
 	if err != nil || !settled {

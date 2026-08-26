@@ -17,6 +17,7 @@ import (
 
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
@@ -39,9 +40,26 @@ type ExposureReservation struct {
 
 func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.AuthorizedAction,
 	fields map[string]commerce.SemanticValue, canonicalRequest []byte, fence commerce.WriterFence,
-	payment commerce.AgreementPaymentRequest, sourceAccount string, networkGlobalID int32) (commerce.CustodyActionAuthorization, error) {
-	if authority == nil || sourceAccount == "" || networkGlobalID == 0 {
+	payment commerce.AgreementPaymentRequest, sourceAccount string,
+	networkDomain commerce.CustodyNetworkDomain,
+	sponsorship *SponsorshipCustodyBinding) (commerce.CustodyActionAuthorization, error) {
+	if authority == nil || sourceAccount == "" || commerce.ValidateCustodyNetworkDomain(networkDomain) != nil ||
+		networkDomain.NetworkID != payment.NetworkID || networkDomain.GlobalID == 0 {
 		return commerce.CustodyActionAuthorization{}, errors.New("custody payment binding is incomplete")
+	}
+	domainDigest, err := agentrelay.NetworkDomainDigest(agentrelay.NetworkDomain{NetworkID: networkDomain.NetworkID,
+		GlobalID: networkDomain.GlobalID, ZeroStateRootHash: networkDomain.ZeroStateRootHash,
+		ZeroStateFileHash: networkDomain.ZeroStateFileHash, WorkchainID: networkDomain.WorkchainID})
+	if err != nil || payment.SchemaVersion == 3 && payment.NetworkDomainDigest != domainDigest ||
+		payment.SchemaVersion == 1 && payment.NetworkDomainDigest != "" ||
+		payment.SchemaVersion != 1 && payment.SchemaVersion != 3 {
+		return commerce.CustodyActionAuthorization{}, errors.New("custody payment does not bind the pinned network domain")
+	}
+	if sponsorship != nil && (payment.SchemaVersion != 3 ||
+		!canonicalSHA256(sponsorship.FinalityProfileCBORDigest) ||
+		!canonicalSHA256(sponsorship.ReleaseProfileDigest) ||
+		!canonicalSHA256(sponsorship.CorroborationSnapshotID)) {
+		return commerce.CustodyActionAuthorization{}, errors.New("custody sponsorship finality binding is incomplete")
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
@@ -69,13 +87,31 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 	if approval == "" {
 		approval = zeroSHA256Digest()
 	}
-	body := commerce.CustodyActionAuthorization{SchemaVersion: 1, AuthorityID: authority.doc.AuthorityID,
+	authorizationSchema := uint16(2)
+	paymentRequestDigest := ""
+	if payment.SchemaVersion == 3 {
+		authorizationSchema = 3
+		paymentRequestDigest, err = commerce.AgreementPaymentRequestDigest(payment)
+		if err != nil {
+			return commerce.CustodyActionAuthorization{}, errors.New("custody payment request cannot be bound to relay evidence")
+		}
+	}
+	body := commerce.CustodyActionAuthorization{SchemaVersion: authorizationSchema, AuthorityID: authority.doc.AuthorityID,
 		OwnerID: authority.doc.OwnerID, AgentID: authority.doc.AgentID, SourceAccount: sourceAccount,
-		NetworkID: payment.NetworkID, NetworkGlobalID: networkGlobalID, StableActionID: action.StableActionID,
+		NetworkID: payment.NetworkID, NetworkGlobalID: networkDomain.GlobalID,
+		NetworkDomain: &commerce.CustodyNetworkDomain{NetworkID: networkDomain.NetworkID, GlobalID: networkDomain.GlobalID,
+			ZeroStateRootHash: networkDomain.ZeroStateRootHash, ZeroStateFileHash: networkDomain.ZeroStateFileHash,
+			WorkchainID: networkDomain.WorkchainID}, StableActionID: action.StableActionID,
 		ExactRequestDigest: action.ExactRequestDigest, WriterGeneration: action.WriterGeneration, WriterFenceDigest: fenceDigest,
-		PolicyRevision: action.PolicyRevision, MandateDigest: action.MandateDigest, ApprovalDigestOrZero: approval,
+		AgreementPaymentRequestDigest: paymentRequestDigest,
+		PolicyRevision:                action.PolicyRevision, MandateDigest: action.MandateDigest, ApprovalDigestOrZero: approval,
 		AgreementBodyDigest: payment.AgreementBodyDigest, ObligationInstanceID: payment.ObligationInstanceID,
 		Destination: string(payment.Destination), AmountAtomic: amount, ExpiresAtUnix: action.ExpiresAtUnix}
+	if sponsorship != nil {
+		body.SponsorshipFinalityProfileCBORDigest = sponsorship.FinalityProfileCBORDigest
+		body.SponsorshipReleaseProfileDigest = sponsorship.ReleaseProfileDigest
+		body.SponsorshipCorroborationSnapshotIdentity = sponsorship.CorroborationSnapshotID
+	}
 	return commerce.SignCustodyActionAuthorization(body, authority.key)
 }
 
@@ -86,7 +122,10 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 func (authority *PersonalAuthority) AuthorizeCustodyEffect(action commerce.AuthorizedAction,
 	fields map[string]commerce.SemanticValue, canonicalRequest []byte, fence commerce.WriterFence,
 	template commerce.CustodyEffectAuthorization) (commerce.CustodyEffectAuthorization, error) {
-	if authority == nil {
+	if authority == nil || template.NetworkDomain == nil ||
+		commerce.ValidateCustodyNetworkDomain(*template.NetworkDomain) != nil ||
+		template.NetworkID != template.NetworkDomain.NetworkID ||
+		template.NetworkGlobalID != template.NetworkDomain.GlobalID {
 		return commerce.CustodyEffectAuthorization{}, errors.New("custody effect authority is unavailable")
 	}
 	authority.mu.Lock()
@@ -113,7 +152,9 @@ func (authority *PersonalAuthority) AuthorizeCustodyEffect(action commerce.Autho
 	if approval == "" {
 		approval = zeroSHA256Digest()
 	}
-	template.SchemaVersion = 1
+	domain := *template.NetworkDomain
+	template.SchemaVersion = 2
+	template.NetworkDomain = &domain
 	template.AuthorityID = authority.doc.AuthorityID
 	template.OwnerID = authority.doc.OwnerID
 	template.AgentID = authority.doc.AgentID
@@ -197,23 +238,26 @@ type SettlementLedgerRecord struct {
 }
 
 type authorityDocument struct {
-	Schema               string                                      `json:"schema"`
-	OwnerID              string                                      `json:"owner_id"`
-	AgentID              string                                      `json:"agent_id"`
-	AuthorityID          string                                      `json:"authority_id"`
-	WriterGeneration     uint64                                      `json:"writer_generation"`
-	CurrentFence         *commerce.WriterFence                       `json:"current_fence,omitempty"`
-	Actions              map[string]commerce.ActionResolution        `json:"actions"`
-	AuthorityInstances   map[string]commerce.AuthorityInstanceRecord `json:"authority_instances"`
-	NextInstanceSequence uint64                                      `json:"next_instance_sequence"`
-	PortfolioRevision    uint64                                      `json:"portfolio_revision"`
-	Limits               PortfolioLimits                             `json:"limits"`
-	Reservations         map[string]ExposureReservation              `json:"reservations"`
-	ScheduleEntries      map[string]commerce.EngagementScheduleEntry `json:"schedule_entries"`
-	Dependencies         []commerce.PortfolioDependency              `json:"portfolio_dependencies"`
-	Engagements          map[string]EngagementRecord                 `json:"engagements"`
-	SettlementLedger     map[string]SettlementLedgerRecord           `json:"settlement_ledger"`
-	Accounting           map[string]AccountingEntry                  `json:"accounting"`
+	Schema                     string                                                      `json:"schema"`
+	OwnerID                    string                                                      `json:"owner_id"`
+	AgentID                    string                                                      `json:"agent_id"`
+	AuthorityID                string                                                      `json:"authority_id"`
+	WriterGeneration           uint64                                                      `json:"writer_generation"`
+	CurrentFence               *commerce.WriterFence                                       `json:"current_fence,omitempty"`
+	Actions                    map[string]commerce.ActionResolution                        `json:"actions"`
+	AuthorityInstances         map[string]commerce.AuthorityInstanceRecord                 `json:"authority_instances"`
+	NextInstanceSequence       uint64                                                      `json:"next_instance_sequence"`
+	NextRelayAdmissionSequence uint64                                                      `json:"next_relay_admission_sequence"`
+	RelayAdmissions            map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt `json:"relay_admissions"`
+	RelayAdmissionBindings     map[string]string                                           `json:"relay_admission_bindings"`
+	PortfolioRevision          uint64                                                      `json:"portfolio_revision"`
+	Limits                     PortfolioLimits                                             `json:"limits"`
+	Reservations               map[string]ExposureReservation                              `json:"reservations"`
+	ScheduleEntries            map[string]commerce.EngagementScheduleEntry                 `json:"schedule_entries"`
+	Dependencies               []commerce.PortfolioDependency                              `json:"portfolio_dependencies"`
+	Engagements                map[string]EngagementRecord                                 `json:"engagements"`
+	SettlementLedger           map[string]SettlementLedgerRecord                           `json:"settlement_ledger"`
+	Accounting                 map[string]AccountingEntry                                  `json:"accounting"`
 }
 
 type PersonalAuthority struct {
@@ -249,7 +293,10 @@ func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, key 
 	authority := &PersonalAuthority{path: filepath.Join(directory, authorityFile), lock: lock, key: append(ed25519.PrivateKey(nil), key...), now: time.Now}
 	authority.doc = authorityDocument{Schema: authoritySchema, OwnerID: ownerID, AgentID: agentID, AuthorityID: authorityID,
 		Actions: map[string]commerce.ActionResolution{}, AuthorityInstances: map[string]commerce.AuthorityInstanceRecord{},
-		NextInstanceSequence: 1, PortfolioRevision: 1, Limits: limits, Reservations: map[string]ExposureReservation{},
+		NextInstanceSequence: 1, NextRelayAdmissionSequence: 1,
+		RelayAdmissions:        map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt{},
+		RelayAdmissionBindings: map[string]string{},
+		PortfolioRevision:      1, Limits: limits, Reservations: map[string]ExposureReservation{},
 		ScheduleEntries: map[string]commerce.EngagementScheduleEntry{}}
 	authority.doc.Engagements = map[string]EngagementRecord{}
 	authority.doc.SettlementLedger = map[string]SettlementLedgerRecord{}
@@ -513,6 +560,82 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 	if document.Accounting == nil {
 		document.Accounting = map[string]AccountingEntry{}
 	}
+	if document.RelayAdmissions == nil {
+		document.RelayAdmissions = map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt{}
+	}
+	if document.RelayAdmissionBindings == nil {
+		document.RelayAdmissionBindings = map[string]string{}
+	}
+	if document.NextRelayAdmissionSequence == 0 && len(document.RelayAdmissions) == 0 {
+		document.NextRelayAdmissionSequence = 1
+	}
+	relayAdmissionSequences := make(map[uint64]struct{}, len(document.RelayAdmissions))
+	expectedRelayAdmissionBindings := make(map[string]string, len(document.RelayAdmissions))
+	type relayAdmissionRouteEntry struct {
+		lookupDigest string
+		receipt      agentrelay.SignedRelaySideEffectAdmissionReceipt
+	}
+	relayAdmissionRoutes := make(map[string][]relayAdmissionRouteEntry, len(document.RelayAdmissions))
+	var maximumRelayAdmissionSequence uint64
+	for lookupDigest, receipt := range document.RelayAdmissions {
+		body := receipt.Body
+		lookup := agentrelay.RelaySideEffectAdmissionLookup{SchemaVersion: 1, OwnerID: body.OwnerID, AgentID: body.AgentID,
+			AuthenticatedPrincipal: body.AuthenticatedPrincipal, AuthorityID: body.AuthorityID,
+			ProviderAgentID: body.ProviderAgentID, ServiceProfileDigest: body.ServiceProfileDigest,
+			ProviderQuoteDigest: body.ProviderQuoteDigest, NetworkDigest: body.NetworkDigest,
+			TransactionIdentityDigest: body.TransactionIdentityDigest, Mode: body.Mode,
+			AssuranceLevel: body.AssuranceLevel,
+			RouteAttempt:   body.RouteAttempt, PredecessorReceiptDigest: body.PredecessorReceiptDigest,
+			StableActionID:     body.StableActionID,
+			ExactRequestDigest: body.ExactRequestDigest, RelayExecutionDigest: body.RelayExecutionDigest,
+			StageMask: append([]agentrelay.SideEffectStage(nil), body.StageMask...)}
+		computed, digestErr := agentrelay.RelaySideEffectAdmissionLookupDigest(lookup)
+		if digestErr != nil || computed != lookupDigest || body.OwnerID != document.OwnerID ||
+			body.AgentID != document.AgentID || body.AuthorityID != document.AuthorityID ||
+			body.AdmissionSequence == 0 ||
+			receipt.PublicKey != "ed25519:"+hex.EncodeToString(authority.key.Public().(ed25519.PublicKey)) ||
+			agentrelay.VerifyRelaySideEffectAdmissionReceiptSignature(receipt) != nil {
+			return errors.New("personal authority relay admission ledger is invalid")
+		}
+		if _, duplicate := relayAdmissionSequences[body.AdmissionSequence]; duplicate {
+			return errors.New("personal authority relay admission sequence is reused")
+		}
+		relayAdmissionSequences[body.AdmissionSequence] = struct{}{}
+		if body.AdmissionSequence > maximumRelayAdmissionSequence {
+			maximumRelayAdmissionSequence = body.AdmissionSequence
+		}
+		bindingKey := relayAdmissionStableBindingKey(body.OwnerID, body.AgentID, body.StableActionID)
+		relayAdmissionRoutes[bindingKey] = append(relayAdmissionRoutes[bindingKey], relayAdmissionRouteEntry{
+			lookupDigest: lookupDigest, receipt: receipt,
+		})
+	}
+	for bindingKey, route := range relayAdmissionRoutes {
+		if len(route) > int(agentrelay.MaxRelayRouteAttempts) {
+			return errors.New("personal authority relay admission route chain exceeds the V1 limit")
+		}
+		sort.Slice(route, func(left, right int) bool {
+			return route[left].receipt.Body.RouteAttempt < route[right].receipt.Body.RouteAttempt
+		})
+		chain := make([]agentrelay.SignedRelaySideEffectAdmissionReceipt, len(route))
+		for index := range route {
+			chain[index] = route[index].receipt
+		}
+		if agentrelay.ValidateRelaySideEffectAdmissionRouteChain(chain) != nil {
+			return errors.New("personal authority relay admission route chain is invalid")
+		}
+		expectedRelayAdmissionBindings[bindingKey] = route[len(route)-1].lookupDigest
+	}
+	if maximumRelayAdmissionSequence == ^uint64(0) ||
+		document.NextRelayAdmissionSequence != maximumRelayAdmissionSequence+1 {
+		return errors.New("personal authority relay admission high-water is invalid")
+	}
+	if len(document.RelayAdmissionBindings) == 0 && len(expectedRelayAdmissionBindings) != 0 {
+		// Migrate only from already verified, contiguous receipt chains. The
+		// highest route attempt is the one and only successor admission point.
+		document.RelayAdmissionBindings = expectedRelayAdmissionBindings
+	} else if !equalRelayAdmissionBindings(document.RelayAdmissionBindings, expectedRelayAdmissionBindings) {
+		return errors.New("personal authority relay admission binding index is invalid")
+	}
 	if err := commerce.ValidatePortfolioDependencies(document.Dependencies); err != nil {
 		return errors.New("personal authority dependency graph is invalid")
 	}
@@ -618,12 +741,157 @@ func (authority *PersonalAuthority) ConfirmCurrentWriterFence(fence commerce.Wri
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
-	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
-		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID || fence.Body.AuthorityID != authority.doc.AuthorityID ||
+	if authority.doc.CurrentFence == nil || authority.doc.CurrentFence.Body.WriterGeneration != authority.doc.WriterGeneration ||
+		fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.AuthorityID != authority.doc.AuthorityID ||
 		!now.UTC().Before(time.Unix(int64(fence.Body.ExpiresAtUnix), 0).UTC()) {
 		return errors.New("writer fence is not the current owner lease")
 	}
+	// Currentness is about the exact authority-issued lease, not merely a
+	// generation number. This also rejects a stale/corrupt envelope that happens
+	// to reuse the current generation or lease ID with another instance, scope,
+	// validity bound, or proof.
+	wanted, wantedErr := commerce.WriterFenceDigest(*authority.doc.CurrentFence)
+	got, gotErr := commerce.WriterFenceDigest(fence)
+	if wantedErr != nil || gotErr != nil || got != wanted {
+		return errors.New("writer fence is not the current owner lease")
+	}
 	return nil
+}
+
+// AdmitRelaySideEffects atomically checks the current writer high-water and
+// persists the one recoverable receipt that authorizes the exact Provider
+// route. Receipt issuance is the linearization point; a later takeover cannot
+// revoke already-admitted stages, while a stale writer can never mint a new
+// receipt after takeover.
+func (authority *PersonalAuthority) admitRelaySideEffects(ctx context.Context,
+	descriptor agentrelay.RelaySideEffectAdmissionDescriptor) (agentrelay.SignedRelaySideEffectAdmissionReceipt, error) {
+	if authority == nil || ctx == nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("relay admission authority is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	now := authority.now().UTC()
+	if authority.doc.CurrentFence == nil || descriptor.OwnerID != authority.doc.OwnerID ||
+		descriptor.AgentID != authority.doc.AgentID || descriptor.WriterFence.Body.AuthorityID != authority.doc.AuthorityID ||
+		descriptor.WriterFence.Body.WriterGeneration != authority.doc.WriterGeneration ||
+		descriptor.WriterFence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("stale writer cannot admit relay side effects")
+	}
+	wantedFence, wantedErr := commerce.WriterFenceDigest(*authority.doc.CurrentFence)
+	gotFence, gotErr := commerce.WriterFenceDigest(descriptor.WriterFence)
+	if wantedErr != nil || gotErr != nil || wantedFence != gotFence {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("relay admission does not carry the current writer fence")
+	}
+	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID,
+		key: authority.key.Public().(ed25519.PublicKey)}
+	if err := agentrelay.ValidateRelaySideEffectAdmissionDescriptor(descriptor, resolver, now); err != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
+	}
+	if descriptor.RouteAttempt > maximumRelayRouteHops {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("relay admission route attempt exceeds the V1 limit")
+	}
+	lookupDigest, err := agentrelay.RelaySideEffectAdmissionLookupDigest(descriptor.Lookup())
+	if err != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
+	}
+	if existing, found := authority.doc.RelayAdmissions[lookupDigest]; found {
+		issuedAt := time.Unix(int64(existing.Body.IssuedAtUnix), 0).UTC()
+		if err := agentrelay.VerifyRelaySideEffectAdmissionReceiptForDescriptor(existing, descriptor,
+			agentrelay.RelayExecutionRequest{}, issuedAt); err != nil {
+			return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("stored relay admission conflicts with exact retry")
+		}
+		return cloneRelayAdmissionReceipt(existing), nil
+	}
+	bindingKey := relayAdmissionStableBindingKey(descriptor.OwnerID, descriptor.AgentID, descriptor.StableActionID)
+	boundLookup, hasBoundRoute := authority.doc.RelayAdmissionBindings[bindingKey]
+	if !hasBoundRoute {
+		if descriptor.RouteAttempt != 1 || descriptor.PredecessorReceiptDigest != "" {
+			return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, agentrelay.ErrRelayConflict
+		}
+	} else {
+		predecessor, found := authority.doc.RelayAdmissions[boundLookup]
+		if !found || agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(predecessor, descriptor) != nil {
+			return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, agentrelay.ErrRelayConflict
+		}
+	}
+	if authority.doc.NextRelayAdmissionSequence == 0 || authority.doc.NextRelayAdmissionSequence == ^uint64(0) ||
+		now.Unix() < 0 || descriptor.StartNotAfterCapUnix <= uint64(now.Unix()) {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("relay admission sequence or start window is exhausted")
+	}
+	startNotAfter := uint64(now.Add(agentrelay.MaxRelayAdmissionStartDelay * time.Second).Unix())
+	if descriptor.StartNotAfterCapUnix < startNotAfter {
+		startNotAfter = descriptor.StartNotAfterCapUnix
+	}
+	body, err := agentrelay.BuildRelaySideEffectAdmissionReceiptBody(descriptor,
+		authority.doc.NextRelayAdmissionSequence, uint64(now.Unix()), startNotAfter)
+	if err != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
+	}
+	receipt, err := agentrelay.SignRelaySideEffectAdmissionReceipt(body, authority.key)
+	if err != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
+	}
+	next := cloneAuthorityDocument(authority.doc)
+	next.RelayAdmissions[lookupDigest] = receipt
+	next.RelayAdmissionBindings[bindingKey] = lookupDigest
+	next.NextRelayAdmissionSequence++
+	if err := authority.persist(next); err != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
+	}
+	authority.doc = next
+	return cloneRelayAdmissionReceipt(receipt), nil
+}
+
+func (authority *PersonalAuthority) resolveRelaySideEffectAdmission(ctx context.Context,
+	lookup agentrelay.RelaySideEffectAdmissionLookup) (agentrelay.SignedRelaySideEffectAdmissionReceipt, error) {
+	if authority == nil || ctx == nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("relay admission authority is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
+	}
+	lookupDigest, err := agentrelay.RelaySideEffectAdmissionLookupDigest(lookup)
+	if err != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	if lookup.OwnerID != authority.doc.OwnerID || lookup.AgentID != authority.doc.AgentID ||
+		lookup.AuthorityID != authority.doc.AuthorityID {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("relay side-effect admission lookup is outside this authority")
+	}
+	receipt, found := authority.doc.RelayAdmissions[lookupDigest]
+	if !found {
+		// This typed result is safe because it comes from the same locked journal
+		// that linearizes Admit. Callers must not translate transport failures or
+		// arbitrary remote strings into ErrRelayUnknown.
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, agentrelay.ErrRelayUnknown
+	}
+	return cloneRelayAdmissionReceipt(receipt), nil
+}
+
+func cloneRelayAdmissionReceipt(receipt agentrelay.SignedRelaySideEffectAdmissionReceipt) agentrelay.SignedRelaySideEffectAdmissionReceipt {
+	receipt.Body.StageMask = append([]agentrelay.SideEffectStage(nil), receipt.Body.StageMask...)
+	return receipt
+}
+
+func relayAdmissionStableBindingKey(ownerID, agentID, stableActionID string) string {
+	return ownerID + "\x00" + agentID + "\x00" + stableActionID
+}
+
+func equalRelayAdmissionBindings(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 // SignAction is the only production path that turns a deterministic action

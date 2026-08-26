@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"errors"
 	"math/big"
 	"net/http/httptest"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 )
 
 func TestSharedAuthorityMutualTLSAndCrossHostTakeoverFence(t *testing.T) {
@@ -39,7 +41,7 @@ func TestSharedAuthorityMutualTLSAndCrossHostTakeoverFence(t *testing.T) {
 		digest := sha256.Sum256(parsed.RawSubjectPublicKeyInfo)
 		*target = "sha256:" + hex.EncodeToString(digest[:])
 	}
-	scope := []string{"publication.publish"}
+	scope := []string{"payment.direct", "publication.publish"}
 	server := &SharedAuthorityServer{Backing: backing, ClientsBySPKI: map[string]SharedAuthorityClientGrant{
 		spkiA: {OwnerID: "owner-1", AgentID: "agent-1", InstanceID: "runtime-a", Scopes: scope},
 		spkiB: {OwnerID: "owner-1", AgentID: "agent-1", InstanceID: "runtime-b", Scopes: scope},
@@ -112,6 +114,57 @@ func TestSharedAuthorityMutualTLSAndCrossHostTakeoverFence(t *testing.T) {
 	}
 	if _, err := clientA.Admit(action, fields, request, fenceA, nil); err == nil {
 		t.Fatal("stale host admitted after takeover")
+	}
+
+	// Relay admission crosses the host boundary as the released canonical
+	// AdmissionRequest wire object, not as OpenFox's richer internal descriptor.
+	relayRequest := []byte{0xa1, 0x01, 0x02}
+	relayFields := map[string]commerce.SemanticValue{
+		"owner_id": commerce.ID("owner-1"), "agent_id": commerce.ID("agent-1"),
+		"agreement_body_digest":  commerce.Digest32("sha256:" + strings.Repeat("1", 64)),
+		"obligation_instance_id": commerce.Digest32("sha256:" + strings.Repeat("2", 64)),
+		"payer_id":               commerce.ID("agent-1"), "payee_id": commerce.ID("agent-merchant"),
+		"network_id":         commerce.ID("tos:testnet"),
+		"asset_digest":       commerce.Digest32("sha256:" + strings.Repeat("3", 64)),
+		"amount_atomic":      commerce.ID("25"),
+		"destination_digest": commerce.Digest32("sha256:" + strings.Repeat("4", 64)),
+	}
+	relayAction, err := commerce.BuildAuthorizedAction("owner-1", "agent-1", "payment.direct", relayFields,
+		relayRequest, fenceB, 1, "sha256:"+strings.Repeat("5", 64), "", "pending", uint64(now.Add(time.Minute).Unix()))
+	if err == nil {
+		relayAction, err = clientB.SignAction(relayAction, fenceB)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireFields, err := commerce.ExportSemanticFields(relayAction.ActionKind, relayFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actionDigest, _ := commerce.AuthorizedActionDigest(relayAction)
+	fenceDigest, _ := commerce.WriterFenceDigest(fenceB)
+	descriptor := agentrelay.RelaySideEffectAdmissionDescriptor{SchemaVersion: 1, OwnerID: "owner-1", AgentID: "agent-1",
+		AuthenticatedPrincipal: "agent-1", ProviderAgentID: "agent:relay", ServiceProfileDigest: "sha256:" + strings.Repeat("6", 64),
+		ProviderQuoteDigest: "sha256:" + strings.Repeat("7", 64), NetworkDigest: "sha256:" + strings.Repeat("8", 64),
+		TransactionIdentityDigest: "sha256:" + strings.Repeat("9", 64), Mode: agentrelay.ModeRelayExact,
+		AssuranceLevel: agentrelay.AssuranceAuthorizedSingleProvider,
+		StageMask:      []agentrelay.SideEffectStage{agentrelay.SideEffectBroadcast}, RouteAttempt: 1,
+		StableActionID: relayAction.StableActionID, ExactRequestDigest: relayAction.ExactRequestDigest,
+		RelayExecutionDigest: "sha256:" + strings.Repeat("a", 64), AuthorizedActionDigest: actionDigest,
+		WriterFenceDigest: fenceDigest, StartNotAfterCapUnix: uint64(now.Add(30 * time.Second).Unix()),
+		AuthorizedAction: relayAction, WriterFence: fenceB, UnderlyingActionRequest: relayRequest, SemanticFields: wireFields}
+	unknownLookup := descriptor.Lookup()
+	unknownLookup.ProviderQuoteDigest = "sha256:" + strings.Repeat("f", 64)
+	if _, err := clientB.ResolveRelaySideEffectAdmission(t.Context(), unknownLookup); !errors.Is(err, agentrelay.ErrRelayUnknown) {
+		t.Fatalf("shared authority lost typed linearizable not-found: %v", err)
+	}
+	receipt, err := clientB.AdmitRelaySideEffects(t.Context(), descriptor)
+	if err != nil || receipt.Body.RouteAttempt != 1 || receipt.Body.TransactionIdentityDigest != descriptor.TransactionIdentityDigest {
+		t.Fatalf("shared authority did not admit the exact canonical relay wire request: receipt=%+v err=%v", receipt.Body, err)
+	}
+	resolved, err := clientB.ResolveRelaySideEffectAdmission(t.Context(), descriptor.Lookup())
+	if err != nil || !reflect.DeepEqual(resolved, receipt) {
+		t.Fatalf("shared authority did not recover the exact relay receipt: resolved=%+v err=%v", resolved.Body, err)
 	}
 }
 

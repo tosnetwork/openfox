@@ -133,6 +133,21 @@ func NewSafeDialContext(
 	whitelist *PrivateHostWhitelist,
 	allowPrivateHosts func() bool,
 ) func(context.Context, string, string) (net.Conn, error) {
+	return NewSafeDialContextWithResolver(dialer, whitelist, allowPrivateHosts, nil)
+}
+
+// NewSafeDialContextWithResolver applies the same post-resolution address
+// policy while permitting an owner-supplied resolver. Resolver answers never
+// bypass private/restricted-address classification or the explicit whitelist.
+func NewSafeDialContextWithResolver(
+	dialer *net.Dialer,
+	whitelist *PrivateHostWhitelist,
+	allowPrivateHosts func() bool,
+	resolver *net.Resolver,
+) func(context.Context, string, string) (net.Conn, error) {
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		if allowPrivateHosts != nil && allowPrivateHosts() {
 			return dialer.DialContext(ctx, network, address)
@@ -156,7 +171,7 @@ func NewSafeDialContext(
 			return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		}
 
-		ipAddrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		ipAddrs, err := resolver.LookupIPAddr(ctx, host)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve %s: %w", host, err)
 		}
@@ -267,6 +282,10 @@ func IsPrivateOrRestrictedIP(ip net.IP) bool {
 			(ip4[0] == 192 && ip4[1] == 168) ||
 			(ip4[0] == 169 && ip4[1] == 254) ||
 			(ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127) ||
+			// Azure WireServer exposes host and platform metadata on a public-looking
+			// anycast address. It must be treated like every link-local metadata
+			// endpoint rather than as an Internet destination selected by content.
+			(ip4[0] == 168 && ip4[1] == 63 && ip4[2] == 129 && ip4[3] == 16) ||
 			(ip4[0] == 198 && ip4[1] >= 18 && ip4[1] <= 19) {
 			return true
 		}

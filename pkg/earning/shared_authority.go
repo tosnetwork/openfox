@@ -17,6 +17,8 @@ import (
 	"time"
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 const sharedAuthorityMaximumRequestBytes = 8 << 20
@@ -44,8 +46,9 @@ type sharedAuthorityEnvelope struct {
 }
 
 type sharedAuthorityResult struct {
-	Body  json.RawMessage `json:"body,omitempty"`
-	Error string          `json:"error,omitempty"`
+	Body      json.RawMessage `json:"body,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	ErrorCode string          `json:"error_code,omitempty"`
 }
 
 func SharedAuthorityClientSPKI(cert *tls.Certificate) (string, error) {
@@ -98,7 +101,7 @@ func (server *SharedAuthorityServer) serveHTTP(writer http.ResponseWriter, reque
 	}
 	result, err := server.dispatch(request.Context(), grant, envelope.Operation, envelope.Body)
 	if err != nil {
-		writeSharedAuthorityError(writer, http.StatusConflict, err.Error())
+		writeSharedAuthorityDispatchError(writer, http.StatusConflict, err)
 		return
 	}
 	raw, err := json.Marshal(result)
@@ -124,6 +127,15 @@ func (server *SharedAuthorityServer) authorizeClient(request *http.Request) (Sha
 func writeSharedAuthorityError(writer http.ResponseWriter, status int, message string) {
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(sharedAuthorityResult{Error: message})
+}
+
+func writeSharedAuthorityDispatchError(writer http.ResponseWriter, status int, err error) {
+	result := sharedAuthorityResult{Error: err.Error()}
+	if errors.Is(err, agentrelay.ErrRelayUnknown) {
+		result.ErrorCode = "relay_admission_not_found"
+	}
+	writer.WriteHeader(status)
+	_ = json.NewEncoder(writer).Encode(result)
 }
 
 func decodeSharedBody(raw json.RawMessage, target any) error {
@@ -177,6 +189,70 @@ func (server *SharedAuthorityServer) dispatch(ctx context.Context, grant SharedA
 			return nil, err
 		}
 		return backing.Admit(input.Action, fields, input.Request, input.Fence, input.Reservation)
+	case "admit-relay-side-effects":
+		var wire struct {
+			Request []byte `json:"request"`
+		}
+		if err := decodeSharedBody(raw, &wire); err != nil || len(wire.Request) == 0 || len(wire.Request) > sharedAuthorityMaximumRequestBytes {
+			return nil, errors.New("relay admission wire request is invalid")
+		}
+		var input agentrelay.RelaySideEffectAdmissionRequest
+		if err := codec.Unmarshal(wire.Request, &input); err != nil {
+			return nil, errors.New("relay admission wire request is not canonical")
+		}
+		canonical, err := agentrelay.RelaySideEffectAdmissionRequestBytes(input)
+		if err != nil || !bytes.Equal(canonical, wire.Request) {
+			return nil, errors.New("relay admission wire request is not canonical")
+		}
+		if input.OwnerID != grant.OwnerID || input.AgentID != grant.AgentID ||
+			input.AuthenticatedPrincipal != grant.AgentID || validateFence(input.WriterFence) != nil ||
+			!scopeSubset([]string{input.AuthorizedAction.ActionKind}, grant.Scopes) {
+			return nil, errors.New("relay admission request exceeds the authenticated client grant")
+		}
+		descriptor, err := relayAdmissionDescriptorFromWire(input)
+		if err != nil {
+			return nil, err
+		}
+		return backing.admitRelaySideEffects(ctx, descriptor)
+	case "resolve-relay-side-effects":
+		var input agentrelay.RelaySideEffectAdmissionLookup
+		if err := decodeSharedBody(raw, &input); err != nil {
+			return nil, err
+		}
+		if input.OwnerID != grant.OwnerID || input.AgentID != grant.AgentID ||
+			input.AuthenticatedPrincipal != grant.AgentID {
+			return nil, errors.New("relay admission lookup exceeds the authenticated client grant")
+		}
+		return backing.resolveRelaySideEffectAdmission(ctx, input)
+	case "reauthorize-relay-side-effects":
+		var wire struct {
+			Request   []byte                           `json:"request"`
+			Execution agentrelay.RelayExecutionRequest `json:"protected_execution"`
+		}
+		if err := decodeSharedBody(raw, &wire); err != nil || len(wire.Request) == 0 || len(wire.Request) > sharedAuthorityMaximumRequestBytes {
+			return nil, errors.New("relay reauthorization wire request is invalid")
+		}
+		var input agentrelay.RelaySideEffectAdmissionRequest
+		if err := codec.Unmarshal(wire.Request, &input); err != nil {
+			return nil, errors.New("relay reauthorization wire request is not canonical")
+		}
+		canonical, err := agentrelay.RelaySideEffectAdmissionRequestBytes(input)
+		if err != nil || !bytes.Equal(canonical, wire.Request) {
+			return nil, errors.New("relay reauthorization wire request is not canonical")
+		}
+		if input.OwnerID != grant.OwnerID || input.AgentID != grant.AgentID ||
+			input.AuthenticatedPrincipal != grant.AgentID ||
+			!scopeSubset([]string{input.AuthorizedAction.ActionKind}, grant.Scopes) {
+			return nil, errors.New("relay reauthorization request exceeds the authenticated client grant")
+		}
+		descriptor, err := relayAdmissionDescriptorFromWire(input)
+		if err != nil {
+			return nil, err
+		}
+		// The old descriptor legitimately belongs to the superseded writer. The
+		// backing authority checks the authenticated caller's instance against
+		// the current lease inside the same lock as the not-found observation.
+		return backing.reauthorizeUnlinearizedRelayAdmissionForInstance(ctx, descriptor, wire.Execution, grant.InstanceID)
 	case "resolve":
 		var input struct {
 			StableActionID string `json:"stable_action_id"`
@@ -265,13 +341,14 @@ func (server *SharedAuthorityServer) dispatch(ctx context.Context, grant SharedA
 		return backing.SignAction(input.Action, input.Fence)
 	case "authorize-custody":
 		var input struct {
-			Action          commerce.AuthorizedAction        `json:"action"`
-			Fields          []commerce.SemanticFieldValue    `json:"fields"`
-			Request         []byte                           `json:"request"`
-			Fence           commerce.WriterFence             `json:"fence"`
-			Payment         commerce.AgreementPaymentRequest `json:"payment"`
-			SourceAccount   string                           `json:"source_account"`
-			NetworkGlobalID int32                            `json:"network_global_id"`
+			Action        commerce.AuthorizedAction        `json:"action"`
+			Fields        []commerce.SemanticFieldValue    `json:"fields"`
+			Request       []byte                           `json:"request"`
+			Fence         commerce.WriterFence             `json:"fence"`
+			Payment       commerce.AgreementPaymentRequest `json:"payment"`
+			SourceAccount string                           `json:"source_account"`
+			NetworkDomain commerce.CustodyNetworkDomain    `json:"network_domain"`
+			Sponsorship   *SponsorshipCustodyBinding       `json:"sponsorship,omitempty"`
 		}
 		if err := decodeSharedBody(raw, &input); err != nil {
 			return nil, err
@@ -283,7 +360,8 @@ func (server *SharedAuthorityServer) dispatch(ctx context.Context, grant SharedA
 		if err != nil {
 			return nil, err
 		}
-		return backing.AuthorizeCustodyPayment(input.Action, fields, input.Request, input.Fence, input.Payment, input.SourceAccount, input.NetworkGlobalID)
+		return backing.AuthorizeCustodyPayment(input.Action, fields, input.Request, input.Fence, input.Payment,
+			input.SourceAccount, input.NetworkDomain, input.Sponsorship)
 	case "authorize-custody-effect":
 		var input struct {
 			Action   commerce.AuthorizedAction           `json:"action"`
@@ -609,6 +687,28 @@ func scopeSubset(requested, allowed []string) bool {
 	return len(requested) != 0
 }
 
+func relayAdmissionDescriptorFromWire(request agentrelay.RelaySideEffectAdmissionRequest) (
+	agentrelay.RelaySideEffectAdmissionDescriptor, error) {
+	actionDigest, actionErr := commerce.AuthorizedActionDigest(request.AuthorizedAction)
+	fenceDigest, fenceErr := commerce.WriterFenceDigest(request.WriterFence)
+	if actionErr != nil || fenceErr != nil {
+		return agentrelay.RelaySideEffectAdmissionDescriptor{}, errors.Join(actionErr, fenceErr)
+	}
+	return agentrelay.RelaySideEffectAdmissionDescriptor{SchemaVersion: request.SchemaVersion,
+		OwnerID: request.OwnerID, AgentID: request.AgentID, AuthenticatedPrincipal: request.AuthenticatedPrincipal,
+		ProviderAgentID: request.ProviderAgentID, ServiceProfileDigest: request.ServiceProfileDigest,
+		ProviderQuoteDigest: request.ProviderQuoteDigest, NetworkDigest: request.NetworkDigest,
+		TransactionIdentityDigest: request.TransactionIdentityDigest, Mode: request.Mode,
+		AssuranceLevel: request.AssuranceLevel,
+		StageMask:      append([]agentrelay.SideEffectStage(nil), request.StageMask...), RouteAttempt: request.RouteAttempt,
+		PredecessorReceiptDigest: request.PredecessorReceiptDigest, StableActionID: request.StableActionID,
+		ExactRequestDigest: request.ExactRequestDigest, RelayExecutionDigest: request.RelayExecutionDigest,
+		AuthorizedActionDigest: actionDigest, WriterFenceDigest: fenceDigest,
+		StartNotAfterCapUnix: request.RequestedStartNotAfterUnix, AuthorizedAction: request.AuthorizedAction,
+		WriterFence: request.WriterFence, UnderlyingActionRequest: append([]byte(nil), request.UnderlyingActionRequest...),
+		SemanticFields: append([]commerce.SemanticFieldValue(nil), request.SemanticFields...)}, nil
+}
+
 type SharedAuthorityClient struct {
 	Endpoint      string
 	HTTPClient    *http.Client
@@ -680,8 +780,11 @@ func (client *SharedAuthorityClient) call(ctx context.Context, operation string,
 	var result sharedAuthorityResult
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&result) != nil || result.Error != "" || response.StatusCode != http.StatusOK {
+	if decoder.Decode(&result) != nil || result.Error != "" || result.ErrorCode != "" || response.StatusCode != http.StatusOK {
 		if result.Error != "" {
+			if result.ErrorCode == "relay_admission_not_found" {
+				return errors.Join(agentrelay.ErrRelayUnknown, errors.New(result.Error))
+			}
 			return errors.New(result.Error)
 		}
 		return errors.New("shared authority rejected the request")
@@ -750,6 +853,87 @@ func (client *SharedAuthorityClient) AllocateInstance(request commerce.Authority
 	}{request, fence}, &out)
 	return out, err
 }
+
+func (client *SharedAuthorityClient) AdmitRelaySideEffects(ctx context.Context,
+	descriptor agentrelay.RelaySideEffectAdmissionDescriptor) (agentrelay.SignedRelaySideEffectAdmissionReceipt, error) {
+	var receipt agentrelay.SignedRelaySideEffectAdmissionReceipt
+	wire, err := agentrelay.BuildRelaySideEffectAdmissionRequest(descriptor, descriptor.StartNotAfterCapUnix)
+	if err != nil {
+		return receipt, err
+	}
+	wireBytes, err := agentrelay.RelaySideEffectAdmissionRequestBytes(wire)
+	if err != nil {
+		return receipt, err
+	}
+	if err := client.call(ctx, "admit-relay-side-effects", struct {
+		Request []byte `json:"request"`
+	}{wireBytes}, &receipt); err != nil {
+		return receipt, err
+	}
+	if receipt.PublicKey != "ed25519:"+hex.EncodeToString(client.AuthorityKey) ||
+		receipt.Body.IssuedAtUnix == 0 || receipt.Body.IssuedAtUnix > uint64(^uint64(0)>>1) ||
+		agentrelay.VerifyRelaySideEffectAdmissionReceiptForDescriptor(receipt, descriptor,
+			agentrelay.RelayExecutionRequest{}, time.Unix(int64(receipt.Body.IssuedAtUnix), 0).UTC()) != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("shared authority returned an invalid relay admission receipt")
+	}
+	return receipt, nil
+}
+
+func (client *SharedAuthorityClient) ResolveRelaySideEffectAdmission(ctx context.Context,
+	lookup agentrelay.RelaySideEffectAdmissionLookup) (agentrelay.SignedRelaySideEffectAdmissionReceipt, error) {
+	var receipt agentrelay.SignedRelaySideEffectAdmissionReceipt
+	if err := client.call(ctx, "resolve-relay-side-effects", lookup, &receipt); err != nil {
+		return receipt, err
+	}
+	if receipt.PublicKey != "ed25519:"+hex.EncodeToString(client.AuthorityKey) ||
+		agentrelay.VerifyRelaySideEffectAdmissionReceiptSignature(receipt) != nil ||
+		!relayAdmissionReceiptMatchesLookup(receipt, lookup) {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("shared authority resolved a conflicting relay admission receipt")
+	}
+	return receipt, nil
+}
+
+func (client *SharedAuthorityClient) reauthorizeUnlinearizedRelayAdmission(ctx context.Context,
+	descriptor agentrelay.RelaySideEffectAdmissionDescriptor,
+	execution agentrelay.RelayExecutionRequest) (relayAdmissionReauthorization, error) {
+	var authorization relayAdmissionReauthorization
+	wire, err := agentrelay.BuildRelaySideEffectAdmissionRequest(descriptor, descriptor.StartNotAfterCapUnix)
+	if err != nil {
+		return authorization, err
+	}
+	wireBytes, err := agentrelay.RelaySideEffectAdmissionRequestBytes(wire)
+	if err != nil {
+		return authorization, err
+	}
+	if err := client.call(ctx, "reauthorize-relay-side-effects", struct {
+		Request   []byte                           `json:"request"`
+		Execution agentrelay.RelayExecutionRequest `json:"protected_execution"`
+	}{wireBytes, execution}, &authorization); err != nil {
+		return relayAdmissionReauthorization{}, err
+	}
+	if authorization.PublicKey != "ed25519:"+hex.EncodeToString(client.AuthorityKey) {
+		return relayAdmissionReauthorization{}, errors.New("shared authority returned an untrusted relay reauthorization")
+	}
+	return authorization, nil
+}
+
+func relayAdmissionReceiptMatchesLookup(receipt agentrelay.SignedRelaySideEffectAdmissionReceipt,
+	lookup agentrelay.RelaySideEffectAdmissionLookup) bool {
+	body := receipt.Body
+	fromReceipt := agentrelay.RelaySideEffectAdmissionLookup{SchemaVersion: 1, OwnerID: body.OwnerID,
+		AgentID: body.AgentID, AuthenticatedPrincipal: body.AuthenticatedPrincipal, AuthorityID: body.AuthorityID,
+		ProviderAgentID: body.ProviderAgentID, ServiceProfileDigest: body.ServiceProfileDigest,
+		ProviderQuoteDigest: body.ProviderQuoteDigest, NetworkDigest: body.NetworkDigest,
+		TransactionIdentityDigest: body.TransactionIdentityDigest, Mode: body.Mode,
+		AssuranceLevel: body.AssuranceLevel,
+		StageMask:      append([]agentrelay.SideEffectStage(nil), body.StageMask...), RouteAttempt: body.RouteAttempt,
+		PredecessorReceiptDigest: body.PredecessorReceiptDigest, StableActionID: body.StableActionID,
+		ExactRequestDigest: body.ExactRequestDigest, RelayExecutionDigest: body.RelayExecutionDigest}
+	want, wantErr := agentrelay.RelaySideEffectAdmissionLookupDigest(lookup)
+	got, gotErr := agentrelay.RelaySideEffectAdmissionLookupDigest(fromReceipt)
+	return wantErr == nil && gotErr == nil && want == got
+}
+
 func (client *SharedAuthorityClient) Snapshot() (uint64, PortfolioLimits, []ExposureReservation) {
 	var out struct {
 		Revision     uint64                `json:"revision"`
@@ -804,21 +988,26 @@ func (client *SharedAuthorityClient) SignAction(action commerce.AuthorizedAction
 	}{action, fence}, &out)
 	return out, err
 }
-func (client *SharedAuthorityClient) AuthorizeCustodyPayment(action commerce.AuthorizedAction, fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence, payment commerce.AgreementPaymentRequest, source string, network int32) (commerce.CustodyActionAuthorization, error) {
+func (client *SharedAuthorityClient) AuthorizeCustodyPayment(action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence,
+	payment commerce.AgreementPaymentRequest, source string,
+	network commerce.CustodyNetworkDomain,
+	sponsorship *SponsorshipCustodyBinding) (commerce.CustodyActionAuthorization, error) {
 	var out commerce.CustodyActionAuthorization
 	wireFields, err := commerce.ExportSemanticFields(action.ActionKind, fields)
 	if err != nil {
 		return out, err
 	}
 	err = client.call(context.Background(), "authorize-custody", struct {
-		Action          commerce.AuthorizedAction        `json:"action"`
-		Fields          []commerce.SemanticFieldValue    `json:"fields"`
-		Request         []byte                           `json:"request"`
-		Fence           commerce.WriterFence             `json:"fence"`
-		Payment         commerce.AgreementPaymentRequest `json:"payment"`
-		SourceAccount   string                           `json:"source_account"`
-		NetworkGlobalID int32                            `json:"network_global_id"`
-	}{action, wireFields, request, fence, payment, source, network}, &out)
+		Action        commerce.AuthorizedAction        `json:"action"`
+		Fields        []commerce.SemanticFieldValue    `json:"fields"`
+		Request       []byte                           `json:"request"`
+		Fence         commerce.WriterFence             `json:"fence"`
+		Payment       commerce.AgreementPaymentRequest `json:"payment"`
+		SourceAccount string                           `json:"source_account"`
+		NetworkDomain commerce.CustodyNetworkDomain    `json:"network_domain"`
+		Sponsorship   *SponsorshipCustodyBinding       `json:"sponsorship,omitempty"`
+	}{action, wireFields, request, fence, payment, source, network, sponsorship}, &out)
 	return out, err
 }
 func (client *SharedAuthorityClient) AuthorizeCustodyEffect(action commerce.AuthorizedAction, fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence, template commerce.CustodyEffectAuthorization) (commerce.CustodyEffectAuthorization, error) {
@@ -1126,3 +1315,4 @@ func (client *SharedAuthorityClient) reconciliationSnapshot() (uint64, []Exposur
 }
 
 var _ EconomicAuthority = (*SharedAuthorityClient)(nil)
+var _ agentrelay.RelaySideEffectAdmissionAuthority = (*SharedAuthorityClient)(nil)

@@ -18,6 +18,7 @@ type PaidDemandCustodyAuthorizer struct {
 	FenceSource    WriterFenceProvider
 	PolicyRevision uint64
 	ApprovalDigest string
+	NetworkDomain  *commerce.CustodyNetworkDomain
 }
 
 func (authorizer PaidDemandCustodyAuthorizer) AuthorizeCustodyEffect(ctx context.Context,
@@ -27,6 +28,9 @@ func (authorizer PaidDemandCustodyAuthorizer) AuthorizeCustodyEffect(ctx context
 		request.ActionKind != "escrow.accept" && request.ActionKind != "escrow.fund" &&
 			request.ActionKind != "escrow.release" && request.ActionKind != "escrow.refund" ||
 		request.SourceAccount == "" || request.NetworkID == "" || request.NetworkGlobalID == 0 ||
+		authorizer.NetworkDomain == nil || commerce.ValidateCustodyNetworkDomain(*authorizer.NetworkDomain) != nil ||
+		authorizer.NetworkDomain.NetworkID != request.NetworkID ||
+		authorizer.NetworkDomain.GlobalID != request.NetworkGlobalID ||
 		request.Destination == "" || request.AmountNanoTOS == 0 || request.ExpiresAtUnix == 0 ||
 		!strings.HasPrefix(request.BodyHash, "tvm-cell-sha256:") {
 		return commerce.CustodyEffectAuthorization{}, errors.New("Paid Demand custody effect is disabled or incomplete")
@@ -61,8 +65,10 @@ func (authorizer PaidDemandCustodyAuthorizer) AuthorizeCustodyEffect(ctx context
 		}
 		return commerce.CustodyEffectAuthorization{}, err
 	}
-	template := commerce.CustodyEffectAuthorization{SourceAccount: request.SourceAccount,
-		NetworkID: request.NetworkID, NetworkGlobalID: request.NetworkGlobalID, ActionKind: request.ActionKind,
+	domain := *authorizer.NetworkDomain
+	template := commerce.CustodyEffectAuthorization{SchemaVersion: 2, SourceAccount: request.SourceAccount,
+		NetworkID: request.NetworkID, NetworkGlobalID: request.NetworkGlobalID, NetworkDomain: &domain,
+		ActionKind:          request.ActionKind,
 		AgreementBodyDigest: request.AgreementDigest, ObligationID: request.ObligationID,
 		Destination: request.Destination, AmountNanoTOS: request.AmountNanoTOS,
 		BodyHash: request.BodyHash, StateInitHashOrZero: request.StateInitHashOrZero,

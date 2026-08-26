@@ -108,7 +108,8 @@ func TestThreeOpenFoxRoleEarningPilot(t *testing.T) {
 	bindPilotPayer(t, tosctl, primary, vaultURL, payerKey, custodyDirectory)
 	paymentSink := &TOSCTLPaymentSink{Authority: payerAuthority, Executable: tosctl, ConfigPath: primary,
 		Wallet: "payer-agent", SourceAccount: threeNodeBuyerAccount, NetworkGlobalID: 3, FeeReserveNanoTOS: 50_000_000,
-		QuorumConfigPaths: []string{quorum2, quorum3}, MaximumTransactions: 1000, VaultURL: vaultURL,
+		RelayNetworkDomain: liveTOSCustodyNetworkDomain(t, "tos:local-three-node", 3),
+		QuorumConfigPaths:  []string{quorum2, quorum3}, MaximumTransactions: 1000, VaultURL: vaultURL,
 		EvidenceDirectory: filepath.Join(outputDirectory, "payment-authorizations"), ResolveAttempts: 60, ResolveInterval: time.Second}
 
 	results := make([]threeRolePilotResult, 0, len(specs))

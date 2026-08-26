@@ -11,12 +11,20 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
-const tosQuorumEvidenceProfile = "tos://settlement/native-agent-account-quorum/v1"
+const (
+	tosQuorumEvidenceProfile                  = "tos://settlement/native-agent-account-quorum/v1"
+	maximumVerifiedSponsorshipObservationRefs = 512
+)
+
+var errRelaySponsorshipTypedResolutionRequired = errors.New("relay sponsorship requires typed frozen-snapshot resolution")
 
 // TOSCTLPaymentSink is the production boundary between OpenFox's Owner
 // Economic Action Authority and tosctl custody. OpenFox never passes a private
@@ -25,20 +33,101 @@ const tosQuorumEvidenceProfile = "tos://settlement/native-agent-account-quorum/v
 // writer-generation high-water mark, Agent Account limits, sequence and
 // finalized-chain evidence.
 type TOSCTLPaymentSink struct {
-	Authority           EconomicAuthority
-	Executable          string
-	ConfigPath          string
-	Wallet              string
-	SourceAccount       string
-	NetworkGlobalID     int32
-	FeeReserveNanoTOS   uint64
-	QuorumConfigPaths   []string
-	MaximumTransactions uint32
-	VaultURL            string
-	EvidenceDirectory   string
-	ResolveAttempts     uint32
-	ResolveInterval     time.Duration
-	Run                 func(context.Context, []string, []string) ([]byte, error)
+	Authority       EconomicAuthority
+	Executable      string
+	ConfigPath      string
+	Wallet          string
+	SourceAccount   string
+	NetworkGlobalID int32
+	// RelayNetworkDomain is required for every TOS custody authorization: the
+	// custody boundary accepts only schema v2 proofs bound to the complete
+	// zero-state and target workchain. RelayNetworkPreflight is additionally
+	// required before funding a bearer-executable Agent relay sponsorship.
+	RelayNetworkDomain    *agentrelay.NetworkDomain
+	RelayNetworkPreflight func(context.Context, string, agentrelay.NetworkDomain) error
+	// RelaySponsorshipReleasePolicy is owner configuration. When it selects the
+	// observed profile, this sink may be explicitly wired as the typed
+	// sponsorship resolver; ordinary payments never infer or enable it.
+	RelaySponsorshipReleasePolicy RelaySponsorshipReleasePolicy
+	// RelayTerminalFinalityProfiles is the exact owner-selected subset this
+	// adapter may prove. The bundled tosctl RPC terminal adapter currently
+	// supports confirmation depth one only.
+	RelayTerminalFinalityProfiles   []agentrelay.FinalityProfile
+	FeeReserveNanoTOS               uint64
+	QuorumConfigPaths               []string
+	MaximumTransactions             uint32
+	VaultURL                        string
+	EvidenceDirectory               string
+	ResolveAttempts                 uint32
+	ResolveInterval                 time.Duration
+	Now                             func() time.Time
+	Run                             func(context.Context, []string, []string) ([]byte, error)
+	verifiedSponsorshipMu           sync.Mutex
+	verifiedSponsorshipObservations map[string]uint64
+	verifiedSponsorshipTransactions map[string]uint64
+	sponsorshipSnapshotMu           sync.Mutex
+}
+
+func (sink *TOSCTLPaymentSink) verifyRelayNetworkDomain(ctx context.Context,
+	expected agentrelay.NetworkDomain) error {
+	if sink == nil || sink.RelayNetworkDomain == nil || *sink.RelayNetworkDomain != expected ||
+		sink.NetworkGlobalID != expected.GlobalID {
+		return errors.New("TOS custody relay network domain is not the current owner pin")
+	}
+	return sink.verifyRelayNetworkDomainAt(ctx, expected, sink.ConfigPath)
+}
+
+func (sink *TOSCTLPaymentSink) verifyRelayNetworkDomainAt(ctx context.Context,
+	expected agentrelay.NetworkDomain, configPath string) error {
+	if sink == nil || ctx == nil || sink.RelayNetworkPreflight == nil || !filepath.IsAbs(configPath) {
+		return errors.New("TOS custody relay network domain is not completely pinned")
+	}
+	if _, err := agentrelay.NetworkDomainDigest(expected); err != nil {
+		return errors.New("TOS custody relay network domain is invalid")
+	}
+	if err := sink.RelayNetworkPreflight(ctx, configPath, expected); err != nil {
+		return fmt.Errorf("verify TOS custody relay network domain: %w", err)
+	}
+	return nil
+}
+
+func (sink *TOSCTLPaymentSink) custodyNetworkDomain(ctx context.Context,
+	request commerce.AgreementPaymentRequest, configPath string) (commerce.CustodyNetworkDomain, error) {
+	if sink == nil || sink.RelayNetworkDomain == nil || request.NetworkID != sink.RelayNetworkDomain.NetworkID ||
+		sink.NetworkGlobalID != sink.RelayNetworkDomain.GlobalID {
+		return commerce.CustodyNetworkDomain{}, errors.New("TOS custody payment has no exact pinned network domain")
+	}
+	return sink.custodyNetworkDomainAt(ctx, request, configPath, *sink.RelayNetworkDomain)
+}
+
+func (sink *TOSCTLPaymentSink) custodyNetworkDomainAt(ctx context.Context,
+	request commerce.AgreementPaymentRequest, configPath string,
+	domain agentrelay.NetworkDomain) (commerce.CustodyNetworkDomain, error) {
+	if sink == nil || request.NetworkID != domain.NetworkID {
+		return commerce.CustodyNetworkDomain{}, errors.New("TOS custody payment has no exact pinned network domain")
+	}
+	digest, err := agentrelay.NetworkDomainDigest(domain)
+	if err != nil {
+		return commerce.CustodyNetworkDomain{}, errors.New("TOS custody payment network domain is invalid")
+	}
+	switch request.SchemaVersion {
+	case 1:
+		if request.NetworkDomainDigest != "" {
+			return commerce.CustodyNetworkDomain{}, errors.New("legacy direct payment carries an unexpected network-domain digest")
+		}
+	case 3:
+		if request.NetworkDomainDigest != digest {
+			return commerce.CustodyNetworkDomain{}, errors.New("relay-eligible payment conflicts with the pinned network domain")
+		}
+		if err := sink.verifyRelayNetworkDomainAt(ctx, domain, configPath); err != nil {
+			return commerce.CustodyNetworkDomain{}, err
+		}
+	default:
+		return commerce.CustodyNetworkDomain{}, errors.New("TOS custody does not accept this payment request profile")
+	}
+	return commerce.CustodyNetworkDomain{NetworkID: domain.NetworkID, GlobalID: domain.GlobalID,
+		ZeroStateRootHash: domain.ZeroStateRootHash, ZeroStateFileHash: domain.ZeroStateFileHash,
+		WorkchainID: domain.WorkchainID}, nil
 }
 
 type tosctlPaymentPrepared struct {
@@ -88,30 +177,232 @@ type tosctlQuorum struct {
 }
 
 type tosctlPaymentObservation struct {
-	Endpoint                 string `json:"endpoint"`
-	TransactionHash          string `json:"transaction_hash"`
-	TransactionLT            uint64 `json:"transaction_lt"`
-	TransactionUTime         uint64 `json:"transaction_utime"`
-	TransactionBOCDigest     string `json:"transaction_boc_digest"`
-	BlockWorkchain           int32  `json:"block_workchain"`
-	BlockShard               int64  `json:"block_shard"`
-	BlockSeqno               uint32 `json:"block_seqno"`
-	BlockRootHash            string `json:"block_root_hash"`
-	BlockFileHash            string `json:"block_file_hash"`
-	ObservedMasterchainSeqno uint32 `json:"observed_masterchain_seqno"`
+	Endpoint                        string `json:"endpoint"`
+	OperatorProvenance              string `json:"operator_provenance"`
+	TransactionHash                 string `json:"transaction_hash"`
+	TransactionLT                   uint64 `json:"transaction_lt"`
+	TransactionUTime                uint64 `json:"transaction_utime"`
+	TransactionBOCDigest            string `json:"transaction_boc_digest"`
+	SourceOutboundMessageHash       string `json:"source_outbound_message_hash"`
+	DestinationCreditReference      string `json:"destination_credit_reference"`
+	DestinationTransactionHash      string `json:"destination_transaction_hash"`
+	DestinationTransactionLT        uint64 `json:"destination_transaction_lt"`
+	DestinationTransactionUTime     uint64 `json:"destination_transaction_utime"`
+	DestinationTransactionBOCDigest string `json:"destination_transaction_boc_digest"`
+	DestinationBlockWorkchain       int32  `json:"destination_block_workchain"`
+	DestinationBlockShard           int64  `json:"destination_block_shard"`
+	DestinationBlockSeqno           uint32 `json:"destination_block_seqno"`
+	DestinationBlockRootHash        string `json:"destination_block_root_hash"`
+	DestinationBlockFileHash        string `json:"destination_block_file_hash"`
+	DestinationCreditAtomic         string `json:"destination_credit_atomic"`
+	DestinationCreditFirst          bool   `json:"destination_credit_first"`
+	DestinationTransactionAborted   bool   `json:"destination_transaction_aborted"`
+	DestinationBouncePresent        bool   `json:"destination_bounce_present"`
+	DestinationCreditObservedExact  bool   `json:"destination_credit_observed_exact"`
+	BlockWorkchain                  int32  `json:"block_workchain"`
+	BlockShard                      int64  `json:"block_shard"`
+	BlockSeqno                      uint32 `json:"block_seqno"`
+	BlockRootHash                   string `json:"block_root_hash"`
+	BlockFileHash                   string `json:"block_file_hash"`
+	NetworkGlobalID                 int32  `json:"network_global_id"`
+	ZeroStateWorkchain              int32  `json:"zero_state_workchain"`
+	ZeroStateShard                  int64  `json:"zero_state_shard"`
+	ZeroStateSeqno                  uint32 `json:"zero_state_seqno"`
+	ZeroStateRootHash               string `json:"zero_state_root_hash"`
+	ZeroStateFileHash               string `json:"zero_state_file_hash"`
+	ObservedMasterchainWorkchain    int32  `json:"observed_masterchain_workchain"`
+	ObservedMasterchainShard        int64  `json:"observed_masterchain_shard"`
+	ObservedMasterchainSeqno        uint32 `json:"observed_masterchain_seqno"`
+	ObservedMasterchainRootHash     string `json:"observed_masterchain_root_hash"`
+	ObservedMasterchainFileHash     string `json:"observed_masterchain_file_hash"`
+	ObservedMasterchainGenUTime     uint64 `json:"observed_masterchain_gen_utime"`
+	FinalityProven                  bool   `json:"finality_proven"`
+}
+
+type tosctlRelaySponsorshipEvidenceProfileMember struct {
+	Endpoint           string `json:"endpoint"`
+	OperatorProvenance string `json:"operator_provenance"`
+}
+
+type tosctlRelaySponsorshipEvidenceProfile struct {
+	ProfileURI                 string                                        `json:"profile_uri"`
+	NetworkDomain              agentrelay.NetworkDomain                      `json:"network_domain"`
+	Members                    []tosctlRelaySponsorshipEvidenceProfileMember `json:"members"`
+	Threshold                  uint32                                        `json:"threshold"`
+	MaximumHistoryTransactions uint32                                        `json:"maximum_history_transactions"`
+	StrictMajority             bool                                          `json:"strict_majority"`
+	ExactSubmittedMessage      bool                                          `json:"exact_submitted_message"`
+	ExactDestinationCredit     bool                                          `json:"exact_destination_credit"`
+	ValidatorFinalityProven    bool                                          `json:"validator_finality_proven"`
+}
+
+type tosctlRelaySponsorshipObserved struct {
+	Schema                               string                                `json:"schema"`
+	StableActionID                       string                                `json:"stable_action_id"`
+	SponsorshipStableActionID            string                                `json:"sponsorship_stable_action_id"`
+	SponsorshipExactRequestDigest        string                                `json:"sponsorship_exact_request_digest"`
+	AgreementPaymentRequestDigest        string                                `json:"agreement_payment_request_digest"`
+	AgreementBodyDigest                  string                                `json:"agreement_body_digest"`
+	ObligationInstanceID                 string                                `json:"obligation_instance_id"`
+	ProviderSponsorSourceAccount         string                                `json:"provider_sponsor_source_account"`
+	ProviderSponsorSourceSequence        uint64                                `json:"provider_sponsor_source_sequence"`
+	ProviderSponsorValidUntilUnix        uint64                                `json:"provider_sponsor_valid_until_unix"`
+	SignedTopUpTransactionDigest         string                                `json:"signed_top_up_transaction_digest"`
+	SignedTopUpTransactionCellHash       string                                `json:"signed_top_up_transaction_cell_hash"`
+	SponsorshipPaymentCommitmentCellHash string                                `json:"sponsorship_payment_commitment_cell_hash"`
+	DestinationSourceAccount             string                                `json:"destination_source_account"`
+	Destination                          string                                `json:"destination"`
+	AmountNanoTOS                        uint64                                `json:"amount_nanotos"`
+	NetworkGlobalID                      int32                                 `json:"network_global_id"`
+	NetworkDomain                        agentrelay.NetworkDomain              `json:"network_domain"`
+	SubmittedTransactionHash             string                                `json:"submitted_transaction_hash"`
+	SourceExecutionReference             string                                `json:"source_execution_reference"`
+	DestinationCreditReferences          []string                              `json:"destination_credit_references"`
+	EvidenceProfileURI                   string                                `json:"evidence_profile_uri"`
+	EvidenceProfileDigest                string                                `json:"evidence_profile_digest"`
+	EvidenceProfile                      tosctlRelaySponsorshipEvidenceProfile `json:"evidence_profile"`
+	CorroborationSnapshot                string                                `json:"corroboration_snapshot"`
+	CorroborationSnapshotIdentity        string                                `json:"corroboration_snapshot_identity"`
+	ObservedCheckpointID                 string                                `json:"observed_checkpoint_id"`
+	ObservedCheckpointSequence           uint64                                `json:"observed_checkpoint_sequence"`
+	ObservedCheckpointUnix               uint64                                `json:"observed_checkpoint_unix"`
+	ObservationDigests                   []string                              `json:"observation_digests"`
+	ObservedAtUnix                       uint64                                `json:"observed_at_unix"`
+	Quorum                               tosctlQuorum                          `json:"quorum"`
+	Evidence                             tosctlPaymentObservation              `json:"evidence"`
+	Observations                         []tosctlPaymentObservation            `json:"observations"`
+	Failures                             []string                              `json:"failures"`
+	Finality                             string                                `json:"finality"`
+	State                                string                                `json:"state"`
+	CustodyState                         string                                `json:"custody_state"`
+	MissingProof                         string                                `json:"missing_proof"`
 }
 
 func (sink *TOSCTLPaymentSink) SubmitPayment(ctx context.Context, action commerce.AuthorizedAction,
 	fence commerce.WriterFence, fields map[string]commerce.SemanticValue, canonicalRequest []byte,
 	request commerce.AgreementPaymentRequest) (commerce.AgreementPaymentEvidence, error) {
+	return sink.submitPayment(ctx, action, fence, fields, canonicalRequest, request, sink.ConfigPath, nil, nil)
+}
+
+type tosctlFrozenCustodyIdentity struct {
+	wallet        string
+	sourceAccount string
+	network       agentrelay.NetworkDomain
+	feeReserve    uint64
+}
+
+func (sink *TOSCTLPaymentSink) SubmitRelaySponsorshipPayment(ctx context.Context,
+	action commerce.AuthorizedAction, fence commerce.WriterFence,
+	fields map[string]commerce.SemanticValue, canonicalRequest []byte,
+	request commerce.AgreementPaymentRequest,
+	finality agentrelay.FinalityProfile,
+	frozen RelaySponsorshipEvidenceSnapshot) (commerce.AgreementPaymentEvidence, error) {
+	profile := agentrelay.SponsorshipReleaseProfile{EvidenceClass: agentrelay.SponsorshipReleaseEvidenceClass(frozen.EvidenceClass),
+		ProfileURI: frozen.ProfileURI, ProfileDigest: frozen.ProfileDigest}
+	if err := sink.ValidateRelaySponsorshipEvidenceSnapshot(profile, frozen); err != nil {
+		return commerce.AgreementPaymentEvidence{}, err
+	}
+	configPath, err := sink.relaySponsorshipSnapshotPrimaryConfig(frozen)
+	if err != nil {
+		return commerce.AgreementPaymentEvidence{}, err
+	}
+	finalityCBOR, err := codec.Marshal(finality)
+	if err != nil || !sink.SupportsRelaySponsorshipTerminalFinalityProfile(finality, &frozen) {
+		return commerce.AgreementPaymentEvidence{}, errors.New("selected sponsorship finality profile is unsupported")
+	}
+	binding := &SponsorshipCustodyBinding{FinalityProfileCBORDigest: sha256Digest(finalityCBOR),
+		ReleaseProfileDigest: frozen.ProfileDigest, CorroborationSnapshotID: frozen.SnapshotIdentity}
+	frozenNetwork, err := sink.relaySponsorshipSnapshotNetwork(frozen)
+	if err != nil {
+		return commerce.AgreementPaymentEvidence{}, err
+	}
+	identity := &tosctlFrozenCustodyIdentity{wallet: frozen.CustodyWallet,
+		sourceAccount: frozen.ProviderSourceAccount, network: frozenNetwork,
+		feeReserve: frozen.FeeReserveNanoTOS}
+	return sink.submitPayment(ctx, action, fence, fields, canonicalRequest, request, configPath, binding, identity)
+}
+
+func (sink *TOSCTLPaymentSink) ResumeRelaySponsorshipBroadcast(ctx context.Context,
+	request commerce.AgreementPaymentRequest, frozen *RelaySponsorshipEvidenceSnapshot) error {
+	if err := sink.validate(); err != nil {
+		return err
+	}
+	configPath := sink.ConfigPath
+	wallet := sink.Wallet
+	sourceAccount := sink.SourceAccount
+	networkID := ""
+	if sink.RelayNetworkDomain != nil {
+		networkID = sink.RelayNetworkDomain.NetworkID
+	}
+	if frozen != nil {
+		profile := agentrelay.SponsorshipReleaseProfile{
+			EvidenceClass: agentrelay.SponsorshipReleaseEvidenceClass(frozen.EvidenceClass),
+			ProfileURI:    frozen.ProfileURI, ProfileDigest: frozen.ProfileDigest,
+		}
+		if err := sink.ValidateRelaySponsorshipEvidenceSnapshot(profile, *frozen); err != nil {
+			return err
+		}
+		var err error
+		configPath, err = sink.relaySponsorshipSnapshotPrimaryConfig(*frozen)
+		if err != nil {
+			return err
+		}
+		frozenNetwork, networkErr := sink.relaySponsorshipSnapshotNetwork(*frozen)
+		if networkErr != nil {
+			return networkErr
+		}
+		networkID = frozenNetwork.NetworkID
+		wallet = frozen.CustodyWallet
+		sourceAccount = frozen.ProviderSourceAccount
+	}
+	if request.SchemaVersion != 3 || request.StableActionID == "" ||
+		networkID == "" || request.NetworkID != networkID {
+		return errors.New("submitted sponsorship recovery changes the exact payment")
+	}
+	raw, err := sink.run(ctx, []string{"agent", "account", "economic-payment-broadcast",
+		"--wallet", wallet, "--stable-action-id", request.StableActionID, "--yes", "-c", configPath})
+	if err != nil {
+		// This includes the expected already-Broadcasting response. The caller
+		// immediately performs the bounded read-only corroboration query; an
+		// unknown result remains ambiguous and cannot authorize another top-up.
+		return err
+	}
+	var result tosctlPaymentBroadcast
+	if err := decodeStrictJSON(raw, &result); err != nil ||
+		result.Schema != "tosctl.agent-account.agreement-payment-broadcast.v1" ||
+		result.StableActionID != request.StableActionID || result.Account != sourceAccount ||
+		!canonicalSHA256(result.ExactSignedBOCDigest) || result.State != "broadcasting" {
+		return errors.New("tosctl returned an unrelated resumed sponsorship broadcast")
+	}
+	return nil
+}
+
+func (sink *TOSCTLPaymentSink) submitPayment(ctx context.Context, action commerce.AuthorizedAction,
+	fence commerce.WriterFence, fields map[string]commerce.SemanticValue, canonicalRequest []byte,
+	request commerce.AgreementPaymentRequest, configPath string,
+	sponsorshipBinding *SponsorshipCustodyBinding,
+	frozenIdentity *tosctlFrozenCustodyIdentity) (commerce.AgreementPaymentEvidence, error) {
 	if err := sink.validate(); err != nil {
 		return commerce.AgreementPaymentEvidence{}, err
 	}
 	if request.NetworkID == "" || string(request.Destination) == "" || action.StableActionID != request.StableActionID {
 		return commerce.AgreementPaymentEvidence{}, errors.New("TOS payment request is incomplete")
 	}
+	wallet, sourceAccount, feeReserve := sink.Wallet, sink.SourceAccount, sink.FeeReserveNanoTOS
+	var networkDomain commerce.CustodyNetworkDomain
+	var err error
+	if frozenIdentity != nil {
+		wallet, sourceAccount = frozenIdentity.wallet, frozenIdentity.sourceAccount
+		feeReserve = frozenIdentity.feeReserve
+		networkDomain, err = sink.custodyNetworkDomainAt(ctx, request, configPath, frozenIdentity.network)
+	} else {
+		networkDomain, err = sink.custodyNetworkDomain(ctx, request, configPath)
+	}
+	if err != nil {
+		return commerce.AgreementPaymentEvidence{}, err
+	}
 	authorization, err := sink.Authority.AuthorizeCustodyPayment(action, fields, canonicalRequest, fence,
-		request, sink.SourceAccount, sink.NetworkGlobalID)
+		request, sourceAccount, networkDomain, sponsorshipBinding)
 	if err != nil {
 		return commerce.AgreementPaymentEvidence{}, err
 	}
@@ -125,9 +416,9 @@ func (sink *TOSCTLPaymentSink) SubmitPayment(ctx context.Context, action commerc
 		return commerce.AgreementPaymentEvidence{}, errors.New("TOS payment amount is invalid")
 	}
 	preparedRaw, err := sink.run(ctx, []string{"agent", "account", "economic-payment-prepare",
-		"--wallet", sink.Wallet, "--target", string(request.Destination), "--amount-nanotos", strconv.FormatUint(amount, 10),
-		"--fee-reserve-nanotos", strconv.FormatUint(sink.FeeReserveNanoTOS, 10), "--valid-until", strconv.FormatUint(request.ExpiresAtUnix, 10),
-		"--authorization-file", authorizationPath, "--yes", "-c", sink.ConfigPath})
+		"--wallet", wallet, "--target", string(request.Destination), "--amount-nanotos", strconv.FormatUint(amount, 10),
+		"--fee-reserve-nanotos", strconv.FormatUint(feeReserve, 10), "--valid-until", strconv.FormatUint(request.ExpiresAtUnix, 10),
+		"--authorization-file", authorizationPath, "--yes", "-c", configPath})
 	if err != nil {
 		return commerce.AgreementPaymentEvidence{}, fmt.Errorf("prepare Agreement payment: %w", err)
 	}
@@ -137,26 +428,46 @@ func (sink *TOSCTLPaymentSink) SubmitPayment(ctx context.Context, action commerc
 	}
 	if prepared.Schema != "tosctl.agent-account.agreement-payment-prepared.v1" ||
 		prepared.StableActionID != request.StableActionID || prepared.AgreementBodyDigest != request.AgreementBodyDigest ||
-		prepared.ObligationInstanceID != request.ObligationInstanceID || prepared.Account != sink.SourceAccount ||
+		prepared.ObligationInstanceID != request.ObligationInstanceID || prepared.Account != sourceAccount ||
 		prepared.Target != string(request.Destination) || prepared.AmountNanoTOS != amount || prepared.ExactSignedBOCDigest == "" {
 		return commerce.AgreementPaymentEvidence{}, fmt.Errorf("tosctl returned an unrelated prepared payment: schema=%q action=%q agreement=%q obligation=%q account=%q target=%q amount=%d digest=%q",
 			prepared.Schema, prepared.StableActionID, prepared.AgreementBodyDigest, prepared.ObligationInstanceID,
 			prepared.Account, prepared.Target, prepared.AmountNanoTOS, prepared.ExactSignedBOCDigest)
 	}
-	broadcastRaw, err := sink.run(ctx, []string{"agent", "account", "economic-payment-broadcast", "--wallet", sink.Wallet,
-		"--stable-action-id", request.StableActionID, "--yes", "-c", sink.ConfigPath})
+	// The exact custody authorization can only be issued while OpenFox's
+	// authority record is PREPARED. Once tosctl has durably prepared the exact
+	// signed BOC, move to SUBMITTED before the first broadcast socket write.
+	// A crash after this point may resume/resubmit only this byte-identical BOC
+	// from custody; it can never prepare, sign, or allocate a sequence for a
+	// replacement top-up.
+	if _, err := sink.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
+		commerce.ActionSubmitted, "", nil); err != nil {
+		return commerce.AgreementPaymentEvidence{}, errors.New("establish durable custody submission boundary")
+	}
+	broadcastRaw, err := sink.run(ctx, []string{"agent", "account", "economic-payment-broadcast", "--wallet", wallet,
+		"--stable-action-id", request.StableActionID, "--yes", "-c", configPath})
 	if err != nil {
 		// A transport error after submission is deliberately ambiguous. Resolve
 		// the same stable action; never prepare or broadcast a replacement.
+		if sponsorshipBinding != nil {
+			return commerce.AgreementPaymentEvidence{}, errRelaySponsorshipTypedResolutionRequired
+		}
 		return sink.ResolvePayment(ctx, request)
 	}
 	var broadcast tosctlPaymentBroadcast
 	if err := decodeStrictJSON(broadcastRaw, &broadcast); err != nil || broadcast.Schema != "tosctl.agent-account.agreement-payment-broadcast.v1" ||
-		broadcast.StableActionID != request.StableActionID || broadcast.Account != sink.SourceAccount ||
+		broadcast.StableActionID != request.StableActionID || broadcast.Account != sourceAccount ||
 		broadcast.ExactSignedBOCDigest != prepared.ExactSignedBOCDigest || broadcast.State != "broadcasting" {
 		return commerce.AgreementPaymentEvidence{}, errors.New("tosctl returned an unrelated broadcast result")
 	}
+	if sponsorshipBinding != nil {
+		return commerce.AgreementPaymentEvidence{}, errRelaySponsorshipTypedResolutionRequired
+	}
 	return sink.ResolvePayment(ctx, request)
+}
+
+func (sink *TOSCTLPaymentSink) ManagesRelaySponsorshipSubmissionFence() bool {
+	return sink != nil && sink.Authority != nil
 }
 
 func (sink *TOSCTLPaymentSink) ResolvePayment(ctx context.Context,
@@ -194,6 +505,281 @@ func (sink *TOSCTLPaymentSink) ResolvePayment(ctx context.Context,
 		}
 	}
 	return commerce.AgreementPaymentEvidence{}, fmt.Errorf("resolve Agreement payment from TOS quorum: %w", lastErr)
+}
+
+// ResolveRelaySponsorshipEvidence translates only the strict tosctl v2 RPC
+// corroboration artifact. It embeds the locally held canonical
+// AgreementPaymentRequestV3; tosctl never gets to substitute that body. The
+// result remains observed_unproven and cannot satisfy payment finality.
+func (sink *TOSCTLPaymentSink) ResolveRelaySponsorshipEvidence(ctx context.Context,
+	execution agentrelay.RelayExecutionRequest,
+	request commerce.AgreementPaymentRequest) (agentrelay.SponsorshipResolution, error) {
+	if err := sink.validate(); err != nil {
+		return agentrelay.SponsorshipResolution{}, err
+	}
+	policy := relaySponsorshipReleasePolicyFromRequest(execution.QuoteRequest.Body)
+	if policy.EvidenceClass != agentrelay.SponsorshipReleaseObservedUnproven ||
+		!validRelaySponsorshipReleasePolicy(execution.QuoteRequest.Body.AssuranceLevel, policy) {
+		return agentrelay.SponsorshipResolution{}, errors.New("tosctl RPC corroboration is not the signed owner release profile")
+	}
+	snapshot, err := sink.ensureCurrentRelaySponsorshipSnapshot()
+	if err != nil {
+		return agentrelay.SponsorshipResolution{}, err
+	}
+	return sink.resolveRelaySponsorshipEvidenceFromSnapshot(ctx, execution, request, snapshot)
+}
+
+func (sink *TOSCTLPaymentSink) resolveRelaySponsorshipEvidenceFromSnapshot(ctx context.Context,
+	execution agentrelay.RelayExecutionRequest, request commerce.AgreementPaymentRequest,
+	snapshot tosctlRelaySponsorshipSnapshot) (agentrelay.SponsorshipResolution, error) {
+	policy := relaySponsorshipReleasePolicyFromRequest(execution.QuoteRequest.Body)
+	if snapshot.policy != policy || sink.validateRelaySponsorshipSnapshot(snapshot) != nil {
+		return agentrelay.SponsorshipResolution{}, errors.New("frozen tosctl corroboration snapshot conflicts with the signed release profile")
+	}
+	frozen := snapshot.frozenProvider()
+	frozenNetwork, networkErr := sink.relaySponsorshipSnapshotNetwork(frozen)
+	if request.SchemaVersion != 3 || networkErr != nil ||
+		execution.QuoteRequest.Body.Network != frozenNetwork || request.NetworkID != frozenNetwork.NetworkID {
+		return agentrelay.SponsorshipResolution{}, errors.New("tosctl sponsorship request lacks exact PaymentRequestV3 network binding")
+	}
+	configPath, err := sink.relaySponsorshipSnapshotPrimaryConfig(frozen)
+	if err != nil {
+		return agentrelay.SponsorshipResolution{}, err
+	}
+	args := []string{"agent", "account", "economic-payment-corroborate", "--wallet", snapshot.custodyWallet,
+		"--stable-action-id", request.StableActionID,
+		"--corroboration-snapshot", snapshot.manifestPath,
+		"--corroboration-snapshot-identity", snapshot.identity,
+		"--sponsorship-release-profile-digest", snapshot.policy.ProfileDigest, "-c", configPath}
+	raw, err := sink.run(ctx, args)
+	if err != nil {
+		// A failed bounded query is unknown, never absence and never permission
+		// to submit another top-up.
+		return agentrelay.SponsorshipResolution{Status: agentrelay.SponsorshipResolutionUnknown}, nil
+	}
+	observation, err := sink.decodeRelaySponsorshipObservation(execution, request, raw,
+		snapshot)
+	if err != nil {
+		return agentrelay.SponsorshipResolution{}, err
+	}
+	return agentrelay.SponsorshipResolution{Status: agentrelay.SponsorshipResolutionObservedUnproven,
+		CreditObservation: &observation}, nil
+}
+
+func (sink *TOSCTLPaymentSink) VerifyRelaySponsorshipCreditObservation(_ context.Context,
+	observation agentrelay.RelaySponsorshipCreditObservation, execution agentrelay.RelayExecutionRequest,
+	request commerce.AgreementPaymentRequest) error {
+	policy := relaySponsorshipReleasePolicyFromRequest(execution.QuoteRequest.Body)
+	if sink == nil ||
+		observation.EvidenceProfileURI != policy.ProfileURI || observation.EvidenceProfileDigest != policy.ProfileDigest {
+		return errors.New("sponsorship observation differs from the owner-pinned profile")
+	}
+	digest, err := agentrelay.RelaySponsorshipCreditObservationDigest(observation)
+	if err != nil {
+		return err
+	}
+	if !sink.hasVerifiedSponsorshipObservation(digest) {
+		return errors.New("sponsorship observation was not produced by the strict owner-pinned tosctl verifier")
+	}
+	projected := agentrelay.RelaySponsorshipTransactionEvidence{
+		AgreementPaymentRequestDigest: observation.AgreementPaymentRequestDigest,
+		SponsorshipStableActionID:     observation.SponsorshipStableActionID,
+		SponsorshipExactRequestDigest: observation.SponsorshipExactRequestDigest,
+		ProviderSponsorValidUntilUnix: observation.ProviderSponsorValidUntilUnix,
+	}
+	return validateRelaySponsorshipPaymentBinding(execution, request, projected)
+}
+
+func (sink *TOSCTLPaymentSink) VerifyRelaySponsorshipCreditObservationFromSnapshot(ctx context.Context,
+	observation agentrelay.RelaySponsorshipCreditObservation, execution agentrelay.RelayExecutionRequest,
+	request commerce.AgreementPaymentRequest, frozen RelaySponsorshipEvidenceSnapshot) error {
+	release := agentrelay.SponsorshipReleaseProfile{
+		EvidenceClass: agentrelay.SponsorshipReleaseEvidenceClass(frozen.EvidenceClass),
+		ProfileURI:    frozen.ProfileURI, ProfileDigest: frozen.ProfileDigest}
+	if sink == nil || sink.ValidateRelaySponsorshipEvidenceSnapshot(release, frozen) != nil ||
+		release != execution.QuoteRequest.Body.SelectedSponsorshipReleaseProfile() ||
+		observation.EvidenceProfileURI != frozen.ProfileURI ||
+		observation.EvidenceProfileDigest != frozen.ProfileDigest {
+		return errors.New("sponsorship observation changes its frozen evidence snapshot")
+	}
+	return sink.VerifyRelaySponsorshipCreditObservation(ctx, observation, execution, request)
+}
+
+// VerifySponsorshipCreditObservation is the provider-side protocol gate. A
+// typed observation is accepted only when this process first reconstructed
+// the complete frozen tosctl descriptor, strict-majority winner, and all
+// framed Rust observation digests in ResolveRelaySponsorshipEvidence.
+func (sink *TOSCTLPaymentSink) VerifySponsorshipCreditObservation(_ context.Context,
+	observation agentrelay.RelaySponsorshipCreditObservation,
+	profile agentrelay.SponsorshipReleaseProfile) error {
+	policy := RelaySponsorshipReleasePolicy{EvidenceClass: profile.EvidenceClass,
+		ProfileURI: profile.ProfileURI, ProfileDigest: profile.ProfileDigest}
+	if sink == nil || observation.EvidenceProfileURI != policy.ProfileURI ||
+		observation.EvidenceProfileDigest != policy.ProfileDigest {
+		return errors.New("sponsorship observation differs from the selected release profile")
+	}
+	digest, err := agentrelay.RelaySponsorshipCreditObservationDigest(observation)
+	if err != nil {
+		return err
+	}
+	if !sink.hasVerifiedSponsorshipObservation(digest) {
+		return errors.New("sponsorship observation lacks a reconstructed tosctl quorum artifact")
+	}
+	return nil
+}
+
+func (sink *TOSCTLPaymentSink) RelaySponsorshipEvidenceCapabilities() RelaySponsorshipEvidenceCapabilities {
+	if sink == nil || sink.RelaySponsorshipReleasePolicy.EvidenceClass !=
+		agentrelay.SponsorshipReleaseObservedUnproven ||
+		!validRelaySponsorshipReleasePolicy(agentrelay.AssuranceAuthorizedSingleProvider,
+			sink.RelaySponsorshipReleasePolicy) {
+		return RelaySponsorshipEvidenceCapabilities{}
+	}
+	if _, err := sink.ensureCurrentRelaySponsorshipSnapshot(); err != nil {
+		return RelaySponsorshipEvidenceCapabilities{}
+	}
+	terminal := false
+	for _, profile := range sink.RelayTerminalFinalityProfiles {
+		terminal = terminal || sink.SupportsRelaySponsorshipTerminalFinalityProfile(profile, nil)
+	}
+	if !terminal {
+		return RelaySponsorshipEvidenceCapabilities{}
+	}
+	return RelaySponsorshipEvidenceCapabilities{SupportedReleasePolicies: []RelaySponsorshipReleasePolicy{
+		sink.RelaySponsorshipReleasePolicy}, FreshBalanceSequenceRecheck: true,
+		TerminalEvidence: true}
+}
+
+func (sink *TOSCTLPaymentSink) FreezeRelaySponsorshipEvidenceSnapshot(_ context.Context,
+	execution agentrelay.RelayExecutionRequest) (RelaySponsorshipEvidenceSnapshot, error) {
+	snapshot, err := sink.ensureCurrentRelaySponsorshipSnapshot()
+	if err != nil || sink.RelayNetworkDomain == nil ||
+		execution.QuoteRequest.Body.Network != *sink.RelayNetworkDomain ||
+		snapshot.policy != relaySponsorshipReleasePolicyFromRequest(execution.QuoteRequest.Body) {
+		return RelaySponsorshipEvidenceSnapshot{}, errors.New("current corroboration snapshot does not match the signed execution")
+	}
+	if !validFrozenRelayCustodyLocator(snapshot.custodyWallet) ||
+		!validFrozenRelayCustodyLocator(snapshot.providerSource) || snapshot.feeReserveNanoTOS == 0 {
+		return RelaySponsorshipEvidenceSnapshot{}, errors.New("current provider custody identity is not freezeable")
+	}
+	return snapshot.frozenProvider(), nil
+}
+
+func (sink *TOSCTLPaymentSink) ValidateRelaySponsorshipEvidenceSnapshot(
+	profile agentrelay.SponsorshipReleaseProfile, frozen RelaySponsorshipEvidenceSnapshot) error {
+	policy := RelaySponsorshipReleasePolicy{EvidenceClass: profile.EvidenceClass,
+		ProfileURI: profile.ProfileURI, ProfileDigest: profile.ProfileDigest}
+	if frozen.SchemaVersion != 2 || frozen.EvidenceClass != string(policy.EvidenceClass) ||
+		frozen.ProfileURI != policy.ProfileURI || frozen.ProfileDigest != policy.ProfileDigest ||
+		!validFrozenRelayCustodyLocator(frozen.CustodyWallet) ||
+		!validFrozenRelayCustodyLocator(frozen.ProviderSourceAccount) || frozen.FeeReserveNanoTOS == 0 {
+		return errors.New("frozen corroboration snapshot changes the signed release profile")
+	}
+	return sink.validateRelaySponsorshipSnapshot(relayTOSCTLSponsorshipSnapshot(profile, frozen))
+}
+
+func (sink *TOSCTLPaymentSink) ResolveRelaySponsorshipEvidenceFromSnapshot(ctx context.Context,
+	execution agentrelay.RelayExecutionRequest, request commerce.AgreementPaymentRequest,
+	frozen RelaySponsorshipEvidenceSnapshot) (agentrelay.SponsorshipResolution, error) {
+	profile := execution.QuoteRequest.Body.SelectedSponsorshipReleaseProfile()
+	if err := sink.ValidateRelaySponsorshipEvidenceSnapshot(profile, frozen); err != nil {
+		return agentrelay.SponsorshipResolution{}, err
+	}
+	return sink.resolveRelaySponsorshipEvidenceFromSnapshot(ctx, execution, request,
+		relayTOSCTLSponsorshipSnapshot(profile, frozen))
+}
+
+func (sink *TOSCTLPaymentSink) decodeRelaySponsorshipObservation(execution agentrelay.RelayExecutionRequest,
+	request commerce.AgreementPaymentRequest, raw []byte,
+	snapshot tosctlRelaySponsorshipSnapshot) (agentrelay.RelaySponsorshipCreditObservation, error) {
+	var result tosctlRelaySponsorshipObserved
+	if err := decodeStrictJSON(raw, &result); err != nil {
+		return agentrelay.RelaySponsorshipCreditObservation{}, errors.New("decode strict tosctl sponsorship corroboration v2")
+	}
+	paymentDigest, digestErr := commerce.AgreementPaymentRequestDigest(request)
+	canonical, _, materialErr := commerce.PaymentAuthorizationMaterial(request)
+	exactDigest, exactErr := commerce.ExactRequestDigest(canonical)
+	amount, amountErr := strconv.ParseUint(request.Amount.AmountAtomic, 10, 64)
+	policy := relaySponsorshipReleasePolicyFromRequest(execution.QuoteRequest.Body)
+	reserved := execution.ProviderQuote.Body.ReservedSponsorship
+	frozenNetwork, networkErr := sink.relaySponsorshipSnapshotNetwork(snapshot.frozenProvider())
+	now := time.Now().UTC()
+	if sink.Now != nil {
+		now = sink.Now().UTC()
+	}
+	if digestErr != nil || materialErr != nil || exactErr != nil || amountErr != nil || networkErr != nil || reserved == nil ||
+		result.Schema != "tosctl.agent-account.agreement-payment-rpc-corroboration.v2" ||
+		result.StableActionID != request.StableActionID || result.SponsorshipStableActionID != request.StableActionID ||
+		result.SponsorshipExactRequestDigest != exactDigest || result.AgreementPaymentRequestDigest != paymentDigest ||
+		result.AgreementBodyDigest != request.AgreementBodyDigest ||
+		result.ObligationInstanceID != request.ObligationInstanceID ||
+		result.ProviderSponsorSourceAccount != snapshot.providerSource ||
+		result.ProviderSponsorValidUntilUnix != request.ExpiresAtUnix ||
+		result.DestinationSourceAccount != string(request.Destination) ||
+		result.Destination != string(request.Destination) || result.AmountNanoTOS != amount ||
+		result.NetworkGlobalID != frozenNetwork.GlobalID ||
+		result.NetworkDomain != frozenNetwork || result.NetworkDomain != execution.QuoteRequest.Body.Network ||
+		result.EvidenceProfileURI != policy.ProfileURI || result.EvidenceProfileDigest != policy.ProfileDigest ||
+		result.EvidenceProfile.ProfileURI != policy.ProfileURI ||
+		result.EvidenceProfile.NetworkDomain != result.NetworkDomain ||
+		result.EvidenceProfile.MaximumHistoryTransactions != snapshot.maximumTransactions ||
+		result.CorroborationSnapshot != snapshot.manifestPath ||
+		result.CorroborationSnapshotIdentity != snapshot.identity ||
+		!result.EvidenceProfile.StrictMajority || !result.EvidenceProfile.ExactSubmittedMessage ||
+		!result.EvidenceProfile.ExactDestinationCredit || result.EvidenceProfile.ValidatorFinalityProven ||
+		result.Finality != "unproven" || result.State != "observed_unproven" ||
+		result.CustodyState != "broadcasting" || result.MissingProof == "" ||
+		result.ObservedAtUnix == 0 || result.ObservedAtUnix > uint64(now.Add(5*time.Minute).Unix()) ||
+		result.ProviderSponsorValidUntilUnix <= uint64(now.Unix()) ||
+		result.Quorum.Members < 3 || result.Quorum.Threshold < 2 ||
+		result.Quorum.Agreeing < result.Quorum.Threshold {
+		return agentrelay.RelaySponsorshipCreditObservation{}, errors.New("tosctl sponsorship corroboration conflicts with the exact payment or policy")
+	}
+	if reserved.AmountAtomic != request.Amount.AmountAtomic || reserved.Asset.AssetNamespace != request.Amount.AssetNamespace ||
+		reserved.Asset.AssetIdentifier != request.Amount.AssetIdentifier || reserved.Asset.Unit != request.Amount.Unit {
+		return agentrelay.RelaySponsorshipCreditObservation{}, errors.New("tosctl sponsorship amount differs from the signed quote")
+	}
+	if err := verifyTOSCTLSponsorshipCorroboration(result, policy); err != nil {
+		return agentrelay.RelaySponsorshipCreditObservation{}, err
+	}
+	if result.Evidence.TransactionHash != result.SubmittedTransactionHash ||
+		result.Evidence.NetworkGlobalID != result.NetworkGlobalID || result.Evidence.FinalityProven ||
+		uint64(result.Evidence.ObservedMasterchainSeqno) != result.ObservedCheckpointSequence ||
+		result.Evidence.ObservedMasterchainGenUTime != result.ObservedCheckpointUnix ||
+		result.SourceExecutionReference != result.SubmittedTransactionHash ||
+		len(result.DestinationCreditReferences) != 1 ||
+		result.DestinationCreditReferences[0] != result.Evidence.DestinationCreditReference ||
+		result.ObservedCheckpointID != fmt.Sprintf("masterchain:%d:%d:%d:%s:%s",
+			result.Evidence.ObservedMasterchainWorkchain, result.Evidence.ObservedMasterchainShard,
+			result.Evidence.ObservedMasterchainSeqno, result.Evidence.ObservedMasterchainRootHash,
+			result.Evidence.ObservedMasterchainFileHash) {
+		return agentrelay.RelaySponsorshipCreditObservation{}, errors.New("tosctl sponsorship winner differs from the bound checkpoint")
+	}
+	observation := agentrelay.RelaySponsorshipCreditObservation{SchemaVersion: 1,
+		NetworkDigest: request.NetworkDomainDigest, AgreementPaymentRequest: request,
+		AgreementPaymentRequestDigest: paymentDigest, SponsorshipStableActionID: request.StableActionID,
+		ProviderSponsorSourceAccount:         result.ProviderSponsorSourceAccount,
+		ProviderSponsorSourceSequence:        result.ProviderSponsorSourceSequence,
+		ProviderSponsorValidUntilUnix:        result.ProviderSponsorValidUntilUnix,
+		SignedTopUpTransactionDigest:         result.SignedTopUpTransactionDigest,
+		SignedTopUpTransactionCellHash:       result.SignedTopUpTransactionCellHash,
+		SponsorshipPaymentCommitmentCellHash: result.SponsorshipPaymentCommitmentCellHash,
+		DestinationSourceAccount:             result.DestinationSourceAccount, Amount: *reserved,
+		SubmittedTransactionHash:    result.SubmittedTransactionHash,
+		SourceExecutionReference:    result.SourceExecutionReference,
+		DestinationCreditReferences: append([]string(nil), result.DestinationCreditReferences...),
+		EvidenceProfileURI:          result.EvidenceProfileURI, EvidenceProfileDigest: result.EvidenceProfileDigest,
+		ObservedCheckpointID:       result.ObservedCheckpointID,
+		ObservedCheckpointSequence: result.ObservedCheckpointSequence,
+		ObservedCheckpointUnix:     result.ObservedCheckpointUnix,
+		ObservationDigests:         append([]string(nil), result.ObservationDigests...), ObservedAtUnix: result.ObservedAtUnix}
+	observation.SponsorshipExactRequestDigest = exactDigest
+	digest, err := agentrelay.RelaySponsorshipCreditObservationDigest(observation)
+	if err != nil {
+		return agentrelay.RelaySponsorshipCreditObservation{}, errors.New("tosctl sponsorship corroboration does not form a canonical observation")
+	}
+	sink.rememberVerifiedSponsorshipObservation(digest, observation.ProviderSponsorValidUntilUnix)
+	return observation, nil
 }
 
 func (sink *TOSCTLPaymentSink) evidence(request commerce.AgreementPaymentRequest, raw []byte) (commerce.AgreementPaymentEvidence, error) {
@@ -242,8 +828,12 @@ func (sink *TOSCTLPaymentSink) VerifyPaymentEvidence(request commerce.AgreementP
 func (sink *TOSCTLPaymentSink) validate() error {
 	if sink == nil || sink.Authority == nil || !filepath.IsAbs(sink.Executable) || !filepath.IsAbs(sink.ConfigPath) ||
 		!filepath.IsAbs(sink.EvidenceDirectory) || sink.Wallet == "" || sink.SourceAccount == "" || sink.NetworkGlobalID == 0 ||
-		sink.FeeReserveNanoTOS == 0 || len(sink.QuorumConfigPaths) < 2 {
+		sink.RelayNetworkDomain == nil || sink.RelayNetworkDomain.GlobalID != sink.NetworkGlobalID ||
+		sink.FeeReserveNanoTOS == 0 || len(sink.QuorumConfigPaths) < 2 || sink.maximumTransactions() > 10_000 {
 		return errors.New("TOS custody payment Adapter configuration is invalid")
+	}
+	if _, err := agentrelay.NetworkDomainDigest(*sink.RelayNetworkDomain); err != nil {
+		return errors.New("TOS custody payment Adapter network domain is invalid")
 	}
 	seen := map[string]bool{filepath.Clean(sink.ConfigPath): true}
 	for _, path := range sink.QuorumConfigPaths {
@@ -260,6 +850,55 @@ func (sink *TOSCTLPaymentSink) maximumTransactions() uint32 {
 		return 1000
 	}
 	return sink.MaximumTransactions
+}
+
+func (sink *TOSCTLPaymentSink) sponsorshipNow() time.Time {
+	if sink != nil && sink.Now != nil {
+		return sink.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (sink *TOSCTLPaymentSink) rememberVerifiedSponsorshipObservation(digest string, expiresAtUnix uint64) {
+	if sink == nil || !validSHA256Digest(digest) || expiresAtUnix == 0 {
+		return
+	}
+	now := uint64(sink.sponsorshipNow().Unix())
+	sink.verifiedSponsorshipMu.Lock()
+	defer sink.verifiedSponsorshipMu.Unlock()
+	if sink.verifiedSponsorshipObservations == nil {
+		sink.verifiedSponsorshipObservations = make(map[string]uint64)
+	}
+	for candidate, expiry := range sink.verifiedSponsorshipObservations {
+		if expiry <= now {
+			delete(sink.verifiedSponsorshipObservations, candidate)
+		}
+	}
+	for len(sink.verifiedSponsorshipObservations) >= maximumVerifiedSponsorshipObservationRefs {
+		oldestDigest, oldestExpiry := "", ^uint64(0)
+		for candidate, expiry := range sink.verifiedSponsorshipObservations {
+			if expiry < oldestExpiry || expiry == oldestExpiry && candidate < oldestDigest {
+				oldestDigest, oldestExpiry = candidate, expiry
+			}
+		}
+		delete(sink.verifiedSponsorshipObservations, oldestDigest)
+	}
+	sink.verifiedSponsorshipObservations[digest] = expiresAtUnix
+}
+
+func (sink *TOSCTLPaymentSink) hasVerifiedSponsorshipObservation(digest string) bool {
+	if sink == nil || !validSHA256Digest(digest) {
+		return false
+	}
+	now := uint64(sink.sponsorshipNow().Unix())
+	sink.verifiedSponsorshipMu.Lock()
+	defer sink.verifiedSponsorshipMu.Unlock()
+	expiry, ok := sink.verifiedSponsorshipObservations[digest]
+	if !ok || expiry <= now {
+		delete(sink.verifiedSponsorshipObservations, digest)
+		return false
+	}
+	return true
 }
 
 func (sink *TOSCTLPaymentSink) writeAuthorization(authorization commerce.CustodyActionAuthorization) (string, func(), error) {

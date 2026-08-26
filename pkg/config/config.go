@@ -853,9 +853,133 @@ type EarningSettings struct {
 	PrivateHandoff             EarningPrivateHandoffSettings     `json:"private_handoff"`
 	ExternalSettlement         EarningExternalSettlementSettings `json:"external_settlement"`
 	Publication                EarningPublicationSettings        `json:"publication"`
+	AgentRelay                 EarningAgentRelaySettings         `json:"agent_relay"`
 	IntervalSeconds            uint32                            `json:"interval_seconds,omitempty"`
 	JitterSeconds              uint32                            `json:"jitter_seconds,omitempty"`
 	CycleTimeoutSeconds        uint32                            `json:"cycle_timeout_seconds,omitempty"`
+}
+
+// EarningAgentRelaySettings is an owner-authored, default-off deployment
+// boundary. Discovery can supply a signed service profile, but it cannot
+// supply TLS trust, local journals, chain identity, or admission ceilings.
+type EarningAgentRelaySettings struct {
+	Enabled bool   `json:"enabled"`
+	Role    string `json:"role,omitempty"`
+	// AssuranceLevel is independent from OwnerPolicy.Modes: the mode
+	// selects the requested side effects, while this value selects the
+	// operational trust/recovery guarantees that must be present before a
+	// relay capability is enabled.
+	AssuranceLevel                    string                               `json:"assurance_level,omitempty"`
+	SponsorshipReleaseEvidenceClass   string                               `json:"sponsorship_release_evidence_class,omitempty"`
+	SponsorshipReleaseProfileURI      string                               `json:"sponsorship_release_profile_uri,omitempty"`
+	SponsorshipReleaseProfileDigest   string                               `json:"sponsorship_release_profile_digest,omitempty"`
+	OfferIntentFile                   string                               `json:"offer_intent_file,omitempty"`
+	ClientAttemptJournalDirectory     string                               `json:"client_attempt_journal_directory,omitempty"`
+	ClientRouteJournalDirectory       string                               `json:"client_route_journal_directory,omitempty"`
+	ClientTerminalAccountingDirectory string                               `json:"client_terminal_accounting_directory,omitempty"`
+	ProviderJournalDirectory          string                               `json:"provider_journal_directory,omitempty"`
+	HTTPTimeoutMillis                 uint32                               `json:"http_timeout_millis,omitempty"`
+	MaximumHTTPBytes                  uint64                               `json:"maximum_http_bytes,omitempty"`
+	TerminalRetentionSeconds          uint32                               `json:"terminal_retention_seconds,omitempty"`
+	MaximumProtectedRecords           uint32                               `json:"maximum_protected_records,omitempty"`
+	QuoteLifetimeSeconds              uint32                               `json:"quote_lifetime_seconds,omitempty"`
+	RelayFee                          EarningAgentRelayAssetAmountSettings `json:"relay_fee"`
+	SponsorshipFee                    EarningAgentRelayAssetAmountSettings `json:"sponsorship_fee"`
+	ClientTLS                         EarningAgentRelayClientTLSSettings   `json:"client_tls"`
+	ProviderTLS                       EarningAgentRelayProviderTLSSettings `json:"provider_tls"`
+	ProviderProvenance                EarningAgentRelayProvenanceSettings  `json:"provider_provenance"`
+	TOS                               EarningAgentRelayTOSSettings         `json:"tos"`
+	OwnerPolicy                       EarningAgentRelayOwnerPolicySettings `json:"owner_policy"`
+	AdmissionLimits                   EarningAgentRelayAdmissionSettings   `json:"admission_limits"`
+}
+
+type EarningAgentRelayClientTLSSettings struct {
+	CAFile         string `json:"ca_file,omitempty"`
+	ClientCertFile string `json:"client_cert_file,omitempty"`
+	ClientKeyFile  string `json:"client_key_file,omitempty"`
+}
+
+type EarningAgentRelayProviderTLSSettings struct {
+	Listen         string `json:"listen,omitempty"`
+	ServerCertFile string `json:"server_cert_file,omitempty"`
+	ServerKeyFile  string `json:"server_key_file,omitempty"`
+	ClientCAFile   string `json:"client_ca_file,omitempty"`
+}
+
+type EarningAgentRelayProvenanceSettings struct {
+	ProviderAgentID            string `json:"provider_agent_id,omitempty"`
+	IntentDigest               string `json:"intent_digest,omitempty"`
+	ProfileDigest              string `json:"profile_digest,omitempty"`
+	OperatorDomain             string `json:"operator_domain,omitempty"`
+	FailureDomain              string `json:"failure_domain,omitempty"`
+	EndpointOrigin             string `json:"endpoint_origin,omitempty"`
+	CertificateSPKIDigest      string `json:"certificate_spki_digest,omitempty"`
+	ImplementationEvidenceHash string `json:"implementation_evidence_digest,omitempty"`
+}
+
+type EarningAgentRelayTOSSettings struct {
+	Network                    EarningAgentRelayNetworkSettings `json:"network"`
+	RPCEndpoints               []string                         `json:"rpc_endpoints,omitempty"`
+	Quorum                     uint32                           `json:"quorum,omitempty"`
+	QueryTimeoutMillis         uint32                           `json:"query_timeout_millis,omitempty"`
+	MaximumResponseBytes       uint64                           `json:"maximum_response_bytes,omitempty"`
+	ReadinessMaximumAgeSeconds uint32                           `json:"readiness_maximum_age_seconds,omitempty"`
+}
+
+type EarningAgentRelayNetworkSettings struct {
+	NetworkID         string `json:"network_id,omitempty"`
+	GlobalID          int32  `json:"global_id,omitempty"`
+	ZeroStateRootHash string `json:"zero_state_root_hash,omitempty"`
+	ZeroStateFileHash string `json:"zero_state_file_hash,omitempty"`
+	WorkchainID       int32  `json:"workchain_id,omitempty"`
+}
+
+type EarningAgentRelayOwnerPolicySettings struct {
+	NetworkDomains      []EarningAgentRelayNetworkSettings     `json:"network_domains,omitempty"`
+	Modes               []string                               `json:"modes,omitempty"`
+	TransactionProfiles []EarningAgentRelayTransactionSettings `json:"transaction_profiles,omitempty"`
+	FinalityProfiles    []EarningAgentRelayFinalitySettings    `json:"finality_profiles,omitempty"`
+	MaximumSignedBytes  uint32                                 `json:"maximum_signed_bytes,omitempty"`
+	MaximumServiceFees  []EarningAgentRelayAssetAmountSettings `json:"maximum_service_fees,omitempty"`
+}
+
+type EarningAgentRelayTransactionSettings struct {
+	ProfileURI                   string `json:"profile_uri"`
+	ProfileDigest                string `json:"profile_digest"`
+	MaximumSignedBytes           uint32 `json:"maximum_signed_bytes"`
+	InspectableSourceSequence    bool   `json:"inspectable_source_sequence"`
+	InspectableTransactionExpiry bool   `json:"inspectable_transaction_expiry"`
+}
+
+type EarningAgentRelayFinalitySettings struct {
+	ProfileURI               string `json:"profile_uri"`
+	ProfileDigest            string `json:"profile_digest"`
+	TerminalEvidenceClass    string `json:"terminal_evidence_class"`
+	MinimumConfirmationDepth uint32 `json:"minimum_confirmation_depth"`
+	MinimumObservers         uint16 `json:"minimum_observers"`
+	MinimumOperatorDomains   uint16 `json:"minimum_operator_domains"`
+	ReorgWindowSeconds       uint32 `json:"reorg_window_seconds"`
+	MaximumResolutionSeconds uint32 `json:"maximum_resolution_seconds"`
+}
+
+type EarningAgentRelayAssetSettings struct {
+	AssetNamespace  string `json:"asset_namespace"`
+	AssetIdentifier string `json:"asset_identifier"`
+	Unit            string `json:"unit"`
+}
+
+type EarningAgentRelayAssetAmountSettings struct {
+	Asset        EarningAgentRelayAssetSettings `json:"asset"`
+	AmountAtomic string                         `json:"amount_atomic"`
+}
+
+type EarningAgentRelayAdmissionSettings struct {
+	MaximumQuoteReservations               uint32 `json:"maximum_quote_reservations"`
+	MaximumActiveExecutions                uint32 `json:"maximum_active_executions"`
+	MaximumActivePerRequester              uint32 `json:"maximum_active_per_requester"`
+	MaximumQuoteRequestsPerWindow          uint32 `json:"maximum_quote_requests_per_window"`
+	MaximumQuoteRequestsPerRequesterWindow uint32 `json:"maximum_quote_requests_per_requester_window"`
+	QuoteRequestWindowSeconds              uint32 `json:"quote_request_window_seconds"`
 }
 
 type EarningExternalSettlementSettings struct {
@@ -944,19 +1068,20 @@ type EarningPublicationSettings struct {
 }
 
 type EarningTOSPaymentSettings struct {
-	Enabled             bool     `json:"enabled"`
-	Executable          string   `json:"executable,omitempty"`
-	ConfigPath          string   `json:"config_path,omitempty"`
-	Wallet              string   `json:"wallet,omitempty"`
-	SourceAccount       string   `json:"source_account,omitempty"`
-	NetworkGlobalID     int32    `json:"network_global_id,omitempty"`
-	FeeReserveNanoTOS   uint64   `json:"fee_reserve_nanotos,omitempty"`
-	QuorumConfigPaths   []string `json:"quorum_config_paths,omitempty"`
-	VaultURL            string   `json:"vault_url,omitempty"`
-	EvidenceDirectory   string   `json:"evidence_directory,omitempty"`
-	MaximumTransactions uint32   `json:"maximum_transactions,omitempty"`
-	ResolveAttempts     uint32   `json:"resolve_attempts,omitempty"`
-	ResolveIntervalMS   uint32   `json:"resolve_interval_ms,omitempty"`
+	Enabled             bool                             `json:"enabled"`
+	Network             EarningAgentRelayNetworkSettings `json:"network"`
+	Executable          string                           `json:"executable,omitempty"`
+	ConfigPath          string                           `json:"config_path,omitempty"`
+	Wallet              string                           `json:"wallet,omitempty"`
+	SourceAccount       string                           `json:"source_account,omitempty"`
+	NetworkGlobalID     int32                            `json:"network_global_id,omitempty"`
+	FeeReserveNanoTOS   uint64                           `json:"fee_reserve_nanotos,omitempty"`
+	QuorumConfigPaths   []string                         `json:"quorum_config_paths,omitempty"`
+	VaultURL            string                           `json:"vault_url,omitempty"`
+	EvidenceDirectory   string                           `json:"evidence_directory,omitempty"`
+	MaximumTransactions uint32                           `json:"maximum_transactions,omitempty"`
+	ResolveAttempts     uint32                           `json:"resolve_attempts,omitempty"`
+	ResolveIntervalMS   uint32                           `json:"resolve_interval_ms,omitempty"`
 }
 
 // EarningTOSEscrowSettings pins every network, code, custody, budget, and
@@ -1000,6 +1125,7 @@ type EarningTOSEscrowSettings struct {
 	VaultURL                   string                                  `json:"vault_url,omitempty"`
 	CustodyJournalDirectory    string                                  `json:"custody_journal_directory,omitempty"`
 	NetworkGlobalID            int32                                   `json:"network_global_id,omitempty"`
+	NetworkWorkchainID         int32                                   `json:"network_workchain_id,omitempty"`
 	DeploymentNanoTOS          uint64                                  `json:"deployment_nanotos,omitempty"`
 	ActionNanoTOS              uint64                                  `json:"action_nanotos,omitempty"`
 	FeeReserveNanoTOS          uint64                                  `json:"fee_reserve_nanotos,omitempty"`
@@ -1093,6 +1219,7 @@ type EarningGateSettings struct {
 	DirectPayment      bool `json:"direct_payment"`
 	ExternalSettlement bool `json:"external_settlement"`
 	TOSEscrow          bool `json:"tos_escrow"`
+	AgentRelay         bool `json:"agent_relay"`
 }
 
 type EarningPolicySettings struct {

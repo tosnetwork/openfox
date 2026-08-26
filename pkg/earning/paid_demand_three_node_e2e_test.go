@@ -145,10 +145,14 @@ func TestPaidDemandAcceptThreeNode(t *testing.T) {
 		AgreementDigest: agreement, ObligationID: "payment", SourceAccount: source, NetworkID: fixture.Network.NetworkId,
 		NetworkGlobalID: 3, Destination: fixture.EscrowAddress, AmountNanoTOS: 100_000_000,
 		BodyHash: fixture.AcceptBodyHash, StateInitHashOrZero: zeroDigest, ExpiresAtUnix: fixture.AcceptByUnix}
-	if _, err := (PaidDemandCustodyAuthorizer{Engine: engine, Fence: oldFence, PolicyRevision: 1}).AuthorizeCustodyEffect(ctx, request); err == nil {
+	networkDomain := &commerce.CustodyNetworkDomain{NetworkID: fixture.Network.NetworkId, GlobalID: 3,
+		ZeroStateRootHash: fixture.Network.GenesisRootHash, ZeroStateFileHash: fixture.Network.GenesisFileHash, WorkchainID: 0}
+	if _, err := (PaidDemandCustodyAuthorizer{Engine: engine, Fence: oldFence, PolicyRevision: 1,
+		NetworkDomain: networkDomain}).AuthorizeCustodyEffect(ctx, request); err == nil {
 		t.Fatal("superseded writer authorized a chain effect")
 	}
-	authorization, err := (PaidDemandCustodyAuthorizer{Engine: engine, Fence: fence, PolicyRevision: 1}).AuthorizeCustodyEffect(ctx, request)
+	authorization, err := (PaidDemandCustodyAuthorizer{Engine: engine, Fence: fence, PolicyRevision: 1,
+		NetworkDomain: networkDomain}).AuthorizeCustodyEffect(ctx, request)
 	if err != nil {
 		t.Fatal(err)
 	}

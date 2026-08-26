@@ -30,7 +30,7 @@ import (
 
 func NewCommand() *cobra.Command {
 	command := &cobra.Command{Use: "earning", Short: "Inspect autonomous earning safety state", Args: cobra.NoArgs}
-	command.AddCommand(statusCommand(), registryCommand(), scoutCommand(), runCommand(), intentCommand(), reconcileCommand(), operationsCommand(), authorityCommand(), modeCommand("pause", openfoxearning.OperationalPaused),
+	command.AddCommand(statusCommand(), registryCommand(), scoutCommand(), runCommand(), intentCommand(), reconcileCommand(), operationsCommand(), authorityCommand(), relayCommand(), modeCommand("pause", openfoxearning.OperationalPaused),
 		modeCommand("drain", openfoxearning.OperationalDraining), modeCommand("resume", openfoxearning.OperationalRunning))
 	return command
 }
@@ -655,7 +655,8 @@ func runCommand() *cobra.Command {
 							AssetResolver: paidDemand.AssetResolver, OfferAuthorities: paidDemand.OfferAuthorities,
 							EscrowCode: paidDemand.EscrowCode, AssetWalletCode: paidDemand.AssetWalletCode,
 							ExecutionKey: paidDemand.ExecutionKey, ActionSender: paidDemand.ProviderSender,
-							Authorizer:      openfoxearning.PaidDemandCustodyAuthorizer{Engine: engine, FenceSource: fenceSource, PolicyRevision: 1},
+							Authorizer: openfoxearning.PaidDemandCustodyAuthorizer{Engine: engine, FenceSource: fenceSource,
+								PolicyRevision: 1, NetworkDomain: configuredPaidDemandCustodyNetwork(cfg.Earning.TOSEscrow)},
 							NetworkGlobalID: cfg.Earning.TOSEscrow.NetworkGlobalID,
 							ActionNanoTOS:   cfg.Earning.TOSEscrow.ActionNanoTOS,
 							PollInterval:    time.Duration(cfg.Earning.TOSEscrow.PollIntervalMillis) * time.Millisecond,
@@ -685,13 +686,15 @@ func runCommand() *cobra.Command {
 					}
 					if cfg.Earning.Gates.DirectPayment {
 						payment := cfg.Earning.TOSPayment
+						network := configuredRelayNetwork(payment.Network)
 						interval := time.Duration(payment.ResolveIntervalMS) * time.Millisecond
 						if interval == 0 {
 							interval = time.Second
 						}
 						sink := &openfoxearning.TOSCTLPaymentSink{Authority: authority, Executable: payment.Executable, ConfigPath: payment.ConfigPath,
 							Wallet: payment.Wallet, SourceAccount: payment.SourceAccount, NetworkGlobalID: payment.NetworkGlobalID,
-							FeeReserveNanoTOS: payment.FeeReserveNanoTOS, QuorumConfigPaths: append([]string(nil), payment.QuorumConfigPaths...),
+							RelayNetworkDomain: &network,
+							FeeReserveNanoTOS:  payment.FeeReserveNanoTOS, QuorumConfigPaths: append([]string(nil), payment.QuorumConfigPaths...),
 							MaximumTransactions: payment.MaximumTransactions, VaultURL: payment.VaultURL, EvidenceDirectory: payment.EvidenceDirectory,
 							ResolveAttempts: payment.ResolveAttempts, ResolveInterval: interval}
 						engagementAutonomy.Payment = &openfoxearning.PaymentService{Engine: engine, Sink: sink, Verifier: sink}

@@ -323,6 +323,10 @@ github.com/tosnetwork/tos-messenger v0.0.0-20260825005733-7c5759f44d71 h1:mRYXVa
 github.com/tosnetwork/tos-messenger v0.0.0-20260825005733-7c5759f44d71/go.mod h1:NejX+TWK0XleL5oLnLaRbdayVaODy5kYrS8EuN6JxS0=
 github.com/tosnetwork/tos-service-protocol v0.0.0-20260825005653-0cd6b53f2c35 h1:2Zrh8aAP2EODPQQmD0DfsodCy3L1sWAoLUt/qlaBHNA=
 github.com/tosnetwork/tos-service-protocol v0.0.0-20260825005653-0cd6b53f2c35/go.mod h1:jFUXk+mmQiY2jaBIlhVympKIC9O9RSEK3zrnnEupajU=
+github.com/tosnetwork/tos-service-protocol v0.0.0-20260826043937-ae04235a36b0 h1:qeKaAch/x14bt+ZJL7T7R74fo/N2xq032Rt7wTA/wLc=
+github.com/tosnetwork/tos-service-protocol v0.0.0-20260826043937-ae04235a36b0/go.mod h1:jFUXk+mmQiY2jaBIlhVympKIC9O9RSEK3zrnnEupajU=
+github.com/tosnetwork/tos-service-protocol v0.0.0-20260826094458-acc395a3bed9 h1:JLlkTMLczCtxcqwqfHpojsuaXt0vj5VknfEgzWNs64o=
+github.com/tosnetwork/tos-service-protocol v0.0.0-20260826094458-acc395a3bed9/go.mod h1:jFUXk+mmQiY2jaBIlhVympKIC9O9RSEK3zrnnEupajU=
 github.com/tosnetwork/tosutils-go v1.18.2-0.20260820143526-4d1a10d94bef h1:P+zHw4vfeKoRdLgjEmLFnkZOu4MleU9X22hHEX6l/F8=
 github.com/tosnetwork/tosutils-go v1.18.2-0.20260820143526-4d1a10d94bef/go.mod h1:HtytU2Ya/EII8lswkqK30qgQePIHS1k7XDMxll3d9CQ=
 github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS4MhqMhdFk5YI=

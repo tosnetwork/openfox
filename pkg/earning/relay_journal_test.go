@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -17,6 +18,142 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
+
+func TestDurableRelayJournalFailsClosedAfterDirectoryReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not permit renaming this open directory")
+	}
+	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
+	directory := filepath.Join(t.TempDir(), "relay")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := OpenDurableRelayJournal(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.BindRelayProviderAuthority(fixture.profile.ProviderAgentID); err != nil {
+		t.Fatal(err)
+	}
+	if !journal.HasLinearizableRelayProviderJournal() {
+		t.Fatal("healthy provider journal did not advertise linearizable admission")
+	}
+	attempt := fixture.attempt(t)
+	if _, created, err := journal.ReserveQuote(fixture.profile, attempt.Execution.QuoteRequest,
+		attempt.Execution.ProviderQuote, fixture.now); err != nil || !created {
+		t.Fatalf("seed quote reservation: created=%v err=%v", created, err)
+	}
+	record, created, err := journal.Admit(attempt.Execution, fixture.now)
+	if err != nil || !created {
+		t.Fatalf("seed execution admission: created=%v err=%v", created, err)
+	}
+	moved := directory + "-moved"
+	if err := os.Rename(directory, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if replacement, err := OpenDurableRelayJournal(directory); err == nil {
+		_ = replacement.Close()
+		t.Fatal("replacement directory acquired the same live provider journal domain")
+	}
+	if _, _, err := journal.ReserveQuote(fixture.profile, attempt.Execution.QuoteRequest,
+		attempt.Execution.ProviderQuote, fixture.now); err == nil {
+		t.Fatal("detached provider journal returned an existing quote")
+	}
+	if _, err := journal.Resolve(record.StableActionID, record.ExactRequestDigest); err == nil {
+		t.Fatal("detached provider journal returned an authoritative execution record")
+	}
+	if journal.HasLinearizableRelayProviderJournal() {
+		t.Fatal("detached provider journal continued advertising linearizable admission")
+	}
+	if _, err := os.Lstat(filepath.Join(directory, relayJournalFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement directory received provider state: %v", err)
+	}
+	replacementDirectory := directory + "-replacement"
+	if err := os.Rename(directory, replacementDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(moved, directory); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := journal.ReserveQuote(fixture.profile, attempt.Execution.QuoteRequest,
+		attempt.Execution.ProviderQuote, fixture.now); err == nil {
+		t.Fatal("poisoned provider journal resumed after its pathname was restored")
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if journal.HasLinearizableRelayProviderJournal() {
+		t.Fatal("closed provider journal continued advertising linearizable admission")
+	}
+	replacement, err := OpenDurableRelayJournal(directory)
+	if err != nil {
+		t.Fatalf("replacement provider journal did not become available after clean close: %v", err)
+	}
+	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDurableRelayJournalRejectsDuplicateJSONKeys(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "relay")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := OpenDurableRelayJournal(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, relayJournalFile)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte(`"schema":`),
+		[]byte(`"schema":"tos.openfox.agent-relay-journal.v2","schema":`), 1)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenDurableRelayJournal(directory); err == nil {
+		t.Fatal("provider journal accepted duplicate JSON keys")
+	}
+}
+
+func TestDurableRelayJournalProviderDomainIsUniqueAcrossDirectories(t *testing.T) {
+	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
+	open := func(name string) *DurableRelayJournal {
+		directory := filepath.Join(t.TempDir(), name)
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		journal, err := OpenDurableRelayJournal(directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return journal
+	}
+	first, second := open("first"), open("second")
+	if err := first.BindRelayProviderAuthority(fixture.profile.ProviderAgentID); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.BindRelayProviderAuthority(fixture.profile.ProviderAgentID); err == nil {
+		t.Fatal("one provider identity acquired two live journal domains")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.BindRelayProviderAuthority(fixture.profile.ProviderAgentID); err != nil {
+		t.Fatalf("provider domain did not become available after clean close: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestDurableRelayJournalFreezesBytesCASAndRestart(t *testing.T) {
 	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")

@@ -1024,6 +1024,9 @@ func TestDecentralizedRelayFailoverRejectsCumulativeFeeBeforeAgreement(t *testin
 		t.Fatalf("fee-cap rejection occurred after Agreement/admission or mutated exposure: calls=%d route=%+v err=%v",
 			secondAgreementCalls, stored, err)
 	}
+	if err := routes.Close(); err != nil {
+		t.Fatal(err)
+	}
 	singleDirectory := filepath.Join(t.TempDir(), "single-attempt-policy")
 	if err := os.Mkdir(singleDirectory, 0o700); err != nil {
 		t.Fatal(err)
@@ -1431,22 +1434,23 @@ func relayTerminalAbsent(t *testing.T, fixture *relayTestFixture,
 		t.Fatal("relay terminal profile is missing")
 	}
 	terminalProfile := *execution.ProviderQuote.Body.RelayFinalityProfile
-	evidence, err := agentrelay.SignRelayFinalityEvidence(agentrelay.RelayFinalityEvidenceBody{SchemaVersion: 1,
+	evidenceBody := agentrelay.RelayFinalityEvidenceBody{SchemaVersion: 1,
 		ProviderAgentID: fixture.profile.ProviderAgentID, Network: quoted.Network,
 		AssuranceLevel: quoted.AssuranceLevel,
 		StableActionID: execution.AuthorizedAction.StableActionID, ExactRequestDigest: execution.AuthorizedAction.ExactRequestDigest,
 		RelayExecutionDigest: executionDigest, SignedTransactionDigest: quoted.SignedTransactionDigest,
 		SignedTransactionCellHash: quoted.SignedTransactionCellHash, SourceAccount: quoted.SourceAccount,
 		SourceSequence: quoted.SourceSequence, TransactionValidUntilUnix: quoted.TransactionValidUntilUnix,
-		RelayTerminalEvidenceClass:               terminalProfile.TerminalEvidenceClass,
-		RelayValidatorAuthenticatedPortableProof: true,
-		RelayFinalizedCheckpointID:               "checkpoint:test", RelayFinalizedCheckpointSequence: 100,
+		RelayTerminalEvidenceClass: terminalProfile.TerminalEvidenceClass,
+		RelayFinalizedCheckpointID: "checkpoint:test", RelayFinalizedCheckpointSequence: 100,
 		RelayFinalizedCheckpointUnix: uint64(fixture.now.Unix()),
 		RelayConfirmationDepth:       terminalProfile.MinimumConfirmationDepth,
 		RelayFinalityProfile:         &terminalProfile,
 		RelayObservationDigests:      observationDigests,
 		Outcome:                      agentrelay.OutcomeFinalizedAbsent, ObservedAtUnix: uint64(fixture.now.Unix()),
-		SigningAuthorityAtUnix: uint64(fixture.now.Unix())}, fixture.providerKey)
+		SigningAuthorityAtUnix: uint64(fixture.now.Unix())}
+	setRelayPortableProof(&evidenceBody, true)
+	evidence, err := agentrelay.SignRelayFinalityEvidence(evidenceBody, fixture.providerKey)
 	if err != nil {
 		t.Fatal(err)
 	}

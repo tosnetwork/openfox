@@ -34,6 +34,9 @@ func (authority *PersonalAuthority) ResolveSettlementState(action commerce.Autho
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, err
+	}
 	ledger, found := authority.doc.SettlementLedger[request.ObligationInstanceID]
 	if !found || ledger.State.StateRevision != request.ExpectedStateRevision || request.ObservedAtUnix == 0 ||
 		request.ObservedAtUnix > uint64(authority.now().UTC().Unix()) {
@@ -149,6 +152,9 @@ func (authority *PersonalAuthority) MaterializeSettlement(action commerce.Author
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, SettlementLedgerRecord{}, err
+	}
 	engagement, found := authority.doc.Engagements[obligation.AgreementBodyDigest]
 	initializeObligationRuntime(&engagement)
 	agreementObligation, obligationFound := obligationByID(engagement, obligation.AgreementObligationID)
@@ -202,6 +208,9 @@ func (authority *PersonalAuthority) MaterializeSettlement(action commerce.Author
 func (authority *PersonalAuthority) SettlementSnapshot(agreementDigest string) []SettlementLedgerRecord {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if authority.ensureStorageIdentityLocked() != nil {
+		return nil
+	}
 	result := make([]SettlementLedgerRecord, 0)
 	for _, record := range authority.doc.SettlementLedger {
 		if record.Obligation.AgreementBodyDigest == agreementDigest {
@@ -219,6 +228,9 @@ func (authority *PersonalAuthority) ApplySettlementPayment(action commerce.Autho
 	request BillingResolutionRequest) (commerce.ActionResolution, SettlementLedgerRecord, EngagementRecord, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, err
+	}
 	ledger, found := authority.doc.SettlementLedger[request.ObligationInstanceID]
 	if !found || request.ResolvedAtUnix == 0 || request.ResolvedAtUnix > uint64(authority.now().UTC().Unix()) {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("payment resolution has no materialized obligation")

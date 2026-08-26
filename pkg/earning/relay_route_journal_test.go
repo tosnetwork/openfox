@@ -7,12 +7,193 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
+
+func TestRelayPermanentReplayCapacityReservesEntryCounts(t *testing.T) {
+	sponsorshipRecord := RelayRouteRecord{Hops: []RelayRouteHop{{Attempt: RelayAttempt{
+		Execution: agentrelay.RelayExecutionRequest{QuoteRequest: agentrelay.SignedRelayQuoteRequest{
+			Body: agentrelay.RelayQuoteRequestBody{Mode: agentrelay.ModeSponsorOnly}}}}}}}
+	relayRecord := RelayRouteRecord{Hops: []RelayRouteHop{{Attempt: RelayAttempt{
+		Execution: agentrelay.RelayExecutionRequest{QuoteRequest: agentrelay.SignedRelayQuoteRequest{
+			Body: agentrelay.RelayQuoteRequestBody{Mode: agentrelay.ModeRelayExact}}}}}}}
+
+	for _, test := range []struct {
+		name                   string
+		records                map[string]RelayRouteRecord
+		terminalTombstoneCount int
+		sponsorshipEffectCount int
+		newMode                agentrelay.Mode
+		wantRejected           bool
+	}{
+		{name: "terminal-count-already-full", terminalTombstoneCount: maximumRelayTerminalTombstones,
+			newMode: agentrelay.ModeRelayExact, wantRejected: true},
+		{name: "active-and-new-terminal-count-overflow",
+			records:                map[string]RelayRouteRecord{"active": relayRecord},
+			terminalTombstoneCount: maximumRelayTerminalTombstones - 1,
+			newMode:                agentrelay.ModeRelayExact, wantRejected: true},
+		{name: "sponsorship-count-already-full", sponsorshipEffectCount: maximumRelaySponsorshipEffects,
+			newMode: agentrelay.ModeSponsorOnly, wantRejected: true},
+		{name: "active-and-new-sponsorship-count-overflow",
+			records:                map[string]RelayRouteRecord{"active": sponsorshipRecord},
+			sponsorshipEffectCount: maximumRelaySponsorshipEffects - 1,
+			newMode:                agentrelay.ModeSponsorOnly, wantRejected: true},
+		{name: "exact-count-boundary", records: map[string]RelayRouteRecord{"active": sponsorshipRecord},
+			terminalTombstoneCount: maximumRelayTerminalTombstones - 2,
+			sponsorshipEffectCount: maximumRelaySponsorshipEffects - 2,
+			newMode:                agentrelay.ModeSponsorOnly},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			journal := DurableRelayRouteJournal{records: test.records,
+				terminalTombstoneCount: test.terminalTombstoneCount,
+				sponsorshipEffectCount: test.sponsorshipEffectCount}
+			// Bytes deliberately remain zero: these cases prove that entry-count
+			// exhaustion is enforced independently of aggregate byte capacity.
+			err := journal.reservePermanentReplayCapacity(test.newMode)
+			if test.wantRejected && err == nil {
+				t.Fatal("count-saturated permanent replay registry admitted another route")
+			}
+			if !test.wantRejected && err != nil {
+				t.Fatalf("exact permanent replay count boundary was rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestDurableRelayRouteJournalFailsClosedAfterDirectoryReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not permit renaming this open directory")
+	}
+	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
+	directory := filepath.Join(t.TempDir(), "owner-relay-routes")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := OpenDurableRelayRouteJournal(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := directory + "-moved"
+	if err := os.Rename(directory, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if replacement, err := OpenDurableRelayRouteJournal(directory); err == nil {
+		_ = replacement.Close()
+		t.Fatal("replacement directory created a concurrent logical route authority")
+	}
+	attempt := fixture.attempt(t)
+	profileDigest, err := agentrelay.RelayServiceProfileDigest(fixture.profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := RelayProviderProvenance{ProviderAgentID: fixture.profile.ProviderAgentID,
+		IntentDigest: fixture.verified.IntentDigest(), ProfileDigest: profileDigest,
+		OperatorDomain: "operator", FailureDomain: "failure", EndpointOrigin: "https://relay.example",
+		CertificatePinDigest: relayTestDigest("1"), ImplementationEvidenceHash: relayTestDigest("2")}
+	if _, _, err := journal.Bind(fixture.prepared, []RelayProviderProvenance{provider}, provider,
+		attempt, 1, fixture.now); err == nil {
+		t.Fatal("replaced relay journal directory did not fail closed")
+	}
+	if _, err := os.Lstat(filepath.Join(directory, relayRouteJournalFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement directory received route state: %v", err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDurableRelayRouteJournalPinsProtectedChildDirectories(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not permit renaming this open directory")
+	}
+	directory := filepath.Join(t.TempDir(), "owner-relay-routes")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := OpenDurableRelayRouteJournal(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := journal.effectDirectory
+	moved := original + "-moved"
+	if err := os.Rename(original, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(original, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.sponsorshipChainEffectPath(relayTestDigest("a"), true); err == nil {
+		t.Fatal("replaced sponsorship registry did not fail closed")
+	}
+	entries, err := os.ReadDir(original)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("replacement sponsorship registry received state: entries=%d err=%v", len(entries), err)
+	}
+	if err := os.Remove(original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(moved, original); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.sponsorshipChainEffectPath(relayTestDigest("a"), true); err == nil {
+		t.Fatal("restoring a detached sponsorship registry cleared its permanent poison")
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRelayPermanentRegistryCountIsBounded(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "registry")
+	shard := filepath.Join(directory, "aa")
+	if err := os.MkdirAll(shard, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one.json", "two.json"} {
+		if err := os.WriteFile(filepath.Join(shard, name), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pinned, err := openRelayPinnedDirectory(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.close()
+	if count, bytes, err := countRelayPermanentRegistryPinned(pinned, ".", ".json", 2, 2, 4); err != nil || count != 2 || bytes != 4 {
+		t.Fatalf("bounded registry count=%d bytes=%d err=%v", count, bytes, err)
+	}
+	if _, _, err := countRelayPermanentRegistryPinned(pinned, ".", ".json", 1, 2, 4); err == nil {
+		t.Fatal("permanent registry above its cap was accepted")
+	}
+	if _, _, err := countRelayPermanentRegistryPinned(pinned, ".", ".json", 2, 2, 3); err == nil {
+		t.Fatal("permanent registry above its aggregate byte cap was accepted")
+	}
+}
+
+func TestRelayRouteOwnerDomainCannotSplitAcrossDirectories(t *testing.T) {
+	first := &DurableRelayRouteJournal{}
+	second := &DurableRelayRouteJournal{}
+	if err := first.bindOwnerDomain("owner:test", "agent:test"); err != nil {
+		t.Fatal(err)
+	}
+	defer first.closeOwnerDomain()
+	if err := second.bindOwnerDomain("owner:test", "agent:test"); err == nil {
+		second.closeOwnerDomain()
+		t.Fatal("same owner and Agent acquired two route authority domains")
+	}
+	if err := second.bindOwnerDomain("owner:test", "agent:other"); err != nil {
+		t.Fatalf("independent owner/Agent route domain was rejected: %v", err)
+	}
+	second.closeOwnerDomain()
+}
 
 func TestDurableRelayRouteJournalPinsSelectionBeforeSubmitAndAcrossRestart(t *testing.T) {
 	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")

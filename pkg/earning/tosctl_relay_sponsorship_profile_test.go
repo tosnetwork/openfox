@@ -1,11 +1,15 @@
 package earning
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,9 +27,10 @@ func TestRelaySponsorshipProofBundleCrossLanguageVector(t *testing.T) {
 		"sponsorship_stable_action_id":     "sha256:" + strings.Repeat("2", 64),
 		"confirmation_depth":               uint64(1),
 		"observations": []any{map[string]any{
-			"endpoint":            "https://rpc-a.example/jsonRPC",
-			"operator_provenance": "sha256:" + strings.Repeat("3", 64),
-			"transaction_hash":    "sha256:" + strings.Repeat("4", 64),
+			"endpoint":                "https://rpc-a.example",
+			"locator_identity_digest": "sha256:7852a333f799e340dd1ca5f6080532fc4d78fc0decb0293569235f7c2d553e52",
+			"operator_provenance":     "sha256:" + strings.Repeat("3", 64),
+			"transaction_hash":        "sha256:" + strings.Repeat("4", 64),
 		}},
 	}
 	encoded, err := codec.Marshal(proof)
@@ -33,8 +38,8 @@ func TestRelaySponsorshipProofBundleCrossLanguageVector(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest, err := agentrelay.RelaySponsorshipProofBundleDigest(encoded)
-	if err != nil || len(encoded) != 544 ||
-		digest != "sha256:d9d2f6b7da5ab45c817a2296b2890b8cee44e0c18a39c556e2c0a4ad51e09da7" {
+	if err != nil || len(encoded) != 632 ||
+		digest != "sha256:61280872b5cc6f30fabe301020d7a8f7c29e86a0c806bec61d3bb51bbb36414f" {
 		t.Fatalf("Go sponsorship proof bundle diverged from the Rust vector: len=%d digest=%s err=%v",
 			len(encoded), digest, err)
 	}
@@ -73,19 +78,26 @@ func TestTOSCTLSponsorshipProfileDigestMatchesNormativeRustVector(t *testing.T) 
 	network := agentrelay.NetworkDomain{NetworkID: "tos:testnet", GlobalID: 42,
 		ZeroStateRootHash: "sha256:" + strings.Repeat("1", 64),
 		ZeroStateFileHash: "sha256:" + strings.Repeat("2", 64), WorkchainID: 0}
-	raws := [][]byte{
-		tosctlProfileConfig(t, "https://rpc-c.example/jsonRPC", "sha256:"+strings.Repeat("c", 64)),
-		tosctlProfileConfig(t, "https://rpc-a.example/jsonRPC", "sha256:"+strings.Repeat("a", 64)),
-		tosctlProfileConfig(t, "https://rpc-b.example/jsonRPC", "sha256:"+strings.Repeat("b", 64)),
+	profile := tosctlRelaySponsorshipEvidenceProfile{
+		ProfileURI: agentrelay.RPCCorroborationEvidenceProfileURI, NetworkDomain: network,
+		Members: []tosctlRelaySponsorshipEvidenceProfileMember{
+			{Endpoint: "https://rpc-a.example", LocatorIdentityDigest: tosctlTestLocatorIdentity(t, "https://rpc-a.example/jsonRPC"),
+				OperatorProvenance: "sha256:" + strings.Repeat("a", 64)},
+			{Endpoint: "https://rpc-b.example", LocatorIdentityDigest: tosctlTestLocatorIdentity(t, "https://rpc-b.example/jsonRPC"),
+				OperatorProvenance: "sha256:" + strings.Repeat("b", 64)},
+			{Endpoint: "https://rpc-c.example", LocatorIdentityDigest: tosctlTestLocatorIdentity(t, "https://rpc-c.example/jsonRPC"),
+				OperatorProvenance: "sha256:" + strings.Repeat("c", 64)},
+		},
+		Threshold: 2, MaximumHistoryTransactions: 1000, StrictMajority: true,
+		ExactSubmittedMessage: true, ExactDestinationCredit: true,
 	}
-	policy, profile, err := buildTOSCTLSponsorshipEvidenceProfileFromRaw(raws, network, 1000)
+	digest, err := tosctlRustFramedDigest(tosctlSponsorshipProfileDomain, tosctlProfileDigestValue(profile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	const rustDigest = "sha256:4459ac77b6fc656fb34f44de3aaedf6ac6a4d717b725fb2f1ee56026786d6e89"
-	if policy.ProfileDigest != rustDigest || profile.Members[0].Endpoint != "https://rpc-a.example/jsonRPC" ||
-		profile.Threshold != 2 {
-		t.Fatalf("Go profile bytes differ from the fixed Rust vector: policy=%+v profile=%+v", policy, profile)
+	const rustDigest = "sha256:bdc62291e5dde10074b58a5c5ba2c017fc2a4a89a51c8233d951105ff1d5c8f0"
+	if digest != rustDigest {
+		t.Fatalf("Go profile bytes differ from the fixed Rust vector: digest=%s profile=%+v", digest, profile)
 	}
 }
 
@@ -114,6 +126,12 @@ func TestTOSCTLSponsorshipCorroborationReconstructsStrictMajorityAndDigests(t *t
 			}
 			value.EvidenceProfileDigest, selected.ProfileDigest = digest, digest
 		},
+		"observation locator mismatch": func(value *tosctlRelaySponsorshipObserved, _ *RelaySponsorshipReleasePolicy) {
+			value.Observations[0].LocatorIdentityDigest = "sha256:" + strings.Repeat("f", 64)
+		},
+		"observation locator path": func(value *tosctlRelaySponsorshipObserved, _ *RelaySponsorshipReleasePolicy) {
+			value.Observations[0].Endpoint += "/private/token"
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			copyResult := result
@@ -125,6 +143,253 @@ func TestTOSCTLSponsorshipCorroborationReconstructsStrictMajorityAndDigests(t *t
 			mutate(&copyResult, &selected)
 			if err := verifyTOSCTLSponsorshipCorroboration(copyResult, selected); err == nil {
 				t.Fatal("forged tosctl corroboration was accepted")
+			}
+		})
+	}
+}
+
+func TestTOSCTLSponsorshipPublicMemberShapeAndOriginAreStrict(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("1", 64)
+	operator := "sha256:" + strings.Repeat("2", 64)
+	valid := `{"endpoint":"https://rpc.example","locator_identity_digest":"` + digest +
+		`","operator_provenance":"` + operator + `"}`
+	for name, raw := range map[string]string{
+		"unknown":   strings.TrimSuffix(valid, "}") + `,"locator":"https://rpc.example/private"}`,
+		"duplicate": strings.TrimSuffix(valid, "}") + `,"endpoint":"https://other.example"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var member tosctlRelaySponsorshipEvidenceProfileMember
+			if err := decodeStrictJSON([]byte(raw), &member); err == nil {
+				t.Fatal("non-exact public member JSON was accepted")
+			}
+		})
+	}
+
+	for name, endpoint := range map[string]string{
+		"credentials":    "https://user:secret@rpc.example",
+		"path":           "https://rpc.example/private/token",
+		"query":          "https://rpc.example?token=secret",
+		"fragment":       "https://rpc.example#secret",
+		"unicode":        "https://rüp.example",
+		"uppercase":      "HTTPS://RPC.EXAMPLE",
+		"default port":   "https://rpc.example:443",
+		"trailing slash": "https://rpc.example/",
+		"dot host":       "https://rpc.example.",
+		"double slash":   "https://rpc.example/a//b",
+		"dot segment":    "https://rpc.example/a/./b",
+		"dotdot segment": "https://rpc.example/a/../b",
+		"backslash path": `https://rpc.example/a\b`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := canonicalTOSCTLRPCEndpoint(endpoint); err == nil {
+				t.Fatalf("unsafe public endpoint %q was accepted", endpoint)
+			}
+		})
+	}
+
+	profile := tosctlRelaySponsorshipEvidenceProfile{
+		ProfileURI: agentrelay.RPCCorroborationEvidenceProfileURI,
+		NetworkDomain: agentrelay.NetworkDomain{NetworkID: "tos:testnet", GlobalID: 1,
+			ZeroStateRootHash: relayTestDigest("a"), ZeroStateFileHash: relayTestDigest("b")},
+		Members: []tosctlRelaySponsorshipEvidenceProfileMember{
+			{Endpoint: "https://a.example", LocatorIdentityDigest: digest, OperatorProvenance: operator},
+			{Endpoint: "https://b.example", LocatorIdentityDigest: relayTestDigest("3"), OperatorProvenance: relayTestDigest("4")},
+			{Endpoint: "https://c.example", LocatorIdentityDigest: relayTestDigest("5"), OperatorProvenance: relayTestDigest("6")},
+		},
+		Threshold: 2, MaximumHistoryTransactions: 1, StrictMajority: true,
+		ExactSubmittedMessage: true, ExactDestinationCredit: true,
+	}
+	if err := validateTOSCTLSponsorshipEvidenceProfile(profile); err != nil {
+		t.Fatalf("exact public profile rejected: %v", err)
+	}
+	profile.Members[0].LocatorIdentityDigest = ""
+	if err := validateTOSCTLSponsorshipEvidenceProfile(profile); err == nil {
+		t.Fatal("public profile accepted a missing locator_identity_digest")
+	}
+}
+
+func TestTOSCTLSponsorshipProfileIgnoresPrivateCredentialsAndFormatting(t *testing.T) {
+	network := agentrelay.NetworkDomain{NetworkID: "tos:testnet", GlobalID: 42,
+		ZeroStateRootHash: relayTestDigest("1"), ZeroStateFileHash: relayTestDigest("2")}
+	first, second := make([][]byte, 3), make([][]byte, 3)
+	for index := range first {
+		endpoint := fmt.Sprintf("https://rpc-%d.example/private/jsonRPC", index)
+		operator := fmt.Sprintf("sha256:%064x", index+1)
+		first[index] = []byte(fmt.Sprintf(
+			`{"chain_rpc":{"urls":[{"url":%q,"api_key":"provider-secret-%d"}],"operator_provenance":%q}}`,
+			endpoint, index, operator))
+		second[index] = []byte(fmt.Sprintf(
+			"{\n  \"chain_rpc\": {\n    \"operator_provenance\": %q,\n    \"urls\": [{\"api_key\": \"client-secret-%d\", \"url\": %q}]\n  }\n}\n",
+			operator, index, endpoint))
+	}
+	firstPolicy, firstProfile, err := buildTOSCTLSponsorshipEvidenceProfileFromRaw(first, network, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPolicy, secondProfile, err := buildTOSCTLSponsorshipEvidenceProfileFromRaw(second, network, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJSON, _ := json.Marshal(firstProfile)
+	secondJSON, _ := json.Marshal(secondProfile)
+	if firstPolicy != secondPolicy || !bytes.Equal(firstJSON, secondJSON) {
+		t.Fatalf("private credentials or formatting changed the public profile:\n%s\n%s", firstJSON, secondJSON)
+	}
+	for index := range first {
+		_, firstLocator, firstConfig, _, firstErr := tosctlRPCProfileMember(first[index])
+		_, secondLocator, secondConfig, _, secondErr := tosctlRPCProfileMember(second[index])
+		if firstErr != nil || secondErr != nil || firstLocator != secondLocator || firstConfig == secondConfig {
+			t.Fatalf("member %d did not separate public locator identity from private bytes", index)
+		}
+	}
+	if strings.Contains(string(firstJSON), "private/jsonRPC") || strings.Contains(string(firstJSON), "secret") {
+		t.Fatalf("public profile leaked a private locator or credential: %s", firstJSON)
+	}
+}
+
+func TestTOSCTLCorroborationSnapshotHandleIsRelativeAndStrict(t *testing.T) {
+	root := privateTempDir(t)
+	identity := relayTestDigest("a")
+	handle := "corroboration-" + strings.TrimPrefix(identity, "sha256:") + "/manifest.json"
+	want := filepath.Join(root, filepath.FromSlash(handle))
+	if got, err := resolveTOSCTLCorroborationSnapshotHandle(root, handle, identity); err != nil || got != want {
+		t.Fatalf("valid snapshot handle was rejected: got=%q err=%v", got, err)
+	}
+	for name, invalid := range map[string]string{
+		"absolute":  filepath.Join(root, "manifest.json"),
+		"traversal": "../corroboration-" + strings.TrimPrefix(identity, "sha256:") + "/manifest.json",
+		"backslash": "corroboration-" + strings.TrimPrefix(identity, "sha256:") + `\manifest.json`,
+		"mismatch":  "corroboration-" + strings.Repeat("b", 64) + "/manifest.json",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := resolveTOSCTLCorroborationSnapshotHandle(root, invalid, identity); err == nil {
+				t.Fatalf("unsafe snapshot handle %q was accepted", invalid)
+			}
+		})
+	}
+}
+
+func TestTOSCTLCorroborationCapabilityAndManifestDoNotLeakHostPaths(t *testing.T) {
+	network := agentrelay.NetworkDomain{NetworkID: "tos:testnet", GlobalID: 42,
+		ZeroStateRootHash: relayTestDigest("1"), ZeroStateFileHash: relayTestDigest("2")}
+	root := privateTempDir(t)
+	paths := make([]string, 3)
+	for index := range paths {
+		paths[index] = filepath.Join(root, fmt.Sprintf("source-%d.json", index))
+		if err := os.WriteFile(paths[index], tosctlProfileConfig(t,
+			fmt.Sprintf("https://rpc-%d.example/private/jsonRPC", index),
+			fmt.Sprintf("sha256:%064x", index+1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw := tosctlSnapshotCapability(t, root, paths, network, 1000)
+	if strings.Contains(string(raw), root) || strings.Contains(string(raw), "snapshot_nonce") ||
+		strings.Contains(string(raw), "/private/jsonRPC") {
+		t.Fatalf("public capability leaked a host path, private nonce, or locator: %s", raw)
+	}
+	var capability tosctlRelaySponsorshipCapability
+	if err := decodeStrictJSON(raw, &capability); err != nil {
+		t.Fatal(err)
+	}
+	registry := filepath.Join(root, "relay-sponsorship-corroboration")
+	manifestPath, err := resolveTOSCTLCorroborationSnapshotHandle(registry,
+		capability.CorroborationSnapshotHandle, capability.CorroborationSnapshotIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestRaw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifestRaw), root) {
+		t.Fatalf("private manifest leaked its absolute host root: %s", manifestRaw)
+	}
+	var manifest tosctlRelaySponsorshipSnapshotManifest
+	if err := decodeStrictJSON(manifestRaw, &manifest); err != nil || !validTOSCTLSnapshotNonce(manifest.SnapshotNonce) {
+		t.Fatalf("private snapshot nonce or manifest is invalid: %+v err=%v", manifest, err)
+	}
+	for _, member := range manifest.Members {
+		if !validTOSCTLSnapshotMemberBasename(member.ConfigPath) {
+			t.Fatalf("manifest member path is not a relative basename: %q", member.ConfigPath)
+		}
+	}
+}
+
+func TestTOSCTLCorroborationSnapshotRejectsDirectorySymlinkReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic-link replacement test requires Unix")
+	}
+	network := agentrelay.NetworkDomain{NetworkID: "tos:testnet", GlobalID: 42,
+		ZeroStateRootHash: relayTestDigest("1"), ZeroStateFileHash: relayTestDigest("2")}
+	root := privateTempDir(t)
+	paths := make([]string, 3)
+	for index := range paths {
+		paths[index] = filepath.Join(root, fmt.Sprintf("source-%d.json", index))
+		if err := os.WriteFile(paths[index], tosctlProfileConfig(t,
+			fmt.Sprintf("https://rpc-%d.example/private/jsonRPC", index),
+			fmt.Sprintf("sha256:%064x", index+1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw := tosctlSnapshotCapability(t, root, paths, network, 1000)
+	var capability tosctlRelaySponsorshipCapability
+	if err := decodeStrictJSON(raw, &capability); err != nil {
+		t.Fatal(err)
+	}
+	registry := filepath.Join(root, "relay-sponsorship-corroboration")
+	manifestPath, err := resolveTOSCTLCorroborationSnapshotHandle(registry,
+		capability.CorroborationSnapshotHandle, capability.CorroborationSnapshotIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := tosctlRelaySponsorshipSnapshot{policy: RelaySponsorshipReleasePolicy{
+		EvidenceClass: agentrelay.SponsorshipReleaseObservedUnproven,
+		ProfileURI:    capability.EvidenceProfileURI, ProfileDigest: capability.EvidenceProfileDigest},
+		maximumTransactions: capability.MaximumHistoryTransactions, registryRoot: registry,
+		manifestPath: manifestPath, identity: capability.CorroborationSnapshotIdentity}
+	sink := &TOSCTLPaymentSink{}
+	if err := sink.validateRelaySponsorshipSnapshot(snapshot); err != nil {
+		t.Fatalf("valid rooted snapshot rejected: %v", err)
+	}
+	directory := filepath.Dir(manifestPath)
+	relocated := directory + "-relocated"
+	if err := os.Rename(directory, relocated); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relocated, directory); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.validateRelaySponsorshipSnapshot(snapshot); err == nil {
+		t.Fatal("snapshot directory symlink replacement was accepted")
+	}
+}
+
+func TestTOSCTLSponsorshipPrivateLocatorPublishesOnlyOrigin(t *testing.T) {
+	raw := tosctlProfileConfig(t, "https://rpc.example/tenant/private-token/jsonRPC",
+		"sha256:"+strings.Repeat("a", 64))
+	endpoint, locatorDigest, contentDigest, _, err := tosctlRPCProfileMember(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "https://rpc.example" || locatorDigest != tosctlTestLocatorIdentity(t,
+		"https://rpc.example/tenant/private-token/jsonRPC") || contentDigest != sha256Digest(raw) ||
+		strings.Contains(endpoint, "private-token") || strings.Contains(endpoint, "/tenant/") {
+		t.Fatalf("private locator leaked into public member: endpoint=%q digest=%q", endpoint, contentDigest)
+	}
+	for name, invalid := range map[string]string{
+		"uppercase":      "HTTPS://RPC.EXAMPLE/private/jsonRPC",
+		"default port":   "https://rpc.example:443/private/jsonRPC",
+		"trailing slash": "https://rpc.example/private/jsonRPC/",
+		"dot host":       "https://rpc.example./private/jsonRPC",
+		"double slash":   "https://rpc.example/private//jsonRPC",
+		"dot segment":    "https://rpc.example/private/./jsonRPC",
+		"dotdot segment": "https://rpc.example/private/../jsonRPC",
+		"backslash":      `https://rpc.example/private\jsonRPC`,
+		"unicode":        "https://rpc.example/私有/jsonRPC",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := canonicalTOSCTLRPCConfigLocator(invalid); err == nil {
+				t.Fatalf("non-canonical private locator %q was accepted", invalid)
 			}
 		})
 	}
@@ -153,8 +418,9 @@ func tosctlCorroborationFixture(t *testing.T) (RelaySponsorshipReleasePolicy,
 			transactionBOC = "7"
 		}
 		return tosctlPaymentObservation{Endpoint: profile.Members[index].Endpoint,
-			OperatorProvenance: profile.Members[index].OperatorProvenance,
-			TransactionHash:    "sha256:" + strings.Repeat(transaction, 64), TransactionLT: 77,
+			LocatorIdentityDigest: profile.Members[index].LocatorIdentityDigest,
+			OperatorProvenance:    profile.Members[index].OperatorProvenance,
+			TransactionHash:       "sha256:" + strings.Repeat(transaction, 64), TransactionLT: 77,
 			TransactionUTime: 100, TransactionBOCDigest: "sha256:" + strings.Repeat(transactionBOC, 64),
 			SourceOutboundMessageHash:  "tvm-cell-sha256:" + strings.Repeat("e", 64),
 			DestinationCreditReference: "sha256:" + strings.Repeat("7", 64),
@@ -327,8 +593,14 @@ func tosctlSnapshotCapability(t *testing.T, root string, paths []string, network
 	if err != nil {
 		t.Fatal(err)
 	}
+	nonceBytes := make([]byte, 32)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		t.Fatal(err)
+	}
+	nonce := hex.EncodeToString(nonceBytes)
 	identity, err := tosctlRustFramedDigest(tosctlSponsorshipSnapshotDomain,
-		map[string]any{"evidence_profile_digest": policy.ProfileDigest, "config_content_digests": digests})
+		map[string]any{"evidence_profile_digest": policy.ProfileDigest,
+			"config_content_digests": digests, "snapshot_nonce": nonce})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,15 +615,16 @@ func tosctlSnapshotCapability(t *testing.T, root string, paths []string, network
 		if err := writeRelayJournalAtomic(directory, path, raws[index]); err != nil {
 			t.Fatal(err)
 		}
-		endpoint, operator, err := tosctlRPCProfileMember(raws[index])
+		endpoint, locatorDigest, contentDigest, operator, err := tosctlRPCProfileMember(raws[index])
 		if err != nil {
 			t.Fatal(err)
 		}
-		members[index] = tosctlRelaySponsorshipSnapshotMember{ConfigPath: path,
-			ConfigContentDigest: digests[index], Endpoint: endpoint, OperatorProvenance: operator}
+		members[index] = tosctlRelaySponsorshipSnapshotMember{ConfigPath: filepath.Base(path),
+			ConfigContentDigest: contentDigest, Endpoint: endpoint,
+			LocatorIdentityDigest: locatorDigest, OperatorProvenance: operator}
 	}
 	manifest := tosctlRelaySponsorshipSnapshotManifest{Schema: "tosctl.agent-account.agreement-payment-rpc-corroboration-snapshot.v1",
-		SnapshotIdentity: identity, EvidenceProfileURI: policy.ProfileURI,
+		SnapshotIdentity: identity, SnapshotNonce: nonce, EvidenceProfileURI: policy.ProfileURI,
 		EvidenceProfileDigest: policy.ProfileDigest, NetworkDomain: network,
 		MaximumHistoryTransactions: maximumTransactions, EvidenceProfile: profile, Members: members}
 	manifestRaw, err := json.Marshal(manifest)
@@ -365,12 +638,22 @@ func tosctlSnapshotCapability(t *testing.T, root string, paths []string, network
 	capability := tosctlRelaySponsorshipCapability{Schema: "tosctl.agent-account.agreement-payment-rpc-corroboration-capability.v1",
 		EvidenceClass: string(policy.EvidenceClass), EvidenceProfileURI: policy.ProfileURI,
 		EvidenceProfileDigest: policy.ProfileDigest, EvidenceProfile: profile,
-		CorroborationSnapshot: manifestPath, CorroborationSnapshotIdentity: identity,
-		NetworkDomain: network, MaximumHistoryTransactions: maximumTransactions,
+		CorroborationSnapshotHandle:   filepath.ToSlash(filepath.Join(filepath.Base(directory), "manifest.json")),
+		CorroborationSnapshotIdentity: identity,
+		NetworkDomain:                 network, MaximumHistoryTransactions: maximumTransactions,
 		MemberCount: uint32(len(members)), SideEffect: false}
 	encoded, err := json.Marshal(capability)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return encoded
+}
+
+func tosctlTestLocatorIdentity(t *testing.T, locator string) string {
+	t.Helper()
+	canonical, _, err := canonicalTOSCTLRPCConfigLocator(locator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tosctlFramedBytesDigest(tosctlRPCLocatorIdentityDomain, []byte(canonical))
 }

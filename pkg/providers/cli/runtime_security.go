@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -217,38 +216,30 @@ func runCommandBounded(ctx context.Context, cmd *exec.Cmd, input []byte, maxOutp
 	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", "", err
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return "", "", err
+	budget := newByteBudget(maxOutputBytes)
+	stdout := newBoundedCollectorWithBudget(budget)
+	stderr := newBoundedCollectorWithBudget(budget)
+	if cmd.Stdout != nil || cmd.Stderr != nil || cmd.Stdin != nil {
+		return "", "", fmt.Errorf("agent backend command standard streams are already configured")
 	}
 	cmd.Stdin = bytes.NewReader(input)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := isolationStart(cmd); err != nil {
 		return "", "", err
 	}
 	if err := attachProcessTree(cmd); err != nil {
 		_ = cmd.Process.Kill()
-		return "", "", fmt.Errorf("attach agent backend process tree: %w", err)
+		_ = cmd.Wait()
+		return stdout.String(), stderr.String(), fmt.Errorf("attach agent backend process tree: %w", err)
 	}
 
-	budget := newByteBudget(maxOutputBytes)
-	stdout := newBoundedCollectorWithBudget(budget)
-	stderr := newBoundedCollectorWithBudget(budget)
-	done := make(chan struct{}, 2)
-	copyPipe := func(dst io.Writer, src io.Reader) {
-		_, _ = io.Copy(dst, src)
-		done <- struct{}{}
-	}
-	go copyPipe(stdout, stdoutPipe)
-	go copyPipe(stderr, stderrPipe)
-
+	// exec.Cmd owns the copy goroutines for non-file stdout/stderr writers and
+	// waits for them before Wait returns. Calling Wait while independently
+	// reading StdoutPipe/StderrPipe is explicitly unsafe: Wait may close a pipe
+	// after the process exits before the reader has retained its final bytes.
 	waitErr := cmd.Wait()
-	<-done
-	<-done
 	if stdout.Truncated() || stderr.Truncated() {
 		return stdout.String(), stderr.String(), ErrOutputLimit
 	}

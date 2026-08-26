@@ -66,6 +66,10 @@ func acquireRelayJournalLock(directory string) (*os.File, error) {
 	return lock, nil
 }
 
+func acquireRelayJournalLockRoot(root *os.Root) (*os.File, error) {
+	return acquireRootedWindowsLock(root, relayJournalLockFile, "relay journal")
+}
+
 func releaseRelayJournalLock(lock *os.File) error {
 	handle := windows.Handle(lock.Fd())
 	var overlapped windows.Overlapped
@@ -107,6 +111,38 @@ func openRelayJournalFile(path string) (*os.File, error) {
 		return nil, errors.New("wrap relay journal file")
 	}
 	return file, nil
+}
+
+func relayJournalFileInfoSecure(info os.FileInfo) bool {
+	// DACL and reparse-point validation are performed on the opened handle in
+	// openRelayJournalFile. Windows FileMode permission bits do not encode ACLs.
+	return info != nil && info.Mode().IsRegular()
+}
+
+func validateRelayJournalOpenedFile(file *os.File, info os.FileInfo) error {
+	if file == nil || !relayJournalFileInfoSecure(info) ||
+		validateRelayWindowsHandle(windows.Handle(file.Fd()), false) != nil ||
+		verifyRelayWindowsHandleProtection(windows.Handle(file.Fd()), false) != nil {
+		return errors.New("relay journal DACL is not owner-only")
+	}
+	return nil
+}
+
+func protectRootedJournalFile(root *os.Root, name string) error {
+	if root == nil || name == "" {
+		return errors.New("rooted relay journal path is unavailable")
+	}
+	// Windows prevents renaming an opened os.Root directory. Protect through
+	// its verified name, then re-open through the retained root and prove that
+	// the exact resulting file carries the protected owner-only DACL.
+	if err := protectRelayWindowsPath(filepath.Join(root.Name(), name), false); err != nil {
+		return err
+	}
+	file, err := openRelayJournalRootFile(root, name)
+	if err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func writeRelayJournalAtomic(directory, path string, data []byte) error {
@@ -154,15 +190,20 @@ func writeRelayJournalAtomic(directory, path string, data []byte) error {
 	if err != nil {
 		return errors.New("open relay journal directory for flush")
 	}
-	defer windows.CloseHandle(directoryHandle)
 	if err := validateRelayWindowsHandle(directoryHandle, true); err != nil {
+		_ = windows.CloseHandle(directoryHandle)
 		return errors.New("relay journal directory is a reparse point")
 	}
 	if err := protectRelayWindowsHandle(directoryHandle, true); err != nil {
+		_ = windows.CloseHandle(directoryHandle)
 		return errors.New("relay journal directory DACL is not owner-only")
 	}
 	if err := windows.FlushFileBuffers(directoryHandle); err != nil {
+		_ = windows.CloseHandle(directoryHandle)
 		return errors.New("flush relay journal directory")
+	}
+	if err := windows.CloseHandle(directoryHandle); err != nil {
+		return errors.New("close flushed relay journal directory")
 	}
 	return nil
 }
@@ -243,6 +284,26 @@ func protectRelayWindowsHandle(handle windows.Handle, directory bool) error {
 		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
 		nil, nil, acl, nil); err != nil {
 		return err
+	}
+	return verifyRelayWindowsHandleProtection(handle, directory)
+}
+
+// verifyRelayWindowsHandleProtection proves the owner-only DACL without
+// mutating it. It is safe for read-only os.Root.Open handles, unlike
+// protectRelayWindowsHandle which legitimately requires WRITE_DAC.
+func verifyRelayWindowsHandleProtection(handle windows.Handle, directory bool) error {
+	token, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return err
+	}
+	defer token.Close()
+	user, err := token.GetTokenUser()
+	if err != nil || user == nil || user.User.Sid == nil {
+		return errors.New("resolve relay journal owner SID")
+	}
+	inheritance := uint32(windows.NO_INHERITANCE)
+	if directory {
+		inheritance = windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE
 	}
 	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT,
 		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)

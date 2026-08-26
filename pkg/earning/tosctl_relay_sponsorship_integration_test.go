@@ -163,7 +163,7 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 		len(frozenManifest.Members) == 0 {
 		t.Fatal("read frozen provider snapshot manifest")
 	}
-	frozenPrimaryConfig = frozenManifest.Members[0].ConfigPath
+	frozenPrimaryConfig = filepath.Join(filepath.Dir(frozen.SnapshotPath), frozenManifest.Members[0].ConfigPath)
 	// Rotate every mutable semantic locator before the first custody prepare.
 	// The admitted A action must still use only A's frozen root/config, wallet,
 	// source account, network, native asset, and fee reserve; B affects only new
@@ -271,15 +271,15 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	}
 
 	// The concrete requester verifier freezes its own quorum snapshot before a
-	// Quote and independently re-queries the chain effect. Provider and client
-	// snapshot identities deliberately differ because credentials/config bytes
-	// are private to each owner, while the signed descriptor is identical.
+	// Quote and independently re-queries the chain effect. Public locator
+	// identities deliberately ignore private API keys and JSON formatting,
+	// while each local snapshot still binds its exact private bytes.
 	clientRoot := privateTempDir(t)
 	clientPaths := tosctlSponsorshipTestConfigs(t, clientRoot, fixture.network)
 	for _, path := range clientPaths {
 		raw, readErr := os.ReadFile(path)
 		if readErr != nil || os.WriteFile(path, append(raw, '\n'), 0o600) != nil {
-			t.Fatal("prepare distinct client RPC config bytes")
+			t.Fatal("prepare independently formatted client RPC config")
 		}
 	}
 	var clientFrozen RelaySponsorshipEvidenceSnapshot
@@ -310,7 +310,7 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	clientFrozen, err = clientSink.FreezeRelaySponsorshipClientEvidenceSnapshot(t.Context(),
 		execution.QuoteRequest.Body)
 	if err != nil || clientFrozen.SnapshotIdentity == frozen.SnapshotIdentity {
-		t.Fatalf("client snapshot was not independently frozen: provider=%s client=%s err=%v",
+		t.Fatalf("client snapshot did not separate private bytes from the shared public profile: provider=%s client=%s err=%v",
 			frozen.SnapshotIdentity, clientFrozen.SnapshotIdentity, err)
 	}
 	if err := clientSink.VerifySponsorshipTransactionEvidenceFromSnapshot(t.Context(),
@@ -324,8 +324,10 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	}
 	clientFrozen, err = clientSink.FreezeRelaySponsorshipClientEvidenceSnapshot(t.Context(),
 		execution.QuoteRequest.Body)
-	if err != nil || clientFrozen.SnapshotIdentity == oldClientFrozen.SnapshotIdentity {
-		t.Fatalf("new Quote did not observe rotated client config: old=%s new=%s err=%v",
+	if err != nil || clientFrozen.SnapshotIdentity == oldClientFrozen.SnapshotIdentity ||
+		!clientSink.SupportsRelaySponsorshipTransactionEvidence(
+			agentrelay.AssuranceAuthorizedSingleProvider, policy, fixture.sponsorshipFinality) {
+		t.Fatalf("private config formatting changed the public predicate or not the local snapshot: old=%s new=%s err=%v",
 			oldClientFrozen.SnapshotIdentity, clientFrozen.SnapshotIdentity, err)
 	}
 	clientFrozen = oldClientFrozen
@@ -429,7 +431,8 @@ func tosctlObservedSponsorshipResult(t *testing.T, execution agentrelay.RelayExe
 	observations := make([]tosctlPaymentObservation, len(manifest.EvidenceProfile.Members))
 	for index, member := range manifest.EvidenceProfile.Members {
 		observations[index] = tosctlPaymentObservation{Endpoint: member.Endpoint,
-			OperatorProvenance: member.OperatorProvenance, TransactionHash: transactionHash,
+			LocatorIdentityDigest: member.LocatorIdentityDigest,
+			OperatorProvenance:    member.OperatorProvenance, TransactionHash: transactionHash,
 			TransactionLT: 77, TransactionUTime: uint64(sink.Now().Unix()),
 			TransactionBOCDigest:       relayTestDigest("5"),
 			SourceOutboundMessageHash:  "tvm-cell-sha256:" + strings.Repeat("6", 64),

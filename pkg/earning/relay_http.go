@@ -23,9 +23,11 @@ import (
 )
 
 const (
-	defaultRelayHTTPBytes       = 1 << 20
-	minimumRelayHTTPBytes       = 64 << 10
-	maximumRelayHTTPConcurrency = 64
+	defaultRelayHTTPBytes                   = 1 << 20
+	minimumRelayHTTPBytes                   = 64 << 10
+	maximumRelayHTTPConcurrency             = 64
+	maximumRelayHTTPConcurrencyPerPrincipal = 8
+	maximumRelayHTTPActivePrincipals        = 4096
 )
 
 var (
@@ -431,7 +433,48 @@ type RelayProviderHTTPHandler struct {
 	sponsorshipReleasePolicy RelaySponsorshipReleasePolicy
 	routes                   map[string]relayHTTPRoute
 	concurrency              chan struct{}
+	principalConcurrency     *relayPrincipalConcurrencyLimiter
 	principalRate            *relayPrincipalRateLimiter
+}
+
+// relayPrincipalConcurrencyLimiter reserves most of the provider's bounded
+// HTTP slots for other authenticated Agents. It is deliberately separate from
+// quote-rate admission: recovery operations must not consume quote allowance,
+// but a slow authenticated requester must still be unable to occupy every
+// body-reader slot.
+type relayPrincipalConcurrencyLimiter struct {
+	mu       sync.Mutex
+	active   map[string]uint32
+	maximum  uint32
+	maxAgent int
+}
+
+func (limiter *relayPrincipalConcurrencyLimiter) acquire(agentID string) bool {
+	if limiter == nil || agentID == "" || limiter.maximum == 0 || limiter.maxAgent <= 0 {
+		return false
+	}
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	count, found := limiter.active[agentID]
+	if !found && len(limiter.active) >= limiter.maxAgent || count >= limiter.maximum {
+		return false
+	}
+	limiter.active[agentID] = count + 1
+	return true
+}
+
+func (limiter *relayPrincipalConcurrencyLimiter) release(agentID string) {
+	if limiter == nil || agentID == "" {
+		return
+	}
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	count := limiter.active[agentID]
+	if count <= 1 {
+		delete(limiter.active, agentID)
+		return
+	}
+	limiter.active[agentID] = count - 1
 }
 
 type relayPrincipalRateWindow struct {
@@ -484,6 +527,11 @@ func NewRelayProviderHTTPHandler(service *agentrelay.ProviderService,
 	if service == nil || authenticate == nil {
 		return nil, errors.New("relay provider service is unavailable")
 	}
+	if journal, ok := service.Journal.(interface{ BindRelayProviderAuthority(string) error }); ok {
+		if err := journal.BindRelayProviderAuthority(service.Profile.ProviderAgentID); err != nil {
+			return nil, errors.New("relay provider journal authority is unavailable")
+		}
+	}
 	if maximumBytes == 0 {
 		maximumBytes = defaultRelayHTTPBytes
 	}
@@ -523,9 +571,12 @@ func NewRelayProviderHTTPHandler(service *agentrelay.ProviderService,
 	return &RelayProviderHTTPHandler{service: service, authenticate: authenticate, maximum: maximumBytes,
 		assurance: assurance, enabledModes: modeSet, sponsorshipReleasePolicy: policy,
 		routes: routes, concurrency: make(chan struct{}, maximumRelayHTTPConcurrency),
+		principalConcurrency: &relayPrincipalConcurrencyLimiter{active: make(map[string]uint32),
+			maximum: maximumRelayHTTPConcurrencyPerPrincipal, maxAgent: maximumRelayHTTPActivePrincipals},
 		principalRate: &relayPrincipalRateLimiter{entries: make(map[string]relayPrincipalRateWindow),
-			maximum: limits.MaximumQuoteRequestsPerRequesterWindow,
-			window:  time.Duration(limits.QuoteRequestWindowSeconds) * time.Second, maxAgent: 4096}}, nil
+			maximum:  limits.MaximumQuoteRequestsPerRequesterWindow,
+			window:   time.Duration(limits.QuoteRequestWindowSeconds) * time.Second,
+			maxAgent: maximumRelayHTTPActivePrincipals}}, nil
 }
 
 func (handler *RelayProviderHTTPHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -536,6 +587,16 @@ func (handler *RelayProviderHTTPHandler) ServeHTTP(response http.ResponseWriter,
 		http.Error(response, "relay endpoint not found", http.StatusNotFound)
 		return
 	}
+	principal, err := handler.authenticate(request)
+	if err != nil || principal.RequesterAgentID == "" {
+		http.Error(response, "relay client authentication required", http.StatusUnauthorized)
+		return
+	}
+	if !handler.principalConcurrency.acquire(principal.RequesterAgentID) {
+		http.Error(response, "relay requester is at bounded concurrency", http.StatusServiceUnavailable)
+		return
+	}
+	defer handler.principalConcurrency.release(principal.RequesterAgentID)
 	select {
 	case handler.concurrency <- struct{}{}:
 		defer func() { <-handler.concurrency }()
@@ -543,12 +604,8 @@ func (handler *RelayProviderHTTPHandler) ServeHTTP(response http.ResponseWriter,
 		http.Error(response, "relay provider is at bounded concurrency", http.StatusServiceUnavailable)
 		return
 	}
-	principal, err := handler.authenticate(request)
-	if err != nil || principal.RequesterAgentID == "" {
-		http.Error(response, "relay client authentication required", http.StatusUnauthorized)
-		return
-	}
-	if !handler.principalRate.allow(principal.RequesterAgentID, relayServiceNow(handler.service)) {
+	if route.operation == "quote" &&
+		!handler.principalRate.allow(principal.RequesterAgentID, relayServiceNow(handler.service)) {
 		http.Error(response, "relay requester rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}

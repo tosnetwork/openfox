@@ -479,8 +479,19 @@ func TestPersonalRelayAdmissionCapabilityIsBoundToExactCurrentWriter(t *testing.
 	rebasedExecution := oldDraft.Execution
 	rebasedExecution.AuthorizedAction = authorization.AuthorizedAction
 	rebasedExecution.WriterFence = authorization.WriterFence
+	rebasedAttempt := oldDraft
+	rebasedAttempt.Execution = rebasedExecution
+	predecessor := harness.plan.Attempt.Execution.AdmissionReceipt
+	if err := verifyRelayAdmissionReauthorization(authorization, oldDraft, rebasedAttempt, predecessor); err != nil {
+		t.Fatalf("canonical relay reauthorization did not verify: %v", err)
+	}
+	withoutSignaturePrefix := authorization
+	withoutSignaturePrefix.Signature = withoutSignaturePrefix.Signature[len("ed25519:"):]
+	if err := verifyRelayAdmissionReauthorization(withoutSignaturePrefix, oldDraft, rebasedAttempt, predecessor); err == nil {
+		t.Fatal("relay reauthorization accepted a non-canonical signature encoding")
+	}
 	rebasedDescriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(rebasedExecution,
-		rebasedExecution.QuoteRequest.Body.RequesterAgentID, harness.plan.Attempt.Execution.AdmissionReceipt)
+		rebasedExecution.QuoteRequest.Body.RequesterAgentID, predecessor)
 	if err != nil {
 		t.Fatal(err)
 	}

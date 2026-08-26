@@ -3,11 +3,11 @@ package earning
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,6 +22,8 @@ import (
 const (
 	tosQuorumEvidenceProfile                  = "tos://settlement/native-agent-account-quorum/v1"
 	maximumVerifiedSponsorshipObservationRefs = 512
+	maximumTOSCTLCommandOutputBytes           = 1 << 20
+	maximumConcurrentTOSCTLCommands           = 8
 )
 
 var errRelaySponsorshipTypedResolutionRequired = errors.New("relay sponsorship requires typed frozen-snapshot resolution")
@@ -62,6 +64,12 @@ type TOSCTLPaymentSink struct {
 	ResolveInterval                 time.Duration
 	Now                             func() time.Time
 	Run                             func(context.Context, []string, []string) ([]byte, error)
+	executableMu                    sync.Mutex
+	executableIdentity              *tosctlExecutableIdentity
+	executableSnapshot              *os.File
+	executableLaunches              chan struct{}
+	vaultCapabilityPinned           bool
+	vaultCapabilityDigest           [sha256.Size]byte
 	verifiedSponsorshipMu           sync.Mutex
 	verifiedSponsorshipObservations map[string]uint64
 	verifiedSponsorshipTransactions map[string]uint64
@@ -178,6 +186,7 @@ type tosctlQuorum struct {
 
 type tosctlPaymentObservation struct {
 	Endpoint                        string `json:"endpoint"`
+	LocatorIdentityDigest           string `json:"locator_identity_digest"`
 	OperatorProvenance              string `json:"operator_provenance"`
 	TransactionHash                 string `json:"transaction_hash"`
 	TransactionLT                   uint64 `json:"transaction_lt"`
@@ -220,8 +229,9 @@ type tosctlPaymentObservation struct {
 }
 
 type tosctlRelaySponsorshipEvidenceProfileMember struct {
-	Endpoint           string `json:"endpoint"`
-	OperatorProvenance string `json:"operator_provenance"`
+	Endpoint              string `json:"endpoint"`
+	LocatorIdentityDigest string `json:"locator_identity_digest"`
+	OperatorProvenance    string `json:"operator_provenance"`
 }
 
 type tosctlRelaySponsorshipEvidenceProfile struct {
@@ -832,8 +842,20 @@ func (sink *TOSCTLPaymentSink) validate() error {
 		sink.FeeReserveNanoTOS == 0 || len(sink.QuorumConfigPaths) < 2 || sink.maximumTransactions() > 10_000 {
 		return errors.New("TOS custody payment Adapter configuration is invalid")
 	}
+	if err := sink.freezeVaultCapability(); err != nil {
+		return errors.New("TOS custody payment Adapter vault capability is invalid")
+	}
 	if _, err := agentrelay.NetworkDomainDigest(*sink.RelayNetworkDomain); err != nil {
 		return errors.New("TOS custody payment Adapter network domain is invalid")
+	}
+	// Test and embedding callbacks are still output-bounded by run(), but only
+	// the production subprocess path has an executable to enroll. Enrolling at
+	// validation time makes replacement between authority admission and launch
+	// detectable; the launch path reopens and snapshots the same identity.
+	if sink.Run == nil {
+		if err := sink.pinTOSCTLExecutable(); err != nil {
+			return errors.New("TOS custody payment Adapter executable is untrusted")
+		}
 	}
 	seen := map[string]bool{filepath.Clean(sink.ConfigPath): true}
 	for _, path := range sink.QuorumConfigPaths {
@@ -940,22 +962,110 @@ func (sink *TOSCTLPaymentSink) writeAuthorization(authorization commerce.Custody
 }
 
 func (sink *TOSCTLPaymentSink) run(ctx context.Context, args []string) ([]byte, error) {
-	env := os.Environ()
+	if sink == nil || ctx == nil || sink.freezeVaultCapability() != nil {
+		return nil, errors.New("tosctl command capability is invalid")
+	}
+	// Custody does not inherit loader, proxy, HOME, PATH, certificate, cloud or
+	// wallet-selection variables from the long-running Agent. The explicit
+	// vault capability is the only environment input accepted by this adapter.
+	env := []string{}
 	if sink.VaultURL != "" {
 		env = append(env, "VAULT_URL="+sink.VaultURL)
 	}
 	if sink.Run != nil {
-		return sink.Run(ctx, append([]string(nil), args...), env)
+		output, err := sink.Run(ctx, append([]string(nil), args...), env)
+		if err != nil {
+			return nil, errors.New("tosctl command failed")
+		}
+		if len(output) > maximumTOSCTLCommandOutputBytes {
+			return nil, errors.New("tosctl output exceeded its shared byte budget")
+		}
+		// Do not retain a callback-owned backing array whose capacity may be much
+		// larger than the accepted response budget.
+		return append([]byte(nil), output...), nil
 	}
-	command := exec.CommandContext(ctx, sink.Executable, args...)
-	command.Env = env
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	return sink.runPinnedTOSCTL(ctx, args, env)
+}
+
+func (sink *TOSCTLPaymentSink) freezeVaultCapability() error {
+	if sink == nil || len(sink.VaultURL) > 4096 || strings.ContainsAny(sink.VaultURL, "\x00\r\n") {
+		return errors.New("invalid bounded tosctl vault capability")
 	}
-	if stderr.Len() != 0 {
-		return nil, errors.New("tosctl emitted unexpected stderr")
+	digest := sha256.Sum256([]byte(sink.VaultURL))
+	sink.executableMu.Lock()
+	defer sink.executableMu.Unlock()
+	if !sink.vaultCapabilityPinned {
+		sink.vaultCapabilityPinned = true
+		sink.vaultCapabilityDigest = digest
+		return nil
 	}
-	return stdout.Bytes(), nil
+	if sink.vaultCapabilityDigest != digest {
+		return errors.New("tosctl vault capability changed after enrollment")
+	}
+	return nil
+}
+
+// tosctlExecutableIdentity is compared on every launch. Device/inode prevent a
+// rename substitution and the canonical SHA-256 digest detects in-place byte
+// changes even when a file happens to retain its metadata.
+type tosctlExecutableIdentity struct {
+	device uint64
+	inode  uint64
+	size   int64
+	digest [32]byte
+}
+
+// tosctlSharedOutput enforces one aggregate budget across stdout and stderr.
+// Stderr is deliberately not retained: custody tools may include sensitive
+// paths or backend details in diagnostics, and callers receive only bounded,
+// stable error categories.
+type tosctlSharedOutput struct {
+	mu         sync.Mutex
+	stdout     bytes.Buffer
+	total      int
+	exceeded   bool
+	stderrSeen bool
+}
+
+type tosctlOutputWriter struct {
+	output *tosctlSharedOutput
+	stderr bool
+}
+
+func (writer tosctlOutputWriter) Write(value []byte) (int, error) {
+	if writer.output == nil {
+		return 0, errors.New("tosctl output sink is unavailable")
+	}
+	writer.output.mu.Lock()
+	defer writer.output.mu.Unlock()
+	if writer.stderr {
+		writer.output.stderrSeen = writer.output.stderrSeen || len(value) != 0
+	}
+	remaining := maximumTOSCTLCommandOutputBytes - writer.output.total
+	if remaining <= 0 {
+		writer.output.exceeded = true
+		return 0, errors.New("tosctl output exceeded limit")
+	}
+	accepted := len(value)
+	if accepted > remaining {
+		accepted = remaining
+		writer.output.exceeded = true
+	}
+	if !writer.stderr && accepted != 0 {
+		_, _ = writer.output.stdout.Write(value[:accepted])
+	}
+	writer.output.total += accepted
+	if accepted != len(value) {
+		return accepted, errors.New("tosctl output exceeded limit")
+	}
+	return accepted, nil
+}
+
+func (output *tosctlSharedOutput) result() ([]byte, bool, bool) {
+	if output == nil {
+		return nil, false, false
+	}
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	return append([]byte(nil), output.stdout.Bytes()...), output.stderrSeen, output.exceeded
 }

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -307,6 +308,107 @@ func TestRelayPrincipalRateLimiterIsBoundedPerAgent(t *testing.T) {
 	}
 	if !limiter.allow("agent:two", now.Add(time.Minute)) {
 		t.Fatal("expired principal window was not safely reclaimed")
+	}
+}
+
+type relayContextBlockingBody struct {
+	ctx     context.Context
+	started chan<- struct{}
+	once    sync.Once
+}
+
+func (body *relayContextBlockingBody) Read([]byte) (int, error) {
+	body.once.Do(func() { body.started <- struct{}{} })
+	<-body.ctx.Done()
+	return 0, body.ctx.Err()
+}
+
+func (*relayContextBlockingBody) Close() error { return nil }
+
+func TestRelayProviderPrincipalFairnessAndCancellationRelease(t *testing.T) {
+	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
+	service := fixture.service(agentrelay.NewMemoryJournal(), &relayTestBroadcaster{})
+	handler, err := NewRelayProviderHTTPHandler(service, func(request *http.Request) (RelayHTTPPrincipal, error) {
+		agentID := request.Header.Get("X-Relay-Agent")
+		if agentID == "" {
+			return RelayHTTPPrincipal{}, errors.New("missing Agent identity")
+		}
+		return RelayHTTPPrincipal{RequesterAgentID: agentID,
+			CertificateSPKIDigest: relayTestDigest("a")}, nil
+	}, defaultRelayHTTPBytes, agentrelay.AssuranceAutonomousDecentralized, service.Profile.SupportedModes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockedContext, cancel := context.WithCancel(t.Context())
+	started := make(chan struct{}, maximumRelayHTTPConcurrencyPerPrincipal)
+	done := make(chan struct{}, maximumRelayHTTPConcurrencyPerPrincipal)
+	for index := 0; index < maximumRelayHTTPConcurrencyPerPrincipal; index++ {
+		request := httptest.NewRequest(http.MethodPost, fixture.profile.Endpoints.ResolveURL,
+			&relayContextBlockingBody{ctx: blockedContext, started: started}).WithContext(blockedContext)
+		request.Header.Set("X-Relay-Agent", "agent:slow")
+		request.Header.Set("Content-Type", agentrelay.ResolveCallContentType)
+		request.Header.Set("Accept", agentrelay.ResolveResultContentType)
+		go func() {
+			handler.ServeHTTP(httptest.NewRecorder(), request)
+			done <- struct{}{}
+		}()
+	}
+	for index := 0; index < maximumRelayHTTPConcurrencyPerPrincipal; index++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("slow authenticated request did not occupy its principal slot")
+		}
+	}
+
+	// The same principal has reached its local ceiling without consuming the
+	// provider-wide reserve required for an unrelated Agent.
+	extra := httptest.NewRequest(http.MethodPost, fixture.profile.Endpoints.ResolveURL, bytes.NewReader([]byte{0xa0}))
+	extra.Header.Set("X-Relay-Agent", "agent:slow")
+	extra.Header.Set("Content-Type", agentrelay.ResolveCallContentType)
+	extra.Header.Set("Accept", agentrelay.ResolveResultContentType)
+	extraResponse := httptest.NewRecorder()
+	handler.ServeHTTP(extraResponse, extra)
+	if extraResponse.Code != http.StatusServiceUnavailable {
+		t.Fatalf("principal concurrency ceiling was not enforced: status=%d", extraResponse.Code)
+	}
+
+	signed, err := agentrelay.SignRelayQuoteRequest(fixture.prepared.QuoteBody, fixture.clientKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoteRaw, err := codec.Marshal(agentrelay.QuoteCall{Request: signed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote := httptest.NewRequest(http.MethodPost, fixture.profile.Endpoints.QuoteURL, bytes.NewReader(quoteRaw))
+	quote.Header.Set("X-Relay-Agent", "agent:client")
+	quote.Header.Set("Content-Type", agentrelay.QuoteCallContentType)
+	quote.Header.Set("Accept", agentrelay.QuoteResultContentType)
+	quoteResponse := httptest.NewRecorder()
+	handler.ServeHTTP(quoteResponse, quote)
+	if quoteResponse.Code != http.StatusOK {
+		t.Fatalf("slow principal starved an unrelated Agent: status=%d body=%s",
+			quoteResponse.Code, quoteResponse.Body.String())
+	}
+
+	cancel()
+	for index := 0; index < maximumRelayHTTPConcurrencyPerPrincipal; index++ {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("cancelled request did not release its principal slot")
+		}
+	}
+	released := httptest.NewRequest(http.MethodPost, fixture.profile.Endpoints.ResolveURL, bytes.NewReader([]byte{0xa0}))
+	released.Header.Set("X-Relay-Agent", "agent:slow")
+	released.Header.Set("Content-Type", agentrelay.ResolveCallContentType)
+	released.Header.Set("Accept", agentrelay.ResolveResultContentType)
+	releasedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(releasedResponse, released)
+	if releasedResponse.Code == http.StatusServiceUnavailable {
+		t.Fatal("cancelled request leaked its per-principal concurrency reservation")
 	}
 }
 

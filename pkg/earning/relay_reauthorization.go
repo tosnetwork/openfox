@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"reflect"
-	"strings"
 	"time"
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
@@ -90,7 +89,7 @@ type PersonalRelaySideEffectAuthority struct {
 }
 
 func (bound *PersonalRelaySideEffectAuthority) HasLinearizableRelayAdmission() bool {
-	return bound != nil && bound.authority != nil
+	return bound != nil && bound.authority != nil && bound.authority.storageIdentityAttached()
 }
 
 // A locked local file gives one-host linearization but can be restored from an
@@ -109,6 +108,9 @@ func (authority *PersonalAuthority) BindRelaySideEffectAuthority(
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return nil, err
+	}
 	if authority.doc.CurrentFence == nil {
 		return nil, errors.New("relay admission authority has no current writer")
 	}
@@ -189,6 +191,9 @@ func (authority *PersonalAuthority) reauthorizeUnlinearizedRelayAdmissionForCapa
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return relayAdmissionReauthorization{}, err
+	}
 	now := authority.now().UTC()
 	if authority.doc.CurrentFence == nil || descriptor.OwnerID != authority.doc.OwnerID ||
 		descriptor.AgentID != authority.doc.AgentID || descriptor.WriterFence.Body.AuthorityID != authority.doc.AuthorityID ||
@@ -438,12 +443,20 @@ func verifyRelayAdmissionReauthorization(authorization relayAdmissionReauthoriza
 		authorization.PublicKey != oldExecution.WriterFence.PublicKey || authorization.PublicKey != newExecution.WriterFence.PublicKey {
 		return errors.New("relay admission reauthorization changes the exact execution")
 	}
-	publicRaw, err := hex.DecodeString(strings.TrimPrefix(authorization.PublicKey, "ed25519:"))
-	signatureRaw, signatureErr := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(authorization.Signature, "ed25519:"))
+	const keyPrefix = "ed25519:"
+	if len(authorization.PublicKey) <= len(keyPrefix) || authorization.PublicKey[:len(keyPrefix)] != keyPrefix ||
+		len(authorization.Signature) <= len(keyPrefix) || authorization.Signature[:len(keyPrefix)] != keyPrefix {
+		return errors.New("relay admission reauthorization signature is invalid")
+	}
+	publicRaw, err := hex.DecodeString(authorization.PublicKey[len(keyPrefix):])
+	signatureRaw, signatureErr := base64.RawURLEncoding.DecodeString(authorization.Signature[len(keyPrefix):])
 	canonical, canonicalErr := codec.Marshal(body)
 	if err != nil || signatureErr != nil || canonicalErr != nil || len(publicRaw) != ed25519.PublicKeySize ||
-		len(signatureRaw) != ed25519.SignatureSize || !ed25519.Verify(ed25519.PublicKey(publicRaw),
-		relayAdmissionReauthorizationMessage(canonical), signatureRaw) {
+		len(signatureRaw) != ed25519.SignatureSize ||
+		authorization.PublicKey != keyPrefix+hex.EncodeToString(publicRaw) ||
+		authorization.Signature != keyPrefix+base64.RawURLEncoding.EncodeToString(signatureRaw) ||
+		!ed25519.Verify(ed25519.PublicKey(publicRaw),
+			relayAdmissionReauthorizationMessage(canonical), signatureRaw) {
 		return errors.New("relay admission reauthorization signature is invalid")
 	}
 	return nil

@@ -149,6 +149,10 @@ func OpenRelayProviderHTTPRuntime(service *agentrelay.ProviderService,
 	if err != nil {
 		return nil, err
 	}
+	if err := journal.BindRelayProviderAuthority(service.Profile.ProviderAgentID); err != nil {
+		_ = journal.Close()
+		return nil, err
+	}
 	fail := func(cause error) (*RelayProviderHTTPRuntime, error) {
 		_ = journal.Close()
 		return nil, cause

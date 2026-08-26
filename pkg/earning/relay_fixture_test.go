@@ -306,8 +306,8 @@ func (source relayTestEvidenceSource) Evidence(_ context.Context,
 		ObservedAtUnix: uint64(source.now.Unix())}
 	if profile := request.ProviderQuote.Body.RelayFinalityProfile; profile != nil {
 		evidence.RelayTerminalEvidenceClass = profile.TerminalEvidenceClass
-		evidence.RelayValidatorAuthenticatedPortableProof =
-			profile.TerminalEvidenceClass == agentrelay.RelayTerminalValidatorFinality
+		setRelayPortableProof(&evidence,
+			profile.TerminalEvidenceClass == agentrelay.RelayTerminalValidatorFinality)
 		evidence.RelayFinalizedCheckpointID = "checkpoint:test"
 		evidence.RelayFinalizedCheckpointSequence = 100
 		evidence.RelayFinalizedCheckpointUnix = uint64(source.now.Unix())
@@ -326,6 +326,22 @@ func (source relayTestEvidenceSource) Evidence(_ context.Context,
 		evidence.SponsorshipTransactionEvidence = record.SponsorshipTransactionEvidence
 	}
 	return evidence, nil
+}
+
+func setRelayPortableProof(body *agentrelay.RelayFinalityEvidenceBody, value bool) {
+	field := reflect.ValueOf(body).Elem().FieldByName("RelayValidatorAuthenticatedPortableProof")
+	if !field.IsValid() || !field.CanSet() {
+		panic("relay portable-proof field is unavailable")
+	}
+	if field.Kind() == reflect.Pointer {
+		copy := value
+		field.Set(reflect.ValueOf(&copy))
+		return
+	}
+	if field.Kind() != reflect.Bool {
+		panic("relay portable-proof field has an unsupported Go representation")
+	}
+	field.SetBool(value)
 }
 
 type relayTestFinalityVerifier struct {
@@ -594,11 +610,19 @@ func (fixture *relayTestFixture) takeoverFence(t *testing.T) commerce.WriterFenc
 
 func (fixture *relayTestFixture) service(journal agentrelay.Journal,
 	broadcaster agentrelay.ExactTransactionBroadcaster) *agentrelay.ProviderService {
-	return &agentrelay.ProviderService{Profile: fixture.profile, SigningKey: fixture.providerKey,
+	service := &agentrelay.ProviderService{Profile: fixture.profile, SigningKey: fixture.providerKey,
 		AgentResolver: fixture.resolver, FenceResolver: fixture.resolver, Inspector: fixture.inspector,
 		ActionBinder: fixture.binder, AgreementVerifier: commerce.AgentSignatureEvidenceVerifier{Resolver: fixture.resolver},
 		QuotePolicy: relayTestQuotePolicy{fee: "3", intent: fixture.verified.IntentDigest()}, Journal: journal,
 		Broadcaster: broadcaster, EvidenceSource: relayTestEvidenceSource{now: fixture.now}, Now: func() time.Time { return fixture.now }}
+	// Presence on the fixed protocol branch is mandatory. Reflection keeps this
+	// test fixture compilable against the immediately preceding reviewed module
+	// commit until dependency-order landing publishes the new field.
+	field := reflect.ValueOf(service).Elem().FieldByName("AdmissionAuthority")
+	if field.IsValid() && field.CanSet() {
+		field.Set(reflect.ValueOf(fixture.admission))
+	}
+	return service
 }
 
 func (fixture *relayTestFixture) agreementAuthorizer(t *testing.T) RelayAgreementAuthorizer {

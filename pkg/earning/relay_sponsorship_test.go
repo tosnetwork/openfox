@@ -639,8 +639,13 @@ func TestTOSCTLRelaySponsorshipRequiresFullNetworkDomainCustodyPreflight(t *test
 
 func relaySponsorshipFixture(t *testing.T, fixture *relayTestFixture) (agentrelay.RelayExecutionRequest,
 	commerce.AgentAgreement, commerce.AgreementObligation) {
+	return relaySponsorshipFixtureForMode(t, fixture, agentrelay.ModeSponsorAndRelay)
+}
+
+func relaySponsorshipFixtureForMode(t *testing.T, fixture *relayTestFixture, mode agentrelay.Mode) (
+	agentrelay.RelayExecutionRequest, commerce.AgentAgreement, commerce.AgreementObligation) {
 	t.Helper()
-	fixture.enableSponsorship(t, agentrelay.ModeSponsorAndRelay)
+	fixture.enableSponsorship(t, mode)
 	attempt := fixture.attempt(t)
 	execution, agreement := attempt.Execution, attempt.Agreement
 	var obligation commerce.AgreementObligation

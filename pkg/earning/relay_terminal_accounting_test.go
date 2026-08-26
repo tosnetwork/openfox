@@ -6,12 +6,171 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 )
+
+func TestRelayTerminalAccountingReconcilesCommittedWriteErrorAndRetry(t *testing.T) {
+	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
+	fixture.prepared.QuoteBody.AssuranceLevel = agentrelay.AssuranceAuthorizedSingleProvider
+	attempt := fixture.attempt(t)
+	resolution, evidence := relayTerminalAbsent(t, fixture, attempt.Execution)
+	result := RelayExecutionResult{Resolution: resolution, Evidence: &evidence}
+	executionDigest, err := agentrelay.RelayExecutionRequestDigest(attempt.Execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolutionDigest, err := agentrelay.RelayResolutionDigest(resolution.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceDigest, err := agentrelay.RelayFinalityEvidenceDigest(evidence.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := RelayTerminalHandoffReference{
+		StableActionID:       fixture.prepared.UnderlyingAction.StableActionID,
+		ExactRequestDigest:   fixture.prepared.UnderlyingAction.ExactRequestDigest,
+		RelayExecutionDigest: executionDigest, ProviderAgentID: fixture.profile.ProviderAgentID,
+		RouteGeneration: 1, ProtectedArtifactDigest: relayTestDigest("d"),
+		TerminalResolutionDigest: resolutionDigest, TerminalEvidenceDigest: evidenceDigest,
+	}
+	directory := filepath.Join(t.TempDir(), "accounting")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := OpenDurableRelayTerminalAccountingJournal(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+
+	injected := errors.New("injected error after committed record write")
+	journal.recordWrite = func(path string, raw []byte) error {
+		if err := journal.writeAtomic(path, raw); err != nil {
+			return err
+		}
+		return injected
+	}
+	if _, err := journal.CommitRelayTerminalHandoff(t.Context(), reference, attempt, result,
+		fixture.now.Add(time.Second)); !errors.Is(err, injected) {
+		t.Fatalf("committed-but-ambiguous record write returned the wrong error: %v", err)
+	}
+	path, err := journal.recordPath(reference.StableActionID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("ambiguous write did not actually commit its record: %v", err)
+	}
+	if journal.recordCount != 1 || journal.recordBytes != info.Size() {
+		t.Fatalf("write-error reconciliation undercounted committed record: count=%d bytes=%d want=1/%d",
+			journal.recordCount, journal.recordBytes, info.Size())
+	}
+
+	// Simulate the historical stale-counter state and prove that the existing-
+	// record retry repairs it before returning the stable receipt.
+	journal.recordWrite = nil
+	journal.recordCount, journal.recordBytes = 0, 0
+	receipt, err := journal.CommitRelayTerminalHandoff(t.Context(), reference, attempt, result,
+		fixture.now.Add(time.Hour))
+	if err != nil || receipt.ReceiptDigest == "" {
+		t.Fatalf("idempotent accounting retry did not recover the committed record: receipt=%+v err=%v",
+			receipt, err)
+	}
+	if journal.recordCount != 1 || journal.recordBytes != info.Size() {
+		t.Fatalf("existing-record retry did not reconcile counters: count=%d bytes=%d want=1/%d",
+			journal.recordCount, journal.recordBytes, info.Size())
+	}
+}
+
+func TestRelayTerminalAccountingJournalFailsClosedAfterDirectoryReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not permit renaming this open directory")
+	}
+	directory := filepath.Join(t.TempDir(), "accounting")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := OpenDurableRelayTerminalAccountingJournal(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := directory + "-moved"
+	if err := os.Rename(directory, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if replacement, err := OpenDurableRelayTerminalAccountingJournal(directory); err == nil {
+		_ = replacement.Close()
+		t.Fatal("replacement directory created a concurrent logical accounting authority")
+	}
+	if err := journal.persistHighWater(2); err == nil {
+		t.Fatal("replaced terminal accounting directory did not fail closed")
+	}
+	if _, err := os.Lstat(filepath.Join(directory, relayTerminalAccountingHighWaterFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement accounting directory received high-water state: %v", err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRelayTerminalAccountingJournalPinsRecordDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not permit renaming this open directory")
+	}
+	directory := filepath.Join(t.TempDir(), "accounting")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := OpenDurableRelayTerminalAccountingJournal(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := journal.recordDirectory
+	moved := original + "-moved"
+	if err := os.Rename(original, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(original, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.recordPath(relayTestDigest("a"), true); err == nil {
+		t.Fatal("replaced terminal accounting registry did not fail closed")
+	}
+	entries, err := os.ReadDir(original)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("replacement accounting registry received state: entries=%d err=%v", len(entries), err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRelayTerminalAccountingOwnerDomainCannotSplitAcrossDirectories(t *testing.T) {
+	first := &DurableRelayTerminalAccountingJournal{}
+	second := &DurableRelayTerminalAccountingJournal{}
+	if err := first.bindOwnerDomain("owner:test", "agent:test"); err != nil {
+		t.Fatal(err)
+	}
+	defer first.closeOwnerDomain()
+	if err := second.bindOwnerDomain("owner:test", "agent:test"); err == nil {
+		second.closeOwnerDomain()
+		t.Fatal("same owner and Agent acquired two terminal accounting authority domains")
+	}
+	if err := second.bindOwnerDomain("owner:test", "agent:other"); err != nil {
+		t.Fatalf("independent owner/Agent accounting domain was rejected: %v", err)
+	}
+	second.closeOwnerDomain()
+}
 
 func TestRelayTerminalAccountingCommitAndHandoffAreCrashIdempotent(t *testing.T) {
 	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")

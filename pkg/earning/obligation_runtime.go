@@ -146,6 +146,9 @@ func (authority *PersonalAuthority) transitionObligation(agreementDigest, obliga
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return EngagementRecord{}, err
+	}
 	record, found := authority.doc.Engagements[agreementDigest]
 	if !found {
 		return EngagementRecord{}, errors.New("obligation runtime has no Agreement")
@@ -312,6 +315,9 @@ func (authority *PersonalAuthority) completeNoPaymentEngagement(agreementDigest,
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return EngagementRecord{}, err
+	}
 	record, found := authority.doc.Engagements[agreementDigest]
 	if !found || hasValueObligation(record) || !allNonValueObligationsDelivered(record) {
 		return EngagementRecord{}, errors.New("engagement is not complete")

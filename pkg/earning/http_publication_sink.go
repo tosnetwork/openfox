@@ -244,10 +244,77 @@ func readBoundedResponse(response *http.Response, expectedStatus, limit int) ([]
 }
 
 func decodeStrictJSON(raw []byte, output any) error {
+	if err := rejectDuplicateJSONKeys(raw); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil {
 		return err
 	}
 	return ensureJSONEOF(decoder)
+}
+
+func rejectDuplicateJSONKeys(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var walk func() error
+	walk = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delimiter, composite := token.(json.Delim)
+		if !composite {
+			return nil
+		}
+		switch delimiter {
+		case '{':
+			seen := make(map[string]struct{})
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return errors.New("JSON object key is invalid")
+				}
+				if _, duplicate := seen[key]; duplicate {
+					return errors.New("JSON object contains a duplicate key")
+				}
+				seen[key] = struct{}{}
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			closing, err := decoder.Token()
+			if err != nil || closing != json.Delim('}') {
+				return errors.New("JSON object is not closed")
+			}
+		case '[':
+			for decoder.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			closing, err := decoder.Token()
+			if err != nil || closing != json.Delim(']') {
+				return errors.New("JSON array is not closed")
+			}
+		default:
+			return errors.New("JSON contains an unexpected delimiter")
+		}
+		return nil
+	}
+	if err := walk(); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("JSON contains trailing data")
+		}
+		return err
+	}
+	return nil
 }

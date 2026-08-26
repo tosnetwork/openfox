@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,6 +24,7 @@ import (
 
 const (
 	tosctlSponsorshipProfileDomain     = "tosctl.agreement-payment-rpc-corroboration-profile.v1\x00"
+	tosctlRPCLocatorIdentityDomain     = "tosctl.agreement-payment-rpc-locator-identity.v1\x00"
 	tosctlSponsorshipObservationDomain = "tosctl.agreement-payment-rpc-observation.v1\x00"
 	tosctlSponsorshipSnapshotDomain    = "tosctl.agreement-payment-rpc-corroboration-snapshot.v1\x00"
 	tosctlMaximumConfigBytes           = 4 << 20
@@ -34,7 +37,7 @@ type tosctlRelaySponsorshipCapability struct {
 	EvidenceProfileURI            string                                `json:"evidence_profile_uri"`
 	EvidenceProfileDigest         string                                `json:"evidence_profile_digest"`
 	EvidenceProfile               tosctlRelaySponsorshipEvidenceProfile `json:"evidence_profile"`
-	CorroborationSnapshot         string                                `json:"corroboration_snapshot"`
+	CorroborationSnapshotHandle   string                                `json:"corroboration_snapshot_handle"`
 	CorroborationSnapshotIdentity string                                `json:"corroboration_snapshot_identity"`
 	NetworkDomain                 agentrelay.NetworkDomain              `json:"network_domain"`
 	MaximumHistoryTransactions    uint32                                `json:"maximum_history_transactions"`
@@ -54,15 +57,17 @@ type tosctlRelaySponsorshipSnapshot struct {
 }
 
 type tosctlRelaySponsorshipSnapshotMember struct {
-	ConfigPath          string `json:"config_path"`
-	ConfigContentDigest string `json:"config_content_digest"`
-	Endpoint            string `json:"endpoint"`
-	OperatorProvenance  string `json:"operator_provenance"`
+	ConfigPath            string `json:"config_path"`
+	ConfigContentDigest   string `json:"config_content_digest"`
+	Endpoint              string `json:"endpoint"`
+	LocatorIdentityDigest string `json:"locator_identity_digest"`
+	OperatorProvenance    string `json:"operator_provenance"`
 }
 
 type tosctlRelaySponsorshipSnapshotManifest struct {
 	Schema                     string                                 `json:"schema"`
 	SnapshotIdentity           string                                 `json:"snapshot_identity"`
+	SnapshotNonce              string                                 `json:"snapshot_nonce"`
 	EvidenceProfileURI         string                                 `json:"evidence_profile_uri"`
 	EvidenceProfileDigest      string                                 `json:"evidence_profile_digest"`
 	NetworkDomain              agentrelay.NetworkDomain               `json:"network_domain"`
@@ -119,13 +124,18 @@ func (sink *TOSCTLPaymentSink) ensureCurrentRelaySponsorshipSnapshot() (tosctlRe
 		capability.MemberCount != uint32(len(capability.EvidenceProfile.Members)) || capability.SideEffect {
 		return tosctlRelaySponsorshipSnapshot{}, errors.New("tosctl corroboration preflight conflicts with owner configuration")
 	}
+	manifestPath, handleErr := resolveTOSCTLCorroborationSnapshotHandle(directory,
+		capability.CorroborationSnapshotHandle, capability.CorroborationSnapshotIdentity)
+	if handleErr != nil {
+		return tosctlRelaySponsorshipSnapshot{}, errors.New("tosctl corroboration preflight returned an invalid snapshot handle")
+	}
 	snapshot := tosctlRelaySponsorshipSnapshot{policy: policy,
 		maximumTransactions: capability.MaximumHistoryTransactions,
 		registryRoot:        directory,
 		custodyWallet:       sink.Wallet,
 		providerSource:      sink.SourceAccount,
 		feeReserveNanoTOS:   sink.FeeReserveNanoTOS,
-		manifestPath:        capability.CorroborationSnapshot,
+		manifestPath:        manifestPath,
 		identity:            capability.CorroborationSnapshotIdentity}
 	if err := sink.validateRelaySponsorshipSnapshot(snapshot); err != nil {
 		return tosctlRelaySponsorshipSnapshot{}, err
@@ -143,6 +153,11 @@ func (sink *TOSCTLPaymentSink) validateRelaySponsorshipSnapshot(snapshot tosctlR
 		return errors.New("tosctl corroboration snapshot identity is invalid")
 	}
 	root := snapshot.registryRoot
+	expectedHandle := "corroboration-" + strings.TrimPrefix(snapshot.identity, "sha256:") + "/manifest.json"
+	expectedPath, expectedErr := resolveTOSCTLCorroborationSnapshotHandle(root, expectedHandle, snapshot.identity)
+	if expectedErr != nil || snapshot.manifestPath != expectedPath {
+		return errors.New("tosctl corroboration snapshot path does not match its identity")
+	}
 	directory := filepath.Dir(snapshot.manifestPath)
 	relative, err := filepath.Rel(root, directory)
 	if err != nil || relative == "." || strings.HasPrefix(relative, "..") || strings.Contains(relative, string(os.PathSeparator)) ||
@@ -150,7 +165,20 @@ func (sink *TOSCTLPaymentSink) validateRelaySponsorshipSnapshot(snapshot tosctlR
 		validateRelayJournalDirectorySecurity(directory) != nil {
 		return errors.New("tosctl corroboration snapshot escaped its owner-private registry")
 	}
-	raw, err := readBoundedRegularFile(snapshot.manifestPath, 1<<20, true)
+	rootHandle, err := openRelayPinnedDirectory(root)
+	if err != nil {
+		return errors.New("open tosctl corroboration snapshot registry")
+	}
+	defer rootHandle.close()
+	directoryHandle, err := openRelayPinnedDirectory(directory)
+	if err != nil || rootHandle.ensureChild(relative, directoryHandle) != nil {
+		if directoryHandle != nil {
+			_ = directoryHandle.close()
+		}
+		return errors.New("pin tosctl corroboration snapshot directory")
+	}
+	defer directoryHandle.close()
+	raw, err := readBoundedPinnedFile(directoryHandle, "manifest.json", 1<<20)
 	if err != nil {
 		return errors.New("read tosctl corroboration snapshot manifest")
 	}
@@ -158,6 +186,7 @@ func (sink *TOSCTLPaymentSink) validateRelaySponsorshipSnapshot(snapshot tosctlR
 	if decodeStrictJSON(raw, &manifest) != nil ||
 		manifest.Schema != "tosctl.agent-account.agreement-payment-rpc-corroboration-snapshot.v1" ||
 		manifest.SnapshotIdentity != snapshot.identity || manifest.EvidenceProfileURI != snapshot.policy.ProfileURI ||
+		!validTOSCTLSnapshotNonce(manifest.SnapshotNonce) ||
 		manifest.EvidenceProfileDigest != snapshot.policy.ProfileDigest ||
 		manifest.MaximumHistoryTransactions != snapshot.maximumTransactions || len(manifest.Members) < 3 ||
 		manifest.EvidenceProfile.ProfileURI != snapshot.policy.ProfileURI ||
@@ -176,21 +205,27 @@ func (sink *TOSCTLPaymentSink) validateRelaySponsorshipSnapshot(snapshot tosctlR
 	contentDigests := make([]string, 0, len(manifest.Members))
 	profileMembers := make(map[string]bool, len(manifest.EvidenceProfile.Members))
 	for _, member := range manifest.EvidenceProfile.Members {
-		profileMembers[member.Endpoint+"\x00"+member.OperatorProvenance] = true
+		profileMembers[tosctlSponsorshipMemberKey(member.Endpoint, member.LocatorIdentityDigest,
+			member.OperatorProvenance)] = true
 	}
 	seen := map[string]bool{}
 	for _, member := range manifest.Members {
-		if !filepath.IsAbs(member.ConfigPath) || filepath.Dir(member.ConfigPath) != directory ||
-			!validSHA256Digest(member.ConfigContentDigest) || !validSHA256Digest(member.OperatorProvenance) ||
-			!profileMembers[member.Endpoint+"\x00"+member.OperatorProvenance] ||
-			seen[member.Endpoint+"\x00"+member.OperatorProvenance] {
+		memberKey := tosctlSponsorshipMemberKey(member.Endpoint, member.LocatorIdentityDigest,
+			member.OperatorProvenance)
+		if !validTOSCTLSnapshotMemberBasename(member.ConfigPath) ||
+			!validSHA256Digest(member.ConfigContentDigest) || !validSHA256Digest(member.LocatorIdentityDigest) ||
+			!validSHA256Digest(member.OperatorProvenance) ||
+			!profileMembers[memberKey] || seen[memberKey] {
 			return errors.New("tosctl corroboration snapshot member is not in the frozen profile")
 		}
-		memberRaw, readErr := readBoundedRegularFile(member.ConfigPath, tosctlMaximumConfigBytes, true)
-		if readErr != nil || sha256Digest(memberRaw) != member.ConfigContentDigest {
+		memberRaw, readErr := readBoundedPinnedFile(directoryHandle, member.ConfigPath, tosctlMaximumConfigBytes)
+		endpoint, locatorDigest, contentDigest, operator, deriveErr := tosctlRPCProfileMember(memberRaw)
+		if readErr != nil || deriveErr != nil || endpoint != member.Endpoint ||
+			locatorDigest != member.LocatorIdentityDigest || contentDigest != member.ConfigContentDigest ||
+			operator != member.OperatorProvenance {
 			return errors.New("tosctl corroboration snapshot member bytes changed")
 		}
-		seen[member.Endpoint+"\x00"+member.OperatorProvenance] = true
+		seen[memberKey] = true
 		contentDigests = append(contentDigests, member.ConfigContentDigest)
 	}
 	if len(seen) != len(profileMembers) {
@@ -198,11 +233,82 @@ func (sink *TOSCTLPaymentSink) validateRelaySponsorshipSnapshot(snapshot tosctlR
 	}
 	identity, err := tosctlRustFramedDigest(tosctlSponsorshipSnapshotDomain,
 		map[string]any{"evidence_profile_digest": manifest.EvidenceProfileDigest,
-			"config_content_digests": contentDigests})
+			"config_content_digests": contentDigests, "snapshot_nonce": manifest.SnapshotNonce})
 	if err != nil || identity != snapshot.identity {
 		return errors.New("tosctl corroboration snapshot identity cannot be reproduced")
 	}
 	return nil
+}
+
+func resolveTOSCTLCorroborationSnapshotHandle(registryRoot, handle, identity string) (string, error) {
+	if !filepath.IsAbs(registryRoot) || filepath.Clean(registryRoot) != registryRoot ||
+		!validSHA256Digest(identity) || strings.Contains(handle, "\\") {
+		return "", errors.New("tosctl corroboration snapshot handle is invalid")
+	}
+	directory := "corroboration-" + strings.TrimPrefix(identity, "sha256:")
+	expected := path.Join(directory, "manifest.json")
+	if handle != expected || path.Clean(handle) != handle {
+		return "", errors.New("tosctl corroboration snapshot handle is invalid")
+	}
+	return filepath.Join(registryRoot, filepath.FromSlash(handle)), nil
+}
+
+func validTOSCTLSnapshotMemberBasename(value string) bool {
+	return value != "" && len(value) <= 128 && value != "." && value != ".." &&
+		filepath.IsLocal(value) && filepath.Base(value) == value &&
+		!strings.ContainsAny(value, `/\\`)
+}
+
+func validTOSCTLSnapshotNonce(value string) bool {
+	if len(value) != 64 || value != strings.ToLower(value) {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32
+}
+
+func readBoundedPinnedFile(directory *relayPinnedDirectory, name string, maximum int64) ([]byte, error) {
+	file, err := directory.openFile(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.Size() <= 0 || info.Size() > maximum {
+		return nil, errors.New("rooted snapshot file is not bounded")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	if err != nil || len(raw) == 0 || int64(len(raw)) > maximum || directory.ensureAttached() != nil {
+		return nil, errors.New("read rooted bounded snapshot file")
+	}
+	return raw, nil
+}
+
+func readPinnedTOSCTLSnapshotManifest(snapshot tosctlRelaySponsorshipSnapshot) ([]byte, error) {
+	if !validSHA256Digest(snapshot.identity) {
+		return nil, errors.New("tosctl corroboration snapshot identity is invalid")
+	}
+	handle := "corroboration-" + strings.TrimPrefix(snapshot.identity, "sha256:") + "/manifest.json"
+	expected, err := resolveTOSCTLCorroborationSnapshotHandle(snapshot.registryRoot, handle, snapshot.identity)
+	if err != nil || expected != snapshot.manifestPath {
+		return nil, errors.New("tosctl corroboration snapshot handle is inconsistent")
+	}
+	directory := filepath.Dir(expected)
+	child := filepath.Base(directory)
+	rootHandle, err := openRelayPinnedDirectory(snapshot.registryRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer rootHandle.close()
+	directoryHandle, err := openRelayPinnedDirectory(directory)
+	if err != nil {
+		return nil, err
+	}
+	defer directoryHandle.close()
+	if err := rootHandle.ensureChild(child, directoryHandle); err != nil {
+		return nil, err
+	}
+	return readBoundedPinnedFile(directoryHandle, "manifest.json", 1<<20)
 }
 
 func (snapshot tosctlRelaySponsorshipSnapshot) frozenProvider() RelaySponsorshipEvidenceSnapshot {
@@ -245,7 +351,7 @@ func (sink *TOSCTLPaymentSink) relaySponsorshipSnapshotNetwork(
 	if err := sink.ValidateRelaySponsorshipEvidenceSnapshot(profile, frozen); err != nil {
 		return agentrelay.NetworkDomain{}, err
 	}
-	raw, err := readBoundedRegularFile(frozen.SnapshotPath, 1<<20, true)
+	raw, err := readPinnedTOSCTLSnapshotManifest(relayTOSCTLSponsorshipSnapshot(profile, frozen))
 	if err != nil {
 		return agentrelay.NetworkDomain{}, errors.New("read frozen corroboration snapshot network")
 	}
@@ -268,7 +374,7 @@ func (sink *TOSCTLPaymentSink) relaySponsorshipSnapshotPrimaryConfig(
 	if err := sink.validateRelaySponsorshipSnapshot(snapshot); err != nil {
 		return "", err
 	}
-	raw, err := readBoundedRegularFile(snapshot.manifestPath, 1<<20, true)
+	raw, err := readPinnedTOSCTLSnapshotManifest(snapshot)
 	if err != nil {
 		return "", err
 	}
@@ -276,7 +382,10 @@ func (sink *TOSCTLPaymentSink) relaySponsorshipSnapshotPrimaryConfig(
 	if decodeStrictJSON(raw, &manifest) != nil || len(manifest.Members) < 3 {
 		return "", errors.New("frozen corroboration snapshot has no primary custody config")
 	}
-	return manifest.Members[0].ConfigPath, nil
+	if !validTOSCTLSnapshotMemberBasename(manifest.Members[0].ConfigPath) {
+		return "", errors.New("frozen corroboration snapshot primary config handle is invalid")
+	}
+	return filepath.Join(filepath.Dir(snapshot.manifestPath), manifest.Members[0].ConfigPath), nil
 }
 
 func buildTOSCTLSponsorshipEvidenceProfile(paths []string, network agentrelay.NetworkDomain,
@@ -305,18 +414,21 @@ func buildTOSCTLSponsorshipEvidenceProfileFromRaw(raws [][]byte, network agentre
 	members := make([]tosctlRelaySponsorshipEvidenceProfileMember, 0, len(raws))
 	endpoints, operators := map[string]bool{}, map[string]bool{}
 	for _, raw := range raws {
-		endpoint, operator, err := tosctlRPCProfileMember(raw)
+		endpoint, locatorDigest, _, operator, err := tosctlRPCProfileMember(raw)
 		if err != nil || endpoints[endpoint] || operators[operator] {
 			return RelaySponsorshipReleasePolicy{}, tosctlRelaySponsorshipEvidenceProfile{},
 				errors.New("tosctl sponsorship profile lacks distinct endpoint/operator failure domains")
 		}
 		endpoints[endpoint], operators[operator] = true, true
 		members = append(members, tosctlRelaySponsorshipEvidenceProfileMember{Endpoint: endpoint,
-			OperatorProvenance: operator})
+			LocatorIdentityDigest: locatorDigest, OperatorProvenance: operator})
 	}
 	sort.Slice(members, func(left, right int) bool {
 		if members[left].Endpoint != members[right].Endpoint {
 			return members[left].Endpoint < members[right].Endpoint
+		}
+		if members[left].LocatorIdentityDigest != members[right].LocatorIdentityDigest {
+			return members[left].LocatorIdentityDigest < members[right].LocatorIdentityDigest
 		}
 		return members[left].OperatorProvenance < members[right].OperatorProvenance
 	})
@@ -332,10 +444,10 @@ func buildTOSCTLSponsorshipEvidenceProfileFromRaw(raws [][]byte, network agentre
 		ProfileURI: profile.ProfileURI, ProfileDigest: digest}, profile, nil
 }
 
-func tosctlRPCProfileMember(raw []byte) (string, string, error) {
+func tosctlRPCProfileMember(raw []byte) (string, string, string, string, error) {
 	var config tosctlChainRPCConfigFile
-	if err := json.Unmarshal(raw, &config); err != nil {
-		return "", "", errors.New("decode tosctl chain-rpc config")
+	if rejectDuplicateJSONKeys(raw) != nil || json.Unmarshal(raw, &config) != nil {
+		return "", "", "", "", errors.New("decode tosctl chain-rpc config")
 	}
 	values := make([]string, 0, len(config.ChainRPC.URLs)+1)
 	if config.ChainRPC.LegacyURL != nil {
@@ -349,39 +461,67 @@ func tosctlRPCProfileMember(raw []byte) (string, string, error) {
 				APIKey string `json:"api_key"`
 			}
 			if json.Unmarshal(encoded, &object) != nil || object.URL == "" || object.APIKey == "" {
-				return "", "", errors.New("tosctl chain-rpc endpoint entry is invalid")
+				return "", "", "", "", errors.New("tosctl chain-rpc endpoint entry is invalid")
 			}
 			value = object.URL
 		}
-		value = strings.TrimSpace(value)
 		if value != "" && !containsTOSCTLString(values, value) {
 			values = append(values, value)
 		}
 	}
 	if len(values) == 0 {
-		values = []string{"http://127.0.0.1:3301/"}
+		values = []string{"http://127.0.0.1:3301"}
 	}
 	if len(values) != 1 || config.ChainRPC.OperatorProvenance == nil ||
 		!validSHA256Digest(*config.ChainRPC.OperatorProvenance) {
-		return "", "", errors.New("tosctl quorum config must pin one endpoint and one operator")
+		return "", "", "", "", errors.New("tosctl quorum config must pin one endpoint and one operator")
 	}
-	endpoint, err := canonicalTOSCTLRPCEndpoint(values[0])
+	locator, endpoint, err := canonicalTOSCTLRPCConfigLocator(values[0])
 	if err != nil {
-		return "", "", err
+		return "", "", "", "", err
 	}
-	return endpoint, *config.ChainRPC.OperatorProvenance, nil
+	locatorDigest := tosctlFramedBytesDigest(tosctlRPCLocatorIdentityDomain, []byte(locator))
+	return endpoint, locatorDigest, sha256Digest(raw), *config.ChainRPC.OperatorProvenance, nil
 }
 
 func canonicalTOSCTLRPCEndpoint(value string) (string, error) {
 	parsed, err := url.Parse(value)
+	if err != nil || (parsed.EscapedPath() != "" && parsed.EscapedPath() != "/") {
+		return "", errors.New("public tosctl chain-rpc endpoint must be an origin")
+	}
+	_, origin, err := canonicalTOSCTLRPCConfigLocator(value)
+	return origin, err
+}
+
+// canonicalTOSCTLRPCConfigLocator derives the canonical private locator and
+// its origin-only public projection. Public profiles commit the former only
+// through locator_identity_digest; they never disclose its path.
+func canonicalTOSCTLRPCConfigLocator(value string) (string, string, error) {
+	if value == "" || value != strings.TrimSpace(value) {
+		return "", "", errors.New("unsafe tosctl chain-rpc endpoint")
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x21 || value[index] > 0x7e {
+			return "", "", errors.New("tosctl chain-rpc endpoint must use printable ASCII")
+		}
+	}
+	parsed, err := url.Parse(value)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
 		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(parsed.EscapedPath(), "%") {
-		return "", errors.New("unsafe tosctl chain-rpc endpoint")
+		return "", "", errors.New("unsafe tosctl chain-rpc endpoint")
+	}
+	if strings.Contains(parsed.Path, `\`) || strings.Contains(parsed.Path, "//") {
+		return "", "", errors.New("tosctl chain-rpc endpoint path is not canonical")
+	}
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if segment == "." || segment == ".." {
+			return "", "", errors.New("tosctl chain-rpc endpoint path is not canonical")
+		}
 	}
 	hostname := strings.TrimSuffix(parsed.Hostname(), ".")
 	hostname = strings.ToLower(hostname)
 	if hostname == "" {
-		return "", errors.New("tosctl chain-rpc endpoint has no host")
+		return "", "", errors.New("tosctl chain-rpc endpoint has no host")
 	}
 	port := parsed.Port()
 	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
@@ -390,7 +530,7 @@ func canonicalTOSCTLRPCEndpoint(value string) (string, error) {
 	if parsed.Scheme == "http" && !strings.EqualFold(hostname, "localhost") {
 		address := net.ParseIP(hostname)
 		if address == nil || !address.IsLoopback() {
-			return "", errors.New("remote tosctl chain-rpc endpoint must use HTTPS")
+			return "", "", errors.New("remote tosctl chain-rpc endpoint must use HTTPS")
 		}
 	}
 	if strings.Contains(hostname, ":") {
@@ -401,19 +541,25 @@ func canonicalTOSCTLRPCEndpoint(value string) (string, error) {
 	if port != "" {
 		parsed.Host = net.JoinHostPort(hostname, port)
 	}
-	parsed.RawQuery, parsed.Fragment = "", ""
-	canonical := strings.TrimRight(parsed.String(), "/")
-	if strings.HasSuffix(canonical, ":") {
-		canonical += "/"
+	origin := url.URL{Scheme: strings.ToLower(parsed.Scheme), Host: parsed.Host}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.User, parsed.RawQuery, parsed.Fragment = nil, "", ""
+	canonicalLocator := strings.TrimRight(parsed.String(), "/")
+	if strings.HasSuffix(canonicalLocator, ":") {
+		canonicalLocator += "/"
 	}
-	return canonical, nil
+	if canonicalLocator != value {
+		return "", "", errors.New("tosctl chain-rpc endpoint is not in canonical form")
+	}
+	return canonicalLocator, strings.TrimRight(origin.String(), "/"), nil
 }
 
 func tosctlProfileDigestValue(profile tosctlRelaySponsorshipEvidenceProfile) map[string]any {
 	members := make([]map[string]any, 0, len(profile.Members))
 	for _, member := range profile.Members {
 		members = append(members, map[string]any{"endpoint": member.Endpoint,
-			"operator_provenance": member.OperatorProvenance})
+			"locator_identity_digest": member.LocatorIdentityDigest,
+			"operator_provenance":     member.OperatorProvenance})
 	}
 	network := map[string]any{"network_id": profile.NetworkDomain.NetworkID,
 		"global_id": profile.NetworkDomain.GlobalID, "zero_state_root_hash": profile.NetworkDomain.ZeroStateRootHash,
@@ -444,6 +590,16 @@ func tosctlRustFramedDigest(domain string, value any) (string, error) {
 	_, _ = hash.Write(length[:])
 	_, _ = hash.Write(encoded)
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func tosctlFramedBytesDigest(domain string, value []byte) string {
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(domain))
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+	_, _ = hash.Write(length[:])
+	_, _ = hash.Write(value)
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 type tosctlPaymentObservationQuorumKey struct {
@@ -546,17 +702,22 @@ func verifyTOSCTLSponsorshipCorroboration(result tosctlRelaySponsorshipObserved,
 	pairs := make(map[string]bool, len(members))
 	profileEndpoints, profileOperators := make(map[string]bool, len(members)), make(map[string]bool, len(members))
 	for index, member := range members {
-		if member.Endpoint == "" || !validSHA256Digest(member.OperatorProvenance) {
+		canonicalEndpoint, endpointErr := canonicalTOSCTLRPCEndpoint(member.Endpoint)
+		if endpointErr != nil || canonicalEndpoint != member.Endpoint ||
+			!validSHA256Digest(member.LocatorIdentityDigest) || !validSHA256Digest(member.OperatorProvenance) {
 			return errors.New("tosctl sponsorship profile member is incomplete")
 		}
-		pair := member.Endpoint + "\x00" + member.OperatorProvenance
+		pair := tosctlSponsorshipMemberKey(member.Endpoint, member.LocatorIdentityDigest,
+			member.OperatorProvenance)
 		if pairs[pair] || profileEndpoints[member.Endpoint] || profileOperators[member.OperatorProvenance] {
 			return errors.New("tosctl sponsorship profile repeats an endpoint or operator failure domain")
 		}
 		if index > 0 {
 			previous := members[index-1]
 			if member.Endpoint < previous.Endpoint ||
-				(member.Endpoint == previous.Endpoint && member.OperatorProvenance <= previous.OperatorProvenance) {
+				(member.Endpoint == previous.Endpoint && member.LocatorIdentityDigest < previous.LocatorIdentityDigest) ||
+				(member.Endpoint == previous.Endpoint && member.LocatorIdentityDigest == previous.LocatorIdentityDigest &&
+					member.OperatorProvenance <= previous.OperatorProvenance) {
 				return errors.New("tosctl sponsorship profile members are not canonically sorted")
 			}
 		}
@@ -564,9 +725,14 @@ func verifyTOSCTLSponsorshipCorroboration(result tosctlRelaySponsorshipObserved,
 		profileEndpoints[member.Endpoint], profileOperators[member.OperatorProvenance] = true, true
 	}
 	seenEndpoints, seenOperators := map[string]bool{}, map[string]bool{}
+	profileOperatorByEndpoint := make(map[string]string, len(members))
+	for _, member := range members {
+		profileOperatorByEndpoint[member.Endpoint] = member.OperatorProvenance
+	}
 	groups := make(map[tosctlPaymentObservationQuorumKey][]tosctlPaymentObservation)
 	for _, observation := range result.Observations {
-		pair := observation.Endpoint + "\x00" + observation.OperatorProvenance
+		pair := tosctlSponsorshipMemberKey(observation.Endpoint, observation.LocatorIdentityDigest,
+			observation.OperatorProvenance)
 		if !pairs[pair] || seenEndpoints[observation.Endpoint] || seenOperators[observation.OperatorProvenance] ||
 			!validTOSCTLPaymentObservation(observation, result.NetworkDomain, result.NetworkGlobalID) {
 			return errors.New("tosctl sponsorship corroboration contains an unauthorized observation")
@@ -574,6 +740,14 @@ func verifyTOSCTLSponsorshipCorroboration(result tosctlRelaySponsorshipObserved,
 		seenEndpoints[observation.Endpoint], seenOperators[observation.OperatorProvenance] = true, true
 		key := observation.quorumKey()
 		groups[key] = append(groups[key], observation)
+	}
+	for _, failure := range result.Failures {
+		endpoint, failureErr := tosctlSponsorshipFailureEndpoint(failure)
+		operator, authorized := profileOperatorByEndpoint[endpoint]
+		if failureErr != nil || !authorized || seenEndpoints[endpoint] || seenOperators[operator] {
+			return errors.New("tosctl sponsorship corroboration contains an unauthorized failure")
+		}
+		seenEndpoints[endpoint], seenOperators[operator] = true, true
 	}
 	var winner []tosctlPaymentObservation
 	for _, group := range groups {
@@ -617,14 +791,18 @@ func validateTOSCTLSponsorshipEvidenceProfile(profile tosctlRelaySponsorshipEvid
 	}
 	endpoints, operators := map[string]bool{}, map[string]bool{}
 	for index, member := range profile.Members {
-		if member.Endpoint == "" || !validSHA256Digest(member.OperatorProvenance) ||
+		canonicalEndpoint, endpointErr := canonicalTOSCTLRPCEndpoint(member.Endpoint)
+		if endpointErr != nil || canonicalEndpoint != member.Endpoint ||
+			!validSHA256Digest(member.LocatorIdentityDigest) || !validSHA256Digest(member.OperatorProvenance) ||
 			endpoints[member.Endpoint] || operators[member.OperatorProvenance] {
 			return errors.New("tosctl sponsorship evidence profile repeats a failure domain")
 		}
 		if index > 0 {
 			previous := profile.Members[index-1]
 			if member.Endpoint < previous.Endpoint ||
-				(member.Endpoint == previous.Endpoint && member.OperatorProvenance <= previous.OperatorProvenance) {
+				(member.Endpoint == previous.Endpoint && member.LocatorIdentityDigest < previous.LocatorIdentityDigest) ||
+				(member.Endpoint == previous.Endpoint && member.LocatorIdentityDigest == previous.LocatorIdentityDigest &&
+					member.OperatorProvenance <= previous.OperatorProvenance) {
 				return errors.New("tosctl sponsorship evidence profile is not canonically sorted")
 			}
 		}
@@ -635,7 +813,9 @@ func validateTOSCTLSponsorshipEvidenceProfile(profile tosctlRelaySponsorshipEvid
 
 func validTOSCTLPaymentObservation(value tosctlPaymentObservation, network agentrelay.NetworkDomain,
 	globalID int32) bool {
-	return value.Endpoint != "" && validSHA256Digest(value.OperatorProvenance) &&
+	canonicalEndpoint, endpointErr := canonicalTOSCTLRPCEndpoint(value.Endpoint)
+	return endpointErr == nil && canonicalEndpoint == value.Endpoint &&
+		validSHA256Digest(value.LocatorIdentityDigest) && validSHA256Digest(value.OperatorProvenance) &&
 		validSHA256Digest(value.TransactionHash) && value.TransactionLT > 0 && value.TransactionUTime > 0 &&
 		validSHA256Digest(value.TransactionBOCDigest) && validTVMCellSHA256(value.SourceOutboundMessageHash) &&
 		validSHA256Digest(value.DestinationCreditReference) && validSHA256Digest(value.DestinationTransactionHash) &&
@@ -650,6 +830,24 @@ func validTOSCTLPaymentObservation(value tosctlPaymentObservation, network agent
 		value.ZeroStateFileHash == network.ZeroStateFileHash && value.ObservedMasterchainSeqno > 0 &&
 		validSHA256Digest(value.ObservedMasterchainRootHash) && validSHA256Digest(value.ObservedMasterchainFileHash) &&
 		value.ObservedMasterchainGenUTime > 0 && !value.FinalityProven
+}
+
+func tosctlSponsorshipMemberKey(endpoint, configContentDigest, operatorProvenance string) string {
+	return endpoint + "\x00" + configContentDigest + "\x00" + operatorProvenance
+}
+
+func tosctlSponsorshipFailureEndpoint(value string) (string, error) {
+	const marker = ": rpc_failure_category="
+	endpoint, category, found := strings.Cut(value, marker)
+	if !found || (category != "not_found" && category != "temporarily_unavailable" &&
+		category != "invalid_or_conflicting_response") {
+		return "", errors.New("tosctl sponsorship failure diagnostic is invalid")
+	}
+	canonical, err := canonicalTOSCTLRPCEndpoint(endpoint)
+	if err != nil || canonical != endpoint {
+		return "", errors.New("tosctl sponsorship failure diagnostic exposes a non-public endpoint")
+	}
+	return endpoint, nil
 }
 
 func reflectTOSCTLObservationEqual(left, right tosctlPaymentObservation) bool {
@@ -676,7 +874,21 @@ func readBoundedRegularFile(path string, maximum int64, ownerOnly bool) ([]byte,
 		info.Size() > maximum || ownerOnly && info.Mode().Perm() != 0o600 {
 		return nil, errors.New("file is not a bounded regular owner-approved file")
 	}
-	return os.ReadFile(path)
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, errors.New("open bounded owner-approved file")
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() ||
+		opened.Size() <= 0 || opened.Size() > maximum || ownerOnly && opened.Mode().Perm() != 0o600 {
+		return nil, errors.New("owner-approved file changed while opening")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	if err != nil || len(raw) == 0 || int64(len(raw)) > maximum {
+		return nil, errors.New("read bounded owner-approved file")
+	}
+	return raw, nil
 }
 
 func sha256Digest(value []byte) string {

@@ -1198,11 +1198,29 @@ func (processor *AgreementSponsorshipProcessor) validateTypedSponsorshipResoluti
 		return nil
 	case agentrelay.SponsorshipResolutionCorroboratedAbsent,
 		agentrelay.SponsorshipResolutionFinalizedAbsent:
+		hasSponsorshipAbsence := len(resolution.SponsorshipAbsenceObservations) != 0
+		hasTransactionAbsence := len(resolution.TransactionAbsenceObservations) != 0
 		if resolution.TransferReference != "" || len(resolution.EvidenceRefs) != 0 ||
 			resolution.CreditObservation != nil || resolution.TransactionEvidence != nil ||
-			resolution.AbsenceOutcome == "" || len(resolution.SponsorshipAbsenceObservations) == 0 ||
-			len(resolution.TransactionAbsenceObservations) == 0 {
+			resolution.AbsenceOutcome == "" {
 			return errors.New("finalized gas sponsorship absence proof is incomplete")
+		}
+		// The absence domains are mode-specific. A sponsor-only action has no
+		// client-transaction component. A combined action may first persist a
+		// sponsorship-only S- checkpoint and later promote that exact component
+		// to S-/R-, but a transaction-only result can never prove that the one
+		// allowed sponsorship attempt is safe to release or retry.
+		switch execution.QuoteRequest.Body.Mode {
+		case agentrelay.ModeSponsorOnly:
+			if !hasSponsorshipAbsence || hasTransactionAbsence {
+				return errors.New("gas sponsorship absence scope conflicts with sponsor-only mode")
+			}
+		case agentrelay.ModeSponsorAndRelay:
+			if !hasSponsorshipAbsence {
+				return errors.New("combined gas sponsorship absence lacks its sponsorship component")
+			}
+		default:
+			return errors.New("gas sponsorship absence is not permitted for this relay mode")
 		}
 		corroborated := resolution.AbsenceOutcome == agentrelay.OutcomeCorroboratedExpired ||
 			resolution.AbsenceOutcome == agentrelay.OutcomeCorroboratedAbsent ||

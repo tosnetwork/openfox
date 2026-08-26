@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/fileutil"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 )
@@ -110,23 +111,68 @@ type relayJournalDocument struct {
 // journal and returned to ProviderService; status and error paths never format
 // or log the request.
 type DurableRelayJournal struct {
-	mu                sync.Mutex
-	directory         string
-	path              string
-	lock              *os.File
-	records           map[string]agentrelay.Record
-	tombstones        map[string]persistedRelayTombstone
-	providerAgentID   string
-	quoteReservations map[string]persistedRelayQuoteReservation
-	quoteBindings     map[string]string
-	writerHighWater   map[string]uint64
-	quoteAdmissions   map[string][]uint64
-	terminalRetention time.Duration
-	localAdmission    *agentrelay.AdmissionLimits
-	maximumProtected  uint32
+	mu                 sync.Mutex
+	directory          string
+	root               *os.Root
+	path               string
+	lock               *os.File
+	domainLock         *localEconomicDomainLock
+	providerDomainLock *localEconomicDomainLock
+	boundProviderID    string
+	poisoned           bool
+	records            map[string]agentrelay.Record
+	tombstones         map[string]persistedRelayTombstone
+	providerAgentID    string
+	quoteReservations  map[string]persistedRelayQuoteReservation
+	quoteBindings      map[string]string
+	writerHighWater    map[string]uint64
+	quoteAdmissions    map[string][]uint64
+	terminalRetention  time.Duration
+	localAdmission     *agentrelay.AdmissionLimits
+	maximumProtected   uint32
 }
 
-func (*DurableRelayJournal) HasLinearizableRelayProviderJournal() bool { return true }
+func (journal *DurableRelayJournal) HasLinearizableRelayProviderJournal() bool {
+	if journal == nil {
+		return false
+	}
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	return journal.boundProviderID != "" && journal.providerDomainLock != nil &&
+		journal.ensureStorageIdentityLocked() == nil
+}
+
+// BindRelayProviderAuthority promotes this otherwise role-neutral attempt
+// journal to the single local authoritative journal for providerAgentID. A
+// client also journals a selected Provider's quote, so the role cannot be
+// inferred safely from ReserveQuote or Admit inputs. Provider runtimes must
+// bind explicitly before advertising linearizable admission.
+func (journal *DurableRelayJournal) BindRelayProviderAuthority(providerAgentID string) error {
+	if journal == nil || providerAgentID == "" {
+		return errors.New("relay provider identity is unavailable")
+	}
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return err
+	}
+	if journal.boundProviderID != "" {
+		if journal.boundProviderID != providerAgentID {
+			return errors.New("relay journal is bound to a different provider authority")
+		}
+		return nil
+	}
+	if journal.providerAgentID != "" && journal.providerAgentID != providerAgentID {
+		return errors.New("relay journal is scoped to a different provider")
+	}
+	lock, err := acquireLocalEconomicDomainLock("relay-provider\x00" + providerAgentID)
+	if err != nil {
+		return err
+	}
+	journal.providerDomainLock = lock
+	journal.boundProviderID = providerAgentID
+	return nil
+}
 
 // A locked owner-private file is durable and single-host linearizable but may
 // be restored from an older filesystem snapshot. It cannot support the
@@ -183,17 +229,47 @@ func OpenDurableRelayJournalWithOptions(directory string,
 	if err := validateRelayJournalDirectorySecurity(directory); err != nil {
 		return nil, errors.New("relay journal directory must be owner-private and cannot be a symlink")
 	}
-	lock, err := acquireRelayJournalLock(directory)
+	info, err := os.Lstat(directory)
 	if err != nil {
+		return nil, errors.New("stat relay journal directory")
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return nil, errors.New("open relay journal directory capability")
+	}
+	rootInfo, err := root.Stat(".")
+	if err != nil || !os.SameFile(info, rootInfo) {
+		_ = root.Close()
+		return nil, errors.New("relay journal directory changed while opening")
+	}
+	domainLock, err := acquireLocalEconomicDomainLock("provider-relay-journal\x00" + directory)
+	if err != nil {
+		_ = root.Close()
 		return nil, err
 	}
-	journal := &DurableRelayJournal{directory: directory, path: filepath.Join(directory, relayJournalFile), lock: lock,
+	lock, err := acquireRelayJournalLockRoot(root)
+	if err != nil {
+		_ = domainLock.Close()
+		_ = root.Close()
+		return nil, err
+	}
+	pathInfo, pathErr := os.Lstat(directory)
+	if pathErr != nil || !os.SameFile(rootInfo, pathInfo) {
+		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		_ = root.Close()
+		return nil, errors.New("relay journal directory changed while locking")
+	}
+	journal := &DurableRelayJournal{directory: directory, root: root, path: filepath.Join(directory, relayJournalFile),
+		lock: lock, domainLock: domainLock,
 		records: map[string]agentrelay.Record{}, tombstones: map[string]persistedRelayTombstone{},
 		quoteReservations: map[string]persistedRelayQuoteReservation{}, quoteBindings: map[string]string{},
 		writerHighWater: map[string]uint64{}, quoteAdmissions: map[string][]uint64{},
 		terminalRetention: retention, localAdmission: localAdmission, maximumProtected: maximumProtected}
 	if err := journal.load(); err != nil {
 		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		_ = root.Close()
 		return nil, err
 	}
 	return journal, nil
@@ -208,9 +284,49 @@ func (journal *DurableRelayJournal) Close() error {
 	if journal.lock == nil {
 		return nil
 	}
-	lock := journal.lock
+	lock, root, domainLock, providerDomainLock := journal.lock, journal.root, journal.domainLock, journal.providerDomainLock
 	journal.lock = nil
-	return releaseRelayJournalLock(lock)
+	journal.root = nil
+	journal.domainLock = nil
+	journal.providerDomainLock = nil
+	journal.boundProviderID = ""
+	err := releaseRelayJournalLock(lock)
+	if rootErr := root.Close(); err == nil && rootErr != nil {
+		err = errors.New("close relay journal directory capability")
+	}
+	if domainErr := domainLock.Close(); err == nil && domainErr != nil {
+		err = domainErr
+	}
+	if providerDomainErr := providerDomainLock.Close(); err == nil && providerDomainErr != nil {
+		err = providerDomainErr
+	}
+	return err
+}
+
+// ensureStorageIdentityLocked makes pathname replacement a fail-closed
+// condition while all file operations remain anchored to the retained root.
+// The caller must hold journal.mu, or be OpenDurableRelayJournal before it is
+// published to another goroutine.
+func (journal *DurableRelayJournal) ensureStorageIdentityLocked() error {
+	if journal == nil || journal.poisoned || journal.lock == nil || journal.domainLock == nil || journal.root == nil ||
+		journal.boundProviderID != "" && journal.providerDomainLock == nil {
+		return errors.New("relay journal storage identity is unavailable")
+	}
+	opened, err := journal.root.Stat(".")
+	current, pathErr := os.Lstat(journal.directory)
+	if err != nil || pathErr != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 ||
+		!os.SameFile(opened, current) {
+		journal.poisoned = true
+		return errors.New("relay journal storage directory was replaced")
+	}
+	// A same-inode permission drift makes new effects unavailable, but is not
+	// namespace detachment. Returning an error without poisoning lets an
+	// operator repair the owner-only permissions and recover the old durable
+	// state. Inode/path/reparse replacement above remains permanently poisoned.
+	if validateRelayJournalDirectorySecurity(journal.directory) != nil {
+		return errors.New("relay journal storage directory is not owner-private")
+	}
+	return nil
 }
 
 func (journal *DurableRelayJournal) ReserveQuote(profile agentrelay.RelayServiceProfile,
@@ -245,6 +361,12 @@ func (journal *DurableRelayJournal) ReserveQuote(profile agentrelay.RelayService
 	defer journal.mu.Unlock()
 	if journal.lock == nil {
 		return agentrelay.SignedProviderRelayQuote{}, false, errors.New("relay journal is closed")
+	}
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.SignedProviderRelayQuote{}, false, err
+	}
+	if journal.boundProviderID != "" && journal.boundProviderID != profile.ProviderAgentID {
+		return agentrelay.SignedProviderRelayQuote{}, false, errors.New("relay journal is bound to a different provider authority")
 	}
 	if journal.providerAgentID != "" && journal.providerAgentID != profile.ProviderAgentID {
 		return agentrelay.SignedProviderRelayQuote{}, false, errors.New("relay journal is scoped to a different provider")
@@ -330,7 +452,13 @@ func (journal *DurableRelayJournal) Admit(request agentrelay.RelayExecutionReque
 	if journal.lock == nil {
 		return agentrelay.Record{}, false, errors.New("relay journal is closed")
 	}
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.Record{}, false, err
+	}
 	providerAgentID := request.ProviderQuote.Body.ProviderAgentID
+	if journal.boundProviderID != "" && journal.boundProviderID != providerAgentID {
+		return agentrelay.Record{}, false, errors.New("relay journal is bound to a different provider authority")
+	}
 	if journal.providerAgentID != "" && journal.providerAgentID != providerAgentID {
 		return agentrelay.Record{}, false, errors.New("relay journal is scoped to a different provider")
 	}
@@ -460,6 +588,9 @@ func (journal *DurableRelayJournal) Resolve(stableActionID,
 	if journal.lock == nil {
 		return agentrelay.Record{}, errors.New("relay journal is closed")
 	}
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.Record{}, err
+	}
 	record, found := journal.records[relayDurableRecordKey(stableActionID)]
 	if !found {
 		return agentrelay.Record{}, relayRetiredRecordError(journal.tombstones, stableActionID, exactRequestDigest)
@@ -484,6 +615,9 @@ func (journal *DurableRelayJournal) BeginSponsorship(stableActionID, exactReques
 	defer journal.mu.Unlock()
 	if journal.lock == nil {
 		return agentrelay.Record{}, errors.New("relay journal is closed")
+	}
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.Record{}, err
 	}
 	key := relayDurableRecordKey(stableActionID)
 	record, found := journal.records[key]
@@ -560,6 +694,9 @@ func (journal *DurableRelayJournal) RecordSponsorshipObservation(stableActionID,
 	if journal.lock == nil {
 		return agentrelay.Record{}, errors.New("relay journal is closed")
 	}
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.Record{}, err
+	}
 	key := relayDurableRecordKey(stableActionID)
 	record, found := journal.records[key]
 	if !found {
@@ -622,6 +759,9 @@ func (journal *DurableRelayJournal) RecordSponsorship(stableActionID, exactReque
 	defer journal.mu.Unlock()
 	if journal.lock == nil {
 		return agentrelay.Record{}, errors.New("relay journal is closed")
+	}
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.Record{}, err
 	}
 	key := relayDurableRecordKey(stableActionID)
 	record, found := journal.records[key]
@@ -713,6 +853,9 @@ func (journal *DurableRelayJournal) RecordSponsorshipAbsence(stableActionID, exa
 	defer journal.mu.Unlock()
 	if journal.lock == nil {
 		return agentrelay.Record{}, errors.New("relay journal is closed")
+	}
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.Record{}, err
 	}
 	key := relayDurableRecordKey(stableActionID)
 	record, found := journal.records[key]
@@ -840,6 +983,9 @@ func (journal *DurableRelayJournal) ReleaseSponsorshipExposure(stableActionID, e
 	if journal.lock == nil {
 		return agentrelay.Record{}, errors.New("relay journal is closed")
 	}
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.Record{}, err
+	}
 	key := relayDurableRecordKey(stableActionID)
 	record, found := journal.records[key]
 	if !found {
@@ -893,6 +1039,9 @@ func (journal *DurableRelayJournal) Transition(stableActionID, exactRequestDiges
 	if journal.lock == nil {
 		return agentrelay.Record{}, errors.New("relay journal is closed")
 	}
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.Record{}, err
+	}
 	key := relayDurableRecordKey(stableActionID)
 	record, found := journal.records[key]
 	if !found {
@@ -944,7 +1093,10 @@ func (journal *DurableRelayJournal) Transition(stableActionID, exactRequestDiges
 }
 
 func (journal *DurableRelayJournal) load() error {
-	file, err := openRelayJournalFile(journal.path)
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return err
+	}
+	file, err := openRelayJournalRootFile(journal.root, relayJournalFile)
 	if errors.Is(err, os.ErrNotExist) {
 		return journal.persist(journal.providerAgentID, journal.records, journal.tombstones, journal.quoteReservations,
 			journal.quoteBindings, journal.writerHighWater, journal.quoteAdmissions)
@@ -954,7 +1106,7 @@ func (journal *DurableRelayJournal) load() error {
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() <= 0 || info.Size() > maximumRelayJournalBytes {
+	if err != nil || info.Size() <= 0 || info.Size() > maximumRelayJournalBytes {
 		return errors.New("relay journal is not a bounded owner-only regular file")
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, maximumRelayJournalBytes+1))
@@ -962,9 +1114,7 @@ func (journal *DurableRelayJournal) load() error {
 		return errors.New("read bounded relay journal")
 	}
 	var document relayJournalDocument
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&document) != nil || document.Schema != relayJournalSchema || document.QuoteReservations == nil ||
+	if decodeStrictJSON(raw, &document) != nil || document.Schema != relayJournalSchema || document.QuoteReservations == nil ||
 		document.Tombstones == nil || document.QuoteBindings == nil || document.WriterHighWater == nil ||
 		document.QuoteAdmissions == nil ||
 		len(document.Records) > maximumRelayRecords || len(document.Tombstones) > maximumRelayTombstones ||
@@ -973,10 +1123,6 @@ func (journal *DurableRelayJournal) load() error {
 			len(document.QuoteReservations) != 0)) ||
 		len(document.ProviderAgentID) > 256 {
 		return errors.New("relay journal document is invalid")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return errors.New("relay journal has trailing JSON")
 	}
 	records := make(map[string]agentrelay.Record, len(document.Records))
 	tombstones := make(map[string]persistedRelayTombstone, len(document.Tombstones))
@@ -1098,6 +1244,9 @@ func (journal *DurableRelayJournal) persist(providerAgentID string, records map[
 	for _, key := range sortedRelayTombstoneKeys(tombstones) {
 		tombstoneValues = append(tombstoneValues, cloneRelayTombstone(tombstones[key]))
 	}
+	if err := journal.ensureStorageIdentityLocked(); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(relayJournalDocument{Schema: relayJournalSchema, ProviderAgentID: providerAgentID,
 		Records: persisted, Tombstones: tombstoneValues, QuoteReservations: cloneRelayQuoteReservations(reservations),
 		QuoteBindings: cloneRelayStrings(quoteBindings), WriterHighWater: cloneRelayUint64(writers),
@@ -1105,7 +1254,47 @@ func (journal *DurableRelayJournal) persist(providerAgentID string, records map[
 	if err != nil || len(raw) == 0 || len(raw) > maximumRelayJournalBytes {
 		return errors.New("encode bounded relay journal")
 	}
-	return writeRelayJournalAtomic(journal.directory, journal.path, raw)
+	writeErr := fileutil.WriteFileAtomicRoot(journal.root, relayJournalFile, raw, 0o600)
+	protectErr := protectRootedJournalFile(journal.root, relayJournalFile)
+	if writeErr != nil {
+		journal.poisoned = true
+		return errors.New("atomically persist relay journal through retained directory capability")
+	}
+	if protectErr != nil {
+		journal.poisoned = true
+		return protectErr
+	}
+	file, err := openRelayJournalRootFile(journal.root, relayJournalFile)
+	if err != nil {
+		return err
+	}
+	if closeErr := file.Close(); closeErr != nil {
+		return errors.New("close verified relay journal")
+	}
+	return journal.ensureStorageIdentityLocked()
+}
+
+func openRelayJournalRootFile(root *os.Root, name string) (*os.File, error) {
+	if root == nil {
+		return nil, errors.New("relay journal root is unavailable")
+	}
+	before, err := root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, os.ErrNotExist
+	}
+	if err != nil || before.Mode()&os.ModeSymlink != 0 || !relayJournalFileInfoSecure(before) {
+		return nil, errors.New("relay journal is not an owner-only regular file")
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, errors.New("open relay journal through retained directory capability")
+	}
+	after, err := file.Stat()
+	if err != nil || !os.SameFile(before, after) || validateRelayJournalOpenedFile(file, after) != nil {
+		_ = file.Close()
+		return nil, errors.New("relay journal changed while opening")
+	}
+	return file, nil
 }
 
 func validFrozenRelayRequest(request agentrelay.RelayExecutionRequest) bool {

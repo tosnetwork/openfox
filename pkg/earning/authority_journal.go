@@ -1,13 +1,13 @@
 package earning
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,9 +22,10 @@ import (
 )
 
 const (
-	authoritySchema = "tos.openfox.owner-economic-action-authority.v1"
-	authorityFile   = "economic-authority.json"
-	authorityLock   = "economic-authority.lock"
+	authoritySchema        = "tos.openfox.owner-economic-action-authority.v1"
+	authorityFile          = "economic-authority.json"
+	authorityLock          = "economic-authority.lock"
+	maximumRelayAdmissions = 4096
 )
 
 type ExposureReservation struct {
@@ -63,6 +64,9 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.CustodyActionAuthorization{}, err
+	}
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.CustodyActionAuthorization{}, errors.New("stale writer cannot authorize custody")
 	}
@@ -130,6 +134,9 @@ func (authority *PersonalAuthority) AuthorizeCustodyEffect(action commerce.Autho
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.CustodyEffectAuthorization{}, err
+	}
 	now := authority.now().UTC()
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
@@ -261,12 +268,16 @@ type authorityDocument struct {
 }
 
 type PersonalAuthority struct {
-	mu   sync.Mutex
-	path string
-	lock *os.File
-	key  ed25519.PrivateKey
-	doc  authorityDocument
-	now  func() time.Time
+	mu         sync.Mutex
+	directory  string
+	root       *os.Root
+	path       string
+	lock       *os.File
+	domainLock *localEconomicDomainLock
+	poisoned   bool
+	key        ed25519.PrivateKey
+	doc        authorityDocument
+	now        func() time.Time
 }
 
 func (authority *PersonalAuthority) AuthorityNow() time.Time {
@@ -275,6 +286,9 @@ func (authority *PersonalAuthority) AuthorityNow() time.Time {
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if authority.ensureStorageIdentityLocked() != nil {
+		return time.Time{}
+	}
 	return authority.now().UTC()
 }
 
@@ -282,15 +296,43 @@ func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, key 
 	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || ownerID == "" || agentID == "" || authorityID == "" || len(key) != ed25519.PrivateKeySize {
 		return nil, errors.New("personal authority configuration is invalid")
 	}
-	info, err := os.Lstat(directory)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+	if err := validateRelayJournalDirectorySecurity(directory); err != nil {
 		return nil, errors.New("personal authority directory must be owner-private")
 	}
-	lock, err := acquireAuthorityLock(directory)
+	info, err := os.Lstat(directory)
 	if err != nil {
+		return nil, errors.New("stat personal authority directory")
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return nil, errors.New("open personal authority directory capability")
+	}
+	rootInfo, err := root.Stat(".")
+	if err != nil || !os.SameFile(info, rootInfo) {
+		_ = root.Close()
+		return nil, errors.New("personal authority directory changed while opening")
+	}
+	domainIdentity := ownerID + "\x00" + agentID + "\x00" + authorityID
+	domainLock, err := acquireLocalEconomicDomainLock("personal-authority\x00" + domainIdentity)
+	if err != nil {
+		_ = root.Close()
 		return nil, err
 	}
-	authority := &PersonalAuthority{path: filepath.Join(directory, authorityFile), lock: lock, key: append(ed25519.PrivateKey(nil), key...), now: time.Now}
+	lock, err := acquireAuthorityLockRoot(root)
+	if err != nil {
+		_ = domainLock.Close()
+		_ = root.Close()
+		return nil, err
+	}
+	pathInfo, pathErr := os.Lstat(directory)
+	if pathErr != nil || !os.SameFile(rootInfo, pathInfo) {
+		_ = releaseAuthorityLock(lock)
+		_ = domainLock.Close()
+		_ = root.Close()
+		return nil, errors.New("personal authority directory changed while locking")
+	}
+	authority := &PersonalAuthority{directory: directory, root: root, path: authorityFile, lock: lock, domainLock: domainLock,
+		key: append(ed25519.PrivateKey(nil), key...), now: time.Now}
 	authority.doc = authorityDocument{Schema: authoritySchema, OwnerID: ownerID, AgentID: agentID, AuthorityID: authorityID,
 		Actions: map[string]commerce.ActionResolution{}, AuthorityInstances: map[string]commerce.AuthorityInstanceRecord{},
 		NextInstanceSequence: 1, NextRelayAdmissionSequence: 1,
@@ -301,16 +343,22 @@ func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, key 
 	authority.doc.Engagements = map[string]EngagementRecord{}
 	authority.doc.SettlementLedger = map[string]SettlementLedgerRecord{}
 	authority.doc.Accounting = map[string]AccountingEntry{}
-	if _, err := os.Lstat(authority.path); errors.Is(err, os.ErrNotExist) {
+	if _, err := root.Lstat(authority.path); errors.Is(err, os.ErrNotExist) {
 		if err := authority.persist(authority.doc); err != nil {
 			_ = releaseAuthorityLock(lock)
+			_ = domainLock.Close()
+			_ = root.Close()
 			return nil, err
 		}
 	} else if err != nil {
 		_ = releaseAuthorityLock(lock)
+		_ = domainLock.Close()
+		_ = root.Close()
 		return nil, err
 	} else if err := authority.load(ownerID, agentID, authorityID); err != nil {
 		_ = releaseAuthorityLock(lock)
+		_ = domainLock.Close()
+		_ = root.Close()
 		return nil, err
 	}
 	return authority, nil
@@ -327,10 +375,49 @@ func (authority *PersonalAuthority) Close() error {
 	}
 	err := releaseAuthorityLock(authority.lock)
 	authority.lock = nil
+	if rootErr := authority.root.Close(); err == nil && rootErr != nil {
+		err = errors.New("close personal authority directory capability")
+	}
+	authority.root = nil
+	if domainErr := authority.domainLock.Close(); err == nil && domainErr != nil {
+		err = domainErr
+	}
+	authority.domainLock = nil
 	for index := range authority.key {
 		authority.key[index] = 0
 	}
 	return err
+}
+
+// ensureStorageIdentityLocked prevents an owner-authority namespace split. A
+// retained os.Root deliberately follows the original directory across rename,
+// but the economic authority must stop issuing new authorization as soon as
+// its configured pathname no longer names that exact directory. Otherwise a
+// replacement directory could acquire a second lock and create a concurrent
+// authority domain while this process continued using the detached inode.
+// The caller must hold authority.mu.
+func (authority *PersonalAuthority) ensureStorageIdentityLocked() error {
+	if authority == nil || authority.poisoned || authority.lock == nil || authority.domainLock == nil ||
+		authority.root == nil || authority.directory == "" {
+		return errors.New("personal authority storage identity is unavailable")
+	}
+	opened, err := authority.root.Stat(".")
+	current, pathErr := os.Lstat(authority.directory)
+	if err != nil || pathErr != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 ||
+		!os.SameFile(opened, current) || validateRelayJournalDirectorySecurity(authority.directory) != nil {
+		authority.poisoned = true
+		return errors.New("personal authority storage directory was replaced")
+	}
+	return nil
+}
+
+func (authority *PersonalAuthority) storageIdentityAttached() bool {
+	if authority == nil {
+		return false
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	return authority.ensureStorageIdentityLocked() == nil
 }
 
 func (authority *PersonalAuthority) AcquireWriter(_ context.Context, instanceID string, scope []string, ttl time.Duration) (commerce.WriterFence, error) {
@@ -341,6 +428,9 @@ func (authority *PersonalAuthority) AcquireWriter(_ context.Context, instanceID 
 	sort.Strings(scope)
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.WriterFence{}, err
+	}
 	now := authority.now().UTC()
 	next := cloneAuthorityDocument(authority.doc)
 	if next.WriterGeneration == ^uint64(0) {
@@ -369,6 +459,9 @@ func (authority *PersonalAuthority) Admit(action commerce.AuthorizedAction, fiel
 	fence commerce.WriterFence, reservation *ExposureReservation) (commerce.ActionResolution, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, err
+	}
 	now := authority.now().UTC()
 	if authority.doc.CurrentFence == nil || authority.doc.CurrentFence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
@@ -406,6 +499,10 @@ func (authority *PersonalAuthority) Admit(action commerce.AuthorizedAction, fiel
 func (authority *PersonalAuthority) Resolve(stableActionID, requestDigest string) commerce.ActionResolution {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if authority.ensureStorageIdentityLocked() != nil {
+		return commerce.ActionResolution{StableActionID: stableActionID, ExactRequestDigest: requestDigest,
+			State: commerce.ActionConflict, StateRevision: 1}
+	}
 	resolution, found := authority.doc.Actions[stableActionID]
 	if !found {
 		return commerce.ActionResolution{StableActionID: stableActionID, ExactRequestDigest: requestDigest, State: commerce.ActionUnknown, StateRevision: 1}
@@ -421,6 +518,9 @@ func (authority *PersonalAuthority) Transition(stableActionID, requestDigest str
 	sinkReference string, evidence []string) (commerce.ActionResolution, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, err
+	}
 	existing, found := authority.doc.Actions[stableActionID]
 	if !found || existing.ExactRequestDigest != requestDigest {
 		return commerce.ActionResolution{}, errors.New("action transition has no exact admitted predecessor")
@@ -447,6 +547,9 @@ func (authority *PersonalAuthority) AllocateInstance(request commerce.AuthorityI
 	fence commerce.WriterFence) (commerce.AuthorityInstanceRecord, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.AuthorityInstanceRecord{}, err
+	}
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.AuthorityInstanceRecord{}, errors.New("stale writer cannot allocate an authority instance")
@@ -478,6 +581,9 @@ func (authority *PersonalAuthority) AllocateInstance(request commerce.AuthorityI
 func (authority *PersonalAuthority) Snapshot() (uint64, PortfolioLimits, []ExposureReservation) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if authority.ensureStorageIdentityLocked() != nil {
+		return 0, PortfolioLimits{}, nil
+	}
 	reservations := make([]ExposureReservation, 0, len(authority.doc.Reservations))
 	for _, reservation := range authority.doc.Reservations {
 		reservations = append(reservations, reservation)
@@ -492,6 +598,9 @@ func (authority *PersonalAuthority) ReleaseReservation(action commerce.Authorize
 	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence) (commerce.ActionResolution, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, err
+	}
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID || !authority.now().UTC().Before(time.Unix(int64(fence.Body.ExpiresAtUnix), 0)) {
 		return commerce.ActionResolution{}, errors.New("stale writer cannot release a reservation")
@@ -532,18 +641,25 @@ func (authority *PersonalAuthority) ReleaseReservation(action commerce.Authorize
 }
 
 func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) error {
-	info, err := os.Lstat(authority.path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 || info.Size() <= 0 || info.Size() > 32<<20 {
+	info, err := authority.root.Lstat(authority.path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > 32<<20 {
 		return errors.New("personal authority journal is not an owner-only bounded regular file")
 	}
-	raw, err := os.ReadFile(authority.path)
+	file, err := authority.root.Open(authority.path)
 	if err != nil {
 		return err
 	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !os.SameFile(info, openedInfo) || validateAuthorityJournalFile(file, openedInfo) != nil {
+		return errors.New("personal authority journal changed while opening")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, (32<<20)+1))
+	if err != nil || len(raw) == 0 || len(raw) > 32<<20 {
+		return errors.New("read bounded personal authority journal")
+	}
 	var document authorityDocument
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&document) != nil || document.Schema != authoritySchema || document.OwnerID != ownerID || document.AgentID != agentID ||
+	if decodeStrictJSON(raw, &document) != nil || document.Schema != authoritySchema || document.OwnerID != ownerID || document.AgentID != agentID ||
 		document.AuthorityID != authorityID || document.PortfolioRevision == 0 || document.NextInstanceSequence == 0 || document.Actions == nil ||
 		document.AuthorityInstances == nil || document.Reservations == nil {
 		return errors.New("personal authority journal is invalid")
@@ -568,6 +684,9 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 	}
 	if document.NextRelayAdmissionSequence == 0 && len(document.RelayAdmissions) == 0 {
 		document.NextRelayAdmissionSequence = 1
+	}
+	if len(document.RelayAdmissions) > maximumRelayAdmissions || len(document.RelayAdmissionBindings) > maximumRelayAdmissions {
+		return errors.New("personal authority relay admission capacity is exceeded")
 	}
 	relayAdmissionSequences := make(map[uint64]struct{}, len(document.RelayAdmissions))
 	expectedRelayAdmissionBindings := make(map[string]string, len(document.RelayAdmissions))
@@ -708,11 +827,24 @@ func knownEngagementState(state EngagementState) bool {
 }
 
 func (authority *PersonalAuthority) persist(document authorityDocument) error {
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(document)
 	if err != nil || len(raw) > 32<<20 {
 		return errors.New("encode personal authority journal")
 	}
-	return fileutil.WriteFileAtomic(authority.path, raw, 0o600)
+	writeErr := fileutil.WriteFileAtomicRoot(authority.root, authority.path, raw, 0o600)
+	protectErr := protectRootedJournalFile(authority.root, authority.path)
+	if writeErr != nil {
+		authority.poisoned = true
+		return writeErr
+	}
+	if protectErr != nil {
+		authority.poisoned = true
+		return protectErr
+	}
+	return nil
 }
 
 type localFenceResolver struct {
@@ -729,6 +861,9 @@ func (authority *PersonalAuthority) AuthorizeFenceKey(authorityID string, public
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return err
+	}
 	if authorityID != authority.doc.AuthorityID || !authority.key.Public().(ed25519.PublicKey).Equal(publicKey) {
 		return errors.New("writer fence key is not the owner authority key")
 	}
@@ -741,6 +876,9 @@ func (authority *PersonalAuthority) ConfirmCurrentWriterFence(fence commerce.Wri
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return err
+	}
 	if authority.doc.CurrentFence == nil || authority.doc.CurrentFence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.AuthorityID != authority.doc.AuthorityID ||
 		!now.UTC().Before(time.Unix(int64(fence.Body.ExpiresAtUnix), 0).UTC()) {
@@ -773,6 +911,9 @@ func (authority *PersonalAuthority) admitRelaySideEffects(ctx context.Context,
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
+	}
 	now := authority.now().UTC()
 	if authority.doc.CurrentFence == nil || descriptor.OwnerID != authority.doc.OwnerID ||
 		descriptor.AgentID != authority.doc.AgentID || descriptor.WriterFence.Body.AuthorityID != authority.doc.AuthorityID ||
@@ -804,6 +945,9 @@ func (authority *PersonalAuthority) admitRelaySideEffects(ctx context.Context,
 			return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("stored relay admission conflicts with exact retry")
 		}
 		return cloneRelayAdmissionReceipt(existing), nil
+	}
+	if len(authority.doc.RelayAdmissions) >= maximumRelayAdmissions {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("relay admission authority capacity is exhausted")
 	}
 	bindingKey := relayAdmissionStableBindingKey(descriptor.OwnerID, descriptor.AgentID, descriptor.StableActionID)
 	boundLookup, hasBoundRoute := authority.doc.RelayAdmissionBindings[bindingKey]
@@ -859,6 +1003,9 @@ func (authority *PersonalAuthority) resolveRelaySideEffectAdmission(ctx context.
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
+	}
 	if lookup.OwnerID != authority.doc.OwnerID || lookup.AgentID != authority.doc.AgentID ||
 		lookup.AuthorityID != authority.doc.AuthorityID {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("relay side-effect admission lookup is outside this authority")
@@ -903,6 +1050,9 @@ func (authority *PersonalAuthority) SignAction(action commerce.AuthorizedAction,
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.AuthorizedAction{}, err
+	}
 	now := authority.now().UTC()
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID || action.AuthorityID != authority.doc.AuthorityID ||

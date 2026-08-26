@@ -1129,7 +1129,7 @@ func (verifier *TOSCTLRelayFinalityVerifier) VerifyRelayFinalityFromSnapshot(ctx
 				frozen.RelayComponent); err != nil {
 				return err
 			}
-		} else if !relayEvidenceIsPreSubmitSponsorshipOnly(evidence.Body) {
+		} else if !relayEvidenceMaySkipTerminalRelayVerification(capability, evidence.Body) {
 			return errors.New("combined relay evidence omitted its independently verified relay component")
 		}
 	}
@@ -1141,12 +1141,20 @@ func (verifier *TOSCTLRelayFinalityVerifier) VerifyRelayFinalityFromSnapshot(ctx
 		*frozen.SponsorshipEvidence)
 }
 
-// A combined sponsorship-only result may be terminal before any client BOC
+func relayEvidenceMaySkipTerminalRelayVerification(capability agentrelay.RelayEvidenceCapability,
+	body agentrelay.RelayFinalityEvidenceBody) bool {
+	return capability.AssuranceLevel != agentrelay.AssuranceAutonomousDecentralized &&
+		relayEvidenceIsPreSubmitSponsorshipOnly(body)
+}
+
+// A lower-assurance combined sponsorship-only result may be terminal before any client BOC
 // was submitted (for example, a fresh balance/sequence recheck rejected the
 // relay after the exact top-up terminalized). There is then no relay chain
 // effect for the relay verifier to query. Every body that carries even one
 // relay-positive or relay-negative claim must still cross the frozen base
 // verifier; this exception is deliberately exact rather than outcome-only.
+// Autonomous decentralized execution does not use this absence-free shortcut:
+// without portable non-submission evidence it remains unresolved.
 func relayEvidenceIsPreSubmitSponsorshipOnly(body agentrelay.RelayFinalityEvidenceBody) bool {
 	return (body.Outcome == agentrelay.OutcomeFinalizedSponsorshipOnly ||
 		body.Outcome == agentrelay.OutcomeCorroboratedSponsorshipOnly) &&
@@ -1159,10 +1167,27 @@ func relayEvidenceIsPreSubmitSponsorshipOnly(body agentrelay.RelayFinalityEviden
 func relayEvidenceHasTerminalRelayComponent(body agentrelay.RelayFinalityEvidenceBody) bool {
 	return body.SubmittedTransactionHash != "" || body.SourceExecutionReference != "" ||
 		len(body.DestinationCreditReferences) != 0 || body.RelayTerminalEvidenceClass != "" ||
-		body.RelayValidatorAuthenticatedPortableProof || body.RelayFinalizedCheckpointID != "" ||
+		relayPortableProofAuthenticated(body.RelayValidatorAuthenticatedPortableProof) ||
+		body.RelayFinalizedCheckpointID != "" ||
 		body.RelayFinalizedCheckpointSequence != 0 || body.RelayFinalizedCheckpointUnix != 0 ||
 		body.RelayConfirmationDepth != 0 ||
 		len(body.RelayObservationDigests) != 0 || len(body.TransactionAbsenceObservations) != 0
+}
+
+// relayPortableProofAuthenticated is a one-release compatibility bridge. The
+// reviewed relay V1 dependency used a bool; the presence-hardened protocol uses
+// *bool so explicit false and absence are distinct on the wire. Accept both Go
+// representations while the protocol and OpenFox feature branches are landed
+// in dependency order.
+func relayPortableProofAuthenticated(value any) bool {
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() {
+		return false
+	}
+	if reflected.Kind() == reflect.Pointer {
+		return !reflected.IsNil() && reflected.Elem().Kind() == reflect.Bool && reflected.Elem().Bool()
+	}
+	return reflected.Kind() == reflect.Bool && reflected.Bool()
 }
 
 func (sink *TOSCTLPaymentSink) verifyRelayAbsenceProofFromSnapshot(ctx context.Context,

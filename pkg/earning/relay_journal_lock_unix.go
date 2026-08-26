@@ -14,7 +14,7 @@ import (
 
 func validateRelayJournalDirectorySecurity(directory string) error {
 	info, err := os.Lstat(directory)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !unixOwnerPrivateDirectoryInfo(info) {
 		return errors.New("relay journal directory is not owner-private")
 	}
 	return nil
@@ -28,7 +28,7 @@ func acquireRelayJournalLock(directory string) (*os.File, error) {
 	}
 	lock := os.NewFile(uintptr(fd), path)
 	info, statErr := lock.Stat()
-	if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if statErr != nil || !unixOwnerOnlyRegularFileInfo(info) {
 		_ = lock.Close()
 		return nil, errors.New("relay journal lock is not an owner-only regular file")
 	}
@@ -37,6 +37,10 @@ func acquireRelayJournalLock(directory string) (*os.File, error) {
 		return nil, errors.New("relay journal is already open by another process")
 	}
 	return lock, nil
+}
+
+func acquireRelayJournalLockRoot(root *os.Root) (*os.File, error) {
+	return acquireRootedUnixLock(root, relayJournalLockFile, "relay journal")
 }
 
 func releaseRelayJournalLock(lock *os.File) error {
@@ -59,6 +63,25 @@ func openRelayJournalFile(path string) (*os.File, error) {
 		return nil, errors.New("open relay journal")
 	}
 	return os.NewFile(uintptr(fd), path), nil
+}
+
+func relayJournalFileInfoSecure(info os.FileInfo) bool {
+	return unixOwnerOnlyRegularFileInfo(info)
+}
+
+func validateRelayJournalOpenedFile(_ *os.File, info os.FileInfo) error {
+	if !relayJournalFileInfoSecure(info) {
+		return errors.New("relay journal is not an owner-only regular file")
+	}
+	return nil
+}
+
+func protectRootedJournalFile(root *os.Root, name string) error {
+	file, err := openRelayJournalRootFile(root, name)
+	if err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func writeRelayJournalAtomic(directory, path string, data []byte) error {
@@ -94,9 +117,12 @@ func writeRelayJournalAtomic(directory, path string, data []byte) error {
 	if err != nil {
 		return errors.New("open relay journal directory for fsync")
 	}
-	defer directoryFile.Close()
 	if err := directoryFile.Sync(); err != nil {
+		_ = directoryFile.Close()
 		return errors.New("fsync relay journal directory")
+	}
+	if err := directoryFile.Close(); err != nil {
+		return errors.New("close synced relay journal directory")
 	}
 	return nil
 }

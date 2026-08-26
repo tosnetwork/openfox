@@ -150,7 +150,7 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/tosnetwork/tos-ai v0.0.0-20260825005837-ff7607d532b4
 	github.com/tosnetwork/tos-messenger v0.0.0-20260825005733-7c5759f44d71
-	github.com/tosnetwork/tos-service-protocol v0.0.0-20260825005653-0cd6b53f2c35
+	github.com/tosnetwork/tos-service-protocol v0.0.0-20260826094458-acc395a3bed9
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.71.0 // indirect

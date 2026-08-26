@@ -37,6 +37,9 @@ func (authority *PersonalAuthority) RecordAgreementProposal(body commerce.AgentA
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return EngagementRecord{}, err
+	}
 	if existing, found := authority.doc.Engagements[digest]; found {
 		return existing, nil
 	}
@@ -71,6 +74,9 @@ func (authority *PersonalAuthority) RecordAgreementProposal(body commerce.AgentA
 func (authority *PersonalAuthority) ObserveAgreementWithdrawal(agreementDigest, proposalActionID, senderAgentID, eventID string) (EngagementRecord, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return EngagementRecord{}, err
+	}
 	record, found := authority.doc.Engagements[agreementDigest]
 	if !found || record.ProposalActionID != proposalActionID || record.ProposerAgentID != senderAgentID || eventID == "" {
 		return EngagementRecord{}, errors.New("Agreement withdrawal is unrelated to the exact proposal")
@@ -111,6 +117,9 @@ func (authority *PersonalAuthority) ObserveAgreementDelivery(agreementDigest, ob
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return EngagementRecord{}, err
+	}
 	record, found := authority.doc.Engagements[agreementDigest]
 	if !found {
 		return EngagementRecord{}, errors.New("delivery has no exact Agreement")
@@ -166,6 +175,9 @@ func (authority *PersonalAuthority) RecordAgreementEvidence(agreementDigest stri
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return EngagementRecord{}, err
+	}
 	record, found := authority.doc.Engagements[agreementDigest]
 	if !found || record.State == EngagementCancelled || record.State == EngagementFailed {
 		return EngagementRecord{}, errors.New("Agreement evidence has no active proposal")
@@ -219,6 +231,9 @@ func (authority *PersonalAuthority) ReserveEngagement(action commerce.Authorized
 	request PortfolioReservationRequest) (commerce.ActionResolution, EngagementRecord, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, EngagementRecord{}, err
+	}
 	record, found := authority.doc.Engagements[request.Reservation.AgreementDigest]
 	if !found || !engagementEligibleForReservation(record, authority.doc.AgentID) || request.Reservation.Released ||
 		request.TargetPortfolioRevision != authority.doc.PortfolioRevision+1 {
@@ -291,6 +306,9 @@ func engagementEligibleForReservation(record EngagementRecord, localAgentID stri
 func (authority *PersonalAuthority) Engagement(agreementDigest string) (EngagementRecord, bool) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if authority.ensureStorageIdentityLocked() != nil {
+		return EngagementRecord{}, false
+	}
 	record, found := authority.doc.Engagements[agreementDigest]
 	return record, found
 }
@@ -301,6 +319,9 @@ func (authority *PersonalAuthority) EngagementSnapshot() []EngagementRecord {
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if authority.ensureStorageIdentityLocked() != nil {
+		return nil
+	}
 	result := make([]EngagementRecord, 0, len(authority.doc.Engagements))
 	for _, record := range authority.doc.Engagements {
 		result = append(result, record)
@@ -316,6 +337,9 @@ func (authority *PersonalAuthority) BindAcceptedPrivateInput(agreementDigest, ob
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return EngagementRecord{}, err
+	}
 	record, found := authority.doc.Engagements[agreementDigest]
 	if !found || accepted.ChallengeDigest == "" || accepted.UploadActionID == "" {
 		return EngagementRecord{}, errors.New("accepted private input has no Agreement")
@@ -377,6 +401,9 @@ func (authority *PersonalAuthority) RecordPrivateHandoffChallenge(agreementDiges
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return EngagementRecord{}, err
+	}
 	record, found := authority.doc.Engagements[agreementDigest]
 	if !found || record.State != EngagementReserved && record.State != EngagementFundingPending && record.State != EngagementReady {
 		return EngagementRecord{}, errors.New("private handoff challenge has no active Agreement")
@@ -430,6 +457,9 @@ func (authority *PersonalAuthority) transitionEngagement(agreementDigest string,
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return EngagementRecord{}, err
+	}
 	record, found := authority.doc.Engagements[agreementDigest]
 	if !found || record.State != expected || executionID != "" && record.ExecutionID != "" && record.ExecutionID != executionID {
 		return EngagementRecord{}, errors.New("engagement transition has no exact predecessor")

@@ -719,6 +719,7 @@ func sameTOSCTLSponsorshipChainEffect(left, right tosctlPaymentObservation) bool
 	left.ObservedMasterchainFileHash, right.ObservedMasterchainFileHash = "", ""
 	left.ObservedMasterchainGenUTime, right.ObservedMasterchainGenUTime = 0, 0
 	left.Endpoint, right.Endpoint = "", ""
+	left.LocatorIdentityDigest, right.LocatorIdentityDigest = "", ""
 	left.OperatorProvenance, right.OperatorProvenance = "", ""
 	left.FinalityProven, right.FinalityProven = false, false
 	return reflect.DeepEqual(left, right)

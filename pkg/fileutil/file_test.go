@@ -3,6 +3,7 @@ package fileutil
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -172,5 +173,37 @@ func TestWriteFileAtomic_InvalidPath(t *testing.T) {
 	err := WriteFileAtomic("/dev/null/impossible/file.txt", []byte("data"), 0o644)
 	if err == nil {
 		t.Error("expected error for invalid path, got nil")
+	}
+}
+
+func TestWriteFileAtomicRootRetainsOpenedDirectoryAfterRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not permit renaming this open directory")
+	}
+	parent := t.TempDir()
+	directory := filepath.Join(parent, "locked")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	moved := filepath.Join(parent, "moved")
+	if err := os.Rename(directory, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomicRoot(root, "state.json", []byte("durable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(directory, "state.json")); !os.IsNotExist(err) {
+		t.Fatalf("replacement directory received rooted write: %v", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(moved, "state.json")); err != nil || string(raw) != "durable" {
+		t.Fatalf("opened directory did not receive rooted write: %q err=%v", raw, err)
 	}
 }

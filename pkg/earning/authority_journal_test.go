@@ -6,9 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,116 @@ import (
 )
 
 const testDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func TestPersonalAuthorityFailsClosedAcrossPathReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not permit renaming this open directory")
+	}
+	directory := privateTempDir(t)
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, PortfolioLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := authority.AcquireWriter(t.Context(), "runtime-initial", []string{"publication.reply"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := authority.BindRelaySideEffectAuthority(fence)
+	if err != nil || !bound.HasLinearizableRelayAdmission() {
+		t.Fatalf("healthy authority did not expose its local admission capability: %v", err)
+	}
+	moved := directory + "-moved"
+	if err := os.Rename(directory, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if replacement, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, PortfolioLimits{}); err == nil {
+		_ = replacement.Close()
+		t.Fatal("replacement directory acquired the same live logical authority")
+	}
+	if _, err := authority.AcquireWriter(t.Context(), "runtime", []string{"publication.reply"}, time.Minute); err == nil {
+		t.Fatal("detached authority issued a new writer fence")
+	}
+	if resolution := authority.Resolve(testDigest, testDigest); resolution.State != commerce.ActionConflict {
+		t.Fatalf("detached authority translated storage failure into authoritative absence: %+v", resolution)
+	}
+	if bound.HasLinearizableRelayAdmission() {
+		t.Fatal("detached authority continued advertising linearizable admission")
+	}
+	if _, err := os.Lstat(filepath.Join(directory, authorityFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement directory received authority state: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(moved, authorityFile)); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("original authority journal disappeared: info=%v err=%v", info, err)
+	}
+	replacementDirectory := directory + "-replacement"
+	if err := os.Rename(directory, replacementDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(moved, directory); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.AcquireWriter(t.Context(), "runtime-restored", []string{"publication.reply"}, time.Minute); err == nil {
+		t.Fatal("poisoned authority resumed after its pathname was restored")
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if bound.HasLinearizableRelayAdmission() {
+		t.Fatal("closed authority continued advertising linearizable admission")
+	}
+	replacement, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, PortfolioLimits{})
+	if err != nil {
+		t.Fatalf("replacement authority did not become available after clean close: %v", err)
+	}
+	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPersonalAuthorityRejectsRelayAdmissionLedgerAbovePermanentCapacity(t *testing.T) {
+	directory := privateTempDir(t)
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, PortfolioLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, authorityFile)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document authorityDocument
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index <= maximumRelayAdmissions; index++ {
+		document.RelayAdmissions[fmt.Sprintf("entry-%05d", index)] = agentrelay.SignedRelaySideEffectAdmissionReceipt{}
+	}
+	raw, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, PortfolioLimits{}); err == nil {
+		_ = reopened.Close()
+		t.Fatal("oversized permanent relay admission ledger was accepted")
+	}
+}
 
 func TestPersonalAuthorityFencesActionsAndPortfolio(t *testing.T) {
 	directory := privateTempDir(t)

@@ -35,6 +35,10 @@ const (
 	maximumRelayTerminalArtifactBytes  = 8 << 20
 	maximumRelayTerminalHandoffBytes   = 16 << 10
 	maximumRelayTerminalArtifacts      = 256
+	maximumRelayTerminalTombstones     = 65536
+	maximumRelaySponsorshipEffects     = 65536
+	maximumRelayTerminalRegistryBytes  = 256 << 20
+	maximumRelayEffectRegistryBytes    = 256 << 20
 	relayTerminalRouteDirectory        = ".agent-relay-terminal-routes"
 	relayTerminalArtifactDirectory     = ".agent-relay-terminal-artifacts"
 	relayTerminalRouteTombstoneSchema  = "tos.openfox.agent-relay-terminal-route.v1"
@@ -146,6 +150,8 @@ type RelayRouteRecord struct {
 // allowed to consume it. A genuine old top-up can therefore never be reused
 // to settle a new Agreement after restart or Provider-profile rotation.
 type RelaySponsorshipChainEffect struct {
+	OwnerID                       string `json:"owner_id"`
+	AgentID                       string `json:"agent_id"`
 	EffectIdentityDigest          string `json:"effect_identity_digest"`
 	BindingDigest                 string `json:"binding_digest"`
 	NetworkDigest                 string `json:"network_digest"`
@@ -229,6 +235,8 @@ func (record RelayRouteRecord) Current() (RelayRouteHop, bool) {
 
 type relayRouteJournalDocument struct {
 	Schema             string                        `json:"schema"`
+	OwnerID            string                        `json:"owner_id,omitempty"`
+	AgentID            string                        `json:"agent_id,omitempty"`
 	Records            []RelayRouteRecord            `json:"records"`
 	SponsorshipEffects []RelaySponsorshipChainEffect `json:"sponsorship_effects,omitempty"`
 }
@@ -238,6 +246,8 @@ type relayRouteJournalDocument struct {
 // artifact until a durable accounting/portfolio handoff is acknowledged.
 type relayTerminalRouteTombstone struct {
 	Schema                         string                     `json:"schema"`
+	OwnerID                        string                     `json:"owner_id"`
+	AgentID                        string                     `json:"agent_id"`
 	StableActionID                 string                     `json:"stable_action_id"`
 	ExactRequestDigest             string                     `json:"exact_request_digest"`
 	RelayExecutionDigest           string                     `json:"relay_execution_digest"`
@@ -286,13 +296,26 @@ var errRelayTerminalArtifactArchived = errors.New("relay terminal proof artifact
 type DurableRelayRouteJournal struct {
 	mu                        sync.Mutex
 	directory                 string
+	directoryHandle           *relayPinnedDirectory
 	path                      string
 	effectDirectory           string
+	effectDirectoryHandle     *relayPinnedDirectory
 	terminalDirectory         string
+	terminalDirectoryHandle   *relayPinnedDirectory
 	terminalArtifactDirectory string
+	terminalArtifactHandle    *relayPinnedDirectory
 	lock                      *os.File
+	domainLock                *localEconomicDomainLock
+	ownerDomainLock           *localEconomicDomainLock
+	ownerID                   string
+	agentID                   string
+	ownerIdentityPersisted    bool
 	records                   map[string]RelayRouteRecord
 	sponsorshipEffects        map[string]RelaySponsorshipChainEffect
+	terminalTombstoneCount    int
+	sponsorshipEffectCount    int
+	terminalTombstoneBytes    int64
+	sponsorshipEffectBytes    int64
 }
 
 // The local route journal is crash-durable and process-locked, but restoring a
@@ -309,47 +332,125 @@ func OpenDurableRelayRouteJournal(directory string) (*DurableRelayRouteJournal, 
 	if err := validateRelayJournalDirectorySecurity(directory); err != nil {
 		return nil, errors.New("relay route journal directory must be owner-private and cannot be a symlink")
 	}
-	if _, err := os.Lstat(filepath.Join(directory, relayJournalFile)); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return nil, errors.New("relay route journal requires a directory separate from provider attempt journals")
-	}
-	lock, err := acquireRelayJournalLock(directory)
+	directoryHandle, err := openRelayDirectoryIdentity(directory)
 	if err != nil {
 		return nil, err
 	}
-	effectDirectory := filepath.Join(directory, relaySponsorshipEffectDirectory)
-	if err := os.Mkdir(effectDirectory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+	if _, err := directoryHandle.root.Lstat(relayJournalFile); err == nil || !errors.Is(err, os.ErrNotExist) {
+		_ = directoryHandle.close()
+		return nil, errors.New("relay route journal requires a directory separate from provider attempt journals")
+	}
+	domainLock, err := acquireLocalEconomicDomainLock("relay-route-journal\x00" + directory)
+	if err != nil {
+		_ = directoryHandle.close()
+		return nil, err
+	}
+	lock, err := acquireRelayJournalLockRoot(directoryHandle.root)
+	if err != nil {
+		_ = domainLock.Close()
+		_ = directoryHandle.close()
+		return nil, err
+	}
+	lockInfo, lockErr := lock.Stat()
+	rootLockInfo, rootLockErr := directoryHandle.root.Lstat(relayJournalLockFile)
+	if lockErr != nil || rootLockErr != nil || !os.SameFile(lockInfo, rootLockInfo) ||
+		directoryHandle.ensureAttached() != nil {
 		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		_ = directoryHandle.close()
+		return nil, errors.New("relay journal lock does not belong to retained directory")
+	}
+	effectDirectory := filepath.Join(directory, relaySponsorshipEffectDirectory)
+	if err := directoryHandle.mkdir(relaySponsorshipEffectDirectory); err != nil {
+		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		_ = directoryHandle.close()
 		return nil, errors.New("create relay sponsorship effect registry")
 	}
-	if err := validateRelayJournalDirectorySecurity(effectDirectory); err != nil {
+	effectHandle, err := openRelayDirectoryIdentity(effectDirectory)
+	if err != nil || directoryHandle.ensureChild(relaySponsorshipEffectDirectory, effectHandle) != nil {
 		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		if effectHandle != nil {
+			_ = effectHandle.close()
+		}
+		_ = directoryHandle.close()
 		return nil, errors.New("relay sponsorship effect registry must be owner-private")
 	}
 	terminalDirectory := filepath.Join(directory, relayTerminalRouteDirectory)
-	if err := os.Mkdir(terminalDirectory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+	if err := directoryHandle.mkdir(relayTerminalRouteDirectory); err != nil {
 		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		_ = effectHandle.close()
+		_ = directoryHandle.close()
 		return nil, errors.New("create relay terminal route registry")
 	}
-	if err := validateRelayJournalDirectorySecurity(terminalDirectory); err != nil {
+	terminalHandle, err := openRelayDirectoryIdentity(terminalDirectory)
+	if err != nil || directoryHandle.ensureChild(relayTerminalRouteDirectory, terminalHandle) != nil {
 		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		if terminalHandle != nil {
+			_ = terminalHandle.close()
+		}
+		_ = effectHandle.close()
+		_ = directoryHandle.close()
 		return nil, errors.New("relay terminal route registry must be owner-private")
 	}
 	terminalArtifactDirectory := filepath.Join(directory, relayTerminalArtifactDirectory)
-	if err := os.Mkdir(terminalArtifactDirectory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+	if err := directoryHandle.mkdir(relayTerminalArtifactDirectory); err != nil {
 		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		_ = terminalHandle.close()
+		_ = effectHandle.close()
+		_ = directoryHandle.close()
 		return nil, errors.New("create relay terminal artifact registry")
 	}
-	if err := validateRelayJournalDirectorySecurity(terminalArtifactDirectory); err != nil {
+	artifactHandle, err := openRelayDirectoryIdentity(terminalArtifactDirectory)
+	if err != nil || directoryHandle.ensureChild(relayTerminalArtifactDirectory, artifactHandle) != nil {
 		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		if artifactHandle != nil {
+			_ = artifactHandle.close()
+		}
+		_ = terminalHandle.close()
+		_ = effectHandle.close()
+		_ = directoryHandle.close()
 		return nil, errors.New("relay terminal artifact registry must be owner-private")
 	}
 	journal := &DurableRelayRouteJournal{directory: directory, path: filepath.Join(directory, relayRouteJournalFile),
 		effectDirectory: effectDirectory, terminalDirectory: terminalDirectory,
 		terminalArtifactDirectory: terminalArtifactDirectory,
-		lock:                      lock, records: map[string]RelayRouteRecord{},
+		directoryHandle:           directoryHandle, effectDirectoryHandle: effectHandle,
+		terminalDirectoryHandle: terminalHandle, terminalArtifactHandle: artifactHandle,
+		lock: lock, domainLock: domainLock, records: map[string]RelayRouteRecord{},
 		sponsorshipEffects: map[string]RelaySponsorshipChainEffect{}}
-	if err := journal.load(); err != nil {
+	terminalCount, terminalBytes, err := journal.countRelayPermanentRegistry(
+		terminalDirectory, ".json", maximumRelayTerminalTombstones,
+		maximumRelayTerminalRouteBytes, maximumRelayTerminalRegistryBytes)
+	if err != nil {
+		journal.closeDirectoryHandles()
 		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		return nil, errors.New("count relay terminal replay registry")
+	}
+	effectCount, effectBytes, err := journal.countRelayPermanentRegistry(
+		effectDirectory, ".json", maximumRelaySponsorshipEffects,
+		maximumRelaySponsorshipEffectBytes, maximumRelayEffectRegistryBytes)
+	if err != nil {
+		journal.closeDirectoryHandles()
+		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
+		return nil, errors.New("count relay sponsorship replay registry")
+	}
+	journal.terminalTombstoneCount = terminalCount
+	journal.sponsorshipEffectCount = effectCount
+	journal.terminalTombstoneBytes = terminalBytes
+	journal.sponsorshipEffectBytes = effectBytes
+	if err := journal.load(); err != nil {
+		journal.closeOwnerDomain()
+		journal.closeDirectoryHandles()
+		_ = releaseRelayJournalLock(lock)
+		_ = domainLock.Close()
 		return nil, err
 	}
 	return journal, nil
@@ -366,7 +467,212 @@ func (journal *DurableRelayRouteJournal) Close() error {
 	}
 	lock := journal.lock
 	journal.lock = nil
-	return releaseRelayJournalLock(lock)
+	err := releaseRelayJournalLock(lock)
+	if ownerErr := journal.ownerDomainLock.Close(); err == nil && ownerErr != nil {
+		err = ownerErr
+	}
+	journal.ownerDomainLock = nil
+	if domainErr := journal.domainLock.Close(); err == nil && domainErr != nil {
+		err = domainErr
+	}
+	journal.domainLock = nil
+	if closeErr := journal.closeDirectoryHandles(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	return err
+}
+
+func (journal *DurableRelayRouteJournal) bindOwnerDomain(ownerID, agentID string) error {
+	if journal == nil || !boundedRelayTrustDomain(ownerID) || !boundedRelayTrustDomain(agentID) {
+		return agentrelay.ErrRelayInvalidState
+	}
+	if journal.ownerID != "" || journal.agentID != "" {
+		if journal.ownerID != ownerID || journal.agentID != agentID || journal.ownerDomainLock == nil ||
+			journal.ownerDomainLock.connection == nil {
+			return agentrelay.ErrRelayConflict
+		}
+		return nil
+	}
+	lock, err := acquireLocalEconomicDomainLock("relay-route-owner-agent\x00" + ownerID + "\x00" + agentID)
+	if err != nil {
+		return err
+	}
+	journal.ownerID, journal.agentID, journal.ownerDomainLock = ownerID, agentID, lock
+	return nil
+}
+
+func (journal *DurableRelayRouteJournal) closeOwnerDomain() {
+	if journal == nil {
+		return
+	}
+	_ = journal.ownerDomainLock.Close()
+	journal.ownerDomainLock = nil
+	journal.ownerID, journal.agentID = "", ""
+	journal.ownerIdentityPersisted = false
+}
+
+func openRelayDirectoryIdentity(path string) (*relayPinnedDirectory, error) {
+	return openRelayPinnedDirectory(path)
+}
+
+func (journal *DurableRelayRouteJournal) closeDirectoryHandles() error {
+	var first error
+	for _, handle := range []*relayPinnedDirectory{journal.terminalArtifactHandle, journal.terminalDirectoryHandle,
+		journal.effectDirectoryHandle, journal.directoryHandle} {
+		if handle != nil {
+			if err := handle.close(); err != nil && first == nil {
+				first = errors.New("close relay journal directory identity")
+			}
+		}
+	}
+	journal.terminalArtifactHandle = nil
+	journal.terminalDirectoryHandle = nil
+	journal.effectDirectoryHandle = nil
+	journal.directoryHandle = nil
+	return first
+}
+
+func (journal *DurableRelayRouteJournal) ensureStorageIdentity() error {
+	if journal == nil || journal.directoryHandle == nil || journal.effectDirectoryHandle == nil ||
+		journal.terminalDirectoryHandle == nil || journal.terminalArtifactHandle == nil || journal.lock == nil ||
+		journal.domainLock == nil || journal.domainLock.connection == nil {
+		return errors.New("relay journal storage identity is unavailable")
+	}
+	for _, handle := range []*relayPinnedDirectory{journal.directoryHandle, journal.effectDirectoryHandle,
+		journal.terminalDirectoryHandle, journal.terminalArtifactHandle} {
+		if err := handle.ensureAttached(); err != nil {
+			return err
+		}
+	}
+	if err := journal.directoryHandle.ensureChild(relaySponsorshipEffectDirectory,
+		journal.effectDirectoryHandle); err != nil {
+		return err
+	}
+	if err := journal.directoryHandle.ensureChild(relayTerminalRouteDirectory,
+		journal.terminalDirectoryHandle); err != nil {
+		return err
+	}
+	if err := journal.directoryHandle.ensureChild(relayTerminalArtifactDirectory,
+		journal.terminalArtifactHandle); err != nil {
+		return err
+	}
+	lockInfo, lockErr := journal.lock.Stat()
+	rootLockInfo, rootLockErr := journal.directoryHandle.root.Lstat(relayJournalLockFile)
+	if lockErr != nil || rootLockErr != nil || !os.SameFile(lockInfo, rootLockInfo) {
+		journal.directoryHandle.poison()
+		return errors.New("relay journal process lock was replaced")
+	}
+	return nil
+}
+
+func (journal *DurableRelayRouteJournal) writeAtomic(path string, raw []byte) error {
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return err
+	}
+	directory, name, err := journal.rootedPath(path)
+	if err != nil {
+		return err
+	}
+	if err := directory.writeAtomic(name, raw); err != nil {
+		return err
+	}
+	return journal.ensureStorageIdentity()
+}
+
+func (journal *DurableRelayRouteJournal) removeFile(path string) error {
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return err
+	}
+	directory, name, err := journal.rootedPath(path)
+	if err != nil {
+		return err
+	}
+	if err := directory.remove(name); err != nil {
+		return err
+	}
+	return journal.ensureStorageIdentity()
+}
+
+func (journal *DurableRelayRouteJournal) rootedPath(path string) (*relayPinnedDirectory, string, error) {
+	if journal == nil || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, "", agentrelay.ErrRelayInvalidState
+	}
+	// Select the narrowest retained capability. The main root is intentionally
+	// last so replacing a protected child directory cannot redirect an access
+	// through the still-valid parent capability.
+	locations := []struct {
+		path string
+		root *relayPinnedDirectory
+	}{
+		{journal.terminalArtifactDirectory, journal.terminalArtifactHandle},
+		{journal.terminalDirectory, journal.terminalDirectoryHandle},
+		{journal.effectDirectory, journal.effectDirectoryHandle},
+		{journal.directory, journal.directoryHandle},
+	}
+	for _, location := range locations {
+		if location.root == nil {
+			continue
+		}
+		name, err := filepath.Rel(location.path, path)
+		if err != nil || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) ||
+			!filepath.IsLocal(name) {
+			continue
+		}
+		return location.root, name, nil
+	}
+	return nil, "", errors.New("relay journal path escapes retained directory capabilities")
+}
+
+func (journal *DurableRelayRouteJournal) openFile(path string) (*os.File, error) {
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return nil, err
+	}
+	directory, name, err := journal.rootedPath(path)
+	if err != nil {
+		return nil, err
+	}
+	file, err := directory.openFile(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+func (journal *DurableRelayRouteJournal) lstat(path string) (os.FileInfo, error) {
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return nil, err
+	}
+	directory, name, err := journal.rootedPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return directory.lstat(name)
+}
+
+func (journal *DurableRelayRouteJournal) readDirectory(path string) ([]os.DirEntry, error) {
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return nil, err
+	}
+	directory, name, err := journal.rootedPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return directory.readDir(name)
+}
+
+func (journal *DurableRelayRouteJournal) mkdirDirectory(path string) error {
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return err
+	}
+	directory, name, err := journal.rootedPath(path)
+	if err != nil {
+		return err
+	}
+	return directory.mkdir(name)
 }
 
 type relaySponsorshipEffectIdentityV1 struct {
@@ -378,6 +684,8 @@ type relaySponsorshipEffectIdentityV1 struct {
 }
 
 type relaySponsorshipEffectBindingV1 struct {
+	OwnerID                       string `json:"owner_id"`
+	AgentID                       string `json:"agent_id"`
 	AgreementBodyDigest           string `json:"agreement_body_digest"`
 	AgreementObligationID         string `json:"agreement_obligation_id"`
 	AgreementPaymentRequestDigest string `json:"agreement_payment_request_digest"`
@@ -400,7 +708,8 @@ func (journal *DurableRelayRouteJournal) BindSponsorshipChainEffect(execution ag
 		ProviderSponsorSourceSequence: evidence.ProviderSponsorSourceSequence,
 		SignedTransactionCellHash:     evidence.SignedTopUpTransactionCellHash,
 		SubmittedTransactionHash:      evidence.SubmittedTransactionHash}
-	binding := relaySponsorshipEffectBindingV1{AgreementBodyDigest: execution.AgreementBodyDigest,
+	binding := relaySponsorshipEffectBindingV1{OwnerID: execution.AuthorizedAction.OwnerID,
+		AgentID: execution.AuthorizedAction.AgentID, AgreementBodyDigest: execution.AgreementBodyDigest,
 		AgreementObligationID:         execution.SponsorshipObligationID,
 		AgreementPaymentRequestDigest: evidence.AgreementPaymentRequestDigest,
 		SponsorshipStableActionID:     evidence.SponsorshipStableActionID,
@@ -417,7 +726,8 @@ func (journal *DurableRelayRouteJournal) BindSponsorshipChainEffect(execution ag
 	if nowUnix <= 0 {
 		return agentrelay.ErrRelayInvalidState
 	}
-	record := RelaySponsorshipChainEffect{EffectIdentityDigest: effectDigest, BindingDigest: bindingDigest,
+	record := RelaySponsorshipChainEffect{OwnerID: execution.AuthorizedAction.OwnerID,
+		AgentID: execution.AuthorizedAction.AgentID, EffectIdentityDigest: effectDigest, BindingDigest: bindingDigest,
 		NetworkDigest: evidence.NetworkDigest, ProviderSponsorSourceAccount: evidence.ProviderSponsorSourceAccount,
 		ProviderSponsorSourceSequence: evidence.ProviderSponsorSourceSequence,
 		SignedTransactionCellHash:     evidence.SignedTopUpTransactionCellHash,
@@ -435,6 +745,18 @@ func (journal *DurableRelayRouteJournal) BindSponsorshipChainEffect(execution ag
 	defer journal.mu.Unlock()
 	if journal.lock == nil {
 		return errors.New("relay route journal is closed")
+	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return err
+	}
+	if err := journal.bindOwnerDomain(execution.AuthorizedAction.OwnerID,
+		execution.AuthorizedAction.AgentID); err != nil {
+		return err
+	}
+	if !journal.ownerIdentityPersisted {
+		if err := journal.persist(journal.records); err != nil {
+			return err
+		}
 	}
 	if prior, found := journal.sponsorshipEffects[effectDigest]; found {
 		if prior.BindingDigest != bindingDigest || prior.AgreementBodyDigest != record.AgreementBodyDigest ||
@@ -465,7 +787,7 @@ func (journal *DurableRelayRouteJournal) BindSponsorshipChainEffect(execution ag
 		return err
 	}
 	journal.cacheSponsorshipChainEffect(record)
-	return nil
+	return journal.ensureStorageIdentity()
 }
 
 func (journal *DurableRelayRouteJournal) Resolve(stableActionID,
@@ -477,6 +799,9 @@ func (journal *DurableRelayRouteJournal) Resolve(stableActionID,
 	defer journal.mu.Unlock()
 	if journal.lock == nil {
 		return RelayRouteRecord{}, errors.New("relay route journal is closed")
+	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return RelayRouteRecord{}, err
 	}
 	record, found := journal.records[stableActionID]
 	if !found {
@@ -560,6 +885,13 @@ func (journal *DurableRelayRouteJournal) bind(prepared PreparedRelayTransaction,
 	if journal.lock == nil {
 		return RelayRouteRecord{}, false, errors.New("relay route journal is closed")
 	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return RelayRouteRecord{}, false, err
+	}
+	if err := journal.bindOwnerDomain(prepared.UnderlyingAction.OwnerID,
+		prepared.UnderlyingAction.AgentID); err != nil {
+		return RelayRouteRecord{}, false, err
+	}
 	if existing, found := journal.records[stableActionID]; found {
 		if existing.ExactRequestDigest != exactRequestDigest || !attemptMatchesPrepared(existing.Hops[len(existing.Hops)-1].Attempt, prepared) {
 			return cloneRelayRouteRecord(existing), false, agentrelay.ErrRelayConflict
@@ -579,6 +911,9 @@ func (journal *DurableRelayRouteJournal) bind(prepared PreparedRelayTransaction,
 		return RelayRouteRecord{}, false, errors.New("relay route journal capacity is exhausted")
 	}
 	if err := journal.reserveTerminalArtifactCapacity(); err != nil {
+		return RelayRouteRecord{}, false, err
+	}
+	if err := journal.reservePermanentReplayCapacity(prepared.QuoteBody.Mode); err != nil {
 		return RelayRouteRecord{}, false, err
 	}
 	record := RelayRouteRecord{StableActionID: stableActionID, ExactRequestDigest: exactRequestDigest,
@@ -606,6 +941,9 @@ func (journal *DurableRelayRouteJournal) MarkSubmitStarted(stableActionID, exact
 	defer journal.mu.Unlock()
 	if journal.lock == nil {
 		return RelayRouteRecord{}, errors.New("relay route journal is closed")
+	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return RelayRouteRecord{}, err
 	}
 	record, found := journal.records[stableActionID]
 	if !found {
@@ -674,6 +1012,9 @@ func (journal *DurableRelayRouteJournal) recordResolveQuery(stableActionID, exac
 	if journal.lock == nil {
 		return RelayRouteRecord{}, errors.New("relay route journal is closed")
 	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return RelayRouteRecord{}, err
+	}
 	record, found := journal.records[stableActionID]
 	if !found {
 		if terminal, terminalFound, err := journal.readTerminalRoute(stableActionID); err != nil {
@@ -739,6 +1080,9 @@ func (journal *DurableRelayRouteJournal) RecordTerminal(stableActionID, exactReq
 	defer journal.mu.Unlock()
 	if journal.lock == nil {
 		return RelayRouteRecord{}, errors.New("relay route journal is closed")
+	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return RelayRouteRecord{}, err
 	}
 	record, found := journal.records[stableActionID]
 	if !found {
@@ -853,6 +1197,9 @@ func (journal *DurableRelayRouteJournal) PrepareSwitch(stableActionID, exactRequ
 	if journal.lock == nil {
 		return RelayRouteRecord{}, errors.New("relay route journal is closed")
 	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return RelayRouteRecord{}, err
+	}
 	record, found := journal.records[stableActionID]
 	if !found {
 		return RelayRouteRecord{}, agentrelay.ErrRelayUnknown
@@ -934,6 +1281,9 @@ func (journal *DurableRelayRouteJournal) MarkPendingAdmissionStarted(stableActio
 	if journal.lock == nil {
 		return RelayRouteRecord{}, errors.New("relay route journal is closed")
 	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return RelayRouteRecord{}, err
+	}
 	record, found := journal.records[stableActionID]
 	if !found {
 		return RelayRouteRecord{}, agentrelay.ErrRelayUnknown
@@ -991,6 +1341,9 @@ func (journal *DurableRelayRouteJournal) RebasePendingAdmission(stableActionID, 
 	defer journal.mu.Unlock()
 	if journal.lock == nil {
 		return RelayRouteRecord{}, errors.New("relay route journal is closed")
+	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return RelayRouteRecord{}, err
 	}
 	record, found := journal.records[stableActionID]
 	if !found {
@@ -1062,6 +1415,9 @@ func (journal *DurableRelayRouteJournal) Switch(stableActionID, exactRequestDige
 	defer journal.mu.Unlock()
 	if journal.lock == nil {
 		return RelayRouteRecord{}, errors.New("relay route journal is closed")
+	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return RelayRouteRecord{}, err
 	}
 	record, found := journal.records[stableActionID]
 	if !found {
@@ -1135,8 +1491,14 @@ func (journal *DurableRelayRouteJournal) Switch(stableActionID, exactRequestDige
 }
 
 func (journal *DurableRelayRouteJournal) load() error {
-	file, err := openRelayJournalFile(journal.path)
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return err
+	}
+	file, err := journal.openFile(journal.path)
 	if errors.Is(err, os.ErrNotExist) {
+		if journal.terminalTombstoneCount != 0 || journal.sponsorshipEffectCount != 0 {
+			return errors.New("relay permanent replay registry exists without its journal")
+		}
 		return journal.persist(journal.records)
 	}
 	if err != nil {
@@ -1144,7 +1506,7 @@ func (journal *DurableRelayRouteJournal) load() error {
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 ||
+	if err != nil || !relayJournalFileInfoSecure(info) ||
 		info.Size() <= 0 || info.Size() > maximumRelayRouteJournalBytes {
 		return errors.New("relay route journal is not a bounded owner-only regular file")
 	}
@@ -1153,24 +1515,41 @@ func (journal *DurableRelayRouteJournal) load() error {
 		return errors.New("read bounded relay route journal")
 	}
 	var document relayRouteJournalDocument
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&document) != nil || document.Schema != relayRouteJournalSchema ||
+	if decodeStrictJSON(raw, &document) != nil || document.Schema != relayRouteJournalSchema ||
 		len(document.Records) > maximumRelayRoutes ||
 		len(document.SponsorshipEffects) > maximumLegacySponsorshipEffects {
 		return errors.New("relay route journal document is invalid")
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return errors.New("relay route journal has trailing JSON")
+	identityMigration := false
+	ownerID, agentID := document.OwnerID, document.AgentID
+	if (ownerID == "") != (agentID == "") || ownerID != "" &&
+		(!boundedRelayTrustDomain(ownerID) || !boundedRelayTrustDomain(agentID)) {
+		return errors.New("relay route journal owner identity is invalid")
+	}
+	for _, candidate := range document.Records {
+		if !validRelayRouteRecord(candidate) {
+			return errors.New("relay route journal record is invalid")
+		}
+		action := candidate.Hops[0].Attempt.Execution.AuthorizedAction
+		if ownerID == "" {
+			ownerID, agentID, identityMigration = action.OwnerID, action.AgentID, true
+		} else if ownerID != action.OwnerID || agentID != action.AgentID {
+			return errors.New("relay route journal mixes owner authority domains")
+		}
+	}
+	if ownerID == "" && (journal.terminalTombstoneCount != 0 || journal.sponsorshipEffectCount != 0) {
+		return errors.New("relay permanent replay state lacks its owner authority domain")
+	}
+	if ownerID != "" {
+		if err := journal.bindOwnerDomain(ownerID, agentID); err != nil {
+			return errors.New("acquire relay route owner authority domain")
+		}
+		journal.ownerIdentityPersisted = document.OwnerID != "" && document.AgentID != ""
 	}
 	records := make(map[string]RelayRouteRecord, len(document.Records))
 	seenRoutes := make(map[string]struct{}, len(document.Records))
 	compactedTerminalRoutes := false
 	for _, record := range document.Records {
-		if !validRelayRouteRecord(record) {
-			return errors.New("relay route journal record is invalid")
-		}
 		if _, found := seenRoutes[record.StableActionID]; found {
 			return errors.New("relay route journal contains a duplicate action")
 		}
@@ -1208,7 +1587,7 @@ func (journal *DurableRelayRouteJournal) load() error {
 	}
 	journal.records = records
 	journal.sponsorshipEffects = effects
-	if len(document.SponsorshipEffects) != 0 || compactedTerminalRoutes {
+	if len(document.SponsorshipEffects) != 0 || compactedTerminalRoutes || identityMigration {
 		// Legacy V1 documents stored a permanently bounded inline replay set.
 		// Migrate each exact identity to the content-addressed registry before
 		// clearing the inline list. A crash at either side is idempotent.
@@ -1220,7 +1599,10 @@ func (journal *DurableRelayRouteJournal) load() error {
 }
 
 func (journal *DurableRelayRouteJournal) validateTerminalTombstoneRegistry() error {
-	shards, err := os.ReadDir(journal.terminalDirectory)
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return err
+	}
+	shards, err := journal.readDirectory(journal.terminalDirectory)
 	if err != nil {
 		return errors.New("read relay terminal tombstone registry")
 	}
@@ -1229,10 +1611,7 @@ func (journal *DurableRelayRouteJournal) validateTerminalTombstoneRegistry() err
 			return errors.New("relay terminal tombstone registry contains an invalid shard")
 		}
 		shardPath := filepath.Join(journal.terminalDirectory, shard.Name())
-		if validateRelayJournalDirectorySecurity(shardPath) != nil {
-			return errors.New("relay terminal tombstone shard is not owner-private")
-		}
-		entries, readErr := os.ReadDir(shardPath)
+		entries, readErr := journal.readDirectory(shardPath)
 		if readErr != nil {
 			return errors.New("read relay terminal tombstone shard")
 		}
@@ -1254,7 +1633,7 @@ func (journal *DurableRelayRouteJournal) validateTerminalTombstoneRegistry() err
 			if pathErr != nil {
 				return pathErr
 			}
-			_, statErr := os.Lstat(artifactPath)
+			_, statErr := journal.lstat(artifactPath)
 			if !tombstone.HandoffAcknowledged && errors.Is(statErr, os.ErrNotExist) {
 				return errors.New("unacknowledged relay terminal tombstone lost its recovery artifact")
 			}
@@ -1263,7 +1642,7 @@ func (journal *DurableRelayRouteJournal) validateTerminalTombstoneRegistry() err
 			}
 		}
 	}
-	return nil
+	return journal.ensureStorageIdentity()
 }
 
 func relayTerminalRecordIsMonotonicSuccessor(active, terminal RelayRouteRecord) bool {
@@ -1362,11 +1741,16 @@ func (journal *DurableRelayRouteJournal) persistState(records map[string]RelayRo
 	for _, key := range keys {
 		values = append(values, cloneRelayRouteRecord(records[key]))
 	}
-	raw, err := json.Marshal(relayRouteJournalDocument{Schema: relayRouteJournalSchema, Records: values})
+	raw, err := json.Marshal(relayRouteJournalDocument{Schema: relayRouteJournalSchema,
+		OwnerID: journal.ownerID, AgentID: journal.agentID, Records: values})
 	if err != nil || len(raw) == 0 || len(raw) > maximumRelayRouteJournalBytes {
 		return errors.New("encode bounded relay route journal")
 	}
-	return writeRelayJournalAtomic(journal.directory, journal.path, raw)
+	if err := journal.writeAtomic(journal.path, raw); err != nil {
+		return err
+	}
+	journal.ownerIdentityPersisted = journal.ownerID != "" && journal.agentID != ""
+	return nil
 }
 
 func relayRouteRecordIsTerminal(record RelayRouteRecord) bool {
@@ -1389,17 +1773,15 @@ func relayRouteRecordIsTerminal(record RelayRouteRecord) bool {
 
 func (journal *DurableRelayRouteJournal) terminalRoutePath(stableActionID string,
 	createShard bool) (string, error) {
-	if journal == nil || !canonicalSHA256(stableActionID) || !filepath.IsAbs(journal.terminalDirectory) {
+	if journal == nil || !canonicalSHA256(stableActionID) || !filepath.IsAbs(journal.terminalDirectory) ||
+		createShard && journal.lock == nil || journal.lock != nil && journal.ensureStorageIdentity() != nil {
 		return "", agentrelay.ErrRelayInvalidState
 	}
 	hexDigest := strings.TrimPrefix(stableActionID, "sha256:")
 	shard := filepath.Join(journal.terminalDirectory, hexDigest[:2])
 	if createShard {
-		if err := os.Mkdir(shard, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		if err := journal.mkdirDirectory(shard); err != nil {
 			return "", errors.New("create relay terminal route shard")
-		}
-		if err := validateRelayJournalDirectorySecurity(shard); err != nil {
-			return "", errors.New("relay terminal route shard is not owner-private")
 		}
 	}
 	return filepath.Join(shard, hexDigest+".json"), nil
@@ -1411,6 +1793,7 @@ func validRelayTerminalRouteTombstone(tombstone relayTerminalRouteTombstone) boo
 		(tombstone.HandoffAcknowledged && canonicalSHA256(tombstone.HandoffReceiptDigest) &&
 			tombstone.HandoffRevision > 0 && tombstone.HandoffAtUnix >= tombstone.CompletedAtUnix)
 	return tombstone.Schema == relayTerminalRouteTombstoneSchema && validHandoff &&
+		boundedRelayTrustDomain(tombstone.OwnerID) && boundedRelayTrustDomain(tombstone.AgentID) &&
 		canonicalSHA256(tombstone.StableActionID) && canonicalSHA256(tombstone.ExactRequestDigest) &&
 		canonicalSHA256(tombstone.RelayExecutionDigest) && boundedRelayTrustDomain(tombstone.ProviderAgentID) &&
 		tombstone.RouteGeneration > 0 && validDurableRelayOutcome(tombstone.TerminalOutcome) &&
@@ -1481,7 +1864,9 @@ func terminalRouteTombstone(record RelayRouteRecord, artifactDigest string) (rel
 		return relayTerminalRouteTombstone{}, agentrelay.ErrRelayInvalidState
 	}
 	current := record.Hops[len(record.Hops)-1]
+	action := record.Hops[0].Attempt.Execution.AuthorizedAction
 	tombstone := relayTerminalRouteTombstone{Schema: relayTerminalRouteTombstoneSchema,
+		OwnerID: action.OwnerID, AgentID: action.AgentID,
 		StableActionID: record.StableActionID, ExactRequestDigest: record.ExactRequestDigest,
 		RelayExecutionDigest: current.RelayExecutionDigest, ProviderAgentID: current.Provider.ProviderAgentID,
 		RouteGeneration: current.Generation, TerminalOutcome: current.TerminalFinalityEvidence.Body.Outcome,
@@ -1500,7 +1885,7 @@ func (journal *DurableRelayRouteJournal) readTerminalRouteTombstone(stableAction
 	if err != nil {
 		return relayTerminalRouteTombstone{}, false, err
 	}
-	file, err := openRelayJournalFile(path)
+	file, err := journal.openFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return relayTerminalRouteTombstone{}, false, nil
 	}
@@ -1509,7 +1894,7 @@ func (journal *DurableRelayRouteJournal) readTerminalRouteTombstone(stableAction
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 ||
+	if err != nil || !relayJournalFileInfoSecure(info) ||
 		info.Size() <= 0 || info.Size() > maximumRelayTerminalRouteBytes {
 		return relayTerminalRouteTombstone{}, false, errors.New("relay terminal route tombstone is invalid")
 	}
@@ -1517,6 +1902,7 @@ func (journal *DurableRelayRouteJournal) readTerminalRouteTombstone(stableAction
 	var tombstone relayTerminalRouteTombstone
 	if err != nil || len(raw) == 0 || len(raw) > maximumRelayTerminalRouteBytes ||
 		decodeStrictJSON(raw, &tombstone) != nil || tombstone.StableActionID != stableActionID ||
+		tombstone.OwnerID != journal.ownerID || tombstone.AgentID != journal.agentID ||
 		!validRelayTerminalRouteTombstone(tombstone) {
 		return relayTerminalRouteTombstone{}, false, errors.New("relay terminal route tombstone cannot be verified")
 	}
@@ -1524,17 +1910,15 @@ func (journal *DurableRelayRouteJournal) readTerminalRouteTombstone(stableAction
 }
 
 func (journal *DurableRelayRouteJournal) terminalArtifactPath(digest string, createShard bool) (string, error) {
-	if journal == nil || !canonicalSHA256(digest) || !filepath.IsAbs(journal.terminalArtifactDirectory) {
+	if journal == nil || !canonicalSHA256(digest) || !filepath.IsAbs(journal.terminalArtifactDirectory) ||
+		createShard && journal.lock == nil || journal.lock != nil && journal.ensureStorageIdentity() != nil {
 		return "", agentrelay.ErrRelayInvalidState
 	}
 	hexDigest := strings.TrimPrefix(digest, "sha256:")
 	shard := filepath.Join(journal.terminalArtifactDirectory, hexDigest[:2])
 	if createShard {
-		if err := os.Mkdir(shard, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		if err := journal.mkdirDirectory(shard); err != nil {
 			return "", errors.New("create relay terminal artifact shard")
-		}
-		if err := validateRelayJournalDirectorySecurity(shard); err != nil {
-			return "", errors.New("relay terminal artifact shard is not owner-private")
 		}
 	}
 	return filepath.Join(shard, hexDigest+".json"), nil
@@ -1565,7 +1949,7 @@ func (journal *DurableRelayRouteJournal) readTerminalArtifactHandoff(artifactDig
 	if err != nil {
 		return relayTerminalArtifactHandoff{}, false, err
 	}
-	file, err := openRelayJournalFile(path)
+	file, err := journal.openFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return relayTerminalArtifactHandoff{}, false, nil
 	}
@@ -1574,7 +1958,7 @@ func (journal *DurableRelayRouteJournal) readTerminalArtifactHandoff(artifactDig
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 ||
+	if err != nil || !relayJournalFileInfoSecure(info) ||
 		info.Size() <= 0 || info.Size() > maximumRelayTerminalHandoffBytes {
 		return relayTerminalArtifactHandoff{}, false, errors.New("relay terminal artifact handoff is invalid")
 	}
@@ -1620,12 +2004,20 @@ func (journal *DurableRelayRouteJournal) AcknowledgeTerminalHandoff(
 	if j.lock == nil {
 		return errors.New("relay route journal is closed")
 	}
+	if err := j.ensureStorageIdentity(); err != nil {
+		return err
+	}
 	tombstone, found, err := j.readTerminalRouteTombstone(acknowledgement.Reference.StableActionID)
 	if err != nil {
 		return err
 	}
 	if !found {
 		return agentrelay.ErrRelayUnknown
+	}
+	priorTombstoneRaw, priorMarshalErr := json.Marshal(tombstone)
+	if priorMarshalErr != nil || len(priorTombstoneRaw) == 0 ||
+		len(priorTombstoneRaw) > maximumRelayTerminalRouteBytes {
+		return errors.New("encode prior relay terminal tombstone")
 	}
 	if tombstone.ExactRequestDigest != acknowledgement.Reference.ExactRequestDigest ||
 		tombstone.RelayExecutionDigest != acknowledgement.Reference.RelayExecutionDigest ||
@@ -1672,7 +2064,7 @@ func (journal *DurableRelayRouteJournal) AcknowledgeTerminalHandoff(
 		if pathErr != nil {
 			return pathErr
 		}
-		if _, statErr := os.Lstat(artifactPath); errors.Is(statErr, os.ErrNotExist) {
+		if _, statErr := journal.lstat(artifactPath); errors.Is(statErr, os.ErrNotExist) {
 			// Already archived after a complete prior acknowledgement.
 			return nil
 		} else if statErr != nil {
@@ -1702,12 +2094,18 @@ func (journal *DurableRelayRouteJournal) AcknowledgeTerminalHandoff(
 		if marshalErr != nil || len(raw) == 0 || len(raw) > maximumRelayTerminalRouteBytes {
 			return errors.New("encode relay terminal handoff tombstone")
 		}
+		delta := int64(len(raw) - len(priorTombstoneRaw))
+		if delta > 0 && journal.terminalTombstoneBytes > maximumRelayTerminalRegistryBytes-delta {
+			return errors.New("relay terminal replay registry byte capacity is exhausted")
+		}
 		// Persist the permanent accounting binding before making the large
 		// artifact evictable. A crash here leaves the artifact protected until
 		// an idempotent retry writes the sidecar below.
-		if err := writeRelayJournalAtomic(filepath.Dir(tombstonePath), tombstonePath, raw); err != nil {
+		if err := journal.writeAtomic(tombstonePath, raw); err != nil {
+			journal.refreshPermanentRegistryCounts()
 			return err
 		}
+		journal.terminalTombstoneBytes += delta
 	}
 	handoffPath, err := j.terminalArtifactHandoffPath(tombstone.ProtectedArtifactDigest, true)
 	if err != nil {
@@ -1717,7 +2115,7 @@ func (journal *DurableRelayRouteJournal) AcknowledgeTerminalHandoff(
 	if err != nil || len(raw) == 0 || len(raw) > maximumRelayTerminalHandoffBytes {
 		return errors.New("encode relay terminal artifact handoff")
 	}
-	if err := writeRelayJournalAtomic(filepath.Dir(handoffPath), handoffPath, raw); err != nil {
+	if err := journal.writeAtomic(handoffPath, raw); err != nil {
 		return err
 	}
 	return j.compactTerminalArtifacts("")
@@ -1747,13 +2145,13 @@ func (journal *DurableRelayRouteJournal) readTerminalArtifact(artifactDigest str
 	if err != nil {
 		return RelayRouteRecord{}, err
 	}
-	file, err := openRelayJournalFile(path)
+	file, err := journal.openFile(path)
 	if err != nil {
 		return RelayRouteRecord{}, err
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 ||
+	if err != nil || !relayJournalFileInfoSecure(info) ||
 		info.Size() <= 0 || info.Size() > maximumRelayTerminalArtifactBytes {
 		return RelayRouteRecord{}, errors.New("relay terminal route artifact is invalid")
 	}
@@ -1791,6 +2189,16 @@ func (journal *DurableRelayRouteJournal) writeTerminalRoute(record RelayRouteRec
 		}
 		return nil
 	}
+	if journal.terminalTombstoneCount >= maximumRelayTerminalTombstones {
+		return errors.New("relay terminal replay registry capacity is exhausted")
+	}
+	tombstoneRaw, err := json.Marshal(tombstone)
+	if err != nil || len(tombstoneRaw) == 0 || len(tombstoneRaw) > maximumRelayTerminalRouteBytes {
+		return errors.New("encode bounded relay terminal route tombstone")
+	}
+	if journal.terminalTombstoneBytes > maximumRelayTerminalRegistryBytes-int64(len(tombstoneRaw)) {
+		return errors.New("relay terminal replay registry byte capacity is exhausted")
+	}
 	artifactPath, err := journal.terminalArtifactPath(artifactDigest, true)
 	if err != nil {
 		return err
@@ -1800,8 +2208,8 @@ func (journal *DurableRelayRouteJournal) writeTerminalRoute(record RelayRouteRec
 	if err != nil || len(artifactRaw) == 0 || len(artifactRaw) > maximumRelayTerminalArtifactBytes {
 		return errors.New("encode bounded relay terminal route artifact")
 	}
-	if _, statErr := os.Lstat(artifactPath); errors.Is(statErr, os.ErrNotExist) {
-		if err := writeRelayJournalAtomic(filepath.Dir(artifactPath), artifactPath, artifactRaw); err != nil {
+	if _, statErr := journal.lstat(artifactPath); errors.Is(statErr, os.ErrNotExist) {
+		if err := journal.writeAtomic(artifactPath, artifactRaw); err != nil {
 			return err
 		}
 	} else if statErr != nil {
@@ -1814,13 +2222,12 @@ func (journal *DurableRelayRouteJournal) writeTerminalRoute(record RelayRouteRec
 	if err != nil {
 		return err
 	}
-	tombstoneRaw, err := json.Marshal(tombstone)
-	if err != nil || len(tombstoneRaw) == 0 || len(tombstoneRaw) > maximumRelayTerminalRouteBytes {
-		return errors.New("encode bounded relay terminal route tombstone")
-	}
-	if err := writeRelayJournalAtomic(filepath.Dir(tombstonePath), tombstonePath, tombstoneRaw); err != nil {
+	if err := journal.writeAtomic(tombstonePath, tombstoneRaw); err != nil {
+		journal.refreshPermanentRegistryCounts()
 		return err
 	}
+	journal.terminalTombstoneCount++
+	journal.terminalTombstoneBytes += int64(len(tombstoneRaw))
 	return journal.compactTerminalArtifacts(artifactDigest)
 }
 
@@ -1832,7 +2239,10 @@ type relayTerminalArtifactFile struct {
 }
 
 func (journal *DurableRelayRouteJournal) scanTerminalArtifacts() ([]relayTerminalArtifactFile, error) {
-	shards, err := os.ReadDir(journal.terminalArtifactDirectory)
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return nil, err
+	}
+	shards, err := journal.readDirectory(journal.terminalArtifactDirectory)
 	if err != nil {
 		return nil, errors.New("read relay terminal artifact registry")
 	}
@@ -1842,10 +2252,7 @@ func (journal *DurableRelayRouteJournal) scanTerminalArtifacts() ([]relayTermina
 			return nil, errors.New("relay terminal artifact registry contains an invalid shard")
 		}
 		shardPath := filepath.Join(journal.terminalArtifactDirectory, shard.Name())
-		if validateRelayJournalDirectorySecurity(shardPath) != nil {
-			return nil, errors.New("relay terminal artifact shard is not owner-private")
-		}
-		entries, readErr := os.ReadDir(shardPath)
+		entries, readErr := journal.readDirectory(shardPath)
 		if readErr != nil {
 			return nil, errors.New("read relay terminal artifact shard")
 		}
@@ -1855,7 +2262,7 @@ func (journal *DurableRelayRouteJournal) scanTerminalArtifacts() ([]relayTermina
 			name := entry.Name()
 			path := filepath.Join(shardPath, name)
 			info, infoErr := entry.Info()
-			if infoErr != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			if infoErr != nil || !relayJournalFileInfoSecure(info) {
 				return nil, errors.New("relay terminal artifact registry contains an invalid file")
 			}
 			switch {
@@ -1887,7 +2294,7 @@ func (journal *DurableRelayRouteJournal) scanTerminalArtifacts() ([]relayTermina
 				continue
 			}
 			path, pathErr := journal.terminalArtifactHandoffPath(digest, false)
-			if pathErr != nil || os.Remove(path) != nil {
+			if pathErr != nil || journal.removeFile(path) != nil {
 				return nil, errors.New("clean archived relay terminal handoff marker")
 			}
 		}
@@ -1906,6 +2313,9 @@ func (journal *DurableRelayRouteJournal) scanTerminalArtifacts() ([]relayTermina
 		}
 		copy := handoff
 		artifacts[index].handoff = &copy
+	}
+	if err := journal.ensureStorageIdentity(); err != nil {
+		return nil, err
 	}
 	return artifacts, nil
 }
@@ -1938,14 +2348,14 @@ func (journal *DurableRelayRouteJournal) compactTerminalArtifacts(protectedDiges
 		// The permanent tombstone was verified above to bind the exact
 		// accounting receipt. Remove the large artifact first; a crash before
 		// sidecar cleanup is safely repaired by scanTerminalArtifacts.
-		if err := os.Remove(artifact.path); err != nil {
+		if err := journal.removeFile(artifact.path); err != nil {
 			return errors.New("archive acknowledged relay terminal artifact")
 		}
 		handoffPath, pathErr := journal.terminalArtifactHandoffPath(artifact.digest, false)
 		if pathErr != nil {
 			return pathErr
 		}
-		if err := os.Remove(handoffPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := journal.removeFile(handoffPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return errors.New("remove archived relay terminal handoff marker")
 		}
 		remove--
@@ -1980,20 +2390,66 @@ func (journal *DurableRelayRouteJournal) reserveTerminalArtifactCapacity() error
 	return nil
 }
 
+// reservePermanentReplayCapacity reserves the worst-case terminal tombstone
+// and, for sponsorship modes, the chain-effect replay fence before the first
+// external side effect. Capacity pressure can reject new work, but can never
+// strand an existing route without room to record its permanent identity.
+func (journal *DurableRelayRouteJournal) reservePermanentReplayCapacity(newMode agentrelay.Mode) error {
+	terminalReservations := len(journal.records) + 1
+	if !relayPermanentRegistryCapacityAvailable(journal.terminalTombstoneCount,
+		journal.terminalTombstoneBytes, terminalReservations, maximumRelayTerminalTombstones,
+		maximumRelayTerminalRouteBytes, maximumRelayTerminalRegistryBytes) {
+		return errors.New("relay terminal replay registry capacity is reserved by active routes")
+	}
+	sponsorshipRoutes := 0
+	for _, record := range journal.records {
+		if record.Hops[0].Attempt.Execution.QuoteRequest.Body.Mode != agentrelay.ModeRelayExact {
+			sponsorshipRoutes++
+		}
+	}
+	if newMode != agentrelay.ModeRelayExact {
+		sponsorshipRoutes++
+	}
+	if !relayPermanentRegistryCapacityAvailable(journal.sponsorshipEffectCount,
+		journal.sponsorshipEffectBytes, sponsorshipRoutes, maximumRelaySponsorshipEffects,
+		maximumRelaySponsorshipEffectBytes, maximumRelayEffectRegistryBytes) {
+		return errors.New("relay sponsorship replay registry capacity is reserved by active routes")
+	}
+	return nil
+}
+
+// relayPermanentRegistryCapacityAvailable reserves both persistent entry
+// count and worst-case bytes without performing an overflowing addition or
+// multiplication. A route is admitted only when every currently active route
+// can still materialize its permanent replay record after all existing
+// records have consumed their lifetime capacity.
+func relayPermanentRegistryCapacityAvailable(currentCount int, currentBytes int64,
+	reservations int, maximumCount int, maximumEntryBytes, maximumBytes int64) bool {
+	if currentCount < 0 || currentBytes < 0 || reservations < 0 || maximumCount <= 0 ||
+		maximumEntryBytes <= 0 || maximumBytes < maximumEntryBytes ||
+		currentCount > maximumCount || reservations > maximumCount-currentCount ||
+		currentBytes > maximumBytes {
+		return false
+	}
+	if int64(reservations) > maximumBytes/maximumEntryBytes {
+		return false
+	}
+	reservedBytes := int64(reservations) * maximumEntryBytes
+	return currentBytes <= maximumBytes-reservedBytes
+}
+
 func (journal *DurableRelayRouteJournal) sponsorshipChainEffectPath(effectDigest string,
 	createShard bool) (string, error) {
 	if journal == nil || !canonicalSHA256(effectDigest) ||
-		!filepath.IsAbs(journal.effectDirectory) {
+		!filepath.IsAbs(journal.effectDirectory) || createShard && journal.lock == nil ||
+		journal.lock != nil && journal.ensureStorageIdentity() != nil {
 		return "", agentrelay.ErrRelayInvalidState
 	}
 	hexDigest := strings.TrimPrefix(effectDigest, "sha256:")
 	shard := filepath.Join(journal.effectDirectory, hexDigest[:2])
 	if createShard {
-		if err := os.Mkdir(shard, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		if err := journal.mkdirDirectory(shard); err != nil {
 			return "", errors.New("create relay sponsorship effect shard")
-		}
-		if err := validateRelayJournalDirectorySecurity(shard); err != nil {
-			return "", errors.New("relay sponsorship effect shard is not owner-private")
 		}
 	}
 	return filepath.Join(shard, hexDigest+".json"), nil
@@ -2005,7 +2461,7 @@ func (journal *DurableRelayRouteJournal) readSponsorshipChainEffect(effectDigest
 	if err != nil {
 		return RelaySponsorshipChainEffect{}, false, err
 	}
-	file, err := openRelayJournalFile(path)
+	file, err := journal.openFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return RelaySponsorshipChainEffect{}, false, nil
 	}
@@ -2014,7 +2470,7 @@ func (journal *DurableRelayRouteJournal) readSponsorshipChainEffect(effectDigest
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 ||
+	if err != nil || !relayJournalFileInfoSecure(info) ||
 		info.Size() <= 0 || info.Size() > maximumRelaySponsorshipEffectBytes {
 		return RelaySponsorshipChainEffect{}, false, errors.New("relay sponsorship effect file is invalid")
 	}
@@ -2022,6 +2478,7 @@ func (journal *DurableRelayRouteJournal) readSponsorshipChainEffect(effectDigest
 	var effect RelaySponsorshipChainEffect
 	if err != nil || len(raw) == 0 || len(raw) > maximumRelaySponsorshipEffectBytes ||
 		decodeStrictJSON(raw, &effect) != nil || effect.EffectIdentityDigest != effectDigest ||
+		effect.OwnerID != journal.ownerID || effect.AgentID != journal.agentID ||
 		!validRelaySponsorshipChainEffect(effect) {
 		return RelaySponsorshipChainEffect{}, false, errors.New("relay sponsorship effect record is invalid")
 	}
@@ -2040,6 +2497,9 @@ func (journal *DurableRelayRouteJournal) writeSponsorshipChainEffect(effect Rela
 		}
 		return nil
 	}
+	if journal.sponsorshipEffectCount >= maximumRelaySponsorshipEffects {
+		return errors.New("relay sponsorship replay registry capacity is exhausted")
+	}
 	path, err := journal.sponsorshipChainEffectPath(effect.EffectIdentityDigest, true)
 	if err != nil {
 		return err
@@ -2048,7 +2508,88 @@ func (journal *DurableRelayRouteJournal) writeSponsorshipChainEffect(effect Rela
 	if err != nil || len(raw) == 0 || len(raw) > maximumRelaySponsorshipEffectBytes {
 		return errors.New("encode relay sponsorship effect record")
 	}
-	return writeRelayJournalAtomic(filepath.Dir(path), path, raw)
+	if journal.sponsorshipEffectBytes > maximumRelayEffectRegistryBytes-int64(len(raw)) {
+		return errors.New("relay sponsorship replay registry byte capacity is exhausted")
+	}
+	if err := journal.writeAtomic(path, raw); err != nil {
+		journal.refreshPermanentRegistryCounts()
+		return err
+	}
+	journal.sponsorshipEffectCount++
+	journal.sponsorshipEffectBytes += int64(len(raw))
+	return nil
+}
+
+func (journal *DurableRelayRouteJournal) refreshPermanentRegistryCounts() {
+	if count, bytes, err := journal.countRelayPermanentRegistry(journal.terminalDirectory, ".json",
+		maximumRelayTerminalTombstones, maximumRelayTerminalRouteBytes,
+		maximumRelayTerminalRegistryBytes); err == nil {
+		journal.terminalTombstoneCount, journal.terminalTombstoneBytes = count, bytes
+	} else {
+		journal.terminalTombstoneCount = maximumRelayTerminalTombstones
+		journal.terminalTombstoneBytes = maximumRelayTerminalRegistryBytes
+	}
+	if count, bytes, err := journal.countRelayPermanentRegistry(journal.effectDirectory, ".json",
+		maximumRelaySponsorshipEffects, maximumRelaySponsorshipEffectBytes,
+		maximumRelayEffectRegistryBytes); err == nil {
+		journal.sponsorshipEffectCount, journal.sponsorshipEffectBytes = count, bytes
+	} else {
+		journal.sponsorshipEffectCount = maximumRelaySponsorshipEffects
+		journal.sponsorshipEffectBytes = maximumRelayEffectRegistryBytes
+	}
+}
+
+func (journal *DurableRelayRouteJournal) countRelayPermanentRegistry(directory, suffix string,
+	maximum int, maximumFileBytes, maximumBytes int64) (int, int64, error) {
+	if journal == nil || !filepath.IsAbs(directory) || suffix == "" || maximum <= 0 ||
+		maximumFileBytes <= 0 || maximumBytes < maximumFileBytes {
+		return 0, 0, errors.New("relay permanent registry configuration is invalid")
+	}
+	root, name, err := journal.rootedPath(directory)
+	if err != nil {
+		return 0, 0, err
+	}
+	return countRelayPermanentRegistryPinned(root, name, suffix, maximum, maximumFileBytes, maximumBytes)
+}
+
+func countRelayPermanentRegistryPinned(directory *relayPinnedDirectory, name, suffix string,
+	maximum int, maximumFileBytes, maximumBytes int64) (int, int64, error) {
+	if directory == nil || suffix == "" || maximum <= 0 || maximumFileBytes <= 0 ||
+		maximumBytes < maximumFileBytes {
+		return 0, 0, errors.New("relay permanent registry configuration is invalid")
+	}
+	shards, err := directory.readDir(name)
+	if err != nil {
+		return 0, 0, err
+	}
+	count := 0
+	var totalBytes int64
+	for _, shard := range shards {
+		if !shard.IsDir() || len(shard.Name()) != 2 {
+			return 0, 0, errors.New("relay permanent registry contains an invalid shard")
+		}
+		shardPath := filepath.Join(name, shard.Name())
+		entries, err := directory.readDir(shardPath)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), suffix) {
+				return 0, 0, errors.New("relay permanent registry contains an invalid entry")
+			}
+			info, statErr := directory.lstat(filepath.Join(shardPath, entry.Name()))
+			if statErr != nil || !relayJournalFileInfoSecure(info) || info.Size() <= 0 ||
+				info.Size() > maximumFileBytes || totalBytes > maximumBytes-info.Size() {
+				return 0, 0, errors.New("relay permanent registry byte capacity is exceeded")
+			}
+			totalBytes += info.Size()
+			count++
+			if count > maximum {
+				return 0, 0, errors.New("relay permanent registry capacity is exceeded")
+			}
+		}
+	}
+	return count, totalBytes, nil
 }
 
 func (journal *DurableRelayRouteJournal) cacheSponsorshipChainEffect(effect RelaySponsorshipChainEffect) {
@@ -2084,6 +2625,7 @@ func validRelaySponsorshipChainEffect(record RelaySponsorshipChainEffect) bool {
 		SignedTransactionCellHash:     record.SignedTransactionCellHash,
 		SubmittedTransactionHash:      record.SubmittedTransactionHash}
 	binding := relaySponsorshipEffectBindingV1{AgreementBodyDigest: record.AgreementBodyDigest,
+		OwnerID: record.OwnerID, AgentID: record.AgentID,
 		AgreementObligationID:         record.AgreementObligationID,
 		AgreementPaymentRequestDigest: record.AgreementPaymentRequestDigest,
 		SponsorshipStableActionID:     record.SponsorshipStableActionID,
@@ -2091,6 +2633,7 @@ func validRelaySponsorshipChainEffect(record RelaySponsorshipChainEffect) bool {
 	effectDigest, effectErr := codec.Digest("tos.openfox.agent-relay-sponsorship-chain-effect.v1", identity)
 	bindingDigest, bindingErr := codec.Digest("tos.openfox.agent-relay-sponsorship-chain-effect-binding.v1", binding)
 	return effectErr == nil && bindingErr == nil && effectDigest == record.EffectIdentityDigest &&
+		boundedRelayTrustDomain(record.OwnerID) && boundedRelayTrustDomain(record.AgentID) &&
 		bindingDigest == record.BindingDigest && canonicalSHA256(record.NetworkDigest) &&
 		record.ProviderSponsorSourceAccount != "" &&
 		validTVMCellSHA256(record.SignedTransactionCellHash) && record.SubmittedTransactionHash != "" &&

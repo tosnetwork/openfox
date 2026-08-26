@@ -60,7 +60,8 @@ func TestTOSCTLRelayAbsenceCapabilityIsExactAndSponsorOnlyDoesNotRequireDual(t *
 			return tosctlSnapshotCapability(t, root, paths, fixture.network, 1000), nil
 		case "economic-payment-sponsorship-dual-absence-capability":
 			role := relayTestCLIFlag(args, "--role")
-			return tosctlRelayAbsenceCapabilityFixture(t, root, paths, capability, role), nil
+			return tosctlRelayAbsenceCapabilityFixture(t, root, paths, capability, role,
+				relayTestCLIFlag(args, "--corroboration-snapshot-identity")), nil
 		default:
 			return nil, errors.New("unexpected tosctl command: " + args[2])
 		}
@@ -94,10 +95,129 @@ func TestTOSCTLRelayAbsenceCapabilityIsExactAndSponsorOnlyDoesNotRequireDual(t *
 	}
 }
 
+func TestTOSCTLRelaySponsorOnlyAbsenceResolvesThroughProcessor(t *testing.T) {
+	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
+	fixture.enableClientCorroboratedTerminalProfile()
+	root := privateTempDir(t)
+	paths := tosctlSponsorshipTestConfigs(t, root, fixture.network)
+	policy, _, err := buildTOSCTLSponsorshipEvidenceProfile(paths, fixture.network, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.prepared.QuoteBody.AssuranceLevel = agentrelay.AssuranceAuthorizedSingleProvider
+	fixture.prepared.QuoteBody.SponsorshipReleaseEvidenceClass = policy.EvidenceClass
+	fixture.prepared.QuoteBody.SponsorshipReleaseProfileURI = policy.ProfileURI
+	fixture.prepared.QuoteBody.SponsorshipReleaseProfileDigest = policy.ProfileDigest
+	execution, agreement, obligation := relaySponsorshipFixtureForMode(t, fixture, agentrelay.ModeSponsorOnly)
+	capability, err := relayEvidenceCapabilityForExecution(execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
+	authorityDirectory := filepath.Join(root, "authority")
+	if err := os.Mkdir(authorityDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:provider",
+		fixture.profile.ProviderAgentID, "authority:provider", authorityKey, PortfolioLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
+	authority.now = func() time.Time { return fixture.now }
+	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.direct"}, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absenceNow := time.Unix(int64(maxUint64(
+		execution.QuoteRequest.Body.TransactionValidUntilUnix+
+			uint64(execution.ProviderQuote.Body.SponsorshipTerminalProfile.ReorgWindowSeconds)+1,
+		uint64(fixture.now.Unix()))), 0).UTC()
+	sink := &TOSCTLPaymentSink{Authority: authority, Executable: "/usr/bin/tosctl", ConfigPath: paths[0],
+		Wallet: "provider", SourceAccount: "0:sponsor", NetworkGlobalID: fixture.network.GlobalID,
+		FeeReserveNanoTOS: 1, RelayNetworkDomain: &fixture.network, QuorumConfigPaths: paths[1:],
+		MaximumTransactions: 1000, EvidenceDirectory: root, RelaySponsorshipReleasePolicy: policy,
+		RelayTerminalFinalityProfiles: []agentrelay.FinalityProfile{fixture.sponsorshipFinality},
+		Now:                           func() time.Time { return absenceNow }}
+	sink.RelayNetworkPreflight = func(context.Context, string, agentrelay.NetworkDomain) error { return nil }
+	var recoveryToken relaySponsorshipRecoveryToken
+	var componentRaw []byte
+	sink.Run = func(_ context.Context, args []string, _ []string) ([]byte, error) {
+		if len(args) < 3 {
+			return nil, errors.New("short tosctl command")
+		}
+		switch args[2] {
+		case "economic-payment-corroboration-profile":
+			return tosctlSnapshotCapability(t, root, paths, fixture.network, 1000), nil
+		case "economic-payment-sponsorship-dual-absence-capability":
+			return tosctlRelayAbsenceCapabilityFixture(t, root, paths, capability,
+				relayTestCLIFlag(args, "--role"), relayTestCLIFlag(args, "--corroboration-snapshot-identity")), nil
+		case "economic-payment-sponsorship-corroborated-terminal":
+			paymentDigest, _ := commerce.AgreementPaymentRequestDigest(recoveryToken.Payment)
+			canonical, _, _ := commerce.PaymentAuthorizationMaterial(recoveryToken.Payment)
+			exactDigest, _ := commerce.ExactRequestDigest(canonical)
+			return mustJSON(t, tosctlRelaySponsorshipTerminalUnknown{
+				Schema: tosctlRelaySponsorshipFinalitySchema, State: "unknown", Category: "not_mature",
+				Reason:                        "quorum checkpoint has not crossed the selected chain-time reorg window",
+				StableActionID:                recoveryToken.Payment.StableActionID,
+				AgreementPaymentRequestDigest: paymentDigest, SponsorshipExactRequestDigest: exactDigest,
+				CustodyState: "broadcasting", ChainSideEffect: false, CustodySideEffect: false}), nil
+		case "economic-payment-sponsorship-component-absence":
+			return componentRaw, nil
+		default:
+			return nil, errors.New("unexpected tosctl command: " + args[2])
+		}
+	}
+	processor := &AgreementSponsorshipProcessor{Engine: &Engine{OwnerID: "owner:provider",
+		AgentID: fixture.profile.ProviderAgentID, MandateDigest: relayTestDigest("a"),
+		Gates: FeatureGates{DirectPayment: true}, Authority: authority, Now: func() time.Time { return fixture.now }},
+		Sink: sink, EvidenceResolver: sink, AbsenceResolver: sink, TransactionEvidenceVerifier: sink,
+		NetworkDomain: fixture.network, NativeAsset: fixture.asset, PolicyRevision: 1,
+		WriterFence: fence, Now: func() time.Time { return fixture.now }}
+	recovery, err := processor.PrepareRecovery(t.Context(), execution, agreement, obligation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryToken, err = decodeRelaySponsorshipRecoveryHandle(recovery, execution)
+	if err != nil || recoveryToken.EvidenceSnapshot == nil {
+		t.Fatalf("decode sponsor-only recovery token: token=%+v err=%v", recoveryToken, err)
+	}
+	componentRaw, _, _, _, _ = tosctlRelayAbsenceWireFixture(t, sink, execution, recoveryToken.Payment,
+		*recoveryToken.EvidenceSnapshot, agentrelay.RelayAbsenceProofSponsorshipOnly, nil, "")
+	processor.Now = func() time.Time { return absenceNow }
+	resolution, err := processor.ResolveFinalized(t.Context(), execution, recovery)
+	if err != nil || resolution.Status != agentrelay.SponsorshipResolutionCorroboratedAbsent ||
+		len(resolution.SponsorshipAbsenceObservations) == 0 || len(resolution.TransactionAbsenceObservations) != 0 {
+		t.Fatalf("sponsor-only processor rejected its exact absence proof: resolution=%+v err=%v", resolution, err)
+	}
+
+	wrongScope := resolution
+	wrongScope.TransactionAbsenceObservations = append([]agentrelay.RelayAbsenceObservationReference(nil),
+		wrongScope.SponsorshipAbsenceObservations...)
+	if err := processor.validateTypedSponsorshipResolution(t.Context(), execution, recoveryToken.Payment,
+		recoveryToken.EvidenceSnapshot, wrongScope); err == nil {
+		t.Fatal("sponsor-only processor accepted a nonexistent transaction absence component")
+	}
+	transactionOnly := resolution
+	transactionOnly.TransactionAbsenceObservations = transactionOnly.SponsorshipAbsenceObservations
+	transactionOnly.SponsorshipAbsenceObservations = nil
+	combinedExecution := execution
+	combinedExecution.QuoteRequest.Body.Mode = agentrelay.ModeSponsorAndRelay
+	if err := processor.validateTypedSponsorshipResolution(t.Context(), combinedExecution, recoveryToken.Payment,
+		recoveryToken.EvidenceSnapshot, transactionOnly); err == nil {
+		t.Fatal("combined processor accepted transaction-only absence evidence")
+	}
+}
+
 func TestTOSCTLRelayCompositeSkipsBaseOnlyForExactPreSubmitSponsorshipOnly(t *testing.T) {
 	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
 	fixture.finality.TerminalEvidenceClass = agentrelay.RelayTerminalProviderCorroborated
+	fixture.finality.ProfileURI = "tos.relay.provider-corroborated-terminal.v1"
+	fixture.finality.ProfileDigest = relayTestDigest("e")
 	fixture.prepared.QuoteBody.RelayTerminalEvidenceClass = fixture.finality.TerminalEvidenceClass
+	fixture.prepared.QuoteBody.RelayFinalityProfileURI = fixture.finality.ProfileURI
+	fixture.prepared.QuoteBody.RelayFinalityProfileDigest = fixture.finality.ProfileDigest
 	fixture.enableClientCorroboratedTerminalProfile()
 	root := privateTempDir(t)
 	paths := tosctlSponsorshipTestConfigs(t, root, fixture.network)
@@ -175,6 +295,11 @@ func TestTOSCTLRelayCompositeSkipsBaseOnlyForExactPreSubmitSponsorshipOnly(t *te
 	if err := verifier.VerifyRelayFinalityFromSnapshot(t.Context(), execution, evidence, raw); err != nil || baseCalls != 0 {
 		t.Fatalf("exact pre-submit sponsorship-only result reached relay verifier: calls=%d err=%v", baseCalls, err)
 	}
+	autonomous := capability
+	autonomous.AssuranceLevel = agentrelay.AssuranceAutonomousDecentralized
+	if relayEvidenceMaySkipTerminalRelayVerification(autonomous, evidence.Body) {
+		t.Fatal("autonomous combined result accepted an absence-free sponsorship-only shortcut")
+	}
 	evidence.Body.SubmittedTransactionHash = "tx:client-claim"
 	if err := verifier.VerifyRelayFinalityFromSnapshot(t.Context(), execution, evidence, raw); !errors.Is(err, baseErr) || baseCalls != 1 {
 		t.Fatalf("relay-positive claim bypassed frozen base verifier: calls=%d err=%v", baseCalls, err)
@@ -193,7 +318,11 @@ func pointerRelaySponsorshipSnapshot(snapshot RelaySponsorshipEvidenceSnapshot) 
 func TestTOSCTLRelayDualAbsencePreservesFrozenComponentAndUsesQueryOnlyPromotion(t *testing.T) {
 	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
 	fixture.finality.TerminalEvidenceClass = agentrelay.RelayTerminalProviderCorroborated
+	fixture.finality.ProfileURI = "tos.relay.provider-corroborated-terminal.v1"
+	fixture.finality.ProfileDigest = relayTestDigest("e")
 	fixture.prepared.QuoteBody.RelayTerminalEvidenceClass = fixture.finality.TerminalEvidenceClass
+	fixture.prepared.QuoteBody.RelayFinalityProfileURI = fixture.finality.ProfileURI
+	fixture.prepared.QuoteBody.RelayFinalityProfileDigest = fixture.finality.ProfileDigest
 	fixture.enableClientCorroboratedTerminalProfile()
 	root := privateTempDir(t)
 	paths := tosctlSponsorshipTestConfigs(t, root, fixture.network)
@@ -234,7 +363,8 @@ func TestTOSCTLRelayDualAbsencePreservesFrozenComponentAndUsesQueryOnlyPromotion
 		RelayTerminalFinalityProfiles: []agentrelay.FinalityProfile{fixture.sponsorshipFinality},
 		Now:                           func() time.Time { return absenceNow }}
 	sink.RelayNetworkPreflight = func(context.Context, string, agentrelay.NetworkDomain) error { return nil }
-	var dualRaw []byte
+	var componentRaw, dualRaw []byte
+	var recoveryToken relaySponsorshipRecoveryToken
 	dualCalls := 0
 	sink.Run = func(_ context.Context, args []string, _ []string) ([]byte, error) {
 		if len(args) < 3 {
@@ -249,13 +379,25 @@ func TestTOSCTLRelayDualAbsencePreservesFrozenComponentAndUsesQueryOnlyPromotion
 				return nil, capabilityErr
 			}
 			return tosctlRelayAbsenceCapabilityFixture(t, root, paths, capability,
-				relayTestCLIFlag(args, "--role")), nil
+				relayTestCLIFlag(args, "--role"), relayTestCLIFlag(args, "--corroboration-snapshot-identity")), nil
 		case "economic-payment-sponsorship-dual-absence":
 			dualCalls++
 			if relayTestCLIFlag(args, "--existing-sponsorship-proof-bundle-cbor") == "" {
 				return nil, errors.New("dual promotion lost its protected predecessor")
 			}
 			return dualRaw, nil
+		case "economic-payment-sponsorship-corroborated-terminal":
+			paymentDigest, _ := commerce.AgreementPaymentRequestDigest(recoveryToken.Payment)
+			canonical, _, _ := commerce.PaymentAuthorizationMaterial(recoveryToken.Payment)
+			exactDigest, _ := commerce.ExactRequestDigest(canonical)
+			return mustJSON(t, tosctlRelaySponsorshipTerminalUnknown{
+				Schema: tosctlRelaySponsorshipFinalitySchema, State: "unknown", Category: "not_mature",
+				Reason:                        "quorum checkpoint has not crossed the selected chain-time reorg window",
+				StableActionID:                recoveryToken.Payment.StableActionID,
+				AgreementPaymentRequestDigest: paymentDigest, SponsorshipExactRequestDigest: exactDigest,
+				CustodyState: "broadcasting", ChainSideEffect: false, CustodySideEffect: false}), nil
+		case "economic-payment-sponsorship-component-absence":
+			return componentRaw, nil
 		default:
 			return nil, errors.New("unexpected tosctl command: " + args[2])
 		}
@@ -280,14 +422,21 @@ func TestTOSCTLRelayDualAbsencePreservesFrozenComponentAndUsesQueryOnlyPromotion
 	if err != nil || token.EvidenceSnapshot == nil {
 		t.Fatalf("decode frozen dual-absence recovery: token=%+v err=%v", token, err)
 	}
+	recoveryToken = token
 	processor.Now = func() time.Time { return absenceNow }
-	componentRaw, componentPayload, componentRefs, componentDigest, componentBundle :=
+	builtComponentRaw, componentPayload, componentRefs, componentDigest, componentBundle :=
 		tosctlRelayAbsenceWireFixture(t, sink, execution, token.Payment, *token.EvidenceSnapshot,
 			agentrelay.RelayAbsenceProofSponsorshipOnly, nil, "")
+	componentRaw = builtComponentRaw
 	component, err := sink.decodeRelaySponsorshipAbsence(execution, token.Payment, *token.EvidenceSnapshot, componentRaw)
 	if err != nil || component.ProofBundleDigest != componentDigest ||
 		!reflect.DeepEqual(component.SponsorshipAbsenceObservations, componentRefs) {
 		t.Fatalf("decode exact sponsorship component: component=%+v err=%v", component, err)
+	}
+	checkpoint, err := processor.ResolveFinalized(t.Context(), execution, recovery)
+	if err != nil || checkpoint.Status != agentrelay.SponsorshipResolutionCorroboratedAbsent ||
+		len(checkpoint.SponsorshipAbsenceObservations) == 0 || len(checkpoint.TransactionAbsenceObservations) != 0 {
+		t.Fatalf("combined processor rejected its valid S- checkpoint: resolution=%+v err=%v", checkpoint, err)
 	}
 	dualRaw, _, _, _, _ = tosctlRelayAbsenceWireFixture(t, sink, execution, token.Payment,
 		*token.EvidenceSnapshot, agentrelay.RelayAbsenceProofDual, &componentPayload, componentDigest)
@@ -317,7 +466,7 @@ func relayTestCLIFlag(args []string, name string) string {
 }
 
 func tosctlRelayAbsenceCapabilityFixture(t *testing.T, root string, paths []string,
-	capability agentrelay.RelayEvidenceCapability, role string) []byte {
+	capability agentrelay.RelayEvidenceCapability, role, snapshotIdentity string) []byte {
 	t.Helper()
 	var snapshot tosctlRelaySponsorshipCapability
 	if err := json.Unmarshal(tosctlSnapshotCapability(t, root, paths, capability.Network, 1000), &snapshot); err != nil {
@@ -341,7 +490,7 @@ func tosctlRelayAbsenceCapabilityFixture(t *testing.T, root string, paths []stri
 		SponsorshipTerminalProfile:       *capability.SponsorshipTerminalProfile,
 		RelayTerminalEvidenceClass:       capability.RelayTerminalEvidenceClass,
 		RelayFinalityProfile:             capability.RelayFinalityProfile,
-		SnapshotIdentity:                 snapshot.CorroborationSnapshotIdentity,
+		SnapshotIdentity:                 snapshotIdentity,
 		SnapshotMembers:                  snapshot.MemberCount, SnapshotThreshold: snapshot.EvidenceProfile.Threshold,
 		AbsenceProofProfileURI:        capability.AbsenceProofProfileURI,
 		AbsenceProofProfileDigest:     capability.AbsenceProofProfileDigest,

@@ -149,8 +149,8 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/tosnetwork/tos-ai v0.0.0-20260825005837-ff7607d532b4
-	github.com/tosnetwork/tos-messenger v0.0.0-20260827122045-1557c4df28ae
-	github.com/tosnetwork/tos-service-protocol v0.0.0-20260827121926-9495aece03b4
+	github.com/tosnetwork/tos-messenger v0.0.0-20260827123113-53ddf27a47d6
+	github.com/tosnetwork/tos-service-protocol v0.0.0-20260827123034-d87b62b98e1f
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.71.0 // indirect

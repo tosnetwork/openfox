@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
+	"github.com/tosnetwork/openfox/pkg/config"
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
 )
@@ -34,6 +35,19 @@ func guarantorCommand() *cobra.Command {
 	command := &cobra.Command{Use: "guarantor", Short: "Inspect the owner-gated Agent Guarantor runtime", Args: cobra.NoArgs}
 	command.AddCommand(guarantorStatusCommand())
 	return command
+}
+
+// validateGuarantorCLIAssembly prevents a generic earning worker from looking
+// healthy while silently omitting an enabled Guarantor Provider. The Provider
+// requires owner-supplied underwriting, historical authority, Decision
+// Authority, and payment dependencies which must be assembled explicitly via
+// earning.NewGuarantorProviderRuntime; they must never be inferred from model
+// output, Intent content, or weak CLI defaults.
+func validateGuarantorCLIAssembly(settings config.EarningSettings) error {
+	if settings.AgentGuarantor.Enabled || settings.Gates.AgentGuarantor {
+		return errors.New("Agent Guarantor side effects require an explicitly assembled NewGuarantorProviderRuntime; the generic earning CLI does not install authority dependencies")
+	}
+	return nil
 }
 
 func guarantorStatusCommand() *cobra.Command {

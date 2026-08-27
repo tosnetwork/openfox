@@ -15,3 +15,14 @@ func TestGuarantorWriterScopesIncludeEveryPayoutVariant(t *testing.T) {
 		}
 	}
 }
+
+func TestGenericEarningCLIFailsClosedForGuarantorRuntime(t *testing.T) {
+	settings := config.EarningSettings{Gates: config.EarningGateSettings{AgentGuarantor: true},
+		AgentGuarantor: config.EarningAgentGuarantorSettings{Enabled: true}}
+	if err := validateGuarantorCLIAssembly(settings); err == nil {
+		t.Fatal("generic earning CLI silently accepted an unassembled Guarantor runtime")
+	}
+	if err := validateGuarantorCLIAssembly(config.EarningSettings{}); err != nil {
+		t.Fatalf("disabled Guarantor unexpectedly blocks the generic earning CLI: %v", err)
+	}
+}

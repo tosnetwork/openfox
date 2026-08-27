@@ -460,6 +460,9 @@ func runCommand() *cobra.Command {
 			if err := cfg.Earning.Validate(); err != nil {
 				return err
 			}
+			if err := validateGuarantorCLIAssembly(cfg.Earning); err != nil {
+				return err
+			}
 			if !cfg.Earning.Enabled || cfg.Earning.EffectiveMode() == "off" {
 				return errors.New("autonomous earning is off")
 			}

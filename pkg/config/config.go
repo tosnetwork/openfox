@@ -854,9 +854,37 @@ type EarningSettings struct {
 	ExternalSettlement         EarningExternalSettlementSettings `json:"external_settlement"`
 	Publication                EarningPublicationSettings        `json:"publication"`
 	AgentRelay                 EarningAgentRelaySettings         `json:"agent_relay"`
+	AgentGuarantor             EarningAgentGuarantorSettings     `json:"agent_guarantor"`
 	IntervalSeconds            uint32                            `json:"interval_seconds,omitempty"`
 	JitterSeconds              uint32                            `json:"jitter_seconds,omitempty"`
 	CycleTimeoutSeconds        uint32                            `json:"cycle_timeout_seconds,omitempty"`
+}
+
+// EarningAgentGuarantorSettings is an owner-authored, default-off risk and
+// capital boundary for the generic Guarantor Service profile. Intent content
+// and model output cannot populate this structure or increase its ceilings.
+type EarningAgentGuarantorSettings struct {
+	Enabled             bool     `json:"enabled"`
+	Role                string   `json:"role,omitempty"`
+	ProfileArtifactFile string   `json:"profile_artifact_file,omitempty"`
+	JournalDirectory    string   `json:"journal_directory,omitempty"`
+	AssuranceLevels     []string `json:"assurance_levels,omitempty"`
+	// Atomic exposure ceilings apply independently to each exact asset identity;
+	// OpenFox never adds unrelated native/token smallest units.
+	MaximumAggregateExposureAtomic  string   `json:"maximum_aggregate_exposure_atomic,omitempty"`
+	MaximumPerCoverageAtomic        string   `json:"maximum_per_coverage_atomic,omitempty"`
+	MaximumPerCounterpartyAtomic    string   `json:"maximum_per_counterparty_atomic,omitempty"`
+	MaximumActiveOffers             uint32   `json:"maximum_active_offers,omitempty"`
+	MaximumActiveCoverages          uint32   `json:"maximum_active_coverages,omitempty"`
+	MaximumActiveClaims             uint32   `json:"maximum_active_claims,omitempty"`
+	MinimumPremiumPPM               uint32   `json:"minimum_premium_ppm,omitempty"`
+	MaximumExpectedClaimProbability uint32   `json:"maximum_expected_claim_probability_ppm,omitempty"`
+	CapitalCostPPM                  uint32   `json:"capital_cost_ppm,omitempty"`
+	HTTPTimeoutMillis               uint32   `json:"http_timeout_millis,omitempty"`
+	MaximumHTTPBytes                uint64   `json:"maximum_http_bytes,omitempty"`
+	CollateralAdapterEnabled        bool     `json:"collateral_adapter_enabled,omitempty"`
+	IndependentCollateralEnabled    bool     `json:"independent_collateral_enabled,omitempty"`
+	CollateralAdapterProfileDigests []string `json:"collateral_adapter_profile_digests,omitempty"`
 }
 
 // EarningAgentRelaySettings is an owner-authored, default-off deployment
@@ -1220,6 +1248,7 @@ type EarningGateSettings struct {
 	ExternalSettlement bool `json:"external_settlement"`
 	TOSEscrow          bool `json:"tos_escrow"`
 	AgentRelay         bool `json:"agent_relay"`
+	AgentGuarantor     bool `json:"agent_guarantor"`
 }
 
 type EarningPolicySettings struct {

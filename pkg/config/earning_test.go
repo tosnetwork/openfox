@@ -19,6 +19,64 @@ func TestEarningDefaultsAndSideEffectsFailClosed(t *testing.T) {
 	}
 }
 
+func TestAgentGuarantorIsDefaultOffAndOwnerBounded(t *testing.T) {
+	settings := DefaultConfig().Earning
+	if settings.AgentGuarantor.Enabled || settings.Gates.AgentGuarantor {
+		t.Fatal("Agent Guarantor must default off")
+	}
+	settings = EarningSettings{Enabled: true, Mode: "policy-gated", StateDir: "/var/lib/openfox/earning",
+		OwnerID: "owner", AgentID: "agent:guarantor", AuthorityID: "authority:owner", MessengerSocket: "/run/openfox/messenger.sock",
+		MandateDigest: "sha256:" + strings.Repeat("a", 64), MinimumIndependentCarriers: 2,
+		TrustedIntentIssuerKeys: map[string]string{"agent:issuer": "ed25519:" + strings.Repeat("b", 64)},
+		Policy:                  EarningPolicySettings{MinimumExpectedProfitAtomic: "0", MaximumLossAtomic: "10000", MaximumOutgoingPaymentAtomic: "0"},
+		Gates:                   EarningGateSettings{Publication: true, Contact: true, Agreement: true, AgentGuarantor: true},
+		Carriers: []EarningCarrierSettings{{ID: "a", Kind: "directory", Directory: "/var/lib/openfox/carrier-a"},
+			{ID: "b", Kind: "directory", Directory: "/var/lib/openfox/carrier-b"}},
+		Publication: EarningPublicationSettings{NetworkID: "tos:test", AllowedAudiences: []string{"public"},
+			MinimumTTLSeconds: 60, MaximumTTLSeconds: 3600, MaximumActive: 10, MaximumRevisionsPerObject: 10,
+			MaximumPublicationsPerPeriod: 10, PeriodSeconds: 60},
+		AgentGuarantor: EarningAgentGuarantorSettings{Enabled: true, Role: "provider",
+			ProfileArtifactFile: "/etc/openfox/guarantor-profile.cbor", JournalDirectory: "/var/lib/openfox/guarantor",
+			AssuranceLevels: []string{"unsecured-signed"}, MaximumAggregateExposureAtomic: "10000",
+			MaximumPerCoverageAtomic: "1000", MaximumPerCounterpartyAtomic: "2000", MaximumActiveOffers: 10,
+			MaximumActiveCoverages: 10, MaximumActiveClaims: 100, MinimumPremiumPPM: 1000,
+			MaximumExpectedClaimProbability: 100000, CapitalCostPPM: 1000, HTTPTimeoutMillis: 5000,
+			MaximumHTTPBytes: 1 << 20}}
+	if err := settings.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	settings.Policy.MaximumLossAtomic = "9999"
+	if err := settings.Validate(); err == nil {
+		t.Fatal("Guarantor exposure exceeded the owner authority maximum-loss bucket")
+	}
+	settings.Policy.MaximumLossAtomic = "10000"
+	settings.AgentGuarantor.AssuranceLevels = []string{"collateral-attested", "unsecured-signed"}
+	if err := settings.Validate(); err == nil {
+		t.Fatal("collateral assurance bypassed its explicit Adapter gate")
+	}
+	settings.AgentGuarantor.CollateralAdapterEnabled = true
+	settings.AgentGuarantor.CollateralAdapterProfileDigests = []string{"sha256:" + strings.Repeat("c", 64)}
+	if err := settings.Validate(); err != nil {
+		t.Fatalf("explicitly gated collateral Adapter was rejected: %v", err)
+	}
+	settings.AgentGuarantor.AssuranceLevels = []string{"independently-enforceable", "unsecured-signed"}
+	if err := settings.Validate(); err == nil {
+		t.Fatal("independently enforceable collateral bypassed its second gate")
+	}
+	settings.AgentGuarantor.IndependentCollateralEnabled = true
+	if err := settings.Validate(); err != nil {
+		t.Fatalf("explicit independently enforceable Adapter was rejected: %v", err)
+	}
+	settings.AgentGuarantor.AssuranceLevels = []string{"unsecured-signed"}
+	settings.AgentGuarantor.CollateralAdapterEnabled = false
+	settings.AgentGuarantor.IndependentCollateralEnabled = false
+	settings.AgentGuarantor.CollateralAdapterProfileDigests = nil
+	settings.AgentGuarantor.MaximumPerCoverageAtomic = "10001"
+	if err := settings.Validate(); err == nil {
+		t.Fatal("Guarantor per-coverage cap exceeded aggregate exposure")
+	}
+}
+
 func TestEnabledEarningRequiresIndependentSecureCarriers(t *testing.T) {
 	settings := EarningSettings{Enabled: true, StateDir: "/tmp/openfox-earning", OwnerID: "owner", AgentID: "agent", AuthorityID: "authority",
 		MessengerSocket: "/tmp/openfox-messenger.sock",

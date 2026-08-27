@@ -8,6 +8,8 @@ import (
 	"time"
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
+	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 type exactSink struct {
@@ -15,18 +17,58 @@ type exactSink struct {
 	now         time.Time
 	calls       int
 	resolutions map[string]commerce.ActionResolution
+	messages    []OutboundMessage
 }
 
 func (sink *exactSink) Submit(_ context.Context, action commerce.AuthorizedAction, fence commerce.WriterFence,
-	fields map[string]commerce.SemanticValue, request []byte, _ OutboundMessage) (commerce.ActionResolution, error) {
+	fields map[string]commerce.SemanticValue, request []byte, message OutboundMessage) (commerce.ActionResolution, error) {
 	if err := commerce.VerifyAuthorizedAction(action, fields, request, fence, localFenceResolver{authorityID: "authority", key: sink.key}, sink.now); err != nil {
 		return commerce.ActionResolution{}, err
 	}
 	sink.calls++
+	sink.messages = append(sink.messages, message)
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, SinkReference: "event:test", StateRevision: 1}
 	sink.resolutions[action.StableActionID] = resolution
 	return resolution, nil
+}
+
+func TestEngineSendsRawCanonicalCommerceEventToMessengerBoundary(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner", "agent:a", "authority", authorityKey,
+		PortfolioLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
+	authority.now = func() time.Time { return now }
+	fence, err := authority.AcquireWriter(context.Background(), "runtime", []string{"messenger.send"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := guarantor.BuildCommerceProfileEventV1(context.Background(), "quote-request",
+		guarantor.AuthorizedCoverageQuoteRequestV1{}, guarantor.CommerceEventContextV1{CreatedAtUnix: uint64(now.Unix()),
+			ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &exactSink{key: authorityKey.Public().(ed25519.PublicKey), now: now,
+		resolutions: map[string]commerce.ActionResolution{}}
+	engine := &Engine{OwnerID: "owner", AgentID: "agent:a", MandateDigest: testDigest,
+		Gates: FeatureGates{AgentGuarantor: true}, Authority: authority, Sink: sink, Now: func() time.Time { return now }}
+	if resolution, sendErr := engine.SendCommerceProfileEvent(context.Background(), "agent:b", event,
+		guarantor.CommerceObjectVerifierV1{}, 1, fence); sendErr != nil || resolution.State != commerce.ActionTerminal {
+		t.Fatalf("send profile event: resolution=%#v err=%v", resolution, sendErr)
+	}
+	if len(sink.messages) != 1 || sink.messages[0].Kind != "commerce.profile-event" ||
+		sink.messages[0].ContentType != commerce.CommerceProfileEventContentType {
+		t.Fatalf("unexpected Messenger profile message: %#v", sink.messages)
+	}
+	var decoded commerce.CommerceProfileEventV1
+	if err := codec.Unmarshal(sink.messages[0].Payload, &decoded); err != nil || decoded.ObjectDigest != event.ObjectDigest {
+		t.Fatalf("Messenger received a wrapped payload instead of the canonical profile event: %#v err=%v", decoded, err)
+	}
 }
 
 func (sink *exactSink) ResolveAction(_ context.Context, actionID, requestDigest string) (commerce.ActionResolution, error) {

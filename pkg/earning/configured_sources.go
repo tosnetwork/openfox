@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 )
 
@@ -19,6 +20,17 @@ func (authorities PinnedIntentAuthorities) AuthorizeIntentKey(agentID string, ke
 		return errors.New("Intent issuer key is not in the owner-pinned finalized authority snapshot")
 	}
 	return nil
+}
+
+// AuthorizeAgentOperationKey applies the same owner-pinned finalized Agent-key
+// snapshot to the generic operation envelope. The profile and historical
+// proof remain signed inputs; the local pin is the actual trust decision.
+func (authorities PinnedIntentAuthorities) AuthorizeAgentOperationKey(agentID string, profile commerce.ProfileRefV1,
+	key ed25519.PublicKey, at time.Time, historicalProof []byte) error {
+	if commerce.ValidateProfileRefV1(profile) != nil || len(historicalProof) == 0 {
+		return errors.New("Agent operation authorization evidence is incomplete")
+	}
+	return authorities.AuthorizeIntentKey(agentID, key, at)
 }
 
 // PinnedRelayAuthorities scopes an owner-pinned Agent authority snapshot to

@@ -20,6 +20,7 @@ type EconomicAuthority interface {
 	AllocateInstance(commerce.AuthorityInstanceAllocationRequest, commerce.WriterFence) (commerce.AuthorityInstanceRecord, error)
 	Snapshot() (uint64, PortfolioLimits, []ExposureReservation)
 	ReleaseReservation(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte, commerce.WriterFence) (commerce.ActionResolution, error)
+	ReleaseGuarantorReservation(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte, commerce.WriterFence, uint64, uint64) (commerce.ActionResolution, error)
 	AuthorizeFenceKey(string, ed25519.PublicKey, time.Time) error
 	ConfirmCurrentWriterFence(commerce.WriterFence, time.Time) error
 	AuthorityNow() time.Time

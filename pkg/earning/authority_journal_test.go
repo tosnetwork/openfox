@@ -222,6 +222,53 @@ func TestPersonalAuthorityFencesActionsAndPortfolio(t *testing.T) {
 	}
 }
 
+func TestPersonalAuthoritySeparatesMaximumLossByExactAsset(t *testing.T) {
+	directory := privateTempDir(t)
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := OpenPersonalAuthority(directory, "owner-1", "agent-1", "authority-asset", key,
+		PortfolioLimits{MaximumLossAtomic: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
+	now := time.Unix(1_800_000_000, 0).UTC()
+	authority.now = func() time.Time { return now }
+	fence, err := authority.AcquireWriter(context.Background(), "asset-runtime", []string{"portfolio.reserve"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nano"}
+	token := commerce.AssetIdentityV1{AssetNamespace: "tos.jetton", AssetIdentifier: testDigest, Unit: "micro"}
+	admit := func(sequence uint64, asset commerce.AssetIdentityV1, maximum uint64) error {
+		request := []byte(fmt.Sprintf("asset-reservation-%d", sequence))
+		fields := reserveFields(sequence)
+		action, buildErr := commerce.BuildAuthorizedAction("owner-1", "agent-1", "portfolio.reserve", fields,
+			request, fence, 1, testDigest, "", "empty", uint64(now.Add(30*time.Minute).Unix()))
+		if buildErr != nil {
+			return buildErr
+		}
+		action, buildErr = authority.SignAction(action, fence)
+		if buildErr != nil {
+			return buildErr
+		}
+		_, buildErr = authority.Admit(action, fields, request, fence, &ExposureReservation{ReservationID: action.StableActionID,
+			AgreementDigest: testDigest, Asset: &asset, MaximumLossAtomic: maximum})
+		return buildErr
+	}
+	if err := admit(1, native, 80); err != nil {
+		t.Fatal(err)
+	}
+	if err := admit(2, token, 80); err != nil {
+		t.Fatalf("different asset units were incorrectly summed: %v", err)
+	}
+	if err := admit(3, native, 30); err == nil {
+		t.Fatal("same-asset maximum loss overcommit was accepted")
+	}
+}
+
 func TestPersonalAuthorityProcessLockAndRecovery(t *testing.T) {
 	directory := privateTempDir(t)
 	_, key, err := ed25519.GenerateKey(rand.Reader)
@@ -462,7 +509,7 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 	defer authority.Close()
 	now := time.Unix(1_800_000_000, 0).UTC()
 	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(t.Context(), "runtime:payment", []string{"payment.direct"}, time.Hour)
+	fence, err := authority.AcquireWriter(t.Context(), "runtime:payment", []string{"payment.domain-bound"}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +536,7 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	action, err := commerce.BuildAuthorizedAction("owner-1", "agent-1", "payment.direct", fields, canonical,
+	action, err := commerce.BuildAuthorizedAction("owner-1", "agent-1", commerce.PaymentActionKind(payment), fields, canonical,
 		fence, 1, testDigest, "", "pending", payment.ExpiresAtUnix)
 	if err == nil {
 		action, err = authority.SignAction(action, fence)

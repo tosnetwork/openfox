@@ -48,27 +48,48 @@ func (service PaymentService) Pay(ctx context.Context, request commerce.Agreemen
 	if err != nil || action.StableActionID != request.StableActionID {
 		return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("payment action identity mismatch")
 	}
+	prior := service.Engine.Authority.Resolve(action.StableActionID, action.ExactRequestDigest)
+	if prior.State == commerce.ActionConflict {
+		return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{},
+			errors.New("payment action conflicts with retained authority state")
+	}
 	admitted, err := service.Engine.Authority.Admit(action, fields, canonical, fence, nil)
 	if err != nil {
 		return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, err
 	}
-	if admitted.State != commerce.ActionPrepared {
-		return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("payment is not in prepared state")
-	}
-	evidence, err := service.Sink.SubmitPayment(ctx, action, fence, fields, canonical, request)
-	if err != nil {
-		evidence, _ = service.Sink.ResolvePayment(ctx, request)
-		if evidence.PaymentRequestDigest == "" {
+	var evidence commerce.AgreementPaymentEvidence
+	if prior.State == commerce.ActionUnknown {
+		if admitted.State != commerce.ActionPrepared {
+			return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("new payment is not in prepared state")
+		}
+		admitted, err = service.Engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
+			commerce.ActionSubmitted, "", nil)
+		if err != nil {
 			return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, err
+		}
+		evidence, err = service.Sink.SubmitPayment(ctx, action, fence, fields, canonical, request)
+		if err != nil {
+			evidence, _ = service.Sink.ResolvePayment(ctx, request)
+			if evidence.PaymentRequestDigest == "" {
+				return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, err
+			}
+		}
+	} else {
+		evidence, err = service.Sink.ResolvePayment(ctx, request)
+		if err != nil || evidence.PaymentRequestDigest == "" {
+			return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{},
+				firstError(err, errors.New("ambiguous payment remains unresolved at the selected Adapter"))
 		}
 	}
 	if err := commerce.VerifyAgreementPaymentEvidence(request, evidence, service.Verifier, service.Engine.now()); err != nil {
 		return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, err
 	}
 	evidenceDigest, _ := codec.Digest("tos.agreement-payment-evidence.v1", evidence)
-	if _, err := service.Engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-		commerce.ActionAccepted, evidence.ExactTransferReference, []string{evidenceDigest}); err != nil {
-		return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, err
+	if admitted.State != commerce.ActionAccepted && admitted.State != commerce.ActionTerminal {
+		if _, err := service.Engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
+			commerce.ActionAccepted, evidence.ExactTransferReference, []string{evidenceDigest}); err != nil {
+			return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, err
+		}
 	}
 	billing := BillingService{Engine: service.Engine}
 	ledger, engagement, err := billing.ApplyPayment(request, evidence, service.Verifier, policyRevision, fence)

@@ -311,6 +311,27 @@ func (server *SharedAuthorityServer) dispatch(ctx context.Context, grant SharedA
 			return nil, err
 		}
 		return backing.ReleaseReservation(input.Action, fields, input.Request, input.Fence)
+	case "release-guarantor-reservation":
+		var input struct {
+			Action                         commerce.AuthorizedAction     `json:"action"`
+			Fields                         []commerce.SemanticFieldValue `json:"fields"`
+			Request                        []byte                        `json:"request"`
+			Fence                          commerce.WriterFence          `json:"fence"`
+			RealizedLossAtomic             uint64                        `json:"realized_loss_atomic"`
+			RetainedDefaultLiabilityAtomic uint64                        `json:"retained_default_liability_atomic"`
+		}
+		if err := decodeSharedBody(raw, &input); err != nil {
+			return nil, err
+		}
+		if err := validateFence(input.Fence); err != nil {
+			return nil, err
+		}
+		fields, err := commerce.ImportSemanticFields(input.Action.ActionKind, input.Fields)
+		if err != nil {
+			return nil, err
+		}
+		return backing.ReleaseGuarantorReservation(input.Action, fields, input.Request, input.Fence,
+			input.RealizedLossAtomic, input.RetainedDefaultLiabilityAtomic)
 	case "confirm-fence":
 		var input struct {
 			Fence      commerce.WriterFence `json:"fence"`
@@ -957,6 +978,24 @@ func (client *SharedAuthorityClient) ReleaseReservation(action commerce.Authoriz
 		Request []byte                        `json:"request"`
 		Fence   commerce.WriterFence          `json:"fence"`
 	}{action, wireFields, request, fence}, &out)
+	return out, err
+}
+func (client *SharedAuthorityClient) ReleaseGuarantorReservation(action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence,
+	realizedLossAtomic, retainedDefaultLiabilityAtomic uint64) (commerce.ActionResolution, error) {
+	var out commerce.ActionResolution
+	wireFields, err := commerce.ExportSemanticFields(action.ActionKind, fields)
+	if err != nil {
+		return out, err
+	}
+	err = client.call(context.Background(), "release-guarantor-reservation", struct {
+		Action                         commerce.AuthorizedAction     `json:"action"`
+		Fields                         []commerce.SemanticFieldValue `json:"fields"`
+		Request                        []byte                        `json:"request"`
+		Fence                          commerce.WriterFence          `json:"fence"`
+		RealizedLossAtomic             uint64                        `json:"realized_loss_atomic"`
+		RetainedDefaultLiabilityAtomic uint64                        `json:"retained_default_liability_atomic"`
+	}{action, wireFields, request, fence, realizedLossAtomic, retainedDefaultLiabilityAtomic}, &out)
 	return out, err
 }
 func (client *SharedAuthorityClient) AuthorizeFenceKey(id string, key ed25519.PublicKey, _ time.Time) error {

@@ -5,8 +5,22 @@ import (
 	"time"
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
+
+type GuarantorFirmOfferAgreementEvidenceVerifier struct {
+	AuthorityResolver   guarantor.AuthorityKeyResolver
+	PublicationResolver commerce.AgentOperationAuthorityResolver
+	UnderlyingResolver  guarantor.UnderlyingAgreementResolver
+	AgreementVerifier   commerce.AgreementEvidenceVerifier
+}
+
+func (verifier GuarantorFirmOfferAgreementEvidenceVerifier) VerifyAgreementEvidence(
+	evidence commerce.AgreementAuthorizationEvidence, now time.Time) error {
+	return guarantor.VerifyFirmOfferAgreementEvidenceIntrinsicV1(evidence, verifier.AuthorityResolver,
+		verifier.PublicationResolver, verifier.UnderlyingResolver, verifier.AgreementVerifier, now)
+}
 
 type ExternalAgreementEvidenceVerifier interface {
 	VerifyAgreementEvidence(commerce.AgreementAuthorizationEvidence, time.Time) error

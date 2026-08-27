@@ -3,7 +3,6 @@ package earning
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/tosnetwork/tos-messenger/pkg/envelope"
@@ -60,7 +59,7 @@ func (inbox PrivateHandoffInbox) ClaimNext(ctx context.Context) (*ClaimedPrivate
 	}
 	result := &ClaimedPrivateHandoffEvent{EventID: decoded.EventID, LeaseID: lease, SenderAgentID: decoded.SenderAgentID,
 		ConversationID: decoded.ConversationID, Kind: decoded.Kind,
-		SemanticActionID: "sha256:" + strings.TrimPrefix(decoded.IdempotencyKey, "idem_")}
+		SemanticActionID: "sha256:" + decoded.IdempotencyKey}
 	switch typed := value.(type) {
 	case payload.PrivateHandoffChallenge:
 		result.Challenge = &typed

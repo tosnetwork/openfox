@@ -843,7 +843,7 @@ func (processor *AgreementSponsorshipProcessor) prepareSponsorshipPayment(ctx co
 	if err != nil {
 		return relaySponsorshipPaymentMaterial{}, err
 	}
-	action, err := commerce.BuildAuthorizedAction(processor.Engine.OwnerID, processor.Engine.AgentID, "payment.direct",
+	action, err := commerce.BuildAuthorizedAction(processor.Engine.OwnerID, processor.Engine.AgentID, commerce.PaymentActionKind(payment),
 		fields, canonical, processor.WriterFence, processor.PolicyRevision, processor.Engine.MandateDigest, "", "pending",
 		minUint64(payment.ExpiresAtUnix, processor.WriterFence.Body.ExpiresAtUnix))
 	if err != nil || action.StableActionID != payment.StableActionID {

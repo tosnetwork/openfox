@@ -126,7 +126,7 @@ func TestTOSCTLRelaySponsorOnlyAbsenceResolvesThroughProcessor(t *testing.T) {
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return fixture.now }
-	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.direct"}, 10*time.Minute)
+	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.domain-bound"}, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestTOSCTLRelayDualAbsencePreservesFrozenComponentAndUsesQueryOnlyPromotion
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return fixture.now }
-	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.direct"}, 10*time.Minute)
+	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.domain-bound"}, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

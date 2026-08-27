@@ -219,7 +219,7 @@ func TestAgreementSponsorshipRejectsStructurallyValidUnverifiedEvidenceBeforeCli
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return fixture.now }
-	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.direct"}, 10*time.Minute)
+	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.domain-bound"}, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestAgreementSponsorshipProcessorPersistsAndQueriesExactPaymentBeforeRetry(
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return fixture.now }
-	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.direct"}, 10*time.Minute)
+	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.domain-bound"}, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func TestAgreementSponsorshipAdmittedPaymentDrainsUnderSuccessorWriter(t *testin
 		t.Fatal(err)
 	}
 	authorityA.now = func() time.Time { return fixture.now }
-	fenceA, err := authorityA.AcquireWriter(t.Context(), "relay-provider-a", []string{"payment.direct"}, 10*time.Minute)
+	fenceA, err := authorityA.AcquireWriter(t.Context(), "relay-provider-a", []string{"payment.domain-bound"}, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +449,7 @@ func TestAgreementSponsorshipAdmittedPaymentDrainsUnderSuccessorWriter(t *testin
 	}
 	defer authorityB.Close()
 	authorityB.now = func() time.Time { return fixture.now }
-	fenceB, err := authorityB.AcquireWriter(t.Context(), "relay-provider-b", []string{"payment.direct"}, 10*time.Minute)
+	fenceB, err := authorityB.AcquireWriter(t.Context(), "relay-provider-b", []string{"payment.domain-bound"}, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +514,7 @@ func TestAgreementSponsorshipSubmittedAndUnresolvedNeverCallsCustodyAgain(t *tes
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return fixture.now }
-	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.direct"}, 10*time.Minute)
+	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.domain-bound"}, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,7 +568,7 @@ func TestAgreementSponsorshipResumesExactValidatorFinalityBroadcastWithoutSnapsh
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return fixture.now }
-	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.direct"}, 10*time.Minute)
+	fence, err := authority.AcquireWriter(t.Context(), "relay-provider", []string{"payment.domain-bound"}, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -39,9 +39,11 @@ func (settings EarningSettings) Validate() error {
 		return errors.New("earning economic policy is invalid")
 	}
 	anyGate := settings.Gates.Publication || settings.Gates.Contact || settings.Gates.Agreement || settings.Gates.Execution ||
-		settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow || settings.Gates.AgentRelay
+		settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow || settings.Gates.AgentRelay ||
+		settings.Gates.AgentGuarantor
 	if !settings.Enabled {
-		if anyGate || mode != "off" || !reflect.DeepEqual(settings.AgentRelay, EarningAgentRelaySettings{}) {
+		if anyGate || mode != "off" || !reflect.DeepEqual(settings.AgentRelay, EarningAgentRelaySettings{}) ||
+			!reflect.DeepEqual(settings.AgentGuarantor, EarningAgentGuarantorSettings{}) {
 			return errors.New("disabled earning configuration cannot enable side-effect gates")
 		}
 		return nil
@@ -56,7 +58,7 @@ func (settings EarningSettings) Validate() error {
 		return errors.New("side-effect earning modes cannot set observe_only")
 	}
 	if mode == "contact" && (settings.Gates.Agreement || settings.Gates.Execution || settings.Gates.DirectPayment ||
-		settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow || settings.Gates.AgentRelay) {
+		settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow || settings.Gates.AgentRelay || settings.Gates.AgentGuarantor) {
 		return errors.New("contact mode cannot enable Agreement, execution, or settlement")
 	}
 	if mode == "trusted" && (settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow) {
@@ -308,6 +310,9 @@ func (settings EarningSettings) Validate() error {
 	if err := validateEarningAgentRelay(settings); err != nil {
 		return err
 	}
+	if err := validateEarningAgentGuarantor(settings); err != nil {
+		return err
+	}
 	if settings.Gates.DirectPayment {
 		payment := settings.TOSPayment
 		if !payment.Enabled || !filepath.IsAbs(payment.Executable) || !filepath.IsAbs(payment.ConfigPath) ||
@@ -434,6 +439,85 @@ func (settings EarningSettings) Validate() error {
 				return errors.New("publication settlement parameters are invalid or unsupported")
 			}
 		}
+	}
+	return nil
+}
+
+func validateEarningAgentGuarantor(settings EarningSettings) error {
+	guarantor := settings.AgentGuarantor
+	if !guarantor.Enabled {
+		if settings.Gates.AgentGuarantor || !reflect.DeepEqual(guarantor, EarningAgentGuarantorSettings{}) {
+			return errors.New("disabled Agent Guarantor cannot retain active risk, profile, or journal configuration")
+		}
+		return nil
+	}
+	if !settings.Gates.AgentGuarantor || !settings.Gates.Agreement || !settings.Gates.Contact || settings.ObserveOnly {
+		return errors.New("Agent Guarantor requires its explicit gate plus contact and Agreement gates")
+	}
+	if guarantor.Role != "client" && guarantor.Role != "provider" && guarantor.Role != "both" {
+		return errors.New("Agent Guarantor role must be client, provider, or both")
+	}
+	if !canonicalAbsoluteRelayPath(guarantor.ProfileArtifactFile) || !canonicalAbsoluteRelayPath(guarantor.JournalDirectory) ||
+		guarantor.ProfileArtifactFile == guarantor.JournalDirectory || guarantor.HTTPTimeoutMillis < 1000 ||
+		guarantor.HTTPTimeoutMillis > 60_000 || guarantor.MaximumHTTPBytes < 64<<10 || guarantor.MaximumHTTPBytes > 1<<20 {
+		return errors.New("Agent Guarantor profile, journal, or bounded transport policy is invalid")
+	}
+	if len(guarantor.AssuranceLevels) == 0 || len(guarantor.AssuranceLevels) > 3 || !sort.StringsAreSorted(guarantor.AssuranceLevels) {
+		return errors.New("Agent Guarantor assurance levels must be a nonempty sorted set")
+	}
+	previous := ""
+	for _, assurance := range guarantor.AssuranceLevels {
+		if assurance == previous || assurance != "collateral-attested" && assurance != "independently-enforceable" &&
+			assurance != "unsecured-signed" {
+			return errors.New("Agent Guarantor assurance level is invalid or duplicated")
+		}
+		previous = assurance
+		if assurance == "collateral-attested" && !guarantor.CollateralAdapterEnabled {
+			return errors.New("Agent Guarantor collateral-attested assurance requires its explicit Adapter gate")
+		}
+		if assurance == "independently-enforceable" && (!guarantor.CollateralAdapterEnabled || !guarantor.IndependentCollateralEnabled) {
+			return errors.New("Agent Guarantor independently-enforceable assurance requires both collateral Adapter gates")
+		}
+	}
+	if guarantor.IndependentCollateralEnabled && !guarantor.CollateralAdapterEnabled {
+		return errors.New("independent Guarantor collateral cannot bypass the collateral Adapter gate")
+	}
+	if guarantor.CollateralAdapterEnabled {
+		if len(guarantor.CollateralAdapterProfileDigests) == 0 || len(guarantor.CollateralAdapterProfileDigests) > 64 ||
+			!sort.StringsAreSorted(guarantor.CollateralAdapterProfileDigests) {
+			return errors.New("Agent Guarantor collateral Adapter allowlist is empty or unsorted")
+		}
+		previousDigest := ""
+		for _, digest := range guarantor.CollateralAdapterProfileDigests {
+			if digest == previousDigest || !earningDigestPattern.MatchString(digest) {
+				return errors.New("Agent Guarantor collateral Adapter allowlist is invalid or duplicated")
+			}
+			previousDigest = digest
+		}
+	} else if len(guarantor.CollateralAdapterProfileDigests) != 0 {
+		return errors.New("disabled Guarantor collateral Adapter retains a profile allowlist")
+	}
+	for _, amount := range []string{guarantor.MaximumAggregateExposureAtomic, guarantor.MaximumPerCoverageAtomic,
+		guarantor.MaximumPerCounterpartyAtomic} {
+		if !canonicalEconomicInteger(amount) || amount == "0" {
+			return errors.New("Agent Guarantor exposure ceilings must be positive canonical integers")
+		}
+	}
+	aggregate, _ := new(big.Int).SetString(guarantor.MaximumAggregateExposureAtomic, 10)
+	perCoverage, _ := new(big.Int).SetString(guarantor.MaximumPerCoverageAtomic, 10)
+	perCounterparty, _ := new(big.Int).SetString(guarantor.MaximumPerCounterpartyAtomic, 10)
+	ownerMaximumLoss, ownerMaximumLossOK := new(big.Int).SetString(settings.Policy.MaximumLossAtomic, 10)
+	if !ownerMaximumLossOK || aggregate.Cmp(ownerMaximumLoss) > 0 || perCoverage.Cmp(aggregate) > 0 ||
+		perCounterparty.Cmp(aggregate) > 0 || guarantor.MaximumActiveOffers == 0 ||
+		guarantor.MaximumActiveOffers > 100_000 || guarantor.MaximumActiveCoverages == 0 || guarantor.MaximumActiveCoverages > 100_000 ||
+		guarantor.MaximumActiveClaims == 0 || guarantor.MaximumActiveClaims > 1_000_000 || guarantor.MinimumPremiumPPM > 1_000_000 ||
+		guarantor.MaximumExpectedClaimProbability == 0 || guarantor.MaximumExpectedClaimProbability > 1_000_000 ||
+		guarantor.CapitalCostPPM > 1_000_000 {
+		return errors.New("Agent Guarantor risk policy is invalid or unbounded")
+	}
+	provider := guarantor.Role == "provider" || guarantor.Role == "both"
+	if provider && !settings.Gates.Publication {
+		return errors.New("Agent Guarantor provider requires the publication gate")
 	}
 	return nil
 }

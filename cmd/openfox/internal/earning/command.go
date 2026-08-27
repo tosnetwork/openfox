@@ -30,7 +30,7 @@ import (
 
 func NewCommand() *cobra.Command {
 	command := &cobra.Command{Use: "earning", Short: "Inspect autonomous earning safety state", Args: cobra.NoArgs}
-	command.AddCommand(statusCommand(), registryCommand(), scoutCommand(), runCommand(), intentCommand(), reconcileCommand(), operationsCommand(), authorityCommand(), relayCommand(), modeCommand("pause", openfoxearning.OperationalPaused),
+	command.AddCommand(statusCommand(), registryCommand(), scoutCommand(), runCommand(), intentCommand(), reconcileCommand(), operationsCommand(), authorityCommand(), relayCommand(), guarantorCommand(), modeCommand("pause", openfoxearning.OperationalPaused),
 		modeCommand("drain", openfoxearning.OperationalDraining), modeCommand("resume", openfoxearning.OperationalRunning))
 	return command
 }
@@ -837,7 +837,8 @@ func configuredShortlist(settings config.EarningSettings) openfoxearning.Shortli
 func configuredFeatureGates(settings config.EarningSettings) openfoxearning.FeatureGates {
 	return openfoxearning.FeatureGates{ObserveOnly: settings.ObserveOnly, Publication: settings.Gates.Publication,
 		Contact: settings.Gates.Contact, Agreement: settings.Gates.Agreement, Execution: settings.Gates.Execution,
-		DirectPayment: settings.Gates.DirectPayment, ExternalSettlement: settings.Gates.ExternalSettlement, TOSEscrow: settings.Gates.TOSEscrow}
+		DirectPayment: settings.Gates.DirectPayment, ExternalSettlement: settings.Gates.ExternalSettlement,
+		TOSEscrow: settings.Gates.TOSEscrow, AgentGuarantor: settings.Gates.AgentGuarantor}
 }
 
 func effectiveOutgoingPayment(value string) string {
@@ -876,6 +877,13 @@ func configuredWriterScopes(settings config.EarningSettings) []string {
 	}
 	if settings.Gates.TOSEscrow {
 		scopes = append(scopes, "agreement.authorize", "escrow.transition", "portfolio.reserve", "provider.offer")
+	}
+	if settings.Gates.AgentGuarantor {
+		scopes = append(scopes, "commercial.quote.close", "commercial.quote.issue", "collateral.transition",
+			"conditional.claim-decision.admit", "conditional.claim-filing.close", "conditional.claim.decide",
+			"conditional.claim.ingress", "conditional.claim.submit", "conditional.claim.transition",
+			"conditional.obligation.transition", "messenger.send", "payment.direct", "payment.domain-bound", "portfolio.release",
+			"portfolio.reserve", "settlement.external")
 	}
 	sort.Strings(scopes)
 	write := 0

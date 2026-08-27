@@ -17,6 +17,7 @@ import (
 
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
@@ -29,14 +30,18 @@ const (
 )
 
 type ExposureReservation struct {
-	ReservationID       string `json:"reservation_id"`
-	AgreementDigest     string `json:"agreement_digest"`
-	ComputeUnits        uint64 `json:"compute_units"`
-	SpendAtomic         uint64 `json:"spend_atomic"`
-	LockedCapitalAtomic uint64 `json:"locked_capital_atomic"`
-	ReceivableAtomic    uint64 `json:"receivable_atomic"`
-	MaximumLossAtomic   uint64 `json:"maximum_loss_atomic"`
-	Released            bool   `json:"released"`
+	ReservationID   string `json:"reservation_id"`
+	AgreementDigest string `json:"agreement_digest"`
+	// Asset is present for asset-denominated economic exposure. A nil value
+	// retains the legacy deployment-wide bucket used by non-monetary and
+	// pre-V1 callers; different exact assets are never numerically added.
+	Asset               *commerce.AssetIdentityV1 `json:"asset,omitempty"`
+	ComputeUnits        uint64                    `json:"compute_units"`
+	SpendAtomic         uint64                    `json:"spend_atomic"`
+	LockedCapitalAtomic uint64                    `json:"locked_capital_atomic"`
+	ReceivableAtomic    uint64                    `json:"receivable_atomic"`
+	MaximumLossAtomic   uint64                    `json:"maximum_loss_atomic"`
+	Released            bool                      `json:"released"`
 }
 
 func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.AuthorizedAction,
@@ -71,7 +76,7 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 		return commerce.CustodyActionAuthorization{}, errors.New("stale writer cannot authorize custody")
 	}
 	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
-	if action.ActionKind != "payment.direct" || action.StableActionID != payment.StableActionID ||
+	if action.ActionKind != commerce.PaymentActionKind(payment) || action.StableActionID != payment.StableActionID ||
 		commerce.VerifyAuthorizedAction(action, fields, canonicalRequest, fence, resolver, authority.now().UTC()) != nil {
 		return commerce.CustodyActionAuthorization{}, errors.New("custody payment is not the exact authorized action")
 	}
@@ -245,26 +250,30 @@ type SettlementLedgerRecord struct {
 }
 
 type authorityDocument struct {
-	Schema                     string                                                      `json:"schema"`
-	OwnerID                    string                                                      `json:"owner_id"`
-	AgentID                    string                                                      `json:"agent_id"`
-	AuthorityID                string                                                      `json:"authority_id"`
-	WriterGeneration           uint64                                                      `json:"writer_generation"`
-	CurrentFence               *commerce.WriterFence                                       `json:"current_fence,omitempty"`
-	Actions                    map[string]commerce.ActionResolution                        `json:"actions"`
-	AuthorityInstances         map[string]commerce.AuthorityInstanceRecord                 `json:"authority_instances"`
-	NextInstanceSequence       uint64                                                      `json:"next_instance_sequence"`
-	NextRelayAdmissionSequence uint64                                                      `json:"next_relay_admission_sequence"`
-	RelayAdmissions            map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt `json:"relay_admissions"`
-	RelayAdmissionBindings     map[string]string                                           `json:"relay_admission_bindings"`
-	PortfolioRevision          uint64                                                      `json:"portfolio_revision"`
-	Limits                     PortfolioLimits                                             `json:"limits"`
-	Reservations               map[string]ExposureReservation                              `json:"reservations"`
-	ScheduleEntries            map[string]commerce.EngagementScheduleEntry                 `json:"schedule_entries"`
-	Dependencies               []commerce.PortfolioDependency                              `json:"portfolio_dependencies"`
-	Engagements                map[string]EngagementRecord                                 `json:"engagements"`
-	SettlementLedger           map[string]SettlementLedgerRecord                           `json:"settlement_ledger"`
-	Accounting                 map[string]AccountingEntry                                  `json:"accounting"`
+	Schema                          string                                                      `json:"schema"`
+	OwnerID                         string                                                      `json:"owner_id"`
+	AgentID                         string                                                      `json:"agent_id"`
+	AuthorityID                     string                                                      `json:"authority_id"`
+	WriterGeneration                uint64                                                      `json:"writer_generation"`
+	CurrentFence                    *commerce.WriterFence                                       `json:"current_fence,omitempty"`
+	Actions                         map[string]commerce.ActionResolution                        `json:"actions"`
+	AuthorityInstances              map[string]commerce.AuthorityInstanceRecord                 `json:"authority_instances"`
+	NextInstanceSequence            uint64                                                      `json:"next_instance_sequence"`
+	NextRelayAdmissionSequence      uint64                                                      `json:"next_relay_admission_sequence"`
+	RelayAdmissions                 map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt `json:"relay_admissions"`
+	RelayAdmissionBindings          map[string]string                                           `json:"relay_admission_bindings"`
+	PortfolioRevision               uint64                                                      `json:"portfolio_revision"`
+	Limits                          PortfolioLimits                                             `json:"limits"`
+	ConsumedMaximumLossAtomic       uint64                                                      `json:"consumed_maximum_loss_atomic"`
+	RetainedDefaultLiabilityAtomic  uint64                                                      `json:"retained_default_liability_atomic"`
+	ConsumedMaximumLossByAsset      map[string]uint64                                           `json:"consumed_maximum_loss_by_asset"`
+	RetainedDefaultLiabilityByAsset map[string]uint64                                           `json:"retained_default_liability_by_asset"`
+	Reservations                    map[string]ExposureReservation                              `json:"reservations"`
+	ScheduleEntries                 map[string]commerce.EngagementScheduleEntry                 `json:"schedule_entries"`
+	Dependencies                    []commerce.PortfolioDependency                              `json:"portfolio_dependencies"`
+	Engagements                     map[string]EngagementRecord                                 `json:"engagements"`
+	SettlementLedger                map[string]SettlementLedgerRecord                           `json:"settlement_ledger"`
+	Accounting                      map[string]AccountingEntry                                  `json:"accounting"`
 }
 
 type PersonalAuthority struct {
@@ -339,6 +348,7 @@ func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, key 
 		RelayAdmissions:        map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt{},
 		RelayAdmissionBindings: map[string]string{},
 		PortfolioRevision:      1, Limits: limits, Reservations: map[string]ExposureReservation{},
+		ConsumedMaximumLossByAsset: map[string]uint64{}, RetainedDefaultLiabilityByAsset: map[string]uint64{},
 		ScheduleEntries: map[string]commerce.EngagementScheduleEntry{}}
 	authority.doc.Engagements = map[string]EngagementRecord{}
 	authority.doc.SettlementLedger = map[string]SettlementLedgerRecord{}
@@ -596,6 +606,22 @@ func (authority *PersonalAuthority) Snapshot() (uint64, PortfolioLimits, []Expos
 // transaction. A fence alone cannot release economic capacity.
 func (authority *PersonalAuthority) ReleaseReservation(action commerce.AuthorizedAction,
 	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence) (commerce.ActionResolution, error) {
+	return authority.releaseReservation(action, fields, request, fence, 0, 0)
+}
+
+// ReleaseGuarantorReservation removes the terminal reservation while retaining
+// spent value and unresolved default liability in the aggregate underwriting
+// limit.  The caller must have derived the two buckets from the verified
+// terminal evidence graph; their sum can never exceed the original reservation.
+func (authority *PersonalAuthority) ReleaseGuarantorReservation(action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence,
+	realizedLossAtomic, retainedDefaultLiabilityAtomic uint64) (commerce.ActionResolution, error) {
+	return authority.releaseReservation(action, fields, request, fence, realizedLossAtomic, retainedDefaultLiabilityAtomic)
+}
+
+func (authority *PersonalAuthority) releaseReservation(action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence,
+	realizedLossAtomic, retainedDefaultLiabilityAtomic uint64) (commerce.ActionResolution, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
 	if err := authority.ensureStorageIdentityLocked(); err != nil {
@@ -613,22 +639,72 @@ func (authority *PersonalAuthority) ReleaseReservation(action commerce.Authorize
 		if prior.ExactRequestDigest != action.ExactRequestDigest {
 			return commerce.ActionResolution{}, errors.New("portfolio release identity conflicts")
 		}
-		return prior, nil
+		if prior.State == commerce.ActionTerminal {
+			return prior, nil
+		}
+		if prior.State != commerce.ActionPrepared {
+			return commerce.ActionResolution{}, errors.New("portfolio release has an unresolved non-prepared predecessor")
+		}
 	}
 	var release PortfolioReleaseRequest
-	if err := codec.Unmarshal(request, &release); err != nil || release.TargetPortfolioRevision != authority.doc.PortfolioRevision+1 {
+	if err := codec.Unmarshal(request, &release); err != nil {
+		var guarantorRelease guarantor.PreAcceptanceExposureReleaseActionBodyV1
+		if decodeErr := codec.Unmarshal(request, &guarantorRelease); decodeErr != nil ||
+			guarantorRelease.SchemaVersion != 1 || guarantorRelease.ReleaseVariant != "pre_acceptance" ||
+			guarantorRelease.TargetPortfolioRevision != guarantorRelease.ExpectedPortfolioRevision+1 {
+			return commerce.ActionResolution{}, errors.New("portfolio release request is invalid")
+		}
+		nonAcceptanceDigest, digestErr := guarantor.OfferNonAcceptanceDigestV1(guarantorRelease.AuthorizedNonAcceptanceEvidence)
+		if digestErr != nil {
+			return commerce.ActionResolution{}, errors.New("portfolio release terminal evidence is invalid")
+		}
+		release = PortfolioReleaseRequest{ReservationID: guarantorRelease.AuthorizedNonAcceptanceEvidence.Body.ReservationID,
+			AgreementDigest:         guarantorRelease.AuthorizedNonAcceptanceEvidence.AuthorizedFirmOffer.Body.CoverageAgreementBodyDigest,
+			TargetPortfolioRevision: guarantorRelease.TargetPortfolioRevision, TerminalEvidenceSetDigest: nonAcceptanceDigest}
+	}
+	if release.TargetPortfolioRevision != authority.doc.PortfolioRevision+1 {
 		return commerce.ActionResolution{}, errors.New("portfolio release request or target revision is invalid")
 	}
 	existing, found := authority.doc.Reservations[release.ReservationID]
 	if !found || existing.AgreementDigest != release.AgreementDigest || existing.Released {
 		return commerce.ActionResolution{}, errors.New("portfolio reservation does not match or is already released")
 	}
+	bucket, bucketErr := exposureAssetBucket(existing.Asset)
+	if bucketErr != nil {
+		return commerce.ActionResolution{}, bucketErr
+	}
+	consumedBefore, retainedBefore := authority.doc.ConsumedMaximumLossAtomic, authority.doc.RetainedDefaultLiabilityAtomic
+	if bucket != "" {
+		consumedBefore = authority.doc.ConsumedMaximumLossByAsset[bucket]
+		retainedBefore = authority.doc.RetainedDefaultLiabilityByAsset[bucket]
+	}
+	if exceeds(realizedLossAtomic, retainedDefaultLiabilityAtomic, existing.MaximumLossAtomic) ||
+		exceeds(consumedBefore, realizedLossAtomic, authority.doc.Limits.MaximumLossAtomic) {
+		return commerce.ActionResolution{}, errors.New("portfolio release disposition exceeds the reserved or aggregate maximum loss")
+	}
+	consumedAfter := consumedBefore + realizedLossAtomic
+	if exceeds(consumedAfter, retainedBefore, authority.doc.Limits.MaximumLossAtomic) ||
+		exceeds(consumedAfter+retainedBefore,
+			retainedDefaultLiabilityAtomic, authority.doc.Limits.MaximumLossAtomic) {
+		return commerce.ActionResolution{}, errors.New("portfolio release retained liability exceeds the aggregate maximum loss")
+	}
 	next := cloneAuthorityDocument(authority.doc)
 	existing.Released = true
 	next.Reservations[release.ReservationID] = existing
+	if bucket == "" {
+		next.ConsumedMaximumLossAtomic += realizedLossAtomic
+		next.RetainedDefaultLiabilityAtomic += retainedDefaultLiabilityAtomic
+	} else {
+		next.ConsumedMaximumLossByAsset[bucket] = consumedAfter
+		next.RetainedDefaultLiabilityByAsset[bucket] = retainedBefore + retainedDefaultLiabilityAtomic
+	}
 	next.PortfolioRevision++
+	stateRevision := uint64(1)
+	if prior, found := authority.doc.Actions[action.StableActionID]; found {
+		stateRevision = prior.StateRevision + 1
+	}
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
-		State: commerce.ActionTerminal, EvidenceRefs: []string{release.TerminalEvidenceSetDigest}, StateRevision: 1}
+		State: commerce.ActionTerminal, EvidenceRefs: []string{release.TerminalEvidenceSetDigest}, StateRevision: stateRevision}
 	if err := commerce.ValidateActionResolution(resolution); err != nil {
 		return commerce.ActionResolution{}, err
 	}
@@ -663,6 +739,31 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 		document.AuthorityID != authorityID || document.PortfolioRevision == 0 || document.NextInstanceSequence == 0 || document.Actions == nil ||
 		document.AuthorityInstances == nil || document.Reservations == nil {
 		return errors.New("personal authority journal is invalid")
+	}
+	if exceeds(document.ConsumedMaximumLossAtomic, document.RetainedDefaultLiabilityAtomic,
+		document.Limits.MaximumLossAtomic) {
+		return errors.New("personal authority loss disposition exceeds its portfolio limit")
+	}
+	if document.ConsumedMaximumLossByAsset == nil {
+		document.ConsumedMaximumLossByAsset = map[string]uint64{}
+	}
+	if document.RetainedDefaultLiabilityByAsset == nil {
+		document.RetainedDefaultLiabilityByAsset = map[string]uint64{}
+	}
+	for bucket, consumed := range document.ConsumedMaximumLossByAsset {
+		retained, found := document.RetainedDefaultLiabilityByAsset[bucket]
+		if !found || !canonicalSHA256(bucket) || exceeds(consumed, retained, document.Limits.MaximumLossAtomic) {
+			return errors.New("personal authority asset loss disposition is invalid")
+		}
+	}
+	for bucket, retained := range document.RetainedDefaultLiabilityByAsset {
+		consumed, found := document.ConsumedMaximumLossByAsset[bucket]
+		if !found || !canonicalSHA256(bucket) || exceeds(consumed, retained, document.Limits.MaximumLossAtomic) {
+			return errors.New("personal authority asset liability disposition is invalid")
+		}
+	}
+	if _, _, err := portfolioUsage(document); err != nil {
+		return err
 	}
 	if document.ScheduleEntries == nil {
 		document.ScheduleEntries = map[string]commerce.EngagementScheduleEntry{}
@@ -1074,30 +1175,74 @@ func admitReservation(document authorityDocument, candidate ExposureReservation)
 	if candidate.ReservationID == "" || candidate.AgreementDigest == "" || candidate.Released {
 		return errors.New("portfolio reservation is invalid")
 	}
+	candidateBucket, err := exposureAssetBucket(candidate.Asset)
+	if err != nil {
+		return err
+	}
 	if existing, found := document.Reservations[candidate.ReservationID]; found {
-		if existing == candidate {
+		if sameJSON(existing, candidate) {
 			return nil
 		}
 		return errors.New("portfolio reservation identity conflicts")
 	}
+	used, lossByAsset, err := portfolioUsage(document)
+	if err != nil {
+		return err
+	}
+	if exceeds(used.ComputeUnits, candidate.ComputeUnits, document.Limits.ComputeUnits) || exceeds(used.SpendAtomic, candidate.SpendAtomic, document.Limits.SpendAtomic) ||
+		exceeds(used.LockedCapitalAtomic, candidate.LockedCapitalAtomic, document.Limits.LockedCapitalAtomic) ||
+		exceeds(used.ReceivableAtomic, candidate.ReceivableAtomic, document.Limits.ReceivableAtomic) ||
+		exceeds(lossByAsset[candidateBucket], candidate.MaximumLossAtomic, document.Limits.MaximumLossAtomic) {
+		return errors.New("aggregate Portfolio limit would be exceeded")
+	}
+	return nil
+}
+
+func portfolioUsage(document authorityDocument) (PortfolioLimits, map[string]uint64, error) {
 	used := PortfolioLimits{}
+	if exceeds(document.ConsumedMaximumLossAtomic, document.RetainedDefaultLiabilityAtomic,
+		document.Limits.MaximumLossAtomic) {
+		return used, nil, errors.New("persisted legacy loss disposition exceeds its limit")
+	}
+	lossByAsset := map[string]uint64{"": document.ConsumedMaximumLossAtomic + document.RetainedDefaultLiabilityAtomic}
+	for bucket, consumed := range document.ConsumedMaximumLossByAsset {
+		retained, found := document.RetainedDefaultLiabilityByAsset[bucket]
+		if !found || !canonicalSHA256(bucket) || exceeds(consumed, retained, document.Limits.MaximumLossAtomic) {
+			return used, nil, errors.New("persisted asset loss disposition exceeds its limit")
+		}
+		lossByAsset[bucket] = consumed + retained
+	}
 	for _, reservation := range document.Reservations {
 		if reservation.Released {
 			continue
+		}
+		bucket, bucketErr := exposureAssetBucket(reservation.Asset)
+		if bucketErr != nil || exceeds(lossByAsset[bucket], reservation.MaximumLossAtomic, document.Limits.MaximumLossAtomic) {
+			return used, nil, errors.New("persisted asset Portfolio use exceeds its limit")
+		}
+		if exceeds(used.ComputeUnits, reservation.ComputeUnits, document.Limits.ComputeUnits) ||
+			exceeds(used.SpendAtomic, reservation.SpendAtomic, document.Limits.SpendAtomic) ||
+			exceeds(used.LockedCapitalAtomic, reservation.LockedCapitalAtomic, document.Limits.LockedCapitalAtomic) ||
+			exceeds(used.ReceivableAtomic, reservation.ReceivableAtomic, document.Limits.ReceivableAtomic) {
+			return used, nil, errors.New("persisted aggregate Portfolio use exceeds its limit")
 		}
 		used.ComputeUnits += reservation.ComputeUnits
 		used.SpendAtomic += reservation.SpendAtomic
 		used.LockedCapitalAtomic += reservation.LockedCapitalAtomic
 		used.ReceivableAtomic += reservation.ReceivableAtomic
-		used.MaximumLossAtomic += reservation.MaximumLossAtomic
+		lossByAsset[bucket] += reservation.MaximumLossAtomic
 	}
-	if exceeds(used.ComputeUnits, candidate.ComputeUnits, document.Limits.ComputeUnits) || exceeds(used.SpendAtomic, candidate.SpendAtomic, document.Limits.SpendAtomic) ||
-		exceeds(used.LockedCapitalAtomic, candidate.LockedCapitalAtomic, document.Limits.LockedCapitalAtomic) ||
-		exceeds(used.ReceivableAtomic, candidate.ReceivableAtomic, document.Limits.ReceivableAtomic) ||
-		exceeds(used.MaximumLossAtomic, candidate.MaximumLossAtomic, document.Limits.MaximumLossAtomic) {
-		return errors.New("aggregate Portfolio limit would be exceeded")
+	return used, lossByAsset, nil
+}
+
+func exposureAssetBucket(asset *commerce.AssetIdentityV1) (string, error) {
+	if asset == nil {
+		return "", nil
 	}
-	return nil
+	if commerce.ValidateAssetIdentityV1(*asset) != nil {
+		return "", errors.New("portfolio exposure asset is invalid")
+	}
+	return codec.Digest("tos.openfox.asset-exposure-bucket.v1", *asset)
 }
 
 func exceeds(current, additional, limit uint64) bool {

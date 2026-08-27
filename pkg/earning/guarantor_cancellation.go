@@ -25,6 +25,9 @@ func (coordinator *GuarantorProviderCoordinator) CancelCoverage(ctx context.Cont
 		coordinator.Resolver == nil || coordinator.AgreementVerifier == nil || coordinator.Eligibility == nil || input.AdmittedAtUnix == 0 {
 		return guarantor.AuthorizedCoverageCancellationReceiptV1{}, commerce.ActionResolution{}, errors.New("Guarantor cancellation coordinator is incomplete")
 	}
+	if !validGuarantorUnix(input.AdmittedAtUnix) {
+		return guarantor.AuthorizedCoverageCancellationReceiptV1{}, commerce.ActionResolution{}, errors.New("Guarantor cancellation time is outside the supported Unix range")
+	}
 	admittedAt := time.Unix(int64(input.AdmittedAtUnix), 0).UTC()
 	if coordinator.Authority.ConfirmCurrentWriterFence(fence, admittedAt) != nil {
 		return guarantor.AuthorizedCoverageCancellationReceiptV1{}, commerce.ActionResolution{}, errors.New("Guarantor cancellation writer is stale")

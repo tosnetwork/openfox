@@ -31,6 +31,9 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 		coordinator.UnderlyingAgreementResolver == nil || coordinator.Eligibility == nil || input.ResolvedAtUnix == 0 {
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, errors.New("Guarantor non-activation coordinator is incomplete")
 	}
+	if !validGuarantorUnix(input.ResolvedAtUnix) || !validGuarantorUnix(input.AcceptanceReceipt.Body.AcceptedAtUnix) {
+		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, errors.New("Guarantor non-activation time is outside the supported Unix range")
+	}
 	now := time.Unix(int64(input.ResolvedAtUnix), 0).UTC()
 	if coordinator.Authority.ConfirmCurrentWriterFence(fence, now) != nil {
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, errors.New("Guarantor non-activation writer is stale")

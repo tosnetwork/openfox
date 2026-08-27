@@ -97,6 +97,9 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 		if err != nil || resolution.State != commerce.ActionTerminal {
 			return GuarantorCloseCoverageResult{}, firstError(err, errors.New("persisted Guarantor exposure release is unresolved"))
 		}
+		if !validGuarantorUnix(plan.CreatedAtUnix) {
+			return GuarantorCloseCoverageResult{}, errors.New("persisted Guarantor exposure-release plan has an invalid time")
+		}
 		at := time.Unix(int64(plan.CreatedAtUnix), 0).UTC()
 		stage, stageErr := coordinator.buildGuarantorStage(position.Terms, "post_acceptance_exposure_release",
 			"application/vnd.tos.service.agent-guarantor-exposure-release-action.v1+cbor", plan.CanonicalRequest,
@@ -196,6 +199,9 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 		if err != nil {
 			return GuarantorCloseCoverageResult{}, err
 		}
+	}
+	if !validGuarantorUnix(plan.CreatedAtUnix) {
+		return GuarantorCloseCoverageResult{}, errors.New("persisted Guarantor coverage-resolution plan has an invalid time")
 	}
 	at := time.Unix(int64(plan.CreatedAtUnix), 0).UTC()
 	stage, err := coordinator.buildGuarantorStage(position.Terms, "coverage_resolution",

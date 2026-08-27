@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"sort"
 	"time"
@@ -57,6 +58,8 @@ type GuarantorIssueOfferInput struct {
 	ExpiresAtUnix            uint64
 	IssuedAtUnix             uint64
 }
+
+func validGuarantorUnix(value uint64) bool { return value > 0 && value <= math.MaxInt64 }
 
 type GuarantorProviderCoordinator struct {
 	OwnerID                         string
@@ -144,6 +147,9 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 		coordinator.UnderlyingAgreementResolver == nil || coordinator.Eligibility == nil ||
 		input.ActivatedAtUnix == 0 {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, errors.New("Guarantor activation coordinator is incomplete")
+	}
+	if !validGuarantorUnix(input.ActivatedAtUnix) || !validGuarantorUnix(input.AcceptanceReceipt.Body.AcceptedAtUnix) {
+		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, errors.New("Guarantor activation time is outside the supported Unix range")
 	}
 	activatedAt := time.Unix(int64(input.ActivatedAtUnix), 0).UTC()
 	if err := coordinator.Authority.ConfirmCurrentWriterFence(fence, activatedAt); err != nil {
@@ -1167,6 +1173,9 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 		input.CoverageObligationID == "" || input.ReceivedAtUnix == 0 {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, errors.New("Guarantor acceptance coordinator is incomplete")
 	}
+	if !validGuarantorUnix(input.ReceivedAtUnix) {
+		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, errors.New("Guarantor acceptance time is outside the supported Unix range")
+	}
 	receivedAt := time.Unix(int64(input.ReceivedAtUnix), 0).UTC()
 	if err := coordinator.Authority.ConfirmCurrentWriterFence(fence, receivedAt); err != nil {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
@@ -1365,8 +1374,12 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 		!canonicalSHA256(coordinator.MandateDigest) || input.CoverageObligationID == "" {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, errors.New("Guarantor provider coordinator is incomplete")
 	}
+	if !validGuarantorUnix(input.IssuedAtUnix) || !validGuarantorUnix(input.AcceptByUnix) ||
+		!validGuarantorUnix(input.ReservationExpiresAtUnix) || !validGuarantorUnix(input.ExpiresAtUnix) {
+		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, errors.New("Guarantor offer time is outside the supported Unix range")
+	}
 	issuedAt := time.Unix(int64(input.IssuedAtUnix), 0).UTC()
-	if input.IssuedAtUnix == 0 || input.AcceptByUnix <= input.IssuedAtUnix ||
+	if input.AcceptByUnix <= input.IssuedAtUnix ||
 		input.ReservationExpiresAtUnix <= input.AcceptByUnix || input.ExpiresAtUnix < input.ReservationExpiresAtUnix {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, errors.New("Guarantor offer schedule is invalid")
 	}

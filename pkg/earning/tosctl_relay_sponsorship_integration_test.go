@@ -4,6 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -82,6 +85,8 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 		case "economic-payment-corroboration-profile":
 			return tosctlSnapshotCapability(t, root, paths, fixture.network, 1000), nil
 		case "economic-payment-prepare":
+			boc := []byte("sponsored-payment-boc")
+			bocDigest := sha256.Sum256(boc)
 			if relayTestCLIFlag(args, "--wallet") != providerWalletA ||
 				relayTestCLIFlag(args, "--fee-reserve-nanotos") != strconv.FormatUint(feeReserveA, 10) ||
 				relayTestCLIFlag(args, "-c") != frozenPrimaryConfig {
@@ -92,8 +97,10 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 				StableActionID: payment.StableActionID, AgreementBodyDigest: payment.AgreementBodyDigest,
 				ObligationInstanceID: payment.ObligationInstanceID, Account: providerSourceA,
 				Target: string(payment.Destination), AmountNanoTOS: amount, ControllerEpoch: 1, Seqno: 7,
-				NetworkGlobalID: fixture.network.GlobalID, ValidUntil: uint32(payment.ExpiresAtUnix),
-				ExactSignedBOC: "te6ccgEBAQEA", ExactSignedBOCDigest: relayTestDigest("d")}), nil
+				NetworkGlobalID: fixture.network.GlobalID, NetworkDomain: fixture.network,
+				ValidUntil: uint32(payment.ExpiresAtUnix), ActionKind: "agent-task-send",
+				SponsorshipCommitmentBodyHash: testStringPointer("tvm-cell-sha256:" + strings.Repeat("1", 64)),
+				ExactSignedBOC:                base64.StdEncoding.EncodeToString(boc), ExactSignedBOCDigest: "sha256:" + hex.EncodeToString(bocDigest[:])}), nil
 		case "economic-payment-broadcast":
 			if relayTestCLIFlag(args, "--wallet") != providerWalletA ||
 				relayTestCLIFlag(args, "-c") != frozenPrimaryConfig {
@@ -394,6 +401,8 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 		t.Fatalf("old genuine chain effect was reusable for a new Agreement after restart: %v", err)
 	}
 }
+
+func testStringPointer(value string) *string { return &value }
 
 func tosctlSponsorshipTestConfigs(t *testing.T, root string, network agentrelay.NetworkDomain) []string {
 	t.Helper()

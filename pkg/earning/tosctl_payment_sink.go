@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -139,19 +141,56 @@ func (sink *TOSCTLPaymentSink) custodyNetworkDomainAt(ctx context.Context,
 }
 
 type tosctlPaymentPrepared struct {
-	Schema               string `json:"schema"`
-	StableActionID       string `json:"stable_action_id"`
-	AgreementBodyDigest  string `json:"agreement_body_digest"`
-	ObligationInstanceID string `json:"obligation_instance_id"`
-	Account              string `json:"account"`
-	Target               string `json:"target"`
-	AmountNanoTOS        uint64 `json:"amount_nanotos"`
-	ControllerEpoch      uint64 `json:"controller_epoch"`
-	Seqno                uint32 `json:"seqno"`
-	NetworkGlobalID      int32  `json:"network_global_id"`
-	ValidUntil           uint32 `json:"valid_until"`
-	ExactSignedBOC       string `json:"exact_signed_boc"`
-	ExactSignedBOCDigest string `json:"exact_signed_boc_digest"`
+	Schema                        string                   `json:"schema"`
+	StableActionID                string                   `json:"stable_action_id"`
+	AgreementBodyDigest           string                   `json:"agreement_body_digest"`
+	ObligationInstanceID          string                   `json:"obligation_instance_id"`
+	Account                       string                   `json:"account"`
+	Target                        string                   `json:"target"`
+	AmountNanoTOS                 uint64                   `json:"amount_nanotos"`
+	ControllerEpoch               uint64                   `json:"controller_epoch"`
+	Seqno                         uint32                   `json:"seqno"`
+	NetworkGlobalID               int32                    `json:"network_global_id"`
+	NetworkDomain                 agentrelay.NetworkDomain `json:"network_domain"`
+	ValidUntil                    uint32                   `json:"valid_until"`
+	ActionKind                    string                   `json:"action_kind"`
+	SponsorshipCommitmentBodyHash *string                  `json:"sponsorship_commitment_body_hash"`
+	ExactSignedBOC                string                   `json:"exact_signed_boc"`
+	ExactSignedBOCDigest          string                   `json:"exact_signed_boc_digest"`
+}
+
+func validateTOSCTLPreparedPayment(prepared tosctlPaymentPrepared, request commerce.AgreementPaymentRequest,
+	network commerce.CustodyNetworkDomain, sourceAccount string, amount uint64, sponsored bool) error {
+	boc, bocErr := base64.StdEncoding.Strict().DecodeString(prepared.ExactSignedBOC)
+	bocDigest := sha256.Sum256(boc)
+	if prepared.Schema != "tosctl.agent-account.agreement-payment-prepared.v1" ||
+		prepared.StableActionID != request.StableActionID || prepared.AgreementBodyDigest != request.AgreementBodyDigest ||
+		prepared.ObligationInstanceID != request.ObligationInstanceID || prepared.Account != sourceAccount ||
+		prepared.Target != string(request.Destination) || prepared.AmountNanoTOS != amount ||
+		prepared.NetworkGlobalID != network.GlobalID || prepared.NetworkDomain.NetworkID != network.NetworkID ||
+		prepared.NetworkDomain.GlobalID != network.GlobalID ||
+		prepared.NetworkDomain.ZeroStateRootHash != network.ZeroStateRootHash ||
+		prepared.NetworkDomain.ZeroStateFileHash != network.ZeroStateFileHash ||
+		prepared.NetworkDomain.WorkchainID != network.WorkchainID ||
+		request.ExpiresAtUnix > uint64(^uint32(0)) || prepared.ValidUntil != uint32(request.ExpiresAtUnix) ||
+		prepared.ExactSignedBOC == "" || bocErr != nil || len(boc) == 0 ||
+		prepared.ExactSignedBOCDigest != "sha256:"+hex.EncodeToString(bocDigest[:]) {
+		return fmt.Errorf("tosctl returned an unrelated prepared payment: schema=%q action=%q agreement=%q obligation=%q account=%q target=%q amount=%d digest=%q",
+			prepared.Schema, prepared.StableActionID, prepared.AgreementBodyDigest, prepared.ObligationInstanceID,
+			prepared.Account, prepared.Target, prepared.AmountNanoTOS, prepared.ExactSignedBOCDigest)
+	}
+	if !sponsored {
+		if prepared.ActionKind != "agent-native-send" || prepared.SponsorshipCommitmentBodyHash != nil {
+			return errors.New("tosctl prepared an unexpected sponsored payment action")
+		}
+		return nil
+	}
+	if prepared.ActionKind != "agent-task-send" || prepared.SponsorshipCommitmentBodyHash == nil ||
+		!canonicalSHA256("sha256:"+strings.TrimPrefix(*prepared.SponsorshipCommitmentBodyHash, "tvm-cell-sha256:")) ||
+		!strings.HasPrefix(*prepared.SponsorshipCommitmentBodyHash, "tvm-cell-sha256:") {
+		return errors.New("tosctl omitted the sponsorship payment commitment")
+	}
+	return nil
 }
 
 type tosctlPaymentBroadcast struct {
@@ -436,13 +475,9 @@ func (sink *TOSCTLPaymentSink) submitPayment(ctx context.Context, action commerc
 	if err := decodeStrictJSON(preparedRaw, &prepared); err != nil {
 		return commerce.AgreementPaymentEvidence{}, fmt.Errorf("decode tosctl prepared payment: %w", err)
 	}
-	if prepared.Schema != "tosctl.agent-account.agreement-payment-prepared.v1" ||
-		prepared.StableActionID != request.StableActionID || prepared.AgreementBodyDigest != request.AgreementBodyDigest ||
-		prepared.ObligationInstanceID != request.ObligationInstanceID || prepared.Account != sourceAccount ||
-		prepared.Target != string(request.Destination) || prepared.AmountNanoTOS != amount || prepared.ExactSignedBOCDigest == "" {
-		return commerce.AgreementPaymentEvidence{}, fmt.Errorf("tosctl returned an unrelated prepared payment: schema=%q action=%q agreement=%q obligation=%q account=%q target=%q amount=%d digest=%q",
-			prepared.Schema, prepared.StableActionID, prepared.AgreementBodyDigest, prepared.ObligationInstanceID,
-			prepared.Account, prepared.Target, prepared.AmountNanoTOS, prepared.ExactSignedBOCDigest)
+	if err := validateTOSCTLPreparedPayment(prepared, request, networkDomain, sourceAccount, amount,
+		sponsorshipBinding != nil); err != nil {
+		return commerce.AgreementPaymentEvidence{}, err
 	}
 	// The exact custody authorization can only be issued while OpenFox's
 	// authority record is PREPARED. Once tosctl has durably prepared the exact

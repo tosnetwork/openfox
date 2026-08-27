@@ -300,7 +300,14 @@ func configureCampaignDocument(t *testing.T, document map[string]any, entry eigh
 	backend := model["agent_backend"].(map[string]any)
 	backend["timeout_seconds"] = float64(300)
 	backend["owner_principal"] = map[string]any{"channel": "pilot-owner", "sender_id": entry.OwnerID}
-	document["evolution"] = map[string]any{"enabled": true, "mode": "apply",
+	evolutionMode := strings.ToLower(strings.TrimSpace(os.Getenv("OPENFOX_CAMPAIGN_EVOLUTION_MODE")))
+	if evolutionMode == "" {
+		evolutionMode = "apply"
+	}
+	if evolutionMode != "observe" && evolutionMode != "draft" && evolutionMode != "apply" {
+		t.Fatalf("OPENFOX_CAMPAIGN_EVOLUTION_MODE must be observe, draft, or apply")
+	}
+	document["evolution"] = map[string]any{"enabled": true, "mode": evolutionMode,
 		"state_dir": filepath.Join(entry.ConfigDirectory, "state", "evolution"), "min_task_count": 2,
 		"min_success_ratio": 0.7, "cold_path_trigger": "after_turn"}
 	earning := document["earning"].(map[string]any)
@@ -962,6 +969,9 @@ func publishCampaignDemand(ctx context.Context, sequence int, buyer, seller *cam
 }
 
 func campaignAgreement(sequence, attempt int, buyer, seller eightAgentManifestEntry, task string, now time.Time) (commerce.AgentAgreementBody, error) {
+	if buyer.AgentID == "" || seller.AgentID == "" || buyer.AgentID == seller.AgentID {
+		return commerce.AgentAgreementBody{}, errors.New("campaign Agreement requires distinct buyer and provider Agents")
+	}
 	profile := commerce.AgentSignatureProfileDigest()
 	body := commerce.AgentAgreementBody{SchemaVersion: 1, AgreementID: "agreement:" + strings.TrimPrefix(campaignDigest(fmt.Sprintf("campaign:v5:%d:%s", sequence, task)), "sha256:"),
 		Version: uint64(attempt + 1), NetworkContext: "tos:local-three-node", Participants: []commerce.AgreementParticipant{{AgentID: buyer.AgentID, Roles: []string{"buyer"}}, {AgentID: seller.AgentID, Roles: []string{"provider"}}},

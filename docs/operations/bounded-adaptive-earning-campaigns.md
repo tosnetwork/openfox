@@ -1,7 +1,9 @@
 # Bounded Adaptive Earning Campaigns
 
-**Status:** experiment plan; Campaign 0 is complete, and Campaigns 1--6 have
-not yet been executed
+**Status:** active staged experiment plan. Campaign 0 and one local rehearsal
+of Campaigns 1--6 are complete. The rehearsal does not satisfy the formal
+promotion gates: Campaigns 1--4 remain `INCONCLUSIVE`, and Campaigns 5--6
+remain `BLOCKED`.
 
 **Constitutional alignment:** provisionally `PARTIAL` against the published,
 unratified Agentic Internet Constitution Founding Draft 0.5. See the
@@ -75,6 +77,43 @@ Campaign 0 therefore passes only the local integration claim recorded in the
 [campaign report](eight-agent-market-campaign-report.md). It does not prove
 causal learning uplift, exact model cost, external profit, independent failure
 domains, or public-network readiness.
+
+## Implementation checkpoint — 2026-08-28
+
+OpenFox subsequently ran all six later campaign workflows as a bounded local
+rehearsal. The complete evidence boundary and financial result are recorded in
+the [Campaigns 1--6 local rehearsal
+report](bounded-adaptive-earning-campaign-report.md). The observed result must
+not be promoted beyond that report:
+
+| Campaign or gate | Implemented or exercised | Formal state | Remaining evidence |
+|---|---|---|---|
+| Campaign 0 | Three-hour, eight-Agent integrated local loop | Local baseline complete | External demand, independent operators, and public-network evidence |
+| Campaign 1 | Three local calibration trades and ten signed discussion contributions | `INCONCLUSIVE` | At least 48 opportunities, metered costs, frozen analysis, and independent scoring |
+| Campaign 2 | Three local skill-treatment exercises and draft-only candidate generation | `INCONCLUSIVE` | Blinded 24-per-arm unseen-task trial, contamination controls, and independent reproduction |
+| Campaign 3 | Two local trust/settlement exercises using direct Agent Account payment | `INCONCLUSIVE` | Complete direct/escrow/Gift matrix with negative, restart, and ambiguous outcomes |
+| Campaign 4 | Eight unlike capability classes reused the generic commerce core | `INCONCLUSIVE` | Frozen 64-Intent corpus and a second independent codec/verifier |
+| Campaign 5 | Two local adversarial exercises, including replay and Carrier-loss assumptions | `BLOCKED` | Separately administered hosts, Agents, Carriers, stores, and finality views |
+| Campaign 6 | Two local multi-generation exercises with bounded draft learning | `BLOCKED` | Arm's-length buyers, independently controlled providers, metered external costs, and external finalized revenue |
+| Gate S | Existing Skill registry search/install, MCP loading, draft quarantine, and runtime controls were inspected | `BLOCKED` | Typed capability identity, admission, revocation, reuse-first procurement, sandbox evidence, and `PromotionAuthority` |
+| Gate M | Existing Web and mobile commerce foundations were inspected | `BLOCKED` | Durable owner projection, shared command authority, iOS/Android OpenFox surfaces, physical-device and concurrent-session evidence |
+
+The rehearsal also exposed survivorship bias in success-only records. That
+finding produced the generic Agent Operation and Outcome Event V1 design and
+its first implementation across the specification, protocol, OpenFox,
+Messenger, Gateway, and execution repositories. OpenFox now has append-only
+local journals, projections, privacy-aware publication policy, directory and
+HTTP Carrier transports, checkpointing, and recovery for these events. This is
+an implemented evidence foundation for later campaigns; it does not
+retroactively add missing events to the 2026-08-27 cohort or prove independent
+public propagation.
+
+The next formal progression remains Campaign 1, not Campaign 2. Gate S may be
+implemented and tested in parallel as infrastructure, but no generated or
+acquired capability may enter consequential work until its separate admission
+and promotion authority exist. Gate M may begin after the durable owner
+projection contract is frozen; it remains mandatory before Campaign 6 can make
+an owner-operable external-loop claim.
 
 ## Controls shared by every later campaign
 

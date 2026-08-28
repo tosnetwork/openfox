@@ -1,15 +1,17 @@
 # Agentic Internet Constitution Applicability and Compliance Record
 
-**Status:** provisional `PARTIAL` alignment record for OpenFox PR #16; not a
-constitutional ratification, protocol-conformance certificate, security audit,
-deployment approval, or production-readiness claim
+**Status:** refreshed provisional `PARTIAL` alignment record for OpenFox PR
+#16. Later implementations close some foundation gaps but do not constitute
+constitutional ratification, protocol conformance, security certification,
+deployment approval, or production readiness.
 
 | Field | Value |
 |---|---|
-| Assessment date | 2026-08-25 |
+| Assessment date | Initial assessment 2026-08-25; implementation checkpoint refreshed 2026-08-28 |
 | Assessed scope | The bounded adaptive earning, trusted capability sourcing, maintained reporting Skill, and mobile owner-control designs added or amended by OpenFox PR #16 |
 | OpenFox base | `tosnetwork/openfox@163f388ce38b3a48d6f763c77ebef1c79de00af9` |
 | Initial assessed PR head | `f4643bce2a9e73850e671cadd4d5b7e41b6b3b03`; later remediation commits remain visible in the same PR history |
+| Current implementation checkpoint | `tosnetwork/openfox@9a3e6867bfd79a688968af9aae9884306555e172`, incorporated into this branch before the refresh |
 | Constitutional reference | [The Agentic Internet Constitution, Founding Draft 0.5 at `tosnetwork/doc@58ce1919cf60a61437662622c8b97d000fcf81ad`](https://github.com/tosnetwork/doc/blob/58ce1919cf60a61437662622c8b97d000fcf81ad/AGENTIC_INTERNET_CONSTITUTION.md) |
 | Constitutional authority | The referenced Constitution is a published proposal and is not yet ratified; this record is a design-alignment assessment, not a claim that OpenFox or TOS has completed constitutional adoption |
 | Claim issuer | OpenFox PR #16 proposer; a named constitutional compliance owner remains pending ratification and scope assignment |
@@ -46,13 +48,45 @@ and compliance sections. Its core mappings are:
 | Constitutional requirement | PR #16 design response | Current evidence | Status |
 |---|---|---|---|
 | Explicit, bounded, revocable authority; no Agent, Skill, MCP server, or model self-grant | Owner-approved sources, exact admission scope, per-execution policy recheck, revocation, and separate install, admission, and execution decisions | Target design only; present Skills and MCP controls do not provide the full admission record | `PARTIAL` |
-| Stable semantic action identity and append-only revisions | Campaigns require exact action identity, query-before-retry, Intent revision or withdrawal, Agreement amendment, and non-mutating mobile state | Existing earning journals and local campaign evidence; cross-platform target not implemented | `PARTIAL` |
+| Stable semantic action identity and append-only revisions | Campaigns require exact action identity, query-before-retry, Intent revision or withdrawal, Agreement amendment, and non-mutating mobile state | Generic semantic-action foundations plus the implemented Agent Operation/Outcome journal, projection, recovery, and Carrier transports; independent public propagation and mobile command semantics remain pending | `PARTIAL` |
 | Meaningful owner control and exit | Web/iOS/Android design includes inspection, pause, steering, reconciliation, exportable evidence, capability and device revocation | Web foundations exist; durable owner projection and mobile control are not implemented end to end | `PARTIAL` |
-| Bounded adaptation with a retained control, unseen evidence, harm metrics, stop rules, rollback, and independent promotion authority | Frozen manifests, Campaigns 1--6, Gate S, Gate M, retained controls, hidden tasks, stop rules, and independent reproduction | Campaign 0 is only a same-host local integration baseline; Campaigns 1--6 are unexecuted | `PARTIAL` |
-| Economic truth | Reports and campaigns separate external revenue, internal transfer, Gift, receivable, refund, fee, measured cost, shadow cost, and realized contribution | Campaign 0 classification evidence; maintained report Skills are not implemented | `PARTIAL` |
+| Bounded adaptation with a retained control, unseen evidence, harm metrics, stop rules, rollback, and independent promotion authority | Frozen manifests, Campaigns 1--6, Gate S, Gate M, retained controls, hidden tasks, stop rules, and independent reproduction | Campaigns 1--6 completed one same-host local rehearsal: 1--4 are formally `INCONCLUSIVE`, 5--6 are `BLOCKED`; `PromotionAuthority`, Gate S, and Gate M remain unimplemented | `PARTIAL` |
+| Economic truth | Reports and campaigns separate external revenue, internal transfer, Gift, receivable, refund, fee, measured cost, shadow cost, and realized contribution | Local campaign accounting and generic positive/negative Operation/Outcome evidence exist; maintained reports, metered external cost, and external revenue evidence remain absent | `PARTIAL` |
 | Open standards without false trust | Agent Skills and MCP remain interoperability baselines; publisher, digest, permission, sandbox, and revocation evidence are separate local trust controls | Standards integration foundations exist; trusted procurement and independent conformance evidence are pending | `PARTIAL` |
 | Human-readable, authority-aware controls without false finality | Mobile design separates proposed, approved, submitted, ambiguous, and finalized state and forbids history rewrite | Target design and existing TOS mobile safety primitives only | `PARTIAL` |
-| Independent implementation and public protocol meaning | Shared authority semantics remain assigned to `tos-service-spec`; OpenFox-specific local policy and projections do not become ecosystem standards by convenience | No new wire protocol is introduced by this documentation-only PR | `PARTIAL` pending any future shared API or schema |
+| Independent implementation and public protocol meaning | Shared authority semantics remain assigned to `tos-service-spec`; OpenFox-specific local policy and projections do not become ecosystem standards by convenience | Operation/Outcome now has a normative design and implementations in the protocol, OpenFox, Messenger, Gateway, and execution layers; independent codec and operator evidence remains a release gate | `PARTIAL` |
+
+## 2026-08-28 implementation checkpoint
+
+The following work completed after the initial documentation-only assessment:
+
+- an eight-Agent local rehearsal exercised Campaigns 1--6 with isolated
+  identities, two same-host Carrier processes, three local TOS validators,
+  real local-chain transfers, signed discussion, accounting, and draft-only
+  adaptation;
+- decentralized transaction relay/sponsorship and guarantor-provider profiles
+  gained bounded OpenFox implementations and recovery tests; and
+- the rehearsal's principal evidence proposal became the generic Agent
+  Operation and Outcome Event V1 design and a multi-repository implementation.
+
+These results strengthen the append-only evidence, recovery, and economic-truth
+foundations. They do not close the capability-supply or owner-control proposal:
+
+| Target | Current determination |
+|---|---|
+| Consequential `apply` restriction | Documentary requirement only; runtime enforcement and candidate-specific promotion are still required |
+| Trusted capability identity and inventory | Not implemented to the target schema or authority boundary |
+| Reuse-first Skills/MCP procurement | Not implemented end to end; Gate S has not run |
+| Maintained finance and market reports | Not implemented |
+| Durable owner projection and shared command API | Not implemented |
+| iOS and Android OpenFox operator surfaces | Not implemented; Gate M has not run |
+| Formal Campaign 1--4 promotion evidence | `INCONCLUSIVE` after the undersized local rehearsal |
+| Campaign 5 independent failure domains | `BLOCKED` |
+| Campaign 6 external adaptive profit | `BLOCKED` |
+
+No local success changes the authority map above. In particular, an
+Operation/Outcome event is a signed assertion with evidence, not self-proving
+truth or permission to promote a Skill.
 
 ## Interim non-derogable controls
 
@@ -130,8 +164,13 @@ may be called production-ready, until evidence closes the applicable blockers:
   owner, review cycle, and Major Surface ownership record;
 - implementation and tests for capability identity, admission, permissions,
   revocation, controlled updates, and `PromotionAuthority`;
-- pre-registered and independently reproduced Campaign 1--6 evidence in the
-  required order, including Gate S and Gate M where applicable;
+- runtime enforcement of the consequential-workflow `apply` prohibition until
+  an exact `PromotionAuthority` is present;
+- implementation and tests for the maintained reports, durable owner
+  projection, shared owner-command authority, and both mobile clients;
+- formal, pre-registered, and independently reproduced Campaign 1--6 evidence
+  in the required order, including Gate S and Gate M where applicable; the
+  completed local rehearsal does not satisfy this blocker;
 - normative review for every shared authority or interoperability object;
 - public-testnet and independent production acceptance for any selected
   TOS-backed settlement profile whose current release record still requires it;

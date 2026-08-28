@@ -1,10 +1,11 @@
 # Trusted Capabilities and Mobile Owner Control Plane
 
-**Status:** target design; registry search/install, MCP integration, runtime
-events, a Web dashboard, and cross-platform TOS Agent Commerce safety libraries
-exist today, but trusted capability procurement, the finance/market built-ins,
-and the mobile OpenFox operator experience described here are not implemented
-end to end
+**Status:** active target design with a partially implemented foundation.
+Generic earning, bounded draft evolution, the Campaigns 1--6 local rehearsal,
+and Agent Operation/Outcome recording now exist. Trusted capability
+procurement, candidate-specific promotion authority, the finance/market
+built-ins, the durable owner projection, and the mobile OpenFox operator
+experience described here are not implemented end to end.
 
 **Constitutional alignment:** provisionally `PARTIAL` against the published,
 unratified Agentic Internet Constitution Founding Draft 0.5. The exact scope,
@@ -36,8 +37,10 @@ The present repository provides useful foundations:
 |---|---|---|
 | Skills | Built-in, global, and workspace loading; registry search; GitHub and ClawHub installation; basic origin metadata; malicious-block and suspicious flags | Verified publisher identity, immutable content digest, permission manifest, conformance evidence, trust policy, revocation, and controlled updates |
 | MCP | Local and remote server configuration, deferred tool discovery, tool-call events, and result spillover to artifacts | Trusted server catalog, identity and version pinning, permission review, sandbox profile, credential scope, revocation, and capability-level admission |
-| Evolution | Learning records, candidate skill drafts, validation, and optional application | Reuse-first procurement, external-candidate comparison, signed promotion evidence, and isolation from vendor-installed Skills |
-| Web | Authenticated dashboard, chat, skills, tools, configuration, and in-memory logs | Durable earning projections, Intent controls, financial reports, approvals, and authority-aware task steering |
+| Evolution | Learning records, attempt-preserving candidate IDs, candidate/quarantine states, validation, rollback-on-apply failure, and optional application; the local rehearsal generated eight draft-only candidates | Reuse-first procurement, external-candidate comparison, outcome-qualified evaluation, candidate-specific `PromotionAuthority`, and isolation from vendor-installed Skills |
+| Economic evidence | Append-only Agent Operation/Outcome journal, recovery, projection, checkpointing, privacy-aware publication policy, and directory/HTTP Carrier transports | Retrospective coverage for old cohorts, independent Carrier operation, external verifier evidence, and a direct promotion/reporting consumer |
+| Campaigns | Campaign 0 plus a local eight-Agent rehearsal of Campaigns 1--6 against two same-host Carriers and three local validators | Formal Campaign 1--4 sample and independence gates, cross-host Campaign 5, and arm's-length external Campaign 6 |
+| Web | Authenticated dashboard, chat, skills, tools, configuration, and in-memory logs | Durable owner-scoped event projection, Intent controls, financial reports, approvals, and authority-aware task steering |
 | Mobile | TOS iOS and Android repositories contain matching Agent Commerce primitives for contact, spending policy, purchase phase, finality, and crash-safe funding | An OpenFox task/report/capability UI, durable event synchronization, owner steering, Intent revision, approval, and revocation flows |
 
 An installed Skill is not therefore a trusted Skill. A configured MCP server is
@@ -449,9 +452,88 @@ flowchart LR
     Owner -->|pause, steer, revoke| Execute
 ```
 
+## Implementation Status and Delivery Ownership
+
+The implemented earning stack should be reused rather than replaced. Generic
+Intent discovery, Agreement coordination, Writer Fences, the Execution Gate,
+settlement adapters, relay and guarantor services, accounting journals, and
+Operation/Outcome events already provide the economic and evidence substrate.
+The remaining work is a capability-supply and owner-control layer above that
+substrate.
+
+| Workstream | Current state | Next shippable result | Primary repositories |
+|---|---|---|---|
+| Consequential evolution safety | The prohibition on autonomous `apply` is documentary; the generic evolution runtime still supports `apply` | Runtime refuses unqualified `apply` whenever earning or another consequential profile is active; only an exact unexpired promotion record can activate one digest | `openfox` |
+| Portable authority objects | Intent, Agreement, semantic action, Writer Fence, and Operation/Outcome objects exist | Freeze capability identity, permission manifest, admission, revocation, and promotion records only where they cross implementations; freeze owner event/command objects used by multiple clients | `tos-service-spec`, then `tos-service-protocol` |
+| Capability inventory | Loaders expose basic names, paths, and origins | One durable inventory binds exact bytes, publisher/source evidence, permissions, status, expiry, revocation generation, compatibility, and last admitted policy | `openfox` |
+| Reuse-first sourcing | Skill registries, installation, MCP configuration, and local evolution exist as separate features | Requirement compiler and sourcing coordinator search admitted inventory first, then approved catalogs, retain every rejection, and emit `NO_ADMISSIBLE_CANDIDATE` before local drafting | `openfox`; optional catalog/Carrier adapters elsewhere |
+| Verification and admission | Existing scanners catch narrow structural and secret-like failures | Quarantined fetch, signature/digest verification, dependency and license inventory, permission diff, sandbox and hidden-task runs, explicit admission, update, revocation, and rollback | `openfox`, sandbox/executor repository selected by deployment |
+| Promotion | Candidate and quarantine states exist, but success can still flow through generic `apply` | Append-only `PromotionAuthority` journal binds one candidate digest, retained control, unseen evaluation, harm metrics, approver, scope, expiry, activation, revocation, and rollback | `openfox`; `tos-service-protocol` for portable verification |
+| Financial and market reports | Campaign reports are handcrafted evidence artifacts | Deterministic accounting/query library plus four maintained orchestration Skills emit content-addressed Markdown, typed data, and evidence manifests with `INCOMPLETE` behavior | `openfox` |
+| Durable owner projection | Operation/Outcome and economic journals exist; Web state is not the target durable projection | Rebuildable owner-scoped snapshot and cursor stream for work, Intents, capabilities, approvals, reports, exposure, reconciliation, and freshness | `openfox` |
+| Owner commands | Existing CLI/Web controls are not a shared mobile-safe command protocol | Stable command identity, expected revision, device session, semantic confirmation, authorization, expiry, resolution query, and replay-safe result | `tos-service-spec`, `tos-service-protocol`, `openfox` |
+| Mobile clients | iOS and Android contain TOS Agent Commerce safety primitives | Both clients consume the same projection, render the same authority states, and submit the same bounded commands without holding unrestricted OpenFox authority | `ios`, `android` |
+| Independent evidence | Local campaigns and same-host multi-Carrier paths pass their bounded claims | Gate S, Gate M, formal Campaigns 1--4, cross-host Campaign 5, and arm's-length Campaign 6 in that order | Test/deployment repositories plus the implementations above |
+
+### Required implementation order
+
+1. **Enforce the current safety ceiling in OpenFox.** Add a consequential-
+   workflow classifier at configuration and activation time. If earning,
+   custody, external disclosure, production credentials, or irreversible tools
+   are reachable, bare `evolution.mode=apply` fails closed. Preserve `observe`
+   and `draft`; do not remove generic local experimentation.
+2. **Freeze only the portable contracts.** Define canonical capability and
+   owner-command records in `tos-service-spec` when another implementation or
+   mobile client must verify them. Implement canonical codecs, domain-separated
+   digests, authorization predicates, conflict rules, and mutation vectors in
+   `tos-service-protocol`. OpenFox-only ranking and UI preferences remain local.
+3. **Build one authoritative local capability inventory.** Integrate Skill
+   loaders, installers, MCP configuration, evolution profiles, execution
+   policy, and revocation into one append-only inventory projection. Existing
+   entries begin as `UNVERIFIED_LEGACY`; no migration invents trust.
+4. **Implement reuse-first sourcing and admission.** Compile the exact
+   Agreement-bound requirement, inspect already admitted inventory, search
+   owner-approved sources within network and privacy budgets, fetch into
+   quarantine, verify and test, then request admission for one exact digest and
+   permission set. Only a complete negative search result may permit local
+   drafting.
+5. **Implement candidate-specific promotion.** Evaluate a candidate against a
+   retained control on committed unseen tasks. A separate owner or accountable
+   authority signs the promotion record. The runtime rechecks it at load and
+   at every consequential use; expiry or revocation prevents new use and sends
+   in-flight work to reconciliation.
+6. **Build reports from deterministic data first.** Implement typed period and
+   accounting queries over economic and Operation/Outcome journals. The four
+   maintained Skills may explain and render those results but may not calculate
+   authoritative balances, hide missing inputs, or turn analysis into trading
+   authority.
+7. **Publish the durable owner projection and command API.** Derive snapshots
+   and resumable redacted events from authoritative journals. Route every Web
+   and mobile mutation through the same command admission, semantic action ID,
+   Writer Fence, policy check, and resolution store.
+8. **Add iOS and Android surfaces after the contract is stable.** First ship
+   read-only work, capability, report, and freshness views. Then add pause,
+   approval, revision, reconciliation, and revocation using device-bound,
+   expiring sessions and exact semantic confirmation.
+9. **Run promotion gates without collapsing their evidence classes.** Gate S
+   proves capability procurement; formal Campaigns 1--4 prove calibration,
+   uplift, settlement, and generic composition; Gate M proves owner operation;
+   Campaign 5 proves independent failure domains; Campaign 6 alone can support
+   an external adaptive-profit claim.
+
+The Gateway, Messenger, and optional market applications do not need to become
+a central capability market. They may carry signed metadata, revocations, or
+owner events, but they remain non-authoritative transports. A first release can
+use configured registries and direct OpenFox control endpoints while retaining
+the same portable identities and evidence rules.
+
 ## Delivery Slices and Acceptance Gates
 
 ### Slice 1 — truth and inventory
+
+**Implementation status:** `PARTIAL` foundation; target acceptance has not
+run. Basic origin metadata and Operation/Outcome evidence exist, but the typed
+inventory, admission, permission, expiry, and revocation records do not.
 
 - Add typed capability identity, origin, digest, publisher, permissions,
   admission, expiry, and revocation records.
@@ -468,6 +550,10 @@ disable/restart behavior for a revoked capability.
 
 ### Slice 2 — trusted reuse before development
 
+**Implementation status:** `BLOCKED` on Slice 1. Registry search, installation,
+MCP loading, and local drafting exist separately; no production coordinator
+yet proves reuse-first ordering or `NO_ADMISSIBLE_CANDIDATE`.
+
 - Compile a requirement, search approved sources, verify candidates in a
   sandbox, and preserve the decision evidence.
 - Block model- or Intent-directed installation, connection, credentials, and
@@ -481,6 +567,9 @@ carry proof of the prior market decision.
 
 ### Slice 3 — maintained reports
 
+**Implementation status:** `NOT IMPLEMENTED`. Campaign reports are evidence for
+the requirements, not implementations of the four scheduled built-ins.
+
 - Release the four built-ins and their fixtures, typed outputs, evidence
   manifests, Markdown rendering, revisions, and schedules.
 - Reconcile report values against the earning and settlement journals.
@@ -490,6 +579,10 @@ classification reconciliation, explicit incomplete-data behavior, no secret
 leakage, and faithful Web rendering.
 
 ### Slice 4 — read-only mobile
+
+**Implementation status:** `NOT IMPLEMENTED`. Existing Web and mobile commerce
+components do not provide the durable OpenFox owner projection or shared
+resumable event contract.
 
 - Publish the owner projection and resumable event API.
 - Render task state, capability provenance, reports, alerts, and freshness on
@@ -501,6 +594,10 @@ finality claim.
 
 ### Slice 5 — mobile control and approvals
 
+**Implementation status:** `BLOCKED` on Slice 4 and the portable command
+contract. Existing local controls do not satisfy replay-safe multi-device
+authority.
+
 - Add pause, Intent revision/withdrawal, policy proposals, approval inbox,
   steering, reconciliation, capability revocation, and device-session
   revocation.
@@ -511,6 +608,10 @@ rejection, stale-state rejection, crash recovery, immediate pause/revocation
 enforcement, and zero duplicate action across concurrent devices.
 
 ### Slice 6 — external validation
+
+**Implementation status:** `BLOCKED`. The same-host local rehearsal is useful
+preparation but is not independent security, physical-device, public-network,
+cross-host, or arm's-length commercial evidence.
 
 - Run the capability-sourcing and mobile gates in the bounded adaptive earning
   campaign before increasing external exposure.

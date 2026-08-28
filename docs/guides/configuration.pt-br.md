@@ -493,4 +493,4 @@ As tarefas agendadas persistem após reinicializações em `~/.openfox/workspace
 | [Sistema de Hooks](../architecture/hooks/README.md) | Hooks orientados a eventos: observadores, interceptores, hooks de aprovação |
 | [Steering](../architecture/steering.md) | Injetar mensagens em um loop de agente em execução |
 | [SubTurn](../architecture/subturn.md) | Coordenação de subagentes, controle de concorrência, ciclo de vida |
-| [Gerenciamento de Contexto](../architecture/agent-refactor/context.md) | Detecção de limites de contexto, compressão |
+| [Gerenciamento de Contexto](../architecture/context-management.md) | Detecção de limites de contexto, compressão |

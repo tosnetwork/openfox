@@ -493,4 +493,4 @@ OpenFox は `cron` ツールを通じて cron スタイルのスケジュール�
 | [Hook システム](../architecture/hooks/README.md) | イベント駆動 Hook：オブザーバー、インターセプター、承認 Hook |
 | [Steering](../architecture/steering.md) | 実行中の Agent ループにメッセージを注入 |
 | [SubTurn](../architecture/subturn.md) | サブ Agent の調整、並行制御、ライフサイクル |
-| [コンテキスト管理](../architecture/agent-refactor/context.md) | コンテキスト境界検出、圧縮戦略 |
+| [コンテキスト管理](../architecture/context-management.md) | コンテキスト境界検出、圧縮戦略 |

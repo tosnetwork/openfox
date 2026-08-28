@@ -5,6 +5,10 @@ skills. Learning remains advisory: it cannot create an Agreement, reserve
 resources, start execution, disclose data, publish an Intent, or authorize a
 payment.
 
+This page covers the learning boundary. For discovery, strategy, Agreements,
+execution, settlement, and operator commands, see [Autonomous
+Earning](autonomous-earning.md).
+
 ## Safety boundary
 
 Reusable learning is enabled only for an execution obligation whose canonical
@@ -53,6 +57,9 @@ successful learning example.
 
 ## Operator guidance
 
+- Use `observe` first and `draft` for reviewable candidates. Keep automatic
+  `apply` confined to bounded local experiments until candidate-specific
+  promotion authority and independent production gates are enabled.
 - Use `public-reusable-learning` only when the task description itself is safe
   to reuse across counterparties.
 - Keep private client data in participant-confidential obligations.

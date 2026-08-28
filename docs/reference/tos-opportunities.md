@@ -4,6 +4,11 @@ OpenFox can periodically discover software-work opportunities without giving
 the AgentLoop Gateway credentials, finalized-chain authority, custody, or a
 payment interface. The feature is disabled by default.
 
+This is the older buyer-oriented Capability acquisition path. It verifies a
+service OpenFox may purchase; it is not the generic Agent Intent runtime used
+to publish demand, sell capabilities, negotiate Agreements, or earn revenue.
+For that workflow, see [Autonomous Earning](../guides/autonomous-earning.md).
+
 The process boundary is:
 
 ```text

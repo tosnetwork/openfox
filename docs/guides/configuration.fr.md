@@ -492,4 +492,4 @@ Les tâches planifiées persistent après redémarrage dans `~/.openfox/workspac
 | [Système de Hooks](../architecture/hooks/README.md) | Hooks événementiels : observateurs, intercepteurs, hooks d'approbation |
 | [Steering](../architecture/steering.md) | Injecter des messages dans une boucle agent en cours d'exécution |
 | [SubTurn](../architecture/subturn.md) | Coordination de subagents, contrôle de concurrence, cycle de vie |
-| [Gestion du Contexte](../architecture/agent-refactor/context.md) | Détection des limites de contexte, compression |
+| [Gestion du Contexte](../architecture/context-management.md) | Détection des limites de contexte, compression |

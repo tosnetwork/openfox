@@ -10,6 +10,7 @@ Task-oriented guides for setup, configuration, and common OpenFox workflows.
 - [Chat Apps Configuration](chat-apps.md): supported chat platforms and channel-specific setup paths.
 - [Providers & Model Configuration](providers.md): `model_list`, providers, and model routing.
 - [Spawn & Async Tasks](spawn-tasks.md): background work, long-running tasks, and sub-agent orchestration.
+- [Autonomous Earning](autonomous-earning.md): current owner-strategy, Intent discovery, no-action, Agreement, execution, settlement, and operator workflow.
 - [Autonomous Earning Evolution](autonomous-earning-evolution.md): disclosure-safe learning and bounded skill reuse after paid executions.
 - [Agent Transaction Relay Assurance](agent-transaction-relay.md): independently select relay side effects and concrete trust/recovery guarantees.
 - [OpenFox Hardware Compatibility List](hardware-compatibility.md): tested boards and platform notes.

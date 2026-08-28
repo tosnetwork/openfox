@@ -154,6 +154,18 @@ func TestEvaluatorFailsClosedOnStaleOrUnprofitableEvidence(t *testing.T) {
 	}
 }
 
+func TestEvaluatorHonorsNaturalLanguageStrategyDeclineBeforeProfit(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	estimate := EconomicEstimate{StrategyDisposition: EconomicStrategyDecline, StrategyRationale: "avoid this counterparty",
+		RevenueAtomic: "1000", PaymentProbabilityPPM: 1_000_000, CompletionProbabilityPPM: 1_000_000,
+		ComputeCostAtomic: "1", MaximumLossAtomic: "1", EstimatedAtUnix: uint64(now.Unix()),
+		ExpiresAtUnix: uint64(now.Add(time.Minute).Unix()), EvidenceDigest: "evidence"}
+	decision, err := EvaluateEconomics(estimate, EconomicPolicy{MinimumExpectedProfitAtomic: "1", MaximumLossAtomic: "100"}, now)
+	if err != nil || decision.Eligible || decision.ExpectedNetAtomic != "999" || decision.StrategyDisposition != EconomicStrategyDecline {
+		t.Fatalf("profitable but unwanted estimate = %+v, %v", decision, err)
+	}
+}
+
 func TestHTTPCarrierBindsOriginIdentityAuthAndDigest(t *testing.T) {
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

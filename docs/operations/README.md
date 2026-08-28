@@ -1,5 +1,12 @@
 # Operations
 
+Operational runbooks and measured campaign reports live together here. A
+campaign report describes evidence from one fixed environment; it is not a
+general deployment guarantee. For current product usage, start with the
+[Autonomous Earning Guide](../guides/autonomous-earning.md).
+
+## Agent commerce campaigns
+
 - [Eight-Agent Market Campaign](eight-agent-market-campaign.md): wall-clock
   decentralized discovery, execution, learning, settlement, and reporting
   campaign.
@@ -13,6 +20,17 @@
 - [Bounded Adaptive Earning Campaigns 1–6 Report](bounded-adaptive-earning-campaign-report.md):
   evidence-bounded local rehearsal of generic trading, signed Agent discussion,
   financial accounting, and draft-only evolution.
+- [Six-Agent One-Hour Autonomous Market Report](six-agent-one-hour-autonomous-market-report.md):
+  repeated AI-planned local trades, direct settlement, learning observations,
+  and the limits of a closed internal economy.
+- [Six-Agent AIPoW Reward Campaign Report](six-agent-aipow-reward-market-campaign-report.md):
+  local Task Escrow settlement followed through to verified AIPoW reward
+  credit.
+- [Native Workspace Strategy Round](six-agent-native-workspace-strategy-market-round-report.md):
+  business preferences read from each Agent's normal workspace, plus the
+  follow-up removal of forced transactions and synthetic economic estimates.
+
+## Runtime operations
 
 Operational docs for debugging, diagnosis, and production troubleshooting.
 

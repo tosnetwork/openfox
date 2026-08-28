@@ -21,6 +21,7 @@ import (
 	"github.com/tosnetwork/tos-messenger/pkg/localapi"
 
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
+	openfoxagent "github.com/tosnetwork/openfox/pkg/agent"
 	"github.com/tosnetwork/openfox/pkg/config"
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
 	"github.com/tosnetwork/openfox/pkg/providers"
@@ -436,6 +437,7 @@ func scoutCommand() *cobra.Command {
 			if closeable, ok := llm.(providers.StatefulProvider); ok {
 				defer closeable.Close()
 			}
+			agentContext := openfoxagent.NewContextBuilder(cfg.WorkspacePath())
 			now := time.Now().UTC()
 			capabilities := make([]openfoxearning.Capability, 0, len(cfg.Earning.Capabilities))
 			for _, capability := range cfg.Earning.Capabilities {
@@ -461,7 +463,8 @@ func scoutCommand() *cobra.Command {
 			}
 			collector := openfoxearning.Collector{Carriers: carriers, Authority: authorities,
 				Inventory: openfoxearning.CurrentInventory{SnapshotValue: inventory},
-				Estimator: openfoxearning.LLMEconomicEstimator{Provider: llm, Model: model, Now: func() time.Time { return now }},
+				Estimator: openfoxearning.LLMEconomicEstimator{Provider: llm, Model: model, Now: func() time.Time { return now },
+					AgentContext: agentContext.BuildSystemPromptWithCache},
 				Policy: openfoxearning.EconomicPolicy{MinimumExpectedProfitAtomic: cfg.Earning.Policy.MinimumExpectedProfitAtomic,
 					MinimumROIPPM: cfg.Earning.Policy.MinimumROIPPM, MaximumLossAtomic: cfg.Earning.Policy.MaximumLossAtomic,
 					MinimumPaymentProbabilityPPM:    cfg.Earning.Policy.MinimumPaymentProbabilityPPM,
@@ -535,6 +538,7 @@ func runCommand() *cobra.Command {
 			if closeable, ok := llm.(providers.StatefulProvider); ok {
 				defer closeable.Close()
 			}
+			agentContext := openfoxagent.NewContextBuilder(cfg.WorkspacePath())
 			journalDir := filepath.Join(cfg.Earning.StateDir, "opportunities")
 			if err := os.MkdirAll(journalDir, 0o700); err != nil {
 				return err
@@ -554,7 +558,8 @@ func runCommand() *cobra.Command {
 				Inventory: openfoxearning.InventorySourceFunc(func(context.Context) (openfoxearning.InventorySnapshot, error) {
 					return configuredInventory(cfg.Earning, authority, time.Now().UTC()), nil
 				}),
-				Estimator: openfoxearning.LLMEconomicEstimator{Provider: llm, Model: model},
+				Estimator: openfoxearning.LLMEconomicEstimator{Provider: llm, Model: model,
+					AgentContext: agentContext.BuildSystemPromptWithCache},
 				Policy: openfoxearning.EconomicPolicy{MinimumExpectedProfitAtomic: cfg.Earning.Policy.MinimumExpectedProfitAtomic,
 					MinimumROIPPM: cfg.Earning.Policy.MinimumROIPPM, MaximumLossAtomic: cfg.Earning.Policy.MaximumLossAtomic,
 					MinimumPaymentProbabilityPPM:    cfg.Earning.Policy.MinimumPaymentProbabilityPPM,
@@ -616,7 +621,8 @@ func runCommand() *cobra.Command {
 				authority = openfoxearning.NewOutcomeRecordingAuthority(authority, outcomeRecorder)
 				engine.Authority = authority
 				if cfg.Earning.Gates.Contact {
-					contactHandler = &openfoxearning.ContactCandidateHandler{Engine: engine, Drafter: openfoxearning.LLMContactDrafter{Provider: llm, Model: model},
+					contactHandler = &openfoxearning.ContactCandidateHandler{Engine: engine, Drafter: openfoxearning.LLMContactDrafter{Provider: llm, Model: model,
+						AgentContext: agentContext.BuildSystemPromptWithCache},
 						Fence: fenceSource, PaymentDestination: []byte(cfg.Earning.TOSPayment.SourceAccount)}
 					handler = contactHandler
 				}
@@ -730,7 +736,8 @@ func runCommand() *cobra.Command {
 						}
 						engagementAutonomy.Runners = openfoxearning.AgreementRunnerFactoryFunc(func(record openfoxearning.EngagementRecord) (openfoxearning.AgreementRunner, error) {
 							return openfoxearning.LLMTaskRunner{Provider: llm, Model: model, Agreement: record.Agreement.Body,
-								OutputDirectory: outputDirectory, SkillWorkspace: workspace, Learning: learning}, nil
+								OutputDirectory: outputDirectory, SkillWorkspace: workspace, Learning: learning,
+								AgentContext: agentContext.BuildSystemPromptWithCache}, nil
 						})
 						engagementAutonomy.Delivery = openfoxearning.MessengerDeliverySink{Messenger: &openfoxearning.MessengerSink{Client: messenger}}
 					}
@@ -839,7 +846,8 @@ func runCommand() *cobra.Command {
 					}
 					manager.Drafter = openfoxearning.LLMSupplyDrafter{Provider: llm, Model: model, NetworkID: publication.NetworkID,
 						AgentID: cfg.Earning.AgentID, Audience: publication.AllowedAudiences[0],
-						SettlementParameters: settlementParameters, OfferPolicies: configuredSupplyOfferPolicies(cfg.Earning)}
+						SettlementParameters: settlementParameters, OfferPolicies: configuredSupplyOfferPolicies(cfg.Earning),
+						AgentContext: agentContext.BuildSystemPromptWithCache}
 					if agreementAutonomy != nil {
 						negotiator := openfoxearning.DemandApplicationNegotiator{Publications: manager,
 							Engine: engine, Inventory: collector.Inventory, Fence: fenceSource,

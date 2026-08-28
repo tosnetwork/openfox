@@ -493,4 +493,4 @@ Tác vụ đã lên lịch được lưu trữ bền vững sau khi khởi độ
 | [Hệ Thống Hook](../architecture/hooks/README.md) | Hook hướng sự kiện: observer, interceptor, approval hook |
 | [Steering](../architecture/steering.md) | Chèn tin nhắn vào vòng lặp agent đang chạy |
 | [SubTurn](../architecture/subturn.md) | Điều phối subagent, kiểm soát đồng thời, vòng đời |
-| [Quản Lý Ngữ Cảnh](../architecture/agent-refactor/context.md) | Phát hiện ranh giới ngữ cảnh, nén |
+| [Quản Lý Ngữ Cảnh](../architecture/context-management.md) | Phát hiện ranh giới ngữ cảnh, nén |

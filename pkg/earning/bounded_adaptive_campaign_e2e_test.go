@@ -306,6 +306,7 @@ func validateBoundedAdaptiveReport(report boundedAdaptiveReport, manifest eightA
 		openingAgents := make(map[string]struct{}, len(manifest.Agents))
 		replyAgents := make(map[string]struct{}, 2)
 		for tradeIndex, trade := range phase.Trades {
+			expectedNet, expectedNetErr := nonnegativeInteger(trade.ExpectedNetNanoTOS)
 			carriers := make(map[string]struct{}, len(trade.CarrierIDs))
 			for _, carrier := range trade.CarrierIDs {
 				carriers[carrier] = struct{}{}
@@ -325,8 +326,9 @@ func validateBoundedAdaptiveReport(report boundedAdaptiveReport, manifest eightA
 				!canonicalSHA256(trade.EconomicEvidenceDigest) || trade.RevenueNanoTOS != expectedSeller.Price ||
 				trade.MaximumInternalCostNanoTOS != expectedSeller.MaximumCost ||
 				trade.ProjectedNetNanoTOS != trade.RevenueNanoTOS-trade.MaximumInternalCostNanoTOS ||
-				trade.ExpectedNetNanoTOS != strconv.FormatUint(trade.ProjectedNetNanoTOS, 10) ||
-				trade.EconomicAnalysisMode != "bounded-owner-fallback" || trade.ExecutionElapsedMillis <= 0 ||
+				expectedNetErr != nil || expectedNet.Sign() <= 0 ||
+				trade.EconomicAnalysisMode != "ai" || trade.EconomicStrategyDisposition != string(EconomicStrategyPursue) ||
+				trade.EconomicStrategyRationale == "" || trade.ExecutionElapsedMillis <= 0 ||
 				trade.SettlementElapsedMillis <= 0 || trade.CompletedAt == "" ||
 				strings.Join(trade.SkillsBefore, "\x00") != strings.Join(trade.SkillsAfter, "\x00") {
 				return fmt.Errorf("Campaign %d trade %d lacks dual-Carrier, economic, deliverable, or finality evidence",

@@ -168,6 +168,7 @@ func TestIsPrivateOrRestrictedIP_Table(t *testing.T) {
 		{"172.16.0.1", true},
 		{"192.168.1.1", true},
 		{"169.254.169.254", true},
+		{"168.63.129.16", true},
 		{"100.64.0.1", true},
 		{"198.18.0.1", true},
 		{"198.20.0.1", false},

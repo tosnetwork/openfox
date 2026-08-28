@@ -148,9 +148,9 @@ require (
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/tosnetwork/tos-ai v0.0.0-20260825005837-ff7607d532b4
-	github.com/tosnetwork/tos-messenger v0.0.0-20260825005733-7c5759f44d71
-	github.com/tosnetwork/tos-service-protocol v0.0.0-20260825005653-0cd6b53f2c35
+	github.com/tosnetwork/tos-ai v0.0.0-20260828001018-90cf46f18c8e
+	github.com/tosnetwork/tos-messenger v0.0.0-20260828001018-f7abfb1e701a
+	github.com/tosnetwork/tos-service-protocol v0.0.0-20260828000705-8d8b80ad5934
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.71.0 // indirect

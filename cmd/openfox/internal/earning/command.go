@@ -25,12 +25,13 @@ import (
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
 	"github.com/tosnetwork/openfox/pkg/providers"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 	"github.com/tosnetwork/tos-service-protocol/pkg/paiddemand"
 )
 
 func NewCommand() *cobra.Command {
 	command := &cobra.Command{Use: "earning", Short: "Inspect autonomous earning safety state", Args: cobra.NoArgs}
-	command.AddCommand(statusCommand(), registryCommand(), scoutCommand(), runCommand(), intentCommand(), reconcileCommand(), operationsCommand(), authorityCommand(), modeCommand("pause", openfoxearning.OperationalPaused),
+	command.AddCommand(statusCommand(), registryCommand(), scoutCommand(), runCommand(), intentCommand(), reconcileCommand(), operationsCommand(), authorityCommand(), relayCommand(), guarantorCommand(), modeCommand("pause", openfoxearning.OperationalPaused),
 		modeCommand("drain", openfoxearning.OperationalDraining), modeCommand("resume", openfoxearning.OperationalRunning))
 	return command
 }
@@ -112,12 +113,14 @@ func intentListCommand() *cobra.Command {
 }
 
 type publicationRuntime struct {
-	Manager        *openfoxearning.PublicationManager
-	Authority      openfoxearning.EconomicAuthority
-	CloseAuthority func()
-	DirectorySinks []*openfoxearning.DirectoryPublicationSink
-	CarrierIDs     []string
-	Fence          commerce.WriterFence
+	Manager               *openfoxearning.PublicationManager
+	Authority             openfoxearning.EconomicAuthority
+	CloseAuthority        func()
+	DirectorySinks        []*openfoxearning.DirectoryPublicationSink
+	OutcomeDirectorySinks []*openfoxearning.DirectoryOutcomeCarrier
+	CarrierIDs            []string
+	Fence                 commerce.WriterFence
+	OutcomeRecorder       *openfoxearning.ManagedOutcomeRecorder
 }
 
 func (runtime *publicationRuntime) Close() {
@@ -127,7 +130,13 @@ func (runtime *publicationRuntime) Close() {
 	if runtime.Manager != nil {
 		_ = runtime.Manager.Close()
 	}
+	if runtime.OutcomeRecorder != nil {
+		_ = runtime.OutcomeRecorder.Close()
+	}
 	for _, sink := range runtime.DirectorySinks {
+		_ = sink.Close()
+	}
+	for _, sink := range runtime.OutcomeDirectorySinks {
 		_ = sink.Close()
 	}
 	if runtime.CloseAuthority != nil {
@@ -177,6 +186,8 @@ func openPublicationRuntime(ctx context.Context) (*publicationRuntime, error) {
 	engine := &openfoxearning.Engine{OwnerID: cfg.Earning.OwnerID, AgentID: cfg.Earning.AgentID, MandateDigest: cfg.Earning.MandateDigest,
 		Gates: configuredFeatureGates(cfg.Earning), Authority: authority, Collector: openfoxearning.Collector{Authority: authorities},
 		PublicationSinks: map[string]openfoxearning.PublicationSink{}, Operations: operations}
+	engine.OutcomePublicationSinks = map[string]openfoxearning.OutcomePublicationSink{}
+	engine.OutcomePublicationPolicy = configuredOutcomePublicationPolicy(cfg.Earning.Outcome)
 	for _, carrier := range cfg.Earning.Carriers {
 		kind := carrier.Kind
 		if kind == "" {
@@ -191,6 +202,14 @@ func openPublicationRuntime(ctx context.Context) (*publicationRuntime, error) {
 			engine.PublicationSinks[carrier.ID] = sink
 			engine.Collector.Carriers = append(engine.Collector.Carriers,
 				openfoxearning.DirectoryCarrier{CarrierID: carrier.ID, Directory: carrier.Directory})
+			if cfg.Earning.Outcome.PublicPublicationEnabled {
+				outcomeSink, openErr := openfoxearning.OpenDirectoryOutcomeCarrier(filepath.Join(carrier.Directory, "operation-outcomes"), carrier.ID, authority)
+				if openErr != nil {
+					return fail(openErr)
+				}
+				runtime.OutcomeDirectorySinks = append(runtime.OutcomeDirectorySinks, outcomeSink)
+				engine.OutcomePublicationSinks[carrier.ID] = outcomeSink
+			}
 		} else {
 			sink, openErr := openfoxearning.NewHTTPPublicationSink(carrier.ID, carrier.Endpoint, carrier.RelayToken.String(), 30*time.Second)
 			if openErr != nil {
@@ -202,6 +221,14 @@ func openPublicationRuntime(ctx context.Context) (*publicationRuntime, error) {
 				return fail(openErr)
 			}
 			engine.Collector.Carriers = append(engine.Collector.Carriers, reader)
+			if cfg.Earning.Outcome.PublicPublicationEnabled {
+				outcomeSink, openErr := openfoxearning.NewHTTPOutcomeCarrier(carrier.ID, configuredOutcomeCarrierEndpoint(carrier.Endpoint),
+					carrier.ReadToken.String(), carrier.RelayToken.String(), carrier.OutcomeReceiptPublicKey, 30*time.Second)
+				if openErr != nil {
+					return fail(openErr)
+				}
+				engine.OutcomePublicationSinks[carrier.ID] = outcomeSink
+			}
 		}
 		runtime.CarrierIDs = append(runtime.CarrierIDs, carrier.ID)
 	}
@@ -211,6 +238,16 @@ func openPublicationRuntime(ctx context.Context) (*publicationRuntime, error) {
 		return fail(err)
 	}
 	runtime.Fence = fence
+	recorder, err := configuredOutcomeRecorder(cfg.Earning, authority, identityKey,
+		func(context.Context) (commerce.WriterFence, error) { return fence, nil })
+	if err != nil {
+		return fail(err)
+	}
+	runtime.OutcomeRecorder = recorder
+	engine.OutcomeRecorder = recorder
+	authority = openfoxearning.NewOutcomeRecordingAuthority(authority, recorder)
+	engine.Authority = authority
+	runtime.Authority = authority
 	publication := cfg.Earning.Publication
 	manager, err := openfoxearning.OpenPublicationManager(filepath.Join(cfg.Earning.StateDir, "publications"), engine,
 		openfoxearning.InventorySourceFunc(func(context.Context) (openfoxearning.InventorySnapshot, error) {
@@ -460,6 +497,9 @@ func runCommand() *cobra.Command {
 			if err := cfg.Earning.Validate(); err != nil {
 				return err
 			}
+			if err := validateGuarantorCLIAssembly(cfg.Earning); err != nil {
+				return err
+			}
 			if !cfg.Earning.Enabled || cfg.Earning.EffectiveMode() == "off" {
 				return errors.New("autonomous earning is off")
 			}
@@ -468,7 +508,7 @@ func runCommand() *cobra.Command {
 				return err
 			}
 			var identityKey ed25519.PrivateKey
-			if cfg.Earning.Gates.Agreement || cfg.Earning.Gates.Publication {
+			if earningHasSideEffects(cfg.Earning) {
 				identityDir := filepath.Join(cfg.Earning.StateDir, "identity")
 				if err := os.MkdirAll(identityDir, 0o700); err != nil {
 					return err
@@ -547,7 +587,9 @@ func runCommand() *cobra.Command {
 				}
 				engine := &openfoxearning.Engine{OwnerID: cfg.Earning.OwnerID, AgentID: cfg.Earning.AgentID, MandateDigest: cfg.Earning.MandateDigest,
 					MinimumIndependentCarriers: int(cfg.Earning.MinimumIndependentCarriers), Gates: configuredFeatureGates(cfg.Earning),
-					Collector: collector, Authority: authority, Operations: operations, PublicationSinks: map[string]openfoxearning.PublicationSink{}}
+					Collector: collector, Authority: authority, Operations: operations, PublicationSinks: map[string]openfoxearning.PublicationSink{},
+					OutcomePublicationSinks: map[string]openfoxearning.OutcomePublicationSink{}}
+				engine.OutcomePublicationPolicy = configuredOutcomePublicationPolicy(cfg.Earning.Outcome)
 				if messenger != nil {
 					engine.Sink = &openfoxearning.MessengerSink{Client: messenger}
 				}
@@ -565,6 +607,14 @@ func runCommand() *cobra.Command {
 					}
 					return acquired, err
 				}
+				outcomeRecorder, recorderErr := configuredOutcomeRecorder(cfg.Earning, authority, identityKey, fenceSource)
+				if recorderErr != nil {
+					return recorderErr
+				}
+				defer outcomeRecorder.Close()
+				engine.OutcomeRecorder = outcomeRecorder
+				authority = openfoxearning.NewOutcomeRecordingAuthority(authority, outcomeRecorder)
+				engine.Authority = authority
 				if cfg.Earning.Gates.Contact {
 					contactHandler = &openfoxearning.ContactCandidateHandler{Engine: engine, Drafter: openfoxearning.LLMContactDrafter{Provider: llm, Model: model},
 						Fence: fenceSource, PaymentDestination: []byte(cfg.Earning.TOSPayment.SourceAccount)}
@@ -655,7 +705,8 @@ func runCommand() *cobra.Command {
 							AssetResolver: paidDemand.AssetResolver, OfferAuthorities: paidDemand.OfferAuthorities,
 							EscrowCode: paidDemand.EscrowCode, AssetWalletCode: paidDemand.AssetWalletCode,
 							ExecutionKey: paidDemand.ExecutionKey, ActionSender: paidDemand.ProviderSender,
-							Authorizer:      openfoxearning.PaidDemandCustodyAuthorizer{Engine: engine, FenceSource: fenceSource, PolicyRevision: 1},
+							Authorizer: openfoxearning.PaidDemandCustodyAuthorizer{Engine: engine, FenceSource: fenceSource,
+								PolicyRevision: 1, NetworkDomain: configuredPaidDemandCustodyNetwork(cfg.Earning.TOSEscrow)},
 							NetworkGlobalID: cfg.Earning.TOSEscrow.NetworkGlobalID,
 							ActionNanoTOS:   cfg.Earning.TOSEscrow.ActionNanoTOS,
 							PollInterval:    time.Duration(cfg.Earning.TOSEscrow.PollIntervalMillis) * time.Millisecond,
@@ -685,13 +736,15 @@ func runCommand() *cobra.Command {
 					}
 					if cfg.Earning.Gates.DirectPayment {
 						payment := cfg.Earning.TOSPayment
+						network := configuredRelayNetwork(payment.Network)
 						interval := time.Duration(payment.ResolveIntervalMS) * time.Millisecond
 						if interval == 0 {
 							interval = time.Second
 						}
 						sink := &openfoxearning.TOSCTLPaymentSink{Authority: authority, Executable: payment.Executable, ConfigPath: payment.ConfigPath,
 							Wallet: payment.Wallet, SourceAccount: payment.SourceAccount, NetworkGlobalID: payment.NetworkGlobalID,
-							FeeReserveNanoTOS: payment.FeeReserveNanoTOS, QuorumConfigPaths: append([]string(nil), payment.QuorumConfigPaths...),
+							RelayNetworkDomain: &network,
+							FeeReserveNanoTOS:  payment.FeeReserveNanoTOS, QuorumConfigPaths: append([]string(nil), payment.QuorumConfigPaths...),
 							MaximumTransactions: payment.MaximumTransactions, VaultURL: payment.VaultURL, EvidenceDirectory: payment.EvidenceDirectory,
 							ResolveAttempts: payment.ResolveAttempts, ResolveInterval: interval}
 						engagementAutonomy.Payment = &openfoxearning.PaymentService{Engine: engine, Sink: sink, Verifier: sink}
@@ -741,12 +794,28 @@ func runCommand() *cobra.Command {
 							}
 							defer sink.Close()
 							engine.PublicationSinks[carrier.ID] = sink
+							if cfg.Earning.Outcome.PublicPublicationEnabled {
+								outcomeSink, openErr := openfoxearning.OpenDirectoryOutcomeCarrier(filepath.Join(carrier.Directory, "operation-outcomes"), carrier.ID, authority)
+								if openErr != nil {
+									return openErr
+								}
+								defer outcomeSink.Close()
+								engine.OutcomePublicationSinks[carrier.ID] = outcomeSink
+							}
 						} else {
 							sink, openErr := openfoxearning.NewHTTPPublicationSink(carrier.ID, carrier.Endpoint, carrier.RelayToken.String(), 30*time.Second)
 							if openErr != nil {
 								return openErr
 							}
 							engine.PublicationSinks[carrier.ID] = sink
+							if cfg.Earning.Outcome.PublicPublicationEnabled {
+								outcomeSink, openErr := openfoxearning.NewHTTPOutcomeCarrier(carrier.ID, configuredOutcomeCarrierEndpoint(carrier.Endpoint),
+									carrier.ReadToken.String(), carrier.RelayToken.String(), carrier.OutcomeReceiptPublicKey, 30*time.Second)
+								if openErr != nil {
+									return openErr
+								}
+								engine.OutcomePublicationSinks[carrier.ID] = outcomeSink
+							}
 						}
 					}
 					publication := cfg.Earning.Publication
@@ -834,7 +903,8 @@ func configuredShortlist(settings config.EarningSettings) openfoxearning.Shortli
 func configuredFeatureGates(settings config.EarningSettings) openfoxearning.FeatureGates {
 	return openfoxearning.FeatureGates{ObserveOnly: settings.ObserveOnly, Publication: settings.Gates.Publication,
 		Contact: settings.Gates.Contact, Agreement: settings.Gates.Agreement, Execution: settings.Gates.Execution,
-		DirectPayment: settings.Gates.DirectPayment, ExternalSettlement: settings.Gates.ExternalSettlement, TOSEscrow: settings.Gates.TOSEscrow}
+		DirectPayment: settings.Gates.DirectPayment, ExternalSettlement: settings.Gates.ExternalSettlement,
+		TOSEscrow: settings.Gates.TOSEscrow, AgentGuarantor: settings.Gates.AgentGuarantor}
 }
 
 func effectiveOutgoingPayment(value string) string {
@@ -852,7 +922,7 @@ func configuredAgreementEvidenceProfiles(settings config.EarningSettings) []stri
 }
 
 func configuredWriterScopes(settings config.EarningSettings) []string {
-	scopes := []string{"authority.instance"}
+	scopes := []string{"authority.instance", "operation.journal.append"}
 	if settings.Gates.Contact {
 		scopes = append(scopes, "messenger.contact")
 	}
@@ -874,6 +944,13 @@ func configuredWriterScopes(settings config.EarningSettings) []string {
 	if settings.Gates.TOSEscrow {
 		scopes = append(scopes, "agreement.authorize", "escrow.transition", "portfolio.reserve", "provider.offer")
 	}
+	if settings.Gates.AgentGuarantor {
+		scopes = append(scopes, "commercial.quote.close", "commercial.quote.issue", "collateral.transition",
+			"conditional.claim-decision.admit", "conditional.claim-filing.close", "conditional.claim.decide",
+			"conditional.claim.ingress", "conditional.claim.submit", "conditional.claim.transition",
+			"conditional.obligation.transition", "messenger.send", "payment.direct", "payment.domain-bound", "portfolio.release",
+			"portfolio.reserve", "settlement.external")
+	}
 	sort.Strings(scopes)
 	write := 0
 	for _, scope := range scopes {
@@ -883,6 +960,78 @@ func configuredWriterScopes(settings config.EarningSettings) []string {
 		}
 	}
 	return scopes[:write]
+}
+
+func earningHasSideEffects(settings config.EarningSettings) bool {
+	return settings.Gates.Publication || settings.Gates.Contact || settings.Gates.Agreement || settings.Gates.Execution ||
+		settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow ||
+		settings.Gates.AgentRelay || settings.Gates.AgentGuarantor
+}
+
+func configuredOutcomeRecorder(settings config.EarningSettings, authority openfoxearning.EconomicAuthority,
+	identityKey ed25519.PrivateKey, fenceSource openfoxearning.WriterFenceProvider) (*openfoxearning.ManagedOutcomeRecorder, error) {
+	if authority == nil || len(identityKey) != ed25519.PrivateKeySize || fenceSource == nil {
+		return nil, errors.New("operation outcome recorder requires authority, identity key, and Writer Fence source")
+	}
+	public := identityKey.Public().(ed25519.PublicKey)
+	trustHash, err := codec.Digest("tos.openfox.operation-outcome-trust-configuration.v1", struct {
+		AgentID   string `json:"agent_id"`
+		PublicKey []byte `json:"public_key"`
+	}{settings.AgentID, public})
+	if err != nil {
+		return nil, err
+	}
+	authorityRecord, err := commerce.NewPinnedAgentOperationAuthorityV1(settings.AgentID, public,
+		time.Unix(1, 0).UTC(), time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC), trustHash)
+	if err != nil {
+		return nil, err
+	}
+	cohortScope, err := codec.Digest("tos.openfox.operation-outcome-cohort-scope.v1", struct {
+		OwnerID       string `json:"owner_id"`
+		AgentID       string `json:"agent_id"`
+		MandateDigest string `json:"mandate_digest"`
+	}{settings.OwnerID, settings.AgentID, settings.MandateDigest})
+	if err != nil {
+		return nil, err
+	}
+	networkID := settings.Publication.NetworkID
+	if networkID == "" {
+		networkID = settings.TOSEscrow.NetworkID
+	}
+	if networkID == "" {
+		networkID = settings.AgentRelay.TOS.Network.NetworkID
+	}
+	if networkID == "" {
+		networkID = settings.TOSPayment.Network.NetworkID
+	}
+	if networkID == "" {
+		networkID = "openfox:local"
+	}
+	return &openfoxearning.ManagedOutcomeRecorder{Directory: filepath.Join(settings.StateDir, "operation-outcomes"),
+		OwnerID: settings.OwnerID, AgentID: settings.AgentID, AuthorityID: settings.AuthorityID,
+		Purpose: "economic-side-effects", CohortScopeDigest: cohortScope, NetworkID: networkID,
+		AudienceDescriptor: "local-private", OperationAuthority: authorityRecord, OperationKey: identityKey,
+		FenceSource: fenceSource, FenceResolver: authority, AppendAuthority: authority}, nil
+}
+
+func configuredOutcomeCarrierEndpoint(intentEndpoint string) string {
+	return strings.TrimSuffix(intentEndpoint, "/v1/intents") + "/v1/operations"
+}
+
+func configuredOutcomePublicationPolicy(settings config.EarningOutcomeSettings) openfoxearning.OutcomePublicationPolicy {
+	if !settings.PublicPublicationEnabled {
+		return nil
+	}
+	audiences := make(map[string]struct{}, len(settings.AllowedAudiencePolicyDigests))
+	for _, digest := range settings.AllowedAudiencePolicyDigests {
+		audiences[digest] = struct{}{}
+	}
+	profiles := make(map[string]struct{}, len(settings.AllowedAssertionProfiles))
+	for _, profile := range settings.AllowedAssertionProfiles {
+		profiles[profile] = struct{}{}
+	}
+	return openfoxearning.PublicOutcomePublicationPolicyV1{AllowedAudiencePolicyDigests: audiences,
+		AllowedAssertionProfiles: profiles, AllowExtensions: settings.AllowExtensions}
 }
 
 func configuredSettlementParameters(input map[string]string) map[string][]byte {
@@ -1052,6 +1201,25 @@ func statusCommand() *cobra.Command {
 			for _, carrier := range cfg.Earning.Carriers {
 				carrierIDs = append(carrierIDs, carrier.ID)
 			}
+			httpOutcomeReceiptKeysPinned := true
+			for _, carrier := range cfg.Earning.Carriers {
+				kind := carrier.Kind
+				if kind == "" {
+					kind = "http"
+				}
+				if kind == "http" && carrier.OutcomeReceiptPublicKey == "" {
+					httpOutcomeReceiptKeysPinned = false
+				}
+			}
+			outcome := struct {
+				LocalCaptureConfigured       bool `json:"local_capture_configured"`
+				PublicPublicationEnabled     bool `json:"public_publication_enabled"`
+				AllowedAudiencePolicyCount   int  `json:"allowed_audience_policy_count"`
+				AllowedAssertionProfileCount int  `json:"allowed_assertion_profile_count"`
+				HTTPReceiptKeysPinned        bool `json:"http_receipt_keys_pinned"`
+			}{cfg.Earning.Enabled && earningHasSideEffects(cfg.Earning), cfg.Earning.Outcome.PublicPublicationEnabled,
+				len(cfg.Earning.Outcome.AllowedAudiencePolicyDigests), len(cfg.Earning.Outcome.AllowedAssertionProfiles),
+				httpOutcomeReceiptKeysPinned}
 			output := struct {
 				Enabled                    bool     `json:"enabled"`
 				Mode                       string   `json:"mode"`
@@ -1060,7 +1228,8 @@ func statusCommand() *cobra.Command {
 				MinimumIndependentCarriers uint32   `json:"minimum_independent_carriers"`
 				CarrierIDs                 []string `json:"carrier_ids"`
 				Gates                      any      `json:"gates"`
-			}{cfg.Earning.Enabled, cfg.Earning.EffectiveMode(), cfg.Earning.ObserveOnly, validation, cfg.Earning.MinimumIndependentCarriers, carrierIDs, cfg.Earning.Gates}
+				Outcome                    any      `json:"outcome"`
+			}{cfg.Earning.Enabled, cfg.Earning.EffectiveMode(), cfg.Earning.ObserveOnly, validation, cfg.Earning.MinimumIndependentCarriers, carrierIDs, cfg.Earning.Gates, outcome}
 			encoder := json.NewEncoder(command.OutOrStdout())
 			encoder.SetIndent("", "  ")
 			return encoder.Encode(output)

@@ -106,15 +106,66 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
-	// Sync directory to ensure rename is durable
-	// This prevents the renamed file from disappearing after a crash
-	if dirFile, err := os.Open(dir); err == nil {
-		_ = dirFile.Sync()
+	// Sync directory to ensure rename is durable. A successful return is used
+	// by economic journals as the durable side-effect receipt, so an open,
+	// sync, or close failure must never be silently converted into success.
+	dirFile, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("failed to open directory for sync: %w", err)
+	}
+	if err := dirFile.Sync(); err != nil {
 		_ = dirFile.Close()
+		return fmt.Errorf("failed to sync directory: %w", err)
+	}
+	if err := dirFile.Close(); err != nil {
+		return fmt.Errorf("failed to close synced directory: %w", err)
 	}
 
 	// Success: skip cleanup (file was renamed, no temp to remove)
 	cleanup = false
+	return nil
+}
+
+// WriteFileAtomicRoot is WriteFileAtomic scoped to an already-open directory
+// capability. Unlike a pathname-only update, it continues to address the
+// locked directory if that directory is renamed, and cannot be redirected to
+// a replacement directory installed at the original pathname.
+func WriteFileAtomicRoot(root *os.Root, name string, data []byte, perm os.FileMode) error {
+	if root == nil || name == "" || filepath.IsAbs(name) || filepath.Clean(name) != name || name == "." {
+		return fmt.Errorf("invalid rooted atomic-write target")
+	}
+	dir := filepath.Dir(name)
+	temporary := filepath.Join(dir, fmt.Sprintf(".tmp-%d-%d", os.Getpid(), time.Now().UnixNano()))
+	tmpFile, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return fmt.Errorf("failed to create rooted temp file: %w", err)
+	}
+	cleanup := true
+	defer func() {
+		_ = tmpFile.Close()
+		if cleanup {
+			_ = root.Remove(temporary)
+		}
+	}()
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("failed to write rooted temp file: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync rooted temp file: %w", err)
+	}
+	if err := tmpFile.Chmod(perm); err != nil {
+		return fmt.Errorf("failed to protect rooted temp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close rooted temp file: %w", err)
+	}
+	if err := root.Rename(temporary, name); err != nil {
+		return fmt.Errorf("failed to replace rooted target: %w", err)
+	}
+	cleanup = false
+	if err := syncRootDirectory(root, dir); err != nil {
+		return err
+	}
 	return nil
 }
 

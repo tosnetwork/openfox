@@ -13,6 +13,7 @@ import (
 	"time"
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 )
 
 // TestTOSCTLPaymentSinkThreeNode is opt-in because it spends local test-chain
@@ -107,7 +108,8 @@ func TestTOSCTLPaymentSinkThreeNode(t *testing.T) {
 	}
 	sink := &TOSCTLPaymentSink{Authority: authority, Executable: executable, ConfigPath: primary, Wallet: wallet,
 		SourceAccount: source, NetworkGlobalID: int32(networkGlobalID64), FeeReserveNanoTOS: 50_000_000,
-		QuorumConfigPaths: []string{quorum2, quorum3}, MaximumTransactions: 1000, VaultURL: vaultURL,
+		RelayNetworkDomain: liveTOSCustodyNetworkDomain(t, "tos:local-three-node", int32(networkGlobalID64)),
+		QuorumConfigPaths:  []string{quorum2, quorum3}, MaximumTransactions: 1000, VaultURL: vaultURL,
 		EvidenceDirectory: filepath.Join(filepath.Dir(primary), "payment-evidence"), ResolveAttempts: 30, ResolveInterval: time.Second}
 	evidence, err := sink.SubmitPayment(context.Background(), action, fence, fields, canonical, request)
 	if err != nil {
@@ -121,6 +123,17 @@ func TestTOSCTLPaymentSinkThreeNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("finalized Agreement-bound transfer %s with %s", evidence.ExactTransferReference, evidence.FinalityReference)
+}
+
+func liveTOSCustodyNetworkDomain(t *testing.T, networkID string, globalID int32) *agentrelay.NetworkDomain {
+	t.Helper()
+	workchain, err := strconv.ParseInt(mustEnv(t, "OPENFOX_TOS_TARGET_WORKCHAIN_ID"), 10, 32)
+	if err != nil {
+		t.Fatal("OPENFOX_TOS_TARGET_WORKCHAIN_ID must be an int32")
+	}
+	return &agentrelay.NetworkDomain{NetworkID: networkID, GlobalID: globalID,
+		ZeroStateRootHash: mustEnv(t, "OPENFOX_TOS_ZERO_STATE_ROOT_HASH"),
+		ZeroStateFileHash: mustEnv(t, "OPENFOX_TOS_ZERO_STATE_FILE_HASH"), WorkchainID: int32(workchain)}
 }
 
 func mustEnv(t *testing.T, name string) string {

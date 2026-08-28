@@ -244,6 +244,9 @@ func (authority *PersonalAuthority) AdmitScheduleTransition(action commerce.Auth
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, err
+	}
 	now := authority.now().UTC()
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID || !now.Before(time.Unix(int64(fence.Body.ExpiresAtUnix), 0)) {
@@ -303,6 +306,7 @@ func (authority *PersonalAuthority) AdmitScheduleTransition(action commerce.Auth
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, StateRevision: 1}
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, err
 	}
@@ -318,6 +322,9 @@ func (authority *PersonalAuthority) AdmitDependencyTransition(action commerce.Au
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, err
+	}
 	now := authority.now().UTC()
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID || request.GraphBaseRevision != authority.doc.PortfolioRevision ||
@@ -385,6 +392,7 @@ func (authority *PersonalAuthority) AdmitDependencyTransition(action commerce.Au
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, EvidenceRefs: append([]string(nil), request.EvidenceRefs...), StateRevision: 1}
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, err
 	}
@@ -395,6 +403,9 @@ func (authority *PersonalAuthority) AdmitDependencyTransition(action commerce.Au
 func (authority *PersonalAuthority) ScheduleSnapshot() ([]commerce.EngagementScheduleEntry, []commerce.PortfolioDependency) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if authority.ensureStorageIdentityLocked() != nil {
+		return nil, nil
+	}
 	entries := make([]commerce.EngagementScheduleEntry, 0, len(authority.doc.ScheduleEntries))
 	for _, entry := range authority.doc.ScheduleEntries {
 		entries = append(entries, entry)

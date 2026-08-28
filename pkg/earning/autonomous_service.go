@@ -35,6 +35,7 @@ type AutonomousServiceStatus struct {
 	PrivateHandoffs       uint64    `json:"private_handoffs"`
 	EngagementTransitions uint64    `json:"engagement_transitions"`
 	PublicationChanges    uint64    `json:"publication_changes"`
+	GuarantorEvents       uint64    `json:"guarantor_events"`
 	Failures              uint64    `json:"failures"`
 	LastCycleStarted      time.Time `json:"last_cycle_started,omitempty"`
 	LastCycleCompleted    time.Time `json:"last_cycle_completed,omitempty"`
@@ -54,6 +55,7 @@ type AutonomousService struct {
 	PrivateHandoffs *PrivateHandoffAutonomy
 	Engagements     *EngagementAutonomy
 	Publications    *PublicationAutonomy
+	Guarantor       *GuarantorAutonomy
 	Config          AutonomousServiceConfig
 	Now             func() time.Time
 
@@ -120,6 +122,16 @@ func (service *AutonomousService) RunCycle(ctx context.Context) error {
 		if handoffErr != nil {
 			service.recordFailure(handoffErr)
 			return handoffErr
+		}
+	}
+	if service.Guarantor != nil {
+		processed, guarantorErr := service.Guarantor.Process(cycle, 100)
+		service.mu.Lock()
+		service.status.GuarantorEvents += uint64(processed)
+		service.mu.Unlock()
+		if guarantorErr != nil {
+			service.recordFailure(guarantorErr)
+			return guarantorErr
 		}
 	}
 	if service.Engagements != nil {

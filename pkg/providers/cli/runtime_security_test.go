@@ -45,6 +45,26 @@ func TestRunCommandBoundedSharesBudgetAcrossStreams(t *testing.T) {
 	}
 }
 
+func TestRunCommandBoundedCapturesShortLivedOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test is not supported on Windows")
+	}
+	// A short-lived process can exit before an independently scheduled pipe
+	// reader runs. Repeat enough times to guard the Wait/pipe ordering that used
+	// to intermittently lose the complete (and only) line of provider output.
+	const want = `{"loggedIn":true,"subscriptionType":"max"}`
+	for i := 0; i < 256; i++ {
+		cmd := exec.CommandContext(context.Background(), "sh", "-c", "printf '%s' '"+want+"'")
+		stdout, stderr, err := runCommandBounded(context.Background(), cmd, nil, 4096)
+		if err != nil {
+			t.Fatalf("iteration %d: runCommandBounded() error = %v", i, err)
+		}
+		if stdout != want || stderr != "" {
+			t.Fatalf("iteration %d: output = (%q, %q), want (%q, empty)", i, stdout, stderr, want)
+		}
+	}
+}
+
 func TestRuntimeOptionsAuthorizeOnlyConfiguredOwner(t *testing.T) {
 	options := RuntimeOptions{
 		SubscriptionUse: "local-personal",

@@ -20,12 +20,14 @@ type EconomicAuthority interface {
 	AllocateInstance(commerce.AuthorityInstanceAllocationRequest, commerce.WriterFence) (commerce.AuthorityInstanceRecord, error)
 	Snapshot() (uint64, PortfolioLimits, []ExposureReservation)
 	ReleaseReservation(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte, commerce.WriterFence) (commerce.ActionResolution, error)
+	ReleaseGuarantorReservation(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte, commerce.WriterFence, uint64, uint64) (commerce.ActionResolution, error)
 	AuthorizeFenceKey(string, ed25519.PublicKey, time.Time) error
 	ConfirmCurrentWriterFence(commerce.WriterFence, time.Time) error
 	AuthorityNow() time.Time
 	SignAction(commerce.AuthorizedAction, commerce.WriterFence) (commerce.AuthorizedAction, error)
 	AuthorizeCustodyPayment(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte, commerce.WriterFence,
-		commerce.AgreementPaymentRequest, string, int32) (commerce.CustodyActionAuthorization, error)
+		commerce.AgreementPaymentRequest, string, commerce.CustodyNetworkDomain,
+		*SponsorshipCustodyBinding) (commerce.CustodyActionAuthorization, error)
 	AuthorizeCustodyEffect(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte, commerce.WriterFence,
 		commerce.CustodyEffectAuthorization) (commerce.CustodyEffectAuthorization, error)
 
@@ -58,6 +60,15 @@ type EconomicAuthority interface {
 		AccountingEntry) (commerce.ActionResolution, AccountingEntry, error)
 	AccountingSnapshot() []AccountingEntry
 	reconciliationSnapshot() (uint64, []ExposureReservation, map[string]EngagementRecord)
+}
+
+// SponsorshipCustodyBinding is owner-authorized before custody signs the
+// top-up. All three values are exact digests from the selected Quote and the
+// per-action frozen observer snapshot; partial binding is forbidden.
+type SponsorshipCustodyBinding struct {
+	FinalityProfileCBORDigest string `json:"finality_profile_cbor_digest"`
+	ReleaseProfileDigest      string `json:"release_profile_digest"`
+	CorroborationSnapshotID   string `json:"corroboration_snapshot_identity"`
 }
 
 var _ EconomicAuthority = (*PersonalAuthority)(nil)

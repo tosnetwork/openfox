@@ -11,6 +11,7 @@ Task-oriented guides for setup, configuration, and common OpenFox workflows.
 - [Providers & Model Configuration](providers.md): `model_list`, providers, and model routing.
 - [Spawn & Async Tasks](spawn-tasks.md): background work, long-running tasks, and sub-agent orchestration.
 - [Autonomous Earning Evolution](autonomous-earning-evolution.md): disclosure-safe learning and bounded skill reuse after paid executions.
+- [Agent Transaction Relay Assurance](agent-transaction-relay.md): independently select relay side effects and concrete trust/recovery guarantees.
 - [OpenFox Hardware Compatibility List](hardware-compatibility.md): tested boards and platform notes.
 - [Using Antigravity Provider in OpenFox](ANTIGRAVITY_USAGE.md): Google Cloud Code Assist setup and usage.
 

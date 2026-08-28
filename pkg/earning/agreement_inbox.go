@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/tosnetwork/tos-messenger/pkg/envelope"
@@ -77,7 +76,7 @@ func (inbox AgreementInbox) ClaimNext(ctx context.Context) (*ClaimedAgreementEve
 	result := &ClaimedAgreementEvent{EventID: decoded.EventID, LeaseID: lease, SenderAgentID: decoded.SenderAgentID,
 		SenderEndpointID: decoded.SenderEndpointID, SenderDeviceID: decoded.SenderDeviceID,
 		ConversationID: decoded.ConversationID, Kind: decoded.Kind,
-		SemanticActionID: "sha256:" + strings.TrimPrefix(decoded.IdempotencyKey, "idem_")}
+		SemanticActionID: "sha256:" + decoded.IdempotencyKey}
 	switch value := body.(type) {
 	case payload.IntentApplication:
 		application, decodeErr := commerce.DecodeIntentApplication(value.CanonicalApplication)
@@ -105,7 +104,9 @@ func (inbox AgreementInbox) ClaimNext(ctx context.Context) (*ClaimedAgreementEve
 	return result, nil
 }
 
-var economicIdempotencyPattern = regexp.MustCompile(`^idem_[0-9a-f]{64}$`)
+// Messenger's owner-private API accepts idem_<hex>, but the immutable Event
+// wire format intentionally carries only the canonical 32-byte hex token.
+var economicIdempotencyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (inbox AgreementInbox) Complete(ctx context.Context, event *ClaimedAgreementEvent) error {
 	if event == nil || event.EventID == "" || event.LeaseID == "" {

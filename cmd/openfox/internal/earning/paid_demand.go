@@ -153,8 +153,9 @@ func openPaidDemandRuntime(settings config.EarningSettings, engine *openfoxearni
 			MaxPurchases: configured.MaximumPurchases, MaxPerPurchaseAtomic: configured.MaximumPerPurchaseAtomic,
 			MaxTotalAtomic: configured.MaximumTotalAtomic}, EscrowResolver: escrowResolver,
 		ProviderOfferResolver: offerResolver, EscrowCode: escrowCode, Deployer: deployer, ActionSender: actionSender,
-		EffectAuthorizer: openfoxearning.PaidDemandCustodyAuthorizer{Engine: engine, FenceSource: fence, PolicyRevision: 1},
-		OwnerID:          settings.OwnerID, AgentID: settings.AgentID, CallerID: settings.AgentID, NetworkGlobalID: configured.NetworkGlobalID,
+		EffectAuthorizer: openfoxearning.PaidDemandCustodyAuthorizer{Engine: engine, FenceSource: fence, PolicyRevision: 1,
+			NetworkDomain: configuredPaidDemandCustodyNetwork(configured)},
+		OwnerID: settings.OwnerID, AgentID: settings.AgentID, CallerID: settings.AgentID, NetworkGlobalID: configured.NetworkGlobalID,
 		ActionNanoTOS: configured.ActionNanoTOS, PollInterval: time.Duration(configured.PollIntervalMillis) * time.Millisecond,
 		FinalityTimeout: time.Duration(configured.FinalityTimeoutSeconds) * time.Second})
 	if err != nil {
@@ -170,6 +171,12 @@ func openPaidDemandRuntime(settings config.EarningSettings, engine *openfoxearni
 			Key: identityKey, TTL: time.Hour}, PublicTerms: publicTerms, Negotiations: negotiations,
 		ExecutionKey: executionKey, EscrowCode: escrowCode, AssetWalletCode: assetWalletCode,
 		ActionSender: actionSender, ProviderSender: providerSender}, nil
+}
+
+func configuredPaidDemandCustodyNetwork(value config.EarningTOSEscrowSettings) *commerce.CustodyNetworkDomain {
+	return &commerce.CustodyNetworkDomain{NetworkID: value.NetworkID, GlobalID: value.NetworkGlobalID,
+		ZeroStateRootHash: value.GenesisRootHash, ZeroStateFileHash: value.GenesisFileHash,
+		WorkchainID: value.NetworkWorkchainID}
 }
 
 func readPinnedCell(path, expectedHash string) ([]byte, *cell.Cell, error) {

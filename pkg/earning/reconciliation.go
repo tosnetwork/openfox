@@ -27,6 +27,9 @@ type ReconciliationReport struct {
 func (authority *PersonalAuthority) reconciliationSnapshot() (uint64, []ExposureReservation, map[string]EngagementRecord) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if authority.ensureStorageIdentityLocked() != nil {
+		return 0, nil, nil
+	}
 	reservations := make([]ExposureReservation, 0, len(authority.doc.Reservations))
 	for _, reservation := range authority.doc.Reservations {
 		reservations = append(reservations, reservation)

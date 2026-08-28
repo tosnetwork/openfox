@@ -20,6 +20,7 @@ type FeatureGates struct {
 	DirectPayment      bool `json:"direct_payment"`
 	ExternalSettlement bool `json:"external_settlement"`
 	TOSEscrow          bool `json:"tos_escrow"`
+	AgentGuarantor     bool `json:"agent_guarantor"`
 }
 
 // AuthorizeAgreement signs every body-bound Agent-signature predicate for this
@@ -281,7 +282,10 @@ type Engine struct {
 	Sink                       AuthorizedSink
 	PublicationSink            PublicationSink
 	PublicationSinks           map[string]PublicationSink
+	OutcomePublicationSinks    map[string]OutcomePublicationSink
+	OutcomePublicationPolicy   OutcomePublicationPolicy
 	Operations                 *OperationalController
+	OutcomeRecorder            ActionOutcomeRecorder
 	Now                        func() time.Time
 }
 
@@ -552,6 +556,83 @@ func (engine *Engine) SendTypedApplication(ctx context.Context, recipientAgentID
 	return engine.recordResolution(action, resolved)
 }
 
+// SendCommerceProfileEvent sends one already-authorized profile object through
+// Messenger's generic non-model carriage. This method authorizes transport
+// only; it neither creates nor upgrades authority for the embedded object.
+func (engine *Engine) SendCommerceProfileEvent(ctx context.Context, recipientAgentID string,
+	event commerce.CommerceProfileEventV1, verifier commerce.CommerceObjectVerifier, policyRevision uint64,
+	fence commerce.WriterFence) (commerce.ActionResolution, error) {
+	if engine == nil || engine.Authority == nil || engine.Sink == nil || verifier == nil || recipientAgentID == "" ||
+		!engine.permits("agent-guarantor", engine.Gates.AgentGuarantor, true) {
+		return commerce.ActionResolution{}, errors.New("commerce profile send is disabled or incomplete")
+	}
+	now := engine.now()
+	if err := commerce.VerifyCommerceProfileEventV1(event, now, verifier); err != nil {
+		return commerce.ActionResolution{}, err
+	}
+	canonicalEvent, err := commerce.CanonicalCommerceProfileEventV1(event, now)
+	if err != nil {
+		return commerce.ActionResolution{}, err
+	}
+	message := OutboundMessage{Kind: "commerce.profile-event", RecipientAgentIDs: []string{recipientAgentID},
+		ContentType: commerce.CommerceProfileEventContentType, Payload: canonicalEvent}
+	effectRequest, err := commerce.CanonicalMessengerEffectRequest(commerce.MessengerEffectRequestV1{SchemaVersion: 1,
+		RecipientAgentIDs: append([]string(nil), message.RecipientAgentIDs...), EventKind: message.Kind,
+		ContentType: message.ContentType, Payload: append([]byte(nil), message.Payload...)})
+	if err != nil {
+		return commerce.ActionResolution{}, err
+	}
+	effectDigest, err := commerce.DownstreamEffectDescriptorDigest(effectRequest)
+	if err != nil {
+		return commerce.ActionResolution{}, err
+	}
+	instance, err := engine.Authority.AllocateInstance(commerce.AuthorityInstanceAllocationRequest{OwnerID: engine.OwnerID,
+		AgentID: engine.AgentID, PurposeKind: "messenger.send", MandateDigest: engine.MandateDigest,
+		ApprovalDigestOrZero: zeroSHA256Digest(), DownstreamEffectDescriptorDigest: effectDigest,
+		PredecessorAuthorityInstanceID: zeroSHA256Digest()}, fence)
+	if err != nil {
+		return commerce.ActionResolution{}, err
+	}
+	recipientDigest, err := codec.Digest("tos.messenger-recipient-set.v1", []string{recipientAgentID})
+	if err != nil {
+		return commerce.ActionResolution{}, err
+	}
+	scopeDigest, err := codec.Digest("tos.messenger-conversation-scope.v1", struct {
+		ProfileURI   string `json:"profile_uri"`
+		ObjectKind   string `json:"object_kind"`
+		ObjectDigest string `json:"object_digest"`
+	}{event.ProfileURI, event.ObjectKind, event.ObjectDigest})
+	if err != nil {
+		return commerce.ActionResolution{}, err
+	}
+	fields := map[string]commerce.SemanticValue{"owner_id": commerce.ID(engine.OwnerID), "agent_id": commerce.ID(engine.AgentID),
+		"recipient_set_digest": commerce.Digest32(recipientDigest), "conversation_scope_digest": commerce.Digest32(scopeDigest),
+		"authority_instance_id": commerce.Digest32(instance.AuthorityInstanceID)}
+	action, err := commerce.BuildAuthorizedAction(engine.OwnerID, engine.AgentID, "messenger.send", fields,
+		effectRequest, fence, policyRevision, engine.MandateDigest, "", "unsent",
+		minUint64(event.ExpiresAtUnix, fence.Body.ExpiresAtUnix))
+	if err == nil {
+		action, err = engine.Authority.SignAction(action, fence)
+	}
+	if err != nil {
+		return commerce.ActionResolution{}, err
+	}
+	admitted, err := engine.Authority.Admit(action, fields, effectRequest, fence, nil)
+	if err != nil || admitted.State != commerce.ActionPrepared {
+		return admitted, err
+	}
+	resolved, err := engine.Sink.Submit(ctx, action, fence, fields, effectRequest, message)
+	if err != nil {
+		if recovered, resolveErr := engine.Sink.ResolveAction(ctx, action.StableActionID,
+			action.ExactRequestDigest); resolveErr != nil || recovered.State == commerce.ActionUnknown {
+			return admitted, err
+		} else {
+			resolved = recovered
+		}
+	}
+	return engine.recordResolution(action, resolved)
+}
+
 func (engine *Engine) ProposeAgreement(ctx context.Context, body commerce.AgentAgreementBody, recipients []string,
 	policyRevision uint64, fence commerce.WriterFence) (commerce.ActionResolution, error) {
 	if engine == nil || engine.Authority == nil || engine.Sink == nil || !engine.permits("agreement", engine.Gates.Agreement, true) {
@@ -636,7 +717,19 @@ func (engine *Engine) recordResolution(action commerce.AuthorizedAction, resolut
 	if resolution.StableActionID != action.StableActionID || resolution.ExactRequestDigest != action.ExactRequestDigest || resolution.State == commerce.ActionUnknown {
 		return commerce.ActionResolution{}, errors.New("side-effect sink returned an unrelated or unknown resolution")
 	}
-	return engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest, resolution.State, resolution.SinkReference, resolution.EvidenceRefs)
+	recorded, err := engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest, resolution.State, resolution.SinkReference, resolution.EvidenceRefs)
+	if err != nil {
+		return recorded, err
+	}
+	if _, boundaryRecorded := engine.Authority.(interface{ recordsOutcomesAtAuthorityBoundary() }); boundaryRecorded {
+		return recorded, nil
+	}
+	if engine.OutcomeRecorder != nil {
+		if err := engine.OutcomeRecorder.RecordActionResolution(action, recorded, engine.now()); err != nil {
+			return recorded, errors.New("side effect resolved but immutable outcome recording failed: " + err.Error())
+		}
+	}
+	return recorded, nil
 }
 
 func (engine *Engine) now() time.Time {

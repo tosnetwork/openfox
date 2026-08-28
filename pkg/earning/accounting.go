@@ -122,6 +122,9 @@ func (authority *PersonalAuthority) RecordAccounting(action commerce.AuthorizedA
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, AccountingEntry{}, err
+	}
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID || !authority.now().UTC().Before(time.Unix(int64(fence.Body.ExpiresAtUnix), 0).UTC()) {
 		return commerce.ActionResolution{}, AccountingEntry{}, errors.New("stale writer cannot record accounting")
@@ -142,6 +145,7 @@ func (authority *PersonalAuthority) RecordAccounting(action commerce.AuthorizedA
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, EvidenceRefs: append([]string(nil), entry.Body.EvidenceRefs...), StateRevision: 1}
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, AccountingEntry{}, err
 	}
@@ -155,6 +159,9 @@ func (authority *PersonalAuthority) AccountingSnapshot() []AccountingEntry {
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	if authority.ensureStorageIdentityLocked() != nil {
+		return nil
+	}
 	result := make([]AccountingEntry, 0, len(authority.doc.Accounting))
 	for _, entry := range authority.doc.Accounting {
 		result = append(result, entry)

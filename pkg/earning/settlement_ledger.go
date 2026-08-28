@@ -76,6 +76,7 @@ func (authority *PersonalAuthority) ResolveSettlementState(action commerce.Autho
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, EvidenceRefs: []string{request.EvidenceDigest}, StateRevision: 1}
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	classification := AccountingClassification("")
 	switch request.TargetState {
 	case commerce.SettlementOverdue:
@@ -187,6 +188,7 @@ func (authority *PersonalAuthority) MaterializeSettlement(action commerce.Author
 		State: commerce.ActionTerminal, StateRevision: 1}
 	next := cloneAuthorityDocument(authority.doc)
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	next.SettlementLedger[obligation.ObligationInstanceID] = ledger
 	if runtime.State == ObligationPending {
 		runtime.State = ObligationSettling
@@ -259,6 +261,7 @@ func (authority *PersonalAuthority) ApplySettlementPayment(action commerce.Autho
 		State: commerce.ActionTerminal, EvidenceRefs: []string{request.PaymentEvidenceDigest}, StateRevision: 1}
 	next := cloneAuthorityDocument(authority.doc)
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	next.SettlementLedger[request.ObligationInstanceID] = ledger
 	classification := AccountingPartialPayment
 	if updated.State == commerce.SettlementPaid {

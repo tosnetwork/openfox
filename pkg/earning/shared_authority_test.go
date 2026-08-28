@@ -112,6 +112,9 @@ func TestSharedAuthorityMutualTLSAndCrossHostTakeoverFence(t *testing.T) {
 	if retry, err := clientB.Admit(action, fields, request, fenceB, nil); err != nil || !reflect.DeepEqual(retry, resolution) {
 		t.Fatalf("retry=%+v err=%v", retry, err)
 	}
+	if recovered, found := clientB.ResolveAuthorizedAction(action.StableActionID, action.ExactRequestDigest); !found || !reflect.DeepEqual(recovered, action) {
+		t.Fatalf("shared authority did not recover exact AuthorizedAction: found=%v recovered=%+v", found, recovered)
+	}
 	if _, err := clientA.Admit(action, fields, request, fenceA, nil); err == nil {
 		t.Fatal("stale host admitted after takeover")
 	}

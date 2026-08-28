@@ -262,6 +262,7 @@ func (authority *PersonalAuthority) ReserveEngagement(action commerce.Authorized
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID,
 		ExactRequestDigest: action.ExactRequestDigest, State: commerce.ActionTerminal, StateRevision: 1}
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	record.ReservationID = request.Reservation.ReservationID
 	if record.State == EngagementAgreed {
 		record.State = EngagementReserved

@@ -262,6 +262,19 @@ func (server *SharedAuthorityServer) dispatch(ctx context.Context, grant SharedA
 			return nil, err
 		}
 		return backing.Resolve(input.StableActionID, input.RequestDigest), nil
+	case "resolve-authorized-action":
+		var input struct {
+			StableActionID string `json:"stable_action_id"`
+			RequestDigest  string `json:"request_digest"`
+		}
+		if err := decodeSharedBody(raw, &input); err != nil {
+			return nil, err
+		}
+		action, found := backing.ResolveAuthorizedAction(input.StableActionID, input.RequestDigest)
+		return struct {
+			Action commerce.AuthorizedAction `json:"action"`
+			Found  bool                      `json:"found"`
+		}{action, found}, nil
 	case "transition":
 		var input struct {
 			StableActionID string                         `json:"stable_action_id"`
@@ -854,6 +867,20 @@ func (client *SharedAuthorityClient) Resolve(id, digest string) commerce.ActionR
 		return commerce.ActionResolution{StableActionID: id, ExactRequestDigest: digest, State: commerce.ActionUnknown, StateRevision: 1}
 	}
 	return out
+}
+
+func (client *SharedAuthorityClient) ResolveAuthorizedAction(id, digest string) (commerce.AuthorizedAction, bool) {
+	var out struct {
+		Action commerce.AuthorizedAction `json:"action"`
+		Found  bool                      `json:"found"`
+	}
+	if client.call(context.Background(), "resolve-authorized-action", struct {
+		StableActionID string `json:"stable_action_id"`
+		RequestDigest  string `json:"request_digest"`
+	}{id, digest}, &out) != nil || !out.Found || out.Action.StableActionID != id || out.Action.ExactRequestDigest != digest {
+		return commerce.AuthorizedAction{}, false
+	}
+	return out.Action, true
 }
 func (client *SharedAuthorityClient) Transition(id, digest string, state commerce.ActionResolutionState, reference string, evidence []string) (commerce.ActionResolution, error) {
 	var out commerce.ActionResolution

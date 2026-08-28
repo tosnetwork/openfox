@@ -145,6 +145,7 @@ func (authority *PersonalAuthority) RecordAccounting(action commerce.AuthorizedA
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, EvidenceRefs: append([]string(nil), entry.Body.EvidenceRefs...), StateRevision: 1}
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, AccountingEntry{}, err
 	}

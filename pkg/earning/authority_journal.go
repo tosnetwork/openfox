@@ -257,6 +257,8 @@ type authorityDocument struct {
 	WriterGeneration                uint64                                                      `json:"writer_generation"`
 	CurrentFence                    *commerce.WriterFence                                       `json:"current_fence,omitempty"`
 	Actions                         map[string]commerce.ActionResolution                        `json:"actions"`
+	AuthorizedActions               map[string]commerce.AuthorizedAction                        `json:"authorized_actions,omitempty"`
+	OutcomeJournalHeads             map[string]OutcomeJournalAuthorityHeadV1                    `json:"outcome_journal_heads,omitempty"`
 	AuthorityInstances              map[string]commerce.AuthorityInstanceRecord                 `json:"authority_instances"`
 	NextInstanceSequence            uint64                                                      `json:"next_instance_sequence"`
 	NextRelayAdmissionSequence      uint64                                                      `json:"next_relay_admission_sequence"`
@@ -343,7 +345,8 @@ func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, key 
 	authority := &PersonalAuthority{directory: directory, root: root, path: authorityFile, lock: lock, domainLock: domainLock,
 		key: append(ed25519.PrivateKey(nil), key...), now: time.Now}
 	authority.doc = authorityDocument{Schema: authoritySchema, OwnerID: ownerID, AgentID: agentID, AuthorityID: authorityID,
-		Actions: map[string]commerce.ActionResolution{}, AuthorityInstances: map[string]commerce.AuthorityInstanceRecord{},
+		Actions: map[string]commerce.ActionResolution{}, AuthorizedActions: map[string]commerce.AuthorizedAction{}, OutcomeJournalHeads: map[string]OutcomeJournalAuthorityHeadV1{},
+		AuthorityInstances:   map[string]commerce.AuthorityInstanceRecord{},
 		NextInstanceSequence: 1, NextRelayAdmissionSequence: 1,
 		RelayAdmissions:        map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt{},
 		RelayAdmissionBindings: map[string]string{},
@@ -489,6 +492,9 @@ func (authority *PersonalAuthority) Admit(action commerce.AuthorizedAction, fiel
 		return existing, nil
 	}
 	next := cloneAuthorityDocument(authority.doc)
+	if err := validateAndAdvanceOutcomeJournalAuthorityHead(&next, action, fields, request, fence); err != nil {
+		return commerce.ActionResolution{}, err
+	}
 	if reservation != nil {
 		if err := admitReservation(next, *reservation); err != nil {
 			return commerce.ActionResolution{}, err
@@ -499,6 +505,7 @@ func (authority *PersonalAuthority) Admit(action commerce.AuthorizedAction, fiel
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionPrepared, StateRevision: 1}
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, err
 	}
@@ -522,6 +529,28 @@ func (authority *PersonalAuthority) Resolve(stableActionID, requestDigest string
 			StateRevision: resolution.StateRevision + 1}
 	}
 	return resolution
+}
+
+// ResolveAuthorizedAction returns the exact signed authorization that was
+// linearized with an Action resolution. Outcome recovery uses this object to
+// reproduce the original immutable assertion after a process or writer
+// takeover; it never reconstructs authorization from mutable policy state.
+func (authority *PersonalAuthority) ResolveAuthorizedAction(stableActionID, requestDigest string) (commerce.AuthorizedAction, bool) {
+	if authority == nil {
+		return commerce.AuthorizedAction{}, false
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	if authority.ensureStorageIdentityLocked() != nil {
+		return commerce.AuthorizedAction{}, false
+	}
+	action, found := authority.doc.AuthorizedActions[stableActionID]
+	resolution, resolved := authority.doc.Actions[stableActionID]
+	if !found || !resolved || action.StableActionID != stableActionID ||
+		action.ExactRequestDigest != requestDigest || resolution.ExactRequestDigest != requestDigest {
+		return commerce.AuthorizedAction{}, false
+	}
+	return action, true
 }
 
 func (authority *PersonalAuthority) Transition(stableActionID, requestDigest string, state commerce.ActionResolutionState,
@@ -709,6 +738,7 @@ func (authority *PersonalAuthority) releaseReservation(action commerce.Authorize
 		return commerce.ActionResolution{}, err
 	}
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, err
 	}
@@ -776,6 +806,29 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 	}
 	if document.Accounting == nil {
 		document.Accounting = map[string]AccountingEntry{}
+	}
+	if document.AuthorizedActions == nil {
+		document.AuthorizedActions = map[string]commerce.AuthorizedAction{}
+	}
+	if document.OutcomeJournalHeads == nil {
+		document.OutcomeJournalHeads = map[string]OutcomeJournalAuthorityHeadV1{}
+	}
+	for domain, head := range document.OutcomeJournalHeads {
+		resolution, found := document.Actions[head.StableActionID]
+		if !canonicalSHA256(domain) || head.Epoch == 0 || head.Sequence == 0 || !canonicalSHA256(head.EventContentID) ||
+			!canonicalSHA256(head.OperationEnvelopeDigest) || !canonicalSHA256(head.GapSetDigest) || !found ||
+			resolution.ExactRequestDigest != head.ExactRequestDigest {
+			return errors.New("personal authority outcome journal high-water is invalid")
+		}
+	}
+	for stableActionID, action := range document.AuthorizedActions {
+		resolution, found := document.Actions[stableActionID]
+		if !found || action.StableActionID != stableActionID || action.ExactRequestDigest != resolution.ExactRequestDigest {
+			return errors.New("personal authority authorized Action index is invalid")
+		}
+		if _, err := commerce.AuthorizedActionDigest(action); err != nil {
+			return errors.New("personal authority stored AuthorizedAction is invalid")
+		}
 	}
 	if document.RelayAdmissions == nil {
 		document.RelayAdmissions = map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt{}
@@ -1254,6 +1307,13 @@ func cloneAuthorityDocument(document authorityDocument) authorityDocument {
 	var cloned authorityDocument
 	_ = json.Unmarshal(raw, &cloned)
 	return cloned
+}
+
+func recordAuthorizedAction(document *authorityDocument, action commerce.AuthorizedAction) {
+	if document.AuthorizedActions == nil {
+		document.AuthorizedActions = make(map[string]commerce.AuthorizedAction)
+	}
+	document.AuthorizedActions[action.StableActionID] = action
 }
 
 func randomIdentifier(prefix string) (string, error) {

@@ -306,6 +306,7 @@ func (authority *PersonalAuthority) AdmitScheduleTransition(action commerce.Auth
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, StateRevision: 1}
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, err
 	}
@@ -391,6 +392,7 @@ func (authority *PersonalAuthority) AdmitDependencyTransition(action commerce.Au
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, EvidenceRefs: append([]string(nil), request.EvidenceRefs...), StateRevision: 1}
 	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, err
 	}

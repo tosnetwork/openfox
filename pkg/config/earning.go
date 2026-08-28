@@ -43,13 +43,17 @@ func (settings EarningSettings) Validate() error {
 		settings.Gates.AgentGuarantor
 	if !settings.Enabled {
 		if anyGate || mode != "off" || !reflect.DeepEqual(settings.AgentRelay, EarningAgentRelaySettings{}) ||
-			!reflect.DeepEqual(settings.AgentGuarantor, EarningAgentGuarantorSettings{}) {
+			!reflect.DeepEqual(settings.AgentGuarantor, EarningAgentGuarantorSettings{}) ||
+			!reflect.DeepEqual(settings.Outcome, EarningOutcomeSettings{}) {
 			return errors.New("disabled earning configuration cannot enable side-effect gates")
 		}
 		return nil
 	}
 	if mode == "off" {
 		return errors.New("enabled earning configuration cannot use off mode")
+	}
+	if err := validateEarningOutcome(settings); err != nil {
+		return err
 	}
 	if mode == "observe" && (anyGate || !settings.ObserveOnly) {
 		return errors.New("observe mode requires observe_only and no side-effect gates")
@@ -138,7 +142,10 @@ func (settings EarningSettings) Validate() error {
 			if settings.Gates.Publication && (carrier.RelayToken == nil || carrier.RelayToken.String() == "") {
 				return errors.New("enabled earning publication requires a relay token for every HTTP Carrier")
 			}
-		} else if carrier.Endpoint != "" || carrier.ReadToken != nil || carrier.RelayToken != nil || !filepath.IsAbs(carrier.Directory) || filepath.Clean(carrier.Directory) != carrier.Directory {
+			if settings.Outcome.PublicPublicationEnabled && !earningEd25519KeyPattern.MatchString(carrier.OutcomeReceiptPublicKey) {
+				return errors.New("public Outcome publication requires a pinned receipt key for every HTTP Carrier")
+			}
+		} else if carrier.Endpoint != "" || carrier.ReadToken != nil || carrier.RelayToken != nil || carrier.OutcomeReceiptPublicKey != "" || !filepath.IsAbs(carrier.Directory) || filepath.Clean(carrier.Directory) != carrier.Directory {
 			return errors.New("earning directory Carrier configuration is invalid")
 		}
 		seen[carrier.ID] = true
@@ -438,6 +445,32 @@ func (settings EarningSettings) Validate() error {
 			if !containsSortedConfig(settings.SettlementAdapters, adapter) || len(parameters) == 0 || len(parameters) > 4096 {
 				return errors.New("publication settlement parameters are invalid or unsupported")
 			}
+		}
+	}
+	return nil
+}
+
+func validateEarningOutcome(settings EarningSettings) error {
+	value := settings.Outcome
+	if !value.PublicPublicationEnabled {
+		if len(value.AllowedAudiencePolicyDigests) != 0 || len(value.AllowedAssertionProfiles) != 0 || value.AllowExtensions {
+			return errors.New("disabled Outcome publication cannot retain declassification grants")
+		}
+		return nil
+	}
+	if !settings.Gates.Publication || len(value.AllowedAudiencePolicyDigests) == 0 || len(value.AllowedAudiencePolicyDigests) > 32 ||
+		len(value.AllowedAssertionProfiles) == 0 || len(value.AllowedAssertionProfiles) > 64 ||
+		!sort.StringsAreSorted(value.AllowedAudiencePolicyDigests) || !sort.StringsAreSorted(value.AllowedAssertionProfiles) {
+		return errors.New("Outcome publication requires bounded sorted declassification grants and the publication gate")
+	}
+	for index, digest := range value.AllowedAudiencePolicyDigests {
+		if !earningDigestPattern.MatchString(digest) || index > 0 && value.AllowedAudiencePolicyDigests[index-1] == digest {
+			return errors.New("Outcome audience-policy grants are invalid or duplicated")
+		}
+	}
+	for index, profile := range value.AllowedAssertionProfiles {
+		if profile == "" || len(profile) > 256 || index > 0 && value.AllowedAssertionProfiles[index-1] == profile {
+			return errors.New("Outcome assertion-profile grants are invalid or duplicated")
 		}
 	}
 	return nil

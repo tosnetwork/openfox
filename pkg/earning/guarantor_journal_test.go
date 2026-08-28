@@ -26,7 +26,7 @@ func TestGuarantorJournalPersistsOfferAndRejectsSplitWriter(t *testing.T) {
 	}
 	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
 	position := GuarantorOfferPosition{QuoteRequestDigest: digest("1"), CoveredPartyAgentID: "agent:covered",
-		CoverageAsset: commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nano"},
+		CoverageAsset:       commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nano"},
 		GrossExposureAtomic: "1000", NetExposureAtomic: "600", AcceptByUnix: 2_000_000_100,
 		ReservationExpiresAt: 2_000_000_200, Record: guarantor.OfferRecord{OfferID: digest("2"),
 			ReservationID: digest("3"), AgreementDigest: digest("4"), Status: guarantor.OfferReservedUnsigned,

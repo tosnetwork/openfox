@@ -19,6 +19,50 @@ func TestEarningDefaultsAndSideEffectsFailClosed(t *testing.T) {
 	}
 }
 
+func TestOutcomePublicationRequiresSeparateDeclassificationPolicy(t *testing.T) {
+	settings := EarningSettings{Gates: EarningGateSettings{Publication: true}, Outcome: EarningOutcomeSettings{
+		PublicPublicationEnabled: true, AllowedAudiencePolicyDigests: []string{"sha256:" + strings.Repeat("a", 64)},
+		AllowedAssertionProfiles: []string{"tos.outcome.terminal-disposition.v1"}}}
+	if err := validateEarningOutcome(settings); err != nil {
+		t.Fatal(err)
+	}
+	settings.Gates.Publication = false
+	if validateEarningOutcome(settings) == nil {
+		t.Fatal("Outcome declassification bypassed the general publication gate")
+	}
+	settings.Gates.Publication = true
+	settings.Publication = EarningPublicationSettings{NetworkID: "tos:test", AllowedAudiences: []string{"public"},
+		MinimumTTLSeconds: 60, MaximumTTLSeconds: 3600, MaximumActive: 10, MaximumRevisionsPerObject: 10,
+		MaximumPublicationsPerPeriod: 10, PeriodSeconds: 60}
+	settings.Outcome.AllowedAudiencePolicyDigests = append(settings.Outcome.AllowedAudiencePolicyDigests,
+		settings.Outcome.AllowedAudiencePolicyDigests[0])
+	if validateEarningOutcome(settings) == nil {
+		t.Fatal("duplicate Outcome audience grant was accepted")
+	}
+}
+
+func TestPublicOutcomePublicationRequiresPinnedHTTPCarrierReceiptKeys(t *testing.T) {
+	settings := validAgentRelayEarningSettings("client")
+	settings.Gates.Publication = true
+	settings.Publication = EarningPublicationSettings{NetworkID: "tos:test", AllowedAudiences: []string{"public"},
+		MinimumTTLSeconds: 60, MaximumTTLSeconds: 3600, MaximumActive: 10, MaximumRevisionsPerObject: 10,
+		MaximumPublicationsPerPeriod: 10, PeriodSeconds: 60}
+	settings.Outcome = EarningOutcomeSettings{PublicPublicationEnabled: true,
+		AllowedAudiencePolicyDigests: []string{"sha256:" + strings.Repeat("a", 64)},
+		AllowedAssertionProfiles:     []string{"tos.outcome.terminal-disposition.v1"}}
+	for index := range settings.Carriers {
+		settings.Carriers[index].RelayToken = NewSecureString("relay")
+		settings.Carriers[index].OutcomeReceiptPublicKey = "ed25519:" + strings.Repeat("b", 64)
+	}
+	if err := settings.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	settings.Carriers[0].OutcomeReceiptPublicKey = ""
+	if err := settings.Validate(); err == nil {
+		t.Fatal("public Outcome publication accepted an unpinned HTTP Carrier")
+	}
+}
+
 func TestAgentGuarantorIsDefaultOffAndOwnerBounded(t *testing.T) {
 	settings := DefaultConfig().Earning
 	if settings.AgentGuarantor.Enabled || settings.Gates.AgentGuarantor {

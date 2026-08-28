@@ -853,11 +853,21 @@ type EarningSettings struct {
 	PrivateHandoff             EarningPrivateHandoffSettings     `json:"private_handoff"`
 	ExternalSettlement         EarningExternalSettlementSettings `json:"external_settlement"`
 	Publication                EarningPublicationSettings        `json:"publication"`
+	Outcome                    EarningOutcomeSettings            `json:"outcome"`
 	AgentRelay                 EarningAgentRelaySettings         `json:"agent_relay"`
 	AgentGuarantor             EarningAgentGuarantorSettings     `json:"agent_guarantor"`
 	IntervalSeconds            uint32                            `json:"interval_seconds,omitempty"`
 	JitterSeconds              uint32                            `json:"jitter_seconds,omitempty"`
 	CycleTimeoutSeconds        uint32                            `json:"cycle_timeout_seconds,omitempty"`
+}
+
+// EarningOutcomeSettings is a separate declassification switch. General
+// Intent publication authority never implicitly permits Outcome publication.
+type EarningOutcomeSettings struct {
+	PublicPublicationEnabled     bool     `json:"public_publication_enabled"`
+	AllowedAudiencePolicyDigests []string `json:"allowed_audience_policy_digests,omitempty"`
+	AllowedAssertionProfiles     []string `json:"allowed_assertion_profiles,omitempty"`
+	AllowExtensions              bool     `json:"allow_extensions"`
 }
 
 // EarningAgentGuarantorSettings is an owner-authored, default-off risk and
@@ -1197,12 +1207,13 @@ type EarningRetrievalSettings struct {
 }
 
 type EarningCarrierSettings struct {
-	Kind       string        `json:"kind,omitempty"`
-	ID         string        `json:"id"`
-	Endpoint   string        `json:"endpoint,omitempty"`
-	Directory  string        `json:"directory,omitempty"`
-	ReadToken  *SecureString `json:"read_token,omitzero"`
-	RelayToken *SecureString `json:"relay_token,omitzero"`
+	Kind                    string        `json:"kind,omitempty"`
+	ID                      string        `json:"id"`
+	Endpoint                string        `json:"endpoint,omitempty"`
+	Directory               string        `json:"directory,omitempty"`
+	ReadToken               *SecureString `json:"read_token,omitzero"`
+	RelayToken              *SecureString `json:"relay_token,omitzero"`
+	OutcomeReceiptPublicKey string        `json:"outcome_receipt_public_key,omitempty"`
 }
 
 type EarningCapabilitySettings struct {

@@ -282,7 +282,10 @@ type Engine struct {
 	Sink                       AuthorizedSink
 	PublicationSink            PublicationSink
 	PublicationSinks           map[string]PublicationSink
+	OutcomePublicationSinks    map[string]OutcomePublicationSink
+	OutcomePublicationPolicy   OutcomePublicationPolicy
 	Operations                 *OperationalController
+	OutcomeRecorder            ActionOutcomeRecorder
 	Now                        func() time.Time
 }
 
@@ -714,7 +717,19 @@ func (engine *Engine) recordResolution(action commerce.AuthorizedAction, resolut
 	if resolution.StableActionID != action.StableActionID || resolution.ExactRequestDigest != action.ExactRequestDigest || resolution.State == commerce.ActionUnknown {
 		return commerce.ActionResolution{}, errors.New("side-effect sink returned an unrelated or unknown resolution")
 	}
-	return engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest, resolution.State, resolution.SinkReference, resolution.EvidenceRefs)
+	recorded, err := engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest, resolution.State, resolution.SinkReference, resolution.EvidenceRefs)
+	if err != nil {
+		return recorded, err
+	}
+	if _, boundaryRecorded := engine.Authority.(interface{ recordsOutcomesAtAuthorityBoundary() }); boundaryRecorded {
+		return recorded, nil
+	}
+	if engine.OutcomeRecorder != nil {
+		if err := engine.OutcomeRecorder.RecordActionResolution(action, recorded, engine.now()); err != nil {
+			return recorded, errors.New("side effect resolved but immutable outcome recording failed: " + err.Error())
+		}
+	}
+	return recorded, nil
 }
 
 func (engine *Engine) now() time.Time {

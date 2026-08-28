@@ -19,6 +19,11 @@ If you are browsing docs rather than reorganizing them, start with these directo
 
 For channel-specific setup, start with [Chat Apps Configuration](guides/chat-apps.md) and then drill into `docs/channels/<name>/README.md` as needed.
 
+For the current Agent commerce workflow, begin with [Autonomous
+Earning](guides/autonomous-earning.md). The files under `docs/design/` explain
+why the runtime was built; they are not substitutes for current CLI and
+configuration guidance.
+
 ## Principles
 
 - Choose the document type directory first. Do not create language buckets such as `docs/zh/` or `docs/fr/`.

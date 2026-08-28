@@ -24,6 +24,7 @@ type LLMSupplyDrafter struct {
 	SettlementParameters                map[string][]byte
 	OfferPolicies                       []SupplyOfferPolicy
 	Now                                 func() time.Time
+	AgentContext                        AgentContextSource
 }
 
 // SupplyOfferPolicy is trusted owner configuration, not model output. It gives
@@ -74,7 +75,13 @@ func (drafter LLMSupplyDrafter) DraftSupply(ctx context.Context, inventory Inven
 	if err != nil {
 		return PublicationDraft{}, err
 	}
-	system := `You are OpenFox's read-only supply planner. Propose at most one profitable, business-neutral service Intent using only a READY capability, supported settlement Adapter, and matching trusted_owner_offer_policy. Presence of a matching owner policy means the owner wants that READY capability advertised: set publish=true when its allowed revenue can exceed its allowed cost; use publish=false only when capability, settlement, or positive-margin policy evidence is actually missing. Every asset, price, cost, taxonomy, required keyword, Adapter, and TTL must stay inside that policy. Return exactly one JSON object with these keys and no others: publish (boolean), summary (string), detail (string), taxonomy_paths (string array), keywords (string array), capability_namespace (string), capability_identifier (string), revenue_atomic (canonical unsigned integer string), unit_cost_atomic (canonical unsigned integer string), asset_namespace (string), asset_identifier (string), unit (string), settlement_adapter_uri (string), ttl_seconds (integer), and rationale (string). Do not call tools, publish, message, sign, spend, or claim authorization. Taxonomy paths and keywords must be concise; missing policy means publish=false.`
+	system, err := contextualAgentSystemPrompt(
+		drafter.AgentContext,
+		`You are acting as this OpenFox's read-only supply planner. Apply its identity, business preferences, and owner instructions. Propose at most one profitable, business-neutral service Intent using only a READY capability, supported settlement Adapter, and matching trusted_owner_offer_policy. The typed policy is a safety envelope, not a command to advertise: publish only when the natural-language business strategy also supports the offer. Every asset, price, cost, taxonomy, required keyword, Adapter, and TTL must stay inside that envelope. Return exactly one JSON object with these keys and no others: publish (boolean), summary (string), detail (string), taxonomy_paths (string array), keywords (string array), capability_namespace (string), capability_identifier (string), revenue_atomic (canonical unsigned integer string), unit_cost_atomic (canonical unsigned integer string), asset_namespace (string), asset_identifier (string), unit (string), settlement_adapter_uri (string), ttl_seconds (integer), and rationale (string). Do not call tools, publish, message, sign, spend, or claim authorization. Taxonomy paths and keywords must be concise; missing policy means publish=false.`,
+	)
+	if err != nil {
+		return PublicationDraft{}, err
+	}
 	response, err := drafter.Provider.Chat(providers.WithInternalAgentBackendPrincipal(ctx), []providers.Message{{Role: "system", Content: system}, {Role: "user", Content: string(input)}}, nil,
 		drafter.model(), map[string]any{"temperature": 0, "max_tokens": 1400})
 	if err != nil || response == nil || len(response.Content) == 0 || len(response.Content) > 32<<10 || len(response.ToolCalls) != 0 {

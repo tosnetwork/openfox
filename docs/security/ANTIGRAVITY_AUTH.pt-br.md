@@ -440,7 +440,7 @@ type ProviderAuthResult = {
 
 ### 1. Ambiente/Dependências Necessários
 
-- Go ≥ 1.25
+- Go 1.26.6
 - Base de código do OpenFox (`pkg/providers/` e `pkg/auth/`)
 - Pacotes da biblioteca padrão `crypto` e `net/http`
 

@@ -46,11 +46,12 @@ buyer signs and publishes a demand Intent to both Carriers
 -> both sides release terminal reservations
 ```
 
-An AI estimate that is malformed, changes the signed revenue, or places
-aggregate cost or maximum loss above the owner-authorized inventory bound
-cannot authorize a trade. The campaign may use an explicitly labelled
-conservative owner-bounded estimate so that model formatting variance does not
-become an economic authority.
+An AI estimate that is malformed, unavailable, changes signed exact revenue,
+or exceeds deterministic economic policy cannot authorize a trade. The AI
+must also return an explicit `pursue` or `decline` strategy disposition. A
+decline is a normal no-action result even when the numeric estimate appears
+profitable. Campaign code no longer substitutes a synthetic owner-bounded
+estimate when AI analysis fails.
 
 ## Recovery and learning
 

@@ -10,23 +10,32 @@ import (
 
 const probabilityScale = uint64(1_000_000)
 
+type EconomicStrategyDisposition string
+
+const (
+	EconomicStrategyPursue  EconomicStrategyDisposition = "pursue"
+	EconomicStrategyDecline EconomicStrategyDisposition = "decline"
+)
+
 type EconomicEstimate struct {
-	RevenueAtomic             string `json:"revenue_atomic"`
-	PaymentProbabilityPPM     uint32 `json:"payment_probability_ppm"`
-	CompletionProbabilityPPM  uint32 `json:"completion_probability_ppm"`
-	ComputeCostAtomic         string `json:"compute_cost_atomic"`
-	ModelCostAtomic           string `json:"model_cost_atomic"`
-	APICostAtomic             string `json:"api_cost_atomic"`
-	ToolCostAtomic            string `json:"tool_cost_atomic"`
-	SubcontractCostAtomic     string `json:"subcontract_cost_atomic"`
-	OpportunityCostAtomic     string `json:"opportunity_cost_atomic"`
-	FailureReserveAtomic      string `json:"failure_reserve_atomic"`
-	DisputeReserveAtomic      string `json:"dispute_reserve_atomic"`
-	PrivacyLegalReserveAtomic string `json:"privacy_legal_reserve_atomic"`
-	MaximumLossAtomic         string `json:"maximum_loss_atomic"`
-	EstimatedAtUnix           uint64 `json:"estimated_at_unix"`
-	ExpiresAtUnix             uint64 `json:"expires_at_unix"`
-	EvidenceDigest            string `json:"evidence_digest"`
+	StrategyDisposition       EconomicStrategyDisposition `json:"strategy_disposition,omitempty"`
+	StrategyRationale         string                      `json:"strategy_rationale,omitempty"`
+	RevenueAtomic             string                      `json:"revenue_atomic"`
+	PaymentProbabilityPPM     uint32                      `json:"payment_probability_ppm"`
+	CompletionProbabilityPPM  uint32                      `json:"completion_probability_ppm"`
+	ComputeCostAtomic         string                      `json:"compute_cost_atomic"`
+	ModelCostAtomic           string                      `json:"model_cost_atomic"`
+	APICostAtomic             string                      `json:"api_cost_atomic"`
+	ToolCostAtomic            string                      `json:"tool_cost_atomic"`
+	SubcontractCostAtomic     string                      `json:"subcontract_cost_atomic"`
+	OpportunityCostAtomic     string                      `json:"opportunity_cost_atomic"`
+	FailureReserveAtomic      string                      `json:"failure_reserve_atomic"`
+	DisputeReserveAtomic      string                      `json:"dispute_reserve_atomic"`
+	PrivacyLegalReserveAtomic string                      `json:"privacy_legal_reserve_atomic"`
+	MaximumLossAtomic         string                      `json:"maximum_loss_atomic"`
+	EstimatedAtUnix           uint64                      `json:"estimated_at_unix"`
+	ExpiresAtUnix             uint64                      `json:"expires_at_unix"`
+	EvidenceDigest            string                      `json:"evidence_digest"`
 }
 
 type EconomicPolicy struct {
@@ -38,15 +47,25 @@ type EconomicPolicy struct {
 }
 
 type EconomicDecision struct {
-	Eligible              bool   `json:"eligible"`
-	ExpectedRevenueAtomic string `json:"expected_revenue_atomic"`
-	TotalCostAtomic       string `json:"total_cost_atomic"`
-	ExpectedNetAtomic     string `json:"expected_net_atomic"`
-	ROIPPM                uint64 `json:"roi_ppm"`
-	Reason                string `json:"reason"`
+	Eligible              bool                        `json:"eligible"`
+	StrategyDisposition   EconomicStrategyDisposition `json:"strategy_disposition,omitempty"`
+	StrategyRationale     string                      `json:"strategy_rationale,omitempty"`
+	ExpectedRevenueAtomic string                      `json:"expected_revenue_atomic"`
+	TotalCostAtomic       string                      `json:"total_cost_atomic"`
+	ExpectedNetAtomic     string                      `json:"expected_net_atomic"`
+	ROIPPM                uint64                      `json:"roi_ppm"`
+	Reason                string                      `json:"reason"`
 }
 
 func EvaluateEconomics(estimate EconomicEstimate, policy EconomicPolicy, now time.Time) (EconomicDecision, error) {
+	if estimate.StrategyDisposition != "" && estimate.StrategyDisposition != EconomicStrategyPursue &&
+		estimate.StrategyDisposition != EconomicStrategyDecline {
+		return EconomicDecision{}, errors.New("economic strategy disposition is invalid")
+	}
+	if len(estimate.StrategyRationale) > 4096 ||
+		estimate.StrategyDisposition != "" && estimate.StrategyRationale == "" {
+		return EconomicDecision{}, errors.New("economic strategy rationale is invalid")
+	}
 	if estimate.PaymentProbabilityPPM > uint32(probabilityScale) || estimate.CompletionProbabilityPPM > uint32(probabilityScale) ||
 		estimate.PaymentProbabilityPPM == 0 || estimate.CompletionProbabilityPPM == 0 || estimate.EstimatedAtUnix == 0 ||
 		estimate.ExpiresAtUnix <= estimate.EstimatedAtUnix || !now.UTC().Before(time.Unix(int64(estimate.ExpiresAtUnix), 0).UTC()) || estimate.EvidenceDigest == "" {
@@ -98,8 +117,17 @@ func EvaluateEconomics(estimate EconomicEstimate, policy EconomicPolicy, now tim
 			roi = ^uint64(0)
 		}
 	}
-	decision := EconomicDecision{ExpectedRevenueAtomic: expected.String(), TotalCostAtomic: totalCost.String(), ExpectedNetAtomic: net.String(), ROIPPM: roi}
+	decision := EconomicDecision{
+		StrategyDisposition:   estimate.StrategyDisposition,
+		StrategyRationale:     estimate.StrategyRationale,
+		ExpectedRevenueAtomic: expected.String(),
+		TotalCostAtomic:       totalCost.String(),
+		ExpectedNetAtomic:     net.String(),
+		ROIPPM:                roi,
+	}
 	switch {
+	case estimate.StrategyDisposition == EconomicStrategyDecline:
+		decision.Reason = "opportunity conflicts with the Agent's natural-language strategy"
 	case estimate.PaymentProbabilityPPM < policy.MinimumPaymentProbabilityPPM:
 		decision.Reason = "payment probability is below policy"
 	case estimate.CompletionProbabilityPPM < policy.MinimumCompletionProbabilityPPM:

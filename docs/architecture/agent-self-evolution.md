@@ -10,6 +10,20 @@ The cold path groups related task records, checks the configured success thresho
 
 The apply path validates generated `SKILL.md` content before writing. Invalid drafts are rejected before a skill directory or file is created.
 
+## Relationship to Capability Sourcing
+
+The current self-evolution implementation does not search Skills registries or
+MCP catalogs before drafting, and it does not establish publisher trust,
+artifact provenance, permission safety, or comparative capability fitness.
+Those are target behaviors, not current guarantees.
+
+The target sourcing policy is reuse-first: use an exact already admitted
+capability, then evaluate candidates from owner-approved Skills or MCP sources,
+and create a local candidate only when no external candidate passes. Evolution
+must not edit an installed third-party Skill in place or turn a marketplace
+result into trusted runtime authority. See [Trusted Capabilities and Mobile
+Owner Control Plane](../design/trusted-capabilities-and-mobile-control-plane.md).
+
 ## Safety Considerations
 
 Evolution creates a persistent feedback loop: user input can become a task record, task records can be clustered into an LLM-generated draft, and an accepted draft can become `SKILL.md` content that is loaded into future agent prompts. Treat generated skill content as prompt-sensitive material, especially in `apply` mode.
@@ -17,6 +31,26 @@ Evolution creates a persistent feedback loop: user input can become a task recor
 The current local scanner is a narrow guardrail, not a complete safety boundary. It rejects structurally invalid drafts and a small set of obvious secret-like substrings, but it does not reliably detect prompt injection, unsafe instructions, or every form of sensitive data. Use `observe` or `draft` when human review is required before skill changes reach disk.
 
 In `apply` mode, accepted drafts can update workspace skills automatically. Existing skills are backed up before replacement, but recovery is manual: an operator must restore the desired backup if an applied skill should be rolled back.
+
+### Interim constitutional restriction
+
+Until OpenFox implements and validates the candidate-specific
+`PromotionAuthority` described in the [Agentic Internet Constitution
+Applicability and Compliance
+Record](agentic-internet-constitution-compliance.md), `evolution.mode=apply`
+MUST NOT be enabled for autonomous earning, production, or any workflow capable
+of a Consequential Action. A broad owner configuration is not a separate
+promotion decision for every generated Skill version. The permitted posture
+for those workflows is `observe`, or `draft` followed by independent review and
+an explicit bounded owner decision outside the learning system.
+
+This restriction does not claim that current `apply` mode expands formal tool
+permissions. It recognizes that automatically changing instructions loaded
+into later Agent turns is itself an adaptive promotion. The generating model,
+task content, success threshold, registry, or candidate MUST NOT approve that
+promotion. Existing use of `apply` must remain isolated from real custody,
+external obligations, production credentials, and irreversible effects until
+the gate passes.
 
 ## Modes
 

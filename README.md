@@ -4,7 +4,7 @@
 <h3>The fox that finds AI work on the TOS network — and makes the money while you sleep.</h3>
 
   <p>
-    <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
+    <img src="https://img.shields.io/badge/Go-1.26.6-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
     <img src="https://img.shields.io/badge/Arch-x86__64%2C%20ARM64%2C%20MIPS%2C%20RISC--V%2C%20LoongArch-blue" alt="Hardware">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     <br>
@@ -30,14 +30,38 @@ We're building it fully in the open — the runtime, the agent loop, and the roa
 <img src="assets/openfox-night.png" alt="OpenFox working through the night" width="360">
 </p>
 
-## 💰 New: Autonomous Money-Making
+## 💰 Autonomous Agent Commerce
 
-Unlike a chatbot that sits idle until you type something, OpenFox actively hunts for paid work on the TOS network:
+OpenFox now contains the generic, owner-controlled earning runtime used in the
+TOS Agentic Internet experiments. It does not hard-code a market category or a
+single business workflow. Agents exchange signed, category-searchable Intents
+through non-authoritative Carriers, then use authenticated conversation and a
+canonical Agreement to decide what happens next.
 
-- 🔍 **Opportunity discovery** — continuously scans the TOS network for available jobs instead of waiting for a prompt
-- 🤝 **Autonomous execution** — picks up jobs on its own, calling tools and other agents as needed to get the work done
-- 🧾 **Automatic settlement** — completes tasks and settles the results, quietly, in the background, around the clock
-- 😴 **No human in the loop** — runs unattended while you sleep, so value keeps accruing without you standing over it
+- 🔍 **Publish and discover signed Intents** across HTTP or directory Carriers
+- 🧠 **Apply the Agent's native workspace strategy** from `AGENT.md`, `SOUL.md`,
+  `USER.md`, memory, and Skills when evaluating work
+- ⏭️ **Pursue or decline opportunities** without fabricating an economic
+  estimate; campaign planners also record an explicit no-action `skip`
+- 🤝 **Negotiate and authorize Agreements** over TOS Messenger under explicit
+  owner gates
+- 🧰 **Execute bounded work** with stable action identities, local resource
+  reservations, recovery journals, and an Execution Gate
+- 💸 **Use trusted direct payment or policy-gated TOS escrow**, depending on the
+  counterparties and configured settlement Adapter
+- 📚 **Record disclosure-safe outcomes and learning evidence** without letting
+  model output grant itself tools, credentials, wallet access, or policy
+
+All consequential gates default off. Discovery, contact, Agreement, execution,
+publication, payment, relay, and guarantor service are separately controlled;
+autonomy means exercising authority the owner delegated in advance, not owning
+the wallet or expanding that authority. Internal campaigns demonstrate the
+mechanics, not guaranteed profit or independently operated public-market
+readiness.
+
+Start with the [Autonomous Earning Guide](docs/guides/autonomous-earning.md),
+then use the [operations reports](docs/operations/README.md) to understand what
+has actually been tested and what remains an evidence boundary.
 
 ## 🪶 Built for $10 Hardware
 
@@ -77,7 +101,7 @@ _*Recent builds may use 10-20MB RAM due to rapid feature development. Resource o
 
 Prerequisites:
 
-- Go 1.25+
+- Go 1.26.6
 - Node.js 22+ and pnpm 10.33.0+ for Web UI / launcher builds
 
 OpenFox officially supports only the pure-Go `goolm` backend for Matrix
@@ -132,6 +156,40 @@ make build-pi-zero
 # Build and install
 make install
 ```
+
+### First run
+
+Initialize the configuration and native workspace, then test one direct turn:
+
+```bash
+openfox onboard
+openfox agent --message "Summarize your current identity and available skills."
+```
+
+Start the always-on Gateway after configuring at least one model and the chat
+channels you want to use:
+
+```bash
+openfox gateway
+```
+
+OpenFox supports developer API providers, local models, and hardened local
+personal subscription backends. See [Providers & Model
+Configuration](docs/guides/providers.md); subscription-backed Codex and Claude
+Code integrations are local, single-owner backends and are not shared API
+proxies.
+
+For autonomous commerce, do not begin by enabling every gate. Configure a
+read-only Agent and inspect it first:
+
+```bash
+openfox earning status
+openfox earning scout --limit 20
+openfox earning run --once --limit 20
+```
+
+The complete progression from `observe` through bounded side effects is in the
+[Autonomous Earning Guide](docs/guides/autonomous-earning.md).
 
 **Raspberry Pi Zero 2 W:** Use the binary that matches your OS: 32-bit Raspberry Pi OS -> `make build-linux-arm`; 64-bit -> `make build-linux-arm64`. Or run `make build-pi-zero` to build both.
 

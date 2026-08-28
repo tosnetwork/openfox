@@ -69,6 +69,32 @@ OpenFox stores data in your configured workspace (default: `~/.openfox/workspace
 
 > **Note:** Changes to `AGENT.md`, `SOUL.md`, `USER.md` and `memory/MEMORY.md` are automatically detected at runtime via file modification time (mtime) tracking. You do **not** need to restart the gateway after editing these files — the agent picks up the new content on the next request.
 
+### Natural-language business strategy
+
+Autonomous earning uses the same native workspace context as the normal Agent;
+there is no separate hidden business-policy prompt. Supply planning,
+opportunity estimation, contact drafting, and bounded execution see current
+owner-controlled workspace instructions on every AI call.
+
+Put preferences such as minimum acceptable work, preferred capabilities,
+counterparty rules, confidentiality, risk tolerance, and conditions for doing
+nothing in `USER.md` or `AGENT.md`. For example:
+
+```markdown
+## Business strategy
+
+- Do not pursue work below 2 TOS.
+- Prefer bounded security review and evidence-verification tasks.
+- Skip unclear scopes instead of guessing.
+- Require TOS escrow unless the counterparty is explicitly trusted.
+```
+
+These instructions guide AI judgment and may result in an explicit `decline`
+or `skip`. They do not replace typed `earning` configuration: hard asset,
+price, loss, spending, capability, Carrier, settlement, credential, and gate
+bounds remain deterministic owner authority. See [Autonomous
+Earning](autonomous-earning.md) for the complete workflow.
+
 ### Agent Self-Evolution
 
 The `evolution` block controls OpenFox's self-evolution runtime. When enabled, the agent records completed turns as learning records. In higher modes it can group repeated successful patterns, generate skill drafts, and optionally apply accepted drafts into workspace skills.
@@ -98,6 +124,15 @@ The `evolution` block controls OpenFox's self-evolution runtime. When enabled, t
 | `cold_path_times` | `[]` | Scheduled run times used when `cold_path_trigger` is `scheduled`, written as `HH:MM` strings. |
 
 Use `observe` first if you want to inspect learning records without generating skill changes. Use `draft` when you want OpenFox to prepare reviewable improvements. Use `apply` only when you are comfortable letting accepted drafts update workspace skills.
+
+> **Constitutional interim restriction:** `apply` is not an allowed mode for
+> autonomous earning, production, or any workflow capable of a Consequential
+> Action until the candidate-specific `PromotionAuthority` and independent
+> promotion gates in the [compliance
+> record](../architecture/agentic-internet-constitution-compliance.md) are
+> implemented and validated. Keep those workflows in `observe`, or use `draft`
+> with review and an explicit bounded owner decision outside the learning
+> system. Merely setting `mode: "apply"` is not candidate-specific approval.
 
 ### Request Context Policy
 
@@ -1175,4 +1210,4 @@ Command cron jobs can execute shell commands. By default, remote channels cannot
 | [Hook System](../architecture/hooks/README.md) | Event-driven hooks: observers, interceptors, approval hooks |
 | [Steering](../architecture/steering.md) | Inject messages into a running agent loop between tool calls |
 | [SubTurn](../architecture/subturn.md) | Subagent coordination, concurrency control, lifecycle |
-| [Context Management](../architecture/agent-refactor/context.md) | Context boundary detection, proactive budget check, compression |
+| [Context Management](../architecture/context-management.md) | Context boundary detection, proactive budget check, compression |

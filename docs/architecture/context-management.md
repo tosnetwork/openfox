@@ -1,4 +1,6 @@
-# Context
+# Context Management
+
+<!-- markdownlint-disable MD013 -->
 
 ## What this document covers
 
@@ -18,7 +20,7 @@ These are existing concepts. This document clarifies their boundaries rather tha
 The context window is the model's total input capacity. Four regions fill it:
 
 | Region | Assembled by | Stored in session? |
-|---|---|---|
+| --- | --- | --- |
 | System prompt | `BuildMessages()` — static + dynamic parts | No |
 | Summary | `SetSummary()` stores it; `BuildMessages()` injects it | Separate from history |
 | Session history | User / assistant / tool messages | Yes |
@@ -28,7 +30,7 @@ The context window is the model's total input capacity. Four regions fill it:
 
 The available space for history is therefore:
 
-```
+```text
 history_budget = ContextWindow - system_prompt - summary - tool_definitions - MaxTokens
 ```
 
@@ -138,7 +140,7 @@ Context budget functions (`parseTurnBoundaries`, `findSafeBoundary`, `estimateMe
 
 `forceCompression` and `summarizeSession` mutate session state (history and summary). `BuildMessages` reads that state to construct context. The flow is:
 
-```
+```text
 budget check --> compression decision --> mutate session --> BuildMessages reads session --> LLM call
 ```
 
@@ -158,7 +160,9 @@ These are recognized limitations in the current implementation, documented here 
 
 ## What this document does not cover
 
-- How `AGENT.md` frontmatter configures context parameters — that is part of the Agent definition work
-- How the context builder assembles context in the new architecture — that is upcoming work
+- How `AGENT.md` frontmatter configures context parameters — that belongs to
+  Agent configuration
+- How the context builder assembles native workspace identity, instructions,
+  memory, and Skills — that belongs to the Agent context builder
 - How compression events surface through the event system — that is part of the event model (#1316)
 - Subagent context isolation — that is a separate track

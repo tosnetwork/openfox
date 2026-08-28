@@ -18,7 +18,10 @@ import (
 
 const maximumTOSCTLExecutableBytes = 256 << 20
 
-var errTOSCTLProcessExited = errors.New("tosctl process leader exited")
+var (
+	errTOSCTLProcessExited                 = errors.New("tosctl process leader exited")
+	errTOSCTLProcessContainmentUnavailable = errors.New("secure tosctl process containment is unavailable")
+)
 
 // tosctlProcessContainment uses a fresh user/PID namespace for every custody
 // command. The launched tosctl is PID 1 in that namespace, so Linux kills all
@@ -143,7 +146,11 @@ func (sink *TOSCTLPaymentSink) runPinnedTOSCTL(ctx context.Context, args, enviro
 		_ = stdoutWrite.Close()
 		_ = stderrRead.Close()
 		_ = stderrWrite.Close()
-		return nil, errors.New("secure tosctl process containment is unavailable")
+		if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) ||
+			errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EINVAL) {
+			return nil, errTOSCTLProcessContainmentUnavailable
+		}
+		return nil, errors.New("sealed tosctl command failed to start")
 	}
 	_ = stdoutWrite.Close()
 	_ = stderrWrite.Close()

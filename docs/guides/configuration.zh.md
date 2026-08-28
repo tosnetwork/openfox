@@ -938,4 +938,4 @@ OpenFox 通过 `cron` 工具支持 cron 风格的定时任务。Agent 可以设�
 | [Hook 系统](../architecture/hooks/README.zh.md) | 事件驱动 Hook：观察者、拦截器、审批 Hook |
 | [Steering](../architecture/steering.md) | 在工具调用间向运行中的 Agent 注入消息 |
 | [SubTurn](../architecture/subturn.md) | 子 Agent 协调、并发控制、生命周期管理 |
-| [上下文管理](../architecture/agent-refactor/context.md) | 上下文边界检测、主动预算检查、压缩策略 |
+| [上下文管理](../architecture/context-management.md) | 上下文边界检测、主动预算检查、压缩策略 |

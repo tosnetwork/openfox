@@ -92,6 +92,21 @@ func TestTOSCTLExecutableHelper(t *testing.T) {
 	}
 }
 
+func requireTOSCTLProcessContainment(t *testing.T, sink *TOSCTLPaymentSink) {
+	t.Helper()
+	output, err := sink.run(t.Context(), []string{"-test.run=^TestTOSCTLExecutableHelper$", "--", "normal"})
+	if errors.Is(err, errTOSCTLProcessContainmentUnavailable) {
+		if output != nil || len(sink.executableLaunches) != 0 {
+			t.Fatalf("unavailable containment did not fail closed: output=%q slots=%d", output,
+				len(sink.executableLaunches))
+		}
+		t.Skip("kernel does not permit the user/PID namespace required for secure tosctl containment")
+	}
+	if err != nil || string(output) != `{"state":"safe"}` {
+		t.Fatalf("probe secure tosctl containment: output=%q err=%v", output, err)
+	}
+}
+
 func TestTOSCTLRunnerContainsOrdinaryDescendant(t *testing.T) {
 	current, err := os.Executable()
 	if err != nil {
@@ -102,6 +117,7 @@ func TestTOSCTLRunnerContainsOrdinaryDescendant(t *testing.T) {
 	copyExecutableFixture(t, current, executable)
 	marker := filepath.Join(root, "escaped-marker")
 	sink := &TOSCTLPaymentSink{Executable: executable}
+	requireTOSCTLProcessContainment(t, sink)
 	output, err := sink.run(t.Context(), []string{"-test.run=^TestTOSCTLExecutableHelper$", "--",
 		"spawn-grandchild", marker})
 	if err != nil || string(output) != `{"state":"parent-exited"}` {
@@ -126,6 +142,7 @@ func TestTOSCTLRunnerContainsDetachedDescendantsOnLeaderExit(t *testing.T) {
 	copyExecutableFixture(t, current, executable)
 	marker := filepath.Join(root, "detached-marker")
 	sink := &TOSCTLPaymentSink{Executable: executable}
+	requireTOSCTLProcessContainment(t, sink)
 	output, err := sink.run(t.Context(), []string{"-test.run=^TestTOSCTLExecutableHelper$", "--",
 		"spawn-detached-grandchild", marker})
 	if err != nil || string(output) != `{"state":"detached-parent-exited"}` {
@@ -147,6 +164,7 @@ func TestTOSCTLRunnerContainsDetachedDescendantsOnCancellation(t *testing.T) {
 	copyExecutableFixture(t, current, executable)
 	marker := filepath.Join(root, "cancelled-detached-marker")
 	sink := &TOSCTLPaymentSink{Executable: executable}
+	requireTOSCTLProcessContainment(t, sink)
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	if output, err := sink.run(ctx, []string{"-test.run=^TestTOSCTLExecutableHelper$", "--",
@@ -171,10 +189,7 @@ func TestTOSCTLRunnerUsesSharedOutputBudgetAndRedactedErrors(t *testing.T) {
 	executable := filepath.Join(privateTempDir(t), "tosctl")
 	copyExecutableFixture(t, current, executable)
 	sink := &TOSCTLPaymentSink{Executable: executable}
-	normal, err := sink.run(t.Context(), []string{"-test.run=^TestTOSCTLExecutableHelper$", "--", "normal"})
-	if err != nil || string(normal) != `{"state":"safe"}` {
-		t.Fatalf("run sealed tosctl fixture: output=%q err=%v", normal, err)
-	}
+	requireTOSCTLProcessContainment(t, sink)
 	enrolled := sink.executableSnapshot
 	var wait sync.WaitGroup
 	errorsSeen := make(chan error, 24)

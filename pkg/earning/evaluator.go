@@ -62,7 +62,8 @@ func EvaluateEconomics(estimate EconomicEstimate, policy EconomicPolicy, now tim
 		estimate.StrategyDisposition != EconomicStrategyDecline {
 		return EconomicDecision{}, errors.New("economic strategy disposition is invalid")
 	}
-	if len(estimate.StrategyRationale) > 4096 || estimate.StrategyDisposition != "" && estimate.StrategyRationale == "" {
+	if len(estimate.StrategyRationale) > 4096 ||
+		estimate.StrategyDisposition != "" && estimate.StrategyRationale == "" {
 		return EconomicDecision{}, errors.New("economic strategy rationale is invalid")
 	}
 	if estimate.PaymentProbabilityPPM > uint32(probabilityScale) || estimate.CompletionProbabilityPPM > uint32(probabilityScale) ||
@@ -116,8 +117,14 @@ func EvaluateEconomics(estimate EconomicEstimate, policy EconomicPolicy, now tim
 			roi = ^uint64(0)
 		}
 	}
-	decision := EconomicDecision{StrategyDisposition: estimate.StrategyDisposition, StrategyRationale: estimate.StrategyRationale,
-		ExpectedRevenueAtomic: expected.String(), TotalCostAtomic: totalCost.String(), ExpectedNetAtomic: net.String(), ROIPPM: roi}
+	decision := EconomicDecision{
+		StrategyDisposition:   estimate.StrategyDisposition,
+		StrategyRationale:     estimate.StrategyRationale,
+		ExpectedRevenueAtomic: expected.String(),
+		TotalCostAtomic:       totalCost.String(),
+		ExpectedNetAtomic:     net.String(),
+		ROIPPM:                roi,
+	}
 	switch {
 	case estimate.StrategyDisposition == EconomicStrategyDecline:
 		decision.Reason = "opportunity conflicts with the Agent's natural-language strategy"

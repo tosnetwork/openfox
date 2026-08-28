@@ -21,17 +21,20 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/tosnetwork/tos-ai/pkg/commercegate"
+	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+
 	openfoxagent "github.com/tosnetwork/openfox/pkg/agent"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	"github.com/tosnetwork/openfox/pkg/providers"
 	"github.com/tosnetwork/openfox/pkg/skills"
-	"github.com/tosnetwork/tos-ai/pkg/commercegate"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 )
 
-const eightAgentCampaignSchema = "tos.openfox.eight-agent-market-campaign.v1"
-const sixAgentCampaignSchema = "tos.openfox.six-agent-autonomous-market-campaign.v1"
+const (
+	eightAgentCampaignSchema = "tos.openfox.eight-agent-market-campaign.v1"
+	sixAgentCampaignSchema   = "tos.openfox.six-agent-autonomous-market-campaign.v1"
+)
 
 type eightAgentDefinition struct {
 	Name, OwnerID, AgentID, AuthorityID, Wallet, Capability, Taxonomy, ModelKind, Template string
@@ -147,7 +150,11 @@ type campaignRuntime struct {
 
 type campaignIntentAuthority map[string]ed25519.PublicKey
 
-func (authority campaignIntentAuthority) AuthorizeIntentKey(agentID string, publicKey ed25519.PublicKey, _ time.Time) error {
+func (authority campaignIntentAuthority) AuthorizeIntentKey(
+	agentID string,
+	publicKey ed25519.PublicKey,
+	_ time.Time,
+) error {
 	expected, ok := authority[agentID]
 	if !ok || !expected.Equal(publicKey) {
 		return errors.New("campaign Intent key is not pinned")
@@ -161,64 +168,172 @@ type boundedCampaignEstimator struct {
 }
 
 func (estimator boundedCampaignEstimator) Estimate(ctx context.Context, intent commerce.SignedAgentIntent,
-	inventory InventorySnapshot) (EconomicEstimate, error) {
+	inventory InventorySnapshot,
+) (EconomicEstimate, error) {
 	return estimator.EstimateWithContent(ctx, intent, intent.Body.Payload.DetailDescriptor.InlineContent, inventory)
 }
 
 func (estimator boundedCampaignEstimator) EstimateWithContent(ctx context.Context, intent commerce.SignedAgentIntent,
-	detail []byte, inventory InventorySnapshot) (EconomicEstimate, error) {
+	detail []byte, inventory InventorySnapshot,
+) (EconomicEstimate, error) {
 	estimate, err := estimator.AI.EstimateWithContent(ctx, intent, detail, inventory)
 	if err != nil {
 		return EconomicEstimate{}, fmt.Errorf("AI economic estimate unavailable; decline without side effects: %w", err)
 	}
 	if estimate.RevenueAtomic != strconv.FormatUint(estimator.Price, 10) {
-		return EconomicEstimate{}, errors.New("AI economic estimate changed the signed exact campaign revenue; decline without side effects")
+		return EconomicEstimate{}, errors.New(
+			"AI economic estimate changed the signed exact campaign revenue; decline without side effects",
+		)
 	}
 	return estimate, nil
 }
 
 func eightAgentDefinitions() []eightAgentDefinition {
 	return []eightAgentDefinition{
-		{Name: "security-auditor", OwnerID: "owner:security-studio", AgentID: "agent:security-auditor", AuthorityID: "authority:security-studio", Wallet: "pilot-security-seller", Capability: "secure-code-review", Taxonomy: "security", ModelKind: "claude", Template: "security-auditor", Price: 500_000, MaximumCost: 80_000, Tasks: []string{
-			"Audit a bounded authentication state machine for replay, confused-deputy, and stale-session risks. Return ranked findings and concrete invariants.",
-			"Audit a bounded webhook verifier design for signature wrapping, timestamp replay, and key rotation races. Return ranked remediation.",
-			"Audit a bounded capability-token verifier for scope escalation, audience confusion, and revocation races. Return ranked remediation.",
-		}},
-		{Name: "software-builder", OwnerID: "owner:software-studio", AgentID: "agent:software-builder", AuthorityID: "authority:software-studio", Wallet: "pilot-software-seller", Capability: "bounded-code-implementation", Taxonomy: "software", ModelKind: "codex", Template: "software-builder", Price: 750_000, MaximumCost: 150_000, Tasks: []string{
-			"Implement a self-contained Go function ParseAtomicAmount with strict canonical decimal validation and table-driven tests. Return code only plus a short rationale.",
-			"Implement a self-contained Go bounded retry classifier with explicit ambiguous state and table-driven tests. Return code plus invariants.",
-			"Implement a self-contained Go stable action ID helper using domain-separated SHA-256 and mutation tests. Return code plus invariants.",
-		}},
-		{Name: "evidence-verifier", OwnerID: "owner:evidence-studio", AgentID: "agent:evidence-verifier", AuthorityID: "authority:evidence-studio", Wallet: "pilot-evidence-seller", Capability: "release-evidence-verification", Taxonomy: "evidence", ModelKind: "codex", Template: "evidence-verifier", Price: 300_000, MaximumCost: 50_000, Tasks: []string{
-			"Verify a release claim with pinned commit, Linux tests, Windows compile, artifact digest, signer identity, and reproducible command. Return PASS/FAIL per field.",
-			"Verify a Carrier independence claim with operator, store, upstream, implementation, and source-loss evidence. Return PASS/FAIL per failure domain.",
-			"Verify a payment-finality claim with exact transfer, destination credit, quorum views, network identity, and reorg window. Return PASS/FAIL per field.",
-		}},
-		{Name: "storage-provider", OwnerID: "owner:storage-studio", AgentID: "agent:storage-provider", AuthorityID: "authority:storage-studio", Wallet: "pilot-storage-seller", Capability: "content-retention", Taxonomy: "storage", ModelKind: "claude", Template: "security-auditor", Price: 250_000, MaximumCost: 40_000, Tasks: []string{
-			"Design a content-addressed retention manifest for one 64 KiB object, including digest, replica policy, expiry, retrieval proof, and deletion evidence.",
-			"Evaluate an immutable object retention request and return a bounded replica placement and integrity-check schedule without claiming unavailable storage.",
-			"Produce a deterministic retention receipt schema binding object digest, byte size, expiry, replica set, and periodic verification evidence.",
-		}},
-		{Name: "data-curator", OwnerID: "owner:data-studio", AgentID: "agent:data-curator", AuthorityID: "authority:data-studio", Wallet: "pilot-data-curator", Capability: "data-normalization", Taxonomy: "data", ModelKind: "codex", Template: "software-builder", Price: 220_000, MaximumCost: 35_000, Tasks: []string{
-			"Normalize a small task catalog into stable category, keywords, amount band, date window, and provenance fields. Return canonical JSON schema guidance.",
-			"Deduplicate a conceptual Intent feed using immutable digest, revision lineage, issuer, and source-local cursor. Return deterministic rules.",
-			"Design a bounded two-stage retrieval card for a mixed service catalog with diversity and source provenance. Return canonical field rules.",
-		}},
-		{Name: "localization-writer", OwnerID: "owner:localization-studio", AgentID: "agent:localization-writer", AuthorityID: "authority:localization-studio", Wallet: "pilot-localization-writer", Capability: "technical-localization", Taxonomy: "localization", ModelKind: "claude", Template: "security-auditor", Price: 180_000, MaximumCost: 30_000, Tasks: []string{
-			"Localize a short Agent commerce error catalog into concise Simplified Chinese while preserving identifiers and security meaning.",
-			"Localize a short decentralized discovery operator guide into concise Japanese while preserving protocol names and exact commands.",
-			"Create a terminology-safe bilingual glossary for Agreement, obligation, evidence, settlement, Carrier, and writer fence.",
-		}},
-		{Name: "transaction-operator", OwnerID: "owner:transaction-studio", AgentID: "agent:transaction-operator", AuthorityID: "authority:transaction-studio", Wallet: "pilot-transaction-operator", Capability: "transaction-reliability", Taxonomy: "transaction", ModelKind: "codex", Template: "software-builder", Price: 280_000, MaximumCost: 45_000, Tasks: []string{
-			"Diagnose a transaction stuck after ambiguous broadcast and return a safe query-before-retry recovery procedure with stable action identity.",
-			"Design a bounded transaction-relayer request envelope with fee quote, expiry, idempotency, finality, and anti-replay fields.",
-			"Evaluate a gas-readiness failure and return a deterministic preflight checklist for balance, fees, sequence, endpoint quorum, and expiry.",
-		}},
-		{Name: "guarantor-analyst", OwnerID: "owner:guarantor-studio", AgentID: "agent:guarantor-analyst", AuthorityID: "authority:guarantor-studio", Wallet: "pilot-guarantor-analyst", Capability: "agreement-risk-analysis", Taxonomy: "risk", ModelKind: "claude", Template: "security-auditor", Price: 350_000, MaximumCost: 60_000, Tasks: []string{
-			"Score a two-party postpaid Agreement for counterparty, delivery, evidence, cancellation, and settlement risk. Recommend a bounded guarantee structure.",
-			"Design a decentralized guarantor quote binding Agreement digest, covered obligations, maximum loss, collateral, expiry, and dispute evidence.",
-			"Review a milestone Agreement and return guarantor admission rules that prevent double coverage, stale writer use, and aggregate exposure overflow.",
-		}},
+		{
+			Name:        "security-auditor",
+			OwnerID:     "owner:security-studio",
+			AgentID:     "agent:security-auditor",
+			AuthorityID: "authority:security-studio",
+			Wallet:      "pilot-security-seller",
+			Capability:  "secure-code-review",
+			Taxonomy:    "security",
+			ModelKind:   "claude",
+			Template:    "security-auditor",
+			Price:       500_000,
+			MaximumCost: 80_000,
+			Tasks: []string{
+				"Audit a bounded authentication state machine for replay, confused-deputy, and stale-session risks. Return ranked findings and concrete invariants.",
+				"Audit a bounded webhook verifier design for signature wrapping, timestamp replay, and key rotation races. Return ranked remediation.",
+				"Audit a bounded capability-token verifier for scope escalation, audience confusion, and revocation races. Return ranked remediation.",
+			},
+		},
+		{
+			Name:        "software-builder",
+			OwnerID:     "owner:software-studio",
+			AgentID:     "agent:software-builder",
+			AuthorityID: "authority:software-studio",
+			Wallet:      "pilot-software-seller",
+			Capability:  "bounded-code-implementation",
+			Taxonomy:    "software",
+			ModelKind:   "codex",
+			Template:    "software-builder",
+			Price:       750_000,
+			MaximumCost: 150_000,
+			Tasks: []string{
+				"Implement a self-contained Go function ParseAtomicAmount with strict canonical decimal validation and table-driven tests. Return code only plus a short rationale.",
+				"Implement a self-contained Go bounded retry classifier with explicit ambiguous state and table-driven tests. Return code plus invariants.",
+				"Implement a self-contained Go stable action ID helper using domain-separated SHA-256 and mutation tests. Return code plus invariants.",
+			},
+		},
+		{
+			Name:        "evidence-verifier",
+			OwnerID:     "owner:evidence-studio",
+			AgentID:     "agent:evidence-verifier",
+			AuthorityID: "authority:evidence-studio",
+			Wallet:      "pilot-evidence-seller",
+			Capability:  "release-evidence-verification",
+			Taxonomy:    "evidence",
+			ModelKind:   "codex",
+			Template:    "evidence-verifier",
+			Price:       300_000,
+			MaximumCost: 50_000,
+			Tasks: []string{
+				"Verify a release claim with pinned commit, Linux tests, Windows compile, artifact digest, signer identity, and reproducible command. Return PASS/FAIL per field.",
+				"Verify a Carrier independence claim with operator, store, upstream, implementation, and source-loss evidence. Return PASS/FAIL per failure domain.",
+				"Verify a payment-finality claim with exact transfer, destination credit, quorum views, network identity, and reorg window. Return PASS/FAIL per field.",
+			},
+		},
+		{
+			Name:        "storage-provider",
+			OwnerID:     "owner:storage-studio",
+			AgentID:     "agent:storage-provider",
+			AuthorityID: "authority:storage-studio",
+			Wallet:      "pilot-storage-seller",
+			Capability:  "content-retention",
+			Taxonomy:    "storage",
+			ModelKind:   "claude",
+			Template:    "security-auditor",
+			Price:       250_000,
+			MaximumCost: 40_000,
+			Tasks: []string{
+				"Design a content-addressed retention manifest for one 64 KiB object, including digest, replica policy, expiry, retrieval proof, and deletion evidence.",
+				"Evaluate an immutable object retention request and return a bounded replica placement and integrity-check schedule without claiming unavailable storage.",
+				"Produce a deterministic retention receipt schema binding object digest, byte size, expiry, replica set, and periodic verification evidence.",
+			},
+		},
+		{
+			Name:        "data-curator",
+			OwnerID:     "owner:data-studio",
+			AgentID:     "agent:data-curator",
+			AuthorityID: "authority:data-studio",
+			Wallet:      "pilot-data-curator",
+			Capability:  "data-normalization",
+			Taxonomy:    "data",
+			ModelKind:   "codex",
+			Template:    "software-builder",
+			Price:       220_000,
+			MaximumCost: 35_000,
+			Tasks: []string{
+				"Normalize a small task catalog into stable category, keywords, amount band, date window, and provenance fields. Return canonical JSON schema guidance.",
+				"Deduplicate a conceptual Intent feed using immutable digest, revision lineage, issuer, and source-local cursor. Return deterministic rules.",
+				"Design a bounded two-stage retrieval card for a mixed service catalog with diversity and source provenance. Return canonical field rules.",
+			},
+		},
+		{
+			Name:        "localization-writer",
+			OwnerID:     "owner:localization-studio",
+			AgentID:     "agent:localization-writer",
+			AuthorityID: "authority:localization-studio",
+			Wallet:      "pilot-localization-writer",
+			Capability:  "technical-localization",
+			Taxonomy:    "localization",
+			ModelKind:   "claude",
+			Template:    "security-auditor",
+			Price:       180_000,
+			MaximumCost: 30_000,
+			Tasks: []string{
+				"Localize a short Agent commerce error catalog into concise Simplified Chinese while preserving identifiers and security meaning.",
+				"Localize a short decentralized discovery operator guide into concise Japanese while preserving protocol names and exact commands.",
+				"Create a terminology-safe bilingual glossary for Agreement, obligation, evidence, settlement, Carrier, and writer fence.",
+			},
+		},
+		{
+			Name:        "transaction-operator",
+			OwnerID:     "owner:transaction-studio",
+			AgentID:     "agent:transaction-operator",
+			AuthorityID: "authority:transaction-studio",
+			Wallet:      "pilot-transaction-operator",
+			Capability:  "transaction-reliability",
+			Taxonomy:    "transaction",
+			ModelKind:   "codex",
+			Template:    "software-builder",
+			Price:       280_000,
+			MaximumCost: 45_000,
+			Tasks: []string{
+				"Diagnose a transaction stuck after ambiguous broadcast and return a safe query-before-retry recovery procedure with stable action identity.",
+				"Design a bounded transaction-relayer request envelope with fee quote, expiry, idempotency, finality, and anti-replay fields.",
+				"Evaluate a gas-readiness failure and return a deterministic preflight checklist for balance, fees, sequence, endpoint quorum, and expiry.",
+			},
+		},
+		{
+			Name:        "guarantor-analyst",
+			OwnerID:     "owner:guarantor-studio",
+			AgentID:     "agent:guarantor-analyst",
+			AuthorityID: "authority:guarantor-studio",
+			Wallet:      "pilot-guarantor-analyst",
+			Capability:  "agreement-risk-analysis",
+			Taxonomy:    "risk",
+			ModelKind:   "claude",
+			Template:    "security-auditor",
+			Price:       350_000,
+			MaximumCost: 60_000,
+			Tasks: []string{
+				"Score a two-party postpaid Agreement for counterparty, delivery, evidence, cancellation, and settlement risk. Recommend a bounded guarantee structure.",
+				"Design a decentralized guarantor quote binding Agreement digest, covered obligations, maximum loss, collateral, expiry, and dispute evidence.",
+				"Review a milestone Agreement and return guarantor admission rules that prevent double coverage, stale writer use, and aggregate exposure overflow.",
+			},
+		},
 	}
 }
 
@@ -260,10 +375,18 @@ func TestPrepareEightOpenFoxCampaign(t *testing.T) {
 			_ = os.Chmod(path, 0o700)
 		}
 		if os.Getenv("OPENFOX_CAMPAIGN_NATIVE_STRATEGY") == "1" && templateRoot != root {
-			copyCampaignKeyIfAbsent(t, filepath.Join(templateRoot, "agents", definition.Name, "state", "campaign-authority-v2", "authority-ed25519.key"),
-				filepath.Join(state, "campaign-authority-v2", "authority-ed25519.key"))
-			copyCampaignKeyIfAbsent(t, filepath.Join(templateRoot, "agents", definition.Name, "state", "identity", "agent-ed25519.key"),
-				filepath.Join(state, "identity", "agent-ed25519.key"))
+			copyCampaignKeyIfAbsent(
+				t,
+				filepath.Join(
+					templateRoot, "agents", definition.Name, "state", "campaign-authority-v2", "authority-ed25519.key",
+				),
+				filepath.Join(state, "campaign-authority-v2", "authority-ed25519.key"),
+			)
+			copyCampaignKeyIfAbsent(
+				t,
+				filepath.Join(templateRoot, "agents", definition.Name, "state", "identity", "agent-ed25519.key"),
+				filepath.Join(state, "identity", "agent-ed25519.key"),
+			)
 		}
 		authority := ensureCampaignKey(t, filepath.Join(state, "campaign-authority-v2", "authority-ed25519.key"))
 		identity := ensureCampaignKey(t, filepath.Join(state, "identity", "agent-ed25519.key"))
@@ -276,11 +399,25 @@ func TestPrepareEightOpenFoxCampaign(t *testing.T) {
 		if os.Getenv("OPENFOX_CAMPAIGN_FORCE_CODEX") == "1" {
 			modelKind = "codex"
 		}
-		entries = append(entries, eightAgentManifestEntry{Name: definition.Name, OwnerID: campaignOwnerID, AgentID: campaignAgentID,
-			AuthorityID: campaignAuthorityID, Wallet: definition.Wallet, Target: target, Capability: definition.Capability,
-			Taxonomy: definition.Taxonomy, ModelKind: modelKind, ConfigDirectory: directory,
-			AuthorityPin: "ed25519:" + hex.EncodeToString(authority.Public().(ed25519.PublicKey)), IdentityPin: identityPins[campaignAgentID],
-			Price: definition.Price, MaximumCost: definition.MaximumCost, Tasks: append([]string(nil), definition.Tasks...)})
+		entries = append(entries, eightAgentManifestEntry{
+			Name:            definition.Name,
+			OwnerID:         campaignOwnerID,
+			AgentID:         campaignAgentID,
+			AuthorityID:     campaignAuthorityID,
+			Wallet:          definition.Wallet,
+			Target:          target,
+			Capability:      definition.Capability,
+			Taxonomy:        definition.Taxonomy,
+			ModelKind:       modelKind,
+			ConfigDirectory: directory,
+			AuthorityPin: "ed25519:" + hex.EncodeToString(
+				authority.Public().(ed25519.PublicKey),
+			),
+			IdentityPin: identityPins[campaignAgentID],
+			Price:       definition.Price,
+			MaximumCost: definition.MaximumCost,
+			Tasks:       append([]string(nil), definition.Tasks...),
+		})
 	}
 	for index, definition := range definitions {
 		entry := entries[index]
@@ -309,11 +446,16 @@ func TestPrepareEightOpenFoxCampaign(t *testing.T) {
 			t.Fatalf("validate %s: %v", definition.Name, err)
 		}
 	}
-	manifest := eightAgentManifest{Schema: eightAgentCampaignSchema, CreatedAt: time.Now().UTC().Format(time.RFC3339), Agents: entries}
+	manifest := eightAgentManifest{
+		Schema:    eightAgentCampaignSchema,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Agents:    entries,
+	}
 	writeCampaignJSON(t, filepath.Join(root, "eight-agent-manifest.json"), manifest)
 	sixEntries := []eightAgentManifestEntry{entries[0], entries[1], entries[2], entries[3], entries[6], entries[7]}
 	writeCampaignJSON(t, filepath.Join(root, "six-agent-manifest.json"), eightAgentManifest{
-		Schema: sixAgentCampaignSchema, CreatedAt: manifest.CreatedAt, Agents: sixEntries})
+		Schema: sixAgentCampaignSchema, CreatedAt: manifest.CreatedAt, Agents: sixEntries,
+	})
 	t.Logf("prepared eight-agent manifest=%s", filepath.Join(root, "eight-agent-manifest.json"))
 	t.Logf("prepared six-agent manifest=%s", filepath.Join(root, "six-agent-manifest.json"))
 }
@@ -335,7 +477,8 @@ func copyCampaignKeyIfAbsent(t *testing.T, source, destination string) {
 }
 
 func configureCampaignDocument(t *testing.T, document map[string]any, entry eightAgentManifestEntry,
-	identityPins map[string]string, readToken, writeToken string) {
+	identityPins map[string]string, readToken, writeToken string,
+) {
 	t.Helper()
 	agents := document["agents"].(map[string]any)
 	defaults := agents["defaults"].(map[string]any)
@@ -359,9 +502,11 @@ func configureCampaignDocument(t *testing.T, document map[string]any, entry eigh
 	if evolutionMode != "observe" && evolutionMode != "draft" && evolutionMode != "apply" {
 		t.Fatalf("OPENFOX_CAMPAIGN_EVOLUTION_MODE must be observe, draft, or apply")
 	}
-	document["evolution"] = map[string]any{"enabled": true, "mode": evolutionMode,
+	document["evolution"] = map[string]any{
+		"enabled": true, "mode": evolutionMode,
 		"state_dir": filepath.Join(entry.ConfigDirectory, "state", "evolution"), "min_task_count": 2,
-		"min_success_ratio": 0.7, "cold_path_trigger": "after_turn"}
+		"min_success_ratio": 0.7, "cold_path_trigger": "after_turn",
+	}
 	earning := document["earning"].(map[string]any)
 	earning["state_dir"] = filepath.Join(entry.ConfigDirectory, "state")
 	earning["owner_id"], earning["agent_id"], earning["authority_id"] = entry.OwnerID, entry.AgentID, entry.AuthorityID
@@ -371,17 +516,42 @@ func configureCampaignDocument(t *testing.T, document map[string]any, entry eigh
 		gatewayEndpoint, messengerEndpoint = "http://127.0.0.1:18291/v1/intents", "http://127.0.0.1:18292/v1/intents"
 	}
 	earning["carriers"] = []any{
-		map[string]any{"kind": "http", "id": "carrier:gateway-local-pilot", "endpoint": gatewayEndpoint, "read_token": readToken, "relay_token": writeToken},
-		map[string]any{"kind": "http", "id": "carrier:messenger-local-pilot", "endpoint": messengerEndpoint, "read_token": readToken, "relay_token": writeToken},
+		map[string]any{
+			"kind": "http", "id": "carrier:gateway-local-pilot", "endpoint": gatewayEndpoint,
+			"read_token": readToken, "relay_token": writeToken,
+		},
+		map[string]any{
+			"kind": "http", "id": "carrier:messenger-local-pilot", "endpoint": messengerEndpoint,
+			"read_token": readToken, "relay_token": writeToken,
+		},
 	}
-	earning["capabilities"] = []any{map[string]any{"namespace": "tos.skill", "identifier": entry.Capability,
-		"version": "1.0.0", "evidence_digest": campaignDigest("capability:" + entry.Capability), "offer": map[string]any{
-			"asset_namespace": "tos.asset", "asset_identifier": "native", "unit": "nanotos",
-			"minimum_revenue_atomic": strconv.FormatUint(entry.Price, 10), "maximum_revenue_atomic": strconv.FormatUint(entry.Price, 10),
-			"maximum_unit_cost_atomic": strconv.FormatUint(entry.MaximumCost, 10), "settlement_adapter_uri": "tos.payment.direct.v1",
-			"taxonomy_prefixes": []any{"tos.taxonomy.v1/service/" + entry.Taxonomy + "/pilot"},
-			"required_keywords": []any{entry.Capability}, "minimum_ttl_seconds": 3600, "maximum_ttl_seconds": 86400,
-		}}}
+	earning["capabilities"] = []any{
+		map[string]any{
+			"namespace":       "tos.skill",
+			"identifier":      entry.Capability,
+			"version":         "1.0.0",
+			"evidence_digest": campaignDigest("capability:" + entry.Capability),
+			"offer": map[string]any{
+				"asset_namespace":  "tos.asset",
+				"asset_identifier": "native",
+				"unit":             "nanotos",
+				"minimum_revenue_atomic": strconv.FormatUint(
+					entry.Price,
+					10,
+				),
+				"maximum_revenue_atomic": strconv.FormatUint(entry.Price, 10),
+				"maximum_unit_cost_atomic": strconv.FormatUint(
+					entry.MaximumCost,
+					10,
+				),
+				"settlement_adapter_uri": "tos.payment.direct.v1",
+				"taxonomy_prefixes":      []any{"tos.taxonomy.v1/service/" + entry.Taxonomy + "/pilot"},
+				"required_keywords":      []any{entry.Capability},
+				"minimum_ttl_seconds":    3600,
+				"maximum_ttl_seconds":    86400,
+			},
+		},
+	}
 	publication := earning["publication"].(map[string]any)
 	publication["maximum_active"] = float64(64)
 	publication["maximum_publications_per_period"] = float64(64)
@@ -449,8 +619,10 @@ This is the first native-strategy market round. The five listed local counterpar
 
 On a market cycle, inspect signed Intent cards cheaply, retrieve only relevant bodies, and choose at most one outside service that materially helps the current business. Apply AGENT.md, SOUL.md, USER.md, and memory before contacting anyone. It is valid to buy nothing.
 `
-	files := map[string]string{"AGENT.md": agentMD, "USER.md": userMD, "SOUL.md": soulMD,
-		"HEARTBEAT.md": heartbeatMD, filepath.Join("memory", "MEMORY.md"): memoryMD}
+	files := map[string]string{
+		"AGENT.md": agentMD, "USER.md": userMD, "SOUL.md": soulMD,
+		"HEARTBEAT.md": heartbeatMD, filepath.Join("memory", "MEMORY.md"): memoryMD,
+	}
 	for name, content := range files {
 		path := filepath.Join(workspace, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -517,7 +689,8 @@ func ensureCampaignKey(t *testing.T, path string) ed25519.PrivateKey {
 func readOwnerText(t *testing.T, path string, maximum int64) string {
 	t.Helper()
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() <= 0 || info.Size() > maximum {
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() <= 0 ||
+		info.Size() > maximum {
 		t.Fatalf("owner-only input is invalid: %s", path)
 	}
 	raw, err := os.ReadFile(path)
@@ -553,26 +726,82 @@ func TestPublishEightOpenFoxSupply(t *testing.T) {
 	defer closeCampaignRuntimes(runtimes)
 	for _, runtime := range runtimes {
 		now := time.Now().UTC().Truncate(time.Second)
-		detail := []byte("Owner-bounded " + runtime.definition.Capability + " service. Exact scope is negotiated and frozen in a typed Agreement before execution.")
-		body := commerce.AgentIntentBody{SchemaVersion: 1, NetworkID: "tos:local-three-node", IssuerAgentID: runtime.definition.AgentID,
-			Audience: "public:indexable", ObjectID: "intent:" + strings.TrimPrefix(campaignDigest("supply:"+runtime.definition.AgentID+now.Format(time.RFC3339Nano)), "sha256:"),
-			Revision: 1, CreatedAtUnix: uint64(now.Unix()), ExpiresAtUnix: uint64(now.Add(12 * time.Hour).Unix()),
-			Payload: commerce.AgentIntentPayload{DiscoveryCard: commerce.DiscoveryCard{Summary: "Owner-bounded " + runtime.definition.Capability + " service",
-				IntentModes: []commerce.IntentMode{commerce.IntentOffer}, SubjectClasses: []commerce.SubjectClass{commerce.SubjectService},
-				TaxonomyPaths: []string{"tos.taxonomy.v1/service/" + runtime.definition.Taxonomy + "/pilot"},
-				Keywords:      []commerce.IntentKeyword{{Text: runtime.definition.Capability}}, CapabilityHints: []commerce.CapabilityHint{{Relation: "required",
-					CapabilityNamespace: "tos.skill", CapabilityIdentifier: runtime.definition.Capability}}, ValueState: commerce.ValueSpecified,
-				ValueHints: []commerce.ValueHint{{Role: "price", AssetNamespace: "tos.asset", AssetIdentifier: "native", AmountKind: "exact",
-					MinimumDecimal: strconv.FormatUint(runtime.definition.Price, 10), MaximumDecimal: strconv.FormatUint(runtime.definition.Price, 10), Unit: "nanotos"}},
-				Schedule: commerce.IntentSchedule{Flexibility: "flexible"}, FulfillmentModes: []string{"remote"}},
-				DetailDescriptor: commerce.ContentDescriptor{ContentType: "text/plain", ContentDigest: campaignDigest(string(detail)), ContentSize: uint64(len(detail)), InlineContent: detail},
-				ReplyRoutes:      []commerce.ReplyRoute{{ProfileURI: "tos.messenger.direct.v1", AgentID: runtime.definition.AgentID}},
-				SettlementPreferences: []commerce.SettlementPreference{{AdapterURI: "tos.payment.direct.v1", Required: true,
-					Parameters: []byte(`{"network_id":"tos:local-three-node","asset":"native","unit":"nanotos"}`)}}}}
-		draft := PublicationDraft{Body: body, Economics: PublicationEconomics{RevenueAtomic: strconv.FormatUint(runtime.definition.Price, 10),
-			UnitCostAtomic: strconv.FormatUint(runtime.definition.MaximumCost, 10), AssetNamespace: "tos.asset", AssetIdentifier: "native",
-			ValueHintRole: "price", Unit: "nanotos", EvidenceDigest: campaignDigest("pricing:" + runtime.definition.AgentID),
-			ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())}}
+		detail := []byte(
+			"Owner-bounded " + runtime.definition.Capability + " service. Exact scope is negotiated and frozen in a typed Agreement before execution.",
+		)
+		body := commerce.AgentIntentBody{
+			SchemaVersion: 1,
+			NetworkID:     "tos:local-three-node",
+			IssuerAgentID: runtime.definition.AgentID,
+			Audience:      "public:indexable",
+			ObjectID: "intent:" + strings.TrimPrefix(
+				campaignDigest("supply:"+runtime.definition.AgentID+now.Format(time.RFC3339Nano)),
+				"sha256:",
+			),
+			Revision:      1,
+			CreatedAtUnix: uint64(now.Unix()),
+			ExpiresAtUnix: uint64(now.Add(12 * time.Hour).Unix()),
+			Payload: commerce.AgentIntentPayload{
+				DiscoveryCard: commerce.DiscoveryCard{
+					Summary: "Owner-bounded " + runtime.definition.Capability + " service",
+					IntentModes: []commerce.IntentMode{
+						commerce.IntentOffer,
+					},
+					SubjectClasses: []commerce.SubjectClass{commerce.SubjectService},
+					TaxonomyPaths:  []string{"tos.taxonomy.v1/service/" + runtime.definition.Taxonomy + "/pilot"},
+					Keywords: []commerce.IntentKeyword{
+						{Text: runtime.definition.Capability},
+					},
+					CapabilityHints: []commerce.CapabilityHint{{
+						Relation:            "required",
+						CapabilityNamespace: "tos.skill", CapabilityIdentifier: runtime.definition.Capability,
+					}},
+					ValueState: commerce.ValueSpecified,
+					ValueHints: []commerce.ValueHint{
+						{
+							Role:            "price",
+							AssetNamespace:  "tos.asset",
+							AssetIdentifier: "native",
+							AmountKind:      "exact",
+							MinimumDecimal: strconv.FormatUint(
+								runtime.definition.Price,
+								10,
+							),
+							MaximumDecimal: strconv.FormatUint(runtime.definition.Price, 10),
+							Unit:           "nanotos",
+						},
+					},
+					Schedule:         commerce.IntentSchedule{Flexibility: "flexible"},
+					FulfillmentModes: []string{"remote"},
+				},
+				DetailDescriptor: commerce.ContentDescriptor{
+					ContentType:   "text/plain",
+					ContentDigest: campaignDigest(string(detail)),
+					ContentSize:   uint64(len(detail)),
+					InlineContent: detail,
+				},
+				ReplyRoutes: []commerce.ReplyRoute{
+					{ProfileURI: "tos.messenger.direct.v1", AgentID: runtime.definition.AgentID},
+				},
+				SettlementPreferences: []commerce.SettlementPreference{{
+					AdapterURI: "tos.payment.direct.v1", Required: true,
+					Parameters: []byte(`{"network_id":"tos:local-three-node","asset":"native","unit":"nanotos"}`),
+				}},
+			},
+		}
+		draft := PublicationDraft{Body: body, Economics: PublicationEconomics{
+			RevenueAtomic: strconv.FormatUint(runtime.definition.Price, 10),
+			UnitCostAtomic: strconv.FormatUint(
+				runtime.definition.MaximumCost,
+				10,
+			),
+			AssetNamespace:  "tos.asset",
+			AssetIdentifier: "native",
+			ValueHintRole:   "price",
+			Unit:            "nanotos",
+			EvidenceDigest:  campaignDigest("pricing:" + runtime.definition.AgentID),
+			ExpiresAtUnix:   uint64(now.Add(time.Hour).Unix()),
+		}}
 		record, err := runtime.publisher.Publish(t.Context(), draft,
 			[]string{"carrier:gateway-local-pilot", "carrier:messenger-local-pilot"}, 1, runtime.fence)
 		if err != nil {
@@ -592,7 +821,11 @@ func TestEightOpenFoxAgenticInternetCampaign(t *testing.T) {
 	root := mustEnv(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_ROOT")
 	manifest := loadEightAgentManifest(t, filepath.Join(root, "eight-agent-manifest.json"))
 	duration := parseCampaignDuration(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_DURATION", 3*time.Hour)
-	interval := parseCampaignDuration(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_INTERVAL", duration/time.Duration(len(manifest.Agents)*3))
+	interval := parseCampaignDuration(
+		t,
+		"OPENFOX_EIGHT_AGENT_CAMPAIGN_INTERVAL",
+		duration/time.Duration(len(manifest.Agents)*3),
+	)
 	if duration < 3*time.Hour || interval < 30*time.Second {
 		t.Fatal("campaign must preserve three real hours and bounded pacing")
 	}
@@ -640,8 +873,10 @@ func TestEightOpenFoxAgenticInternetCampaign(t *testing.T) {
 				break
 			}
 			for _, runtime := range []*campaignRuntime{runtimes[item.seller], runtimes[item.buyer]} {
-				engine := &Engine{OwnerID: runtime.definition.OwnerID, AgentID: runtime.definition.AgentID,
-					MandateDigest: runtime.cfg.Earning.MandateDigest, Authority: runtime.authority}
+				engine := &Engine{
+					OwnerID: runtime.definition.OwnerID, AgentID: runtime.definition.AgentID,
+					MandateDigest: runtime.cfg.Earning.MandateDigest, Authority: runtime.authority,
+				}
 				if _, reconcileErr := engine.ReconcileApply(t.Context(), 1, runtime.fence); reconcileErr != nil {
 					t.Fatalf("campaign job %d retry reconciliation: %v", sequence, reconcileErr)
 				}
@@ -656,8 +891,16 @@ func TestEightOpenFoxAgenticInternetCampaign(t *testing.T) {
 		report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		writeCampaignJSON(t, reportPath, report)
 		if campaignResultSettled(result) {
-			t.Logf("settled sequence=%d round=%d buyer=%s seller=%s tx=%s skills=%d->%d", sequence, item.round,
-				result.Buyer, result.Seller, result.PaymentTransaction, len(result.SkillsBefore), len(result.SkillsAfter))
+			t.Logf(
+				"settled sequence=%d round=%d buyer=%s seller=%s tx=%s skills=%d->%d",
+				sequence,
+				item.round,
+				result.Buyer,
+				result.Seller,
+				result.PaymentTransaction,
+				len(result.SkillsBefore),
+				len(result.SkillsAfter),
+			)
 		} else {
 			t.Logf("declined sequence=%d round=%d buyer=%s seller=%s reason=%s", sequence, item.round,
 				result.Buyer, result.Seller, result.Disposition)
@@ -695,7 +938,10 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 		campaignRounds = 1
 		minimumDuration, minimumInterval = 0, 0
 	}
-	interval := parseCampaignDuration(t, "OPENFOX_SIX_AGENT_CAMPAIGN_INTERVAL", duration/time.Duration(len(manifest.Agents)*campaignRounds))
+	interval := parseCampaignDuration(
+		t, "OPENFOX_SIX_AGENT_CAMPAIGN_INTERVAL",
+		duration/time.Duration(len(manifest.Agents)*campaignRounds),
+	)
 	if duration < minimumDuration || interval < minimumInterval {
 		t.Fatal("six-agent campaign duration or pacing is below its selected profile")
 	}
@@ -737,14 +983,22 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 			t.Fatalf("buyer %s demand planning: %v", runtimes[buyerIndex].definition.Name, planErr)
 		}
 		if plan.Decision == "skip" {
-			result := eightAgentJobResult{Sequence: sequence, Round: sequence/len(runtimes) + 1,
+			result := eightAgentJobResult{
+				Sequence: sequence, Round: sequence/len(runtimes) + 1,
 				Disposition: "skipped:buyer-strategy", Buyer: runtimes[buyerIndex].definition.Name,
 				EconomicAnalysisMode: "not-run", DemandPlanningMode: "buyer-ai", DemandRationale: plan.Rationale,
-				CompletedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+				CompletedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			}
 			report.Results = append(report.Results, result)
 			report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			writeCampaignJSON(t, reportPath, report)
-			t.Logf("turn=%d buyer=%s disposition=%s rationale=%q", sequence+1, result.Buyer, result.Disposition, plan.Rationale)
+			t.Logf(
+				"turn=%d buyer=%s disposition=%s rationale=%q",
+				sequence+1,
+				result.Buyer,
+				result.Disposition,
+				plan.Rationale,
+			)
 			continue
 		}
 		sellerIndex := campaignRuntimeIndex(runtimes, plan.SellerAgent)
@@ -764,8 +1018,10 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 				break
 			}
 			for _, runtime := range []*campaignRuntime{runtimes[sellerIndex], runtimes[buyerIndex]} {
-				engine := &Engine{OwnerID: runtime.definition.OwnerID, AgentID: runtime.definition.AgentID,
-					MandateDigest: runtime.cfg.Earning.MandateDigest, Authority: runtime.authority}
+				engine := &Engine{
+					OwnerID: runtime.definition.OwnerID, AgentID: runtime.definition.AgentID,
+					MandateDigest: runtime.cfg.Earning.MandateDigest, Authority: runtime.authority,
+				}
 				if _, reconcileErr := engine.ReconcileApply(t.Context(), 1, runtime.fence); reconcileErr != nil {
 					t.Fatalf("campaign job %d retry reconciliation: %v", sequence, reconcileErr)
 				}
@@ -800,7 +1056,8 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 }
 
 func planAutonomousCampaignDemand(ctx context.Context, round int, buyer *campaignRuntime,
-	runtimes []*campaignRuntime) (autonomousCampaignDemand, error) {
+	runtimes []*campaignRuntime,
+) (autonomousCampaignDemand, error) {
 	if buyer == nil || buyer.provider == nil || len(runtimes) < 2 {
 		return autonomousCampaignDemand{}, errors.New("autonomous demand planner is incomplete")
 	}
@@ -814,19 +1071,27 @@ func planAutonomousCampaignDemand(ctx context.Context, round int, buyer *campaig
 		if candidate == nil || candidate == buyer {
 			continue
 		}
-		catalog = append(catalog, catalogEntry{Agent: candidate.definition.Name,
+		catalog = append(catalog, catalogEntry{
+			Agent:      candidate.definition.Name,
 			Capability: candidate.definition.Capability, Taxonomy: candidate.definition.Taxonomy,
-			Price: strconv.FormatUint(candidate.definition.Price, 10), ExampleScopes: candidate.definition.Tasks})
+			Price: strconv.FormatUint(candidate.definition.Price, 10), ExampleScopes: candidate.definition.Tasks,
+		})
 		allowed[candidate.definition.Name] = candidate
 	}
-	input, err := json.Marshal(map[string]any{"round": round, "buyer": map[string]any{
-		"agent": buyer.definition.Name, "capability": buyer.definition.Capability,
-		"business_role": buyer.definition.Taxonomy}, "available_services": catalog,
-		"currency": "nanotos", "network": "tos:local-three-node"})
+	input, err := json.Marshal(map[string]any{
+		"round": round, "buyer": map[string]any{
+			"agent": buyer.definition.Name, "capability": buyer.definition.Capability,
+			"business_role": buyer.definition.Taxonomy,
+		}, "available_services": catalog,
+		"currency": "nanotos", "network": "tos:local-three-node",
+	})
 	if err != nil {
 		return autonomousCampaignDemand{}, err
 	}
-	system, err := contextualAgentSystemPrompt(buyer.agentContext, "You are acting as this OpenFox's demand-planning mind in a small local Agent economy. Decide whether buying one listed service genuinely helps your current business and complies with the natural-language business preferences above. If yes, return decision=buy, choose one other OpenFox, and write a specific bounded task. If no service is worthwhile, return decision=skip with empty seller_agent, capability, and task. SKIP is a normal successful decision: never invent a need merely to create a trade. You may use example scopes as inspiration but should adapt any request to your own role and this round. Selection and prose are advisory only: you cannot message, sign, execute, or pay. Return exactly one JSON object with decision, seller_agent, capability, task, and rationale string fields and no other fields. decision must be either buy or skip. Do not call tools.")
+	system, err := contextualAgentSystemPrompt(
+		buyer.agentContext,
+		"You are acting as this OpenFox's demand-planning mind in a small local Agent economy. Decide whether buying one listed service genuinely helps your current business and complies with the natural-language business preferences above. If yes, return decision=buy, choose one other OpenFox, and write a specific bounded task. If no service is worthwhile, return decision=skip with empty seller_agent, capability, and task. SKIP is a normal successful decision: never invent a need merely to create a trade. You may use example scopes as inspiration but should adapt any request to your own role and this round. Selection and prose are advisory only: you cannot message, sign, execute, or pay. Return exactly one JSON object with decision, seller_agent, capability, task, and rationale string fields and no other fields. decision must be either buy or skip. Do not call tools.",
+	)
 	if err != nil {
 		return autonomousCampaignDemand{}, err
 	}
@@ -835,7 +1100,8 @@ func planAutonomousCampaignDemand(ctx context.Context, round int, buyer *campaig
 		response, callErr := buyer.provider.Chat(providers.WithInternalAgentBackendPrincipal(ctx), []providers.Message{
 			{Role: "system", Content: system}, {Role: "user", Content: string(input)},
 		}, nil, buyer.model, map[string]any{"temperature": 0.35, "max_tokens": 1000})
-		if callErr != nil || response == nil || len(response.ToolCalls) != 0 || len(response.Content) == 0 || len(response.Content) > 16<<10 {
+		if callErr != nil || response == nil || len(response.ToolCalls) != 0 || len(response.Content) == 0 ||
+			len(response.Content) > 16<<10 {
 			lastErr = errors.New("model call failed, was empty, or attempted a tool call")
 			if callErr != nil {
 				lastErr = callErr
@@ -866,7 +1132,8 @@ func planAutonomousCampaignDemand(ctx context.Context, round int, buyer *campaig
 			return plan, nil
 		case "buy":
 			seller := allowed[plan.SellerAgent]
-			if seller == nil || plan.Capability != seller.definition.Capability || len(plan.Task) < 24 || len(plan.Task) > 4096 {
+			if seller == nil || plan.Capability != seller.definition.Capability || len(plan.Task) < 24 ||
+				len(plan.Task) > 4096 {
 				lastErr = errors.New("buy decision exceeded the signed campaign catalog or text bounds")
 				continue
 			}
@@ -875,7 +1142,10 @@ func planAutonomousCampaignDemand(ctx context.Context, round int, buyer *campaig
 			lastErr = errors.New("model demand decision is neither buy nor skip")
 		}
 	}
-	return autonomousCampaignDemand{}, fmt.Errorf("buyer AI did not produce a valid bounded demand after retry: %w", lastErr)
+	return autonomousCampaignDemand{}, fmt.Errorf(
+		"buyer AI did not produce a valid bounded demand after retry: %w",
+		lastErr,
+	)
 }
 
 func requireCampaignJSONEOF(decoder *json.Decoder) error {
@@ -912,8 +1182,10 @@ func campaignQueue(manifest eightAgentManifest) []queuedCampaignJob {
 	for round := 0; round < 3; round++ {
 		for seller := range manifest.Agents {
 			buyer := (seller + round + 1) % len(manifest.Agents)
-			queue = append(queue, queuedCampaignJob{round: round + 1, buyer: buyer, seller: seller,
-				task: manifest.Agents[seller].Tasks[round]})
+			queue = append(queue, queuedCampaignJob{
+				round: round + 1, buyer: buyer, seller: seller,
+				task: manifest.Agents[seller].Tasks[round],
+			})
 		}
 	}
 	return queue
@@ -953,18 +1225,27 @@ func loadOrCreateCampaignReport(t *testing.T, path string, duration time.Duratio
 	return loadOrCreateNamedCampaignReport(t, path, duration, eightAgentCampaignSchema)
 }
 
-func loadOrCreateNamedCampaignReport(t *testing.T, path string, duration time.Duration, schema string) eightAgentCampaignReport {
+func loadOrCreateNamedCampaignReport(
+	t *testing.T,
+	path string,
+	duration time.Duration,
+	schema string,
+) eightAgentCampaignReport {
 	t.Helper()
 	if raw, err := os.ReadFile(path); err == nil {
 		var report eightAgentCampaignReport
-		if json.Unmarshal(raw, &report) != nil || report.Schema != schema || report.RequestedRunSec != int64(duration/time.Second) {
+		if json.Unmarshal(raw, &report) != nil || report.Schema != schema ||
+			report.RequestedRunSec != int64(duration/time.Second) {
 			t.Fatal("campaign checkpoint is incompatible")
 		}
 		return report
 	}
 	now := time.Now().UTC()
-	report := eightAgentCampaignReport{Schema: schema, Network: "tos:local-three-node",
-		StartedAt: now.Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano), RequestedRunSec: int64(duration / time.Second)}
+	report := eightAgentCampaignReport{
+		Schema: schema, Network: "tos:local-three-node",
+		StartedAt: now.Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano),
+		RequestedRunSec: int64(duration / time.Second),
+	}
 	writeCampaignJSON(t, path, report)
 	return report
 }
@@ -992,27 +1273,66 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 		}
 		contextBuilder := openfoxagent.NewContextBuilder(cfg.WorkspacePath())
 		agentContext := contextBuilder.BuildSystemPromptWithCache
-		authorityKey := readPilotPrivateKey(t, filepath.Join(cfg.Earning.StateDir, "campaign-authority-v2", "authority-ed25519.key"))
+		authorityKey := readPilotPrivateKey(
+			t,
+			filepath.Join(cfg.Earning.StateDir, "campaign-authority-v2", "authority-ed25519.key"),
+		)
 		identityKey := readPilotPrivateKey(t, filepath.Join(cfg.Earning.StateDir, "identity", "agent-ed25519.key"))
-		authority, err := OpenPersonalAuthority(filepath.Join(cfg.Earning.StateDir, "campaign-authority-v2"), entry.OwnerID, entry.AgentID,
-			entry.AuthorityID, authorityKey, PortfolioLimits{ComputeUnits: 64, SpendAtomic: 50_000_000_000,
-				ReceivableAtomic: 50_000_000_000, MaximumLossAtomic: 20_000_000_000})
+		authority, err := OpenPersonalAuthority(
+			filepath.Join(cfg.Earning.StateDir, "campaign-authority-v2"),
+			entry.OwnerID,
+			entry.AgentID,
+			entry.AuthorityID,
+			authorityKey,
+			PortfolioLimits{
+				ComputeUnits: 64, SpendAtomic: 50_000_000_000,
+				ReceivableAtomic: 50_000_000_000, MaximumLossAtomic: 20_000_000_000,
+			},
+		)
 		if err != nil {
 			t.Fatal(err)
 		}
-		fence, err := authority.AcquireWriter(t.Context(), "writer:eight-agent:"+entry.Name,
-			[]string{"billing.materialize", "billing.resolve", "delivery.release", "execution.prepare", "execution.start", "payment.direct", "portfolio.release", "portfolio.reserve", "publication.publish"}, 4*time.Hour)
+		fence, err := authority.AcquireWriter(
+			t.Context(),
+			"writer:eight-agent:"+entry.Name,
+			[]string{
+				"billing.materialize",
+				"billing.resolve",
+				"delivery.release",
+				"execution.prepare",
+				"execution.start",
+				"payment.direct",
+				"portfolio.release",
+				"portfolio.reserve",
+				"publication.publish",
+			},
+			4*time.Hour,
+		)
 		if err != nil {
 			t.Fatal(err)
 		}
-		engine := &Engine{OwnerID: entry.OwnerID, AgentID: entry.AgentID, MandateDigest: cfg.Earning.MandateDigest,
-			Gates: FeatureGates{Publication: true, Execution: true}, Authority: authority, PublicationSinks: map[string]PublicationSink{},
-			Collector: Collector{Authority: trustedIntents}}
+		engine := &Engine{
+			OwnerID:       entry.OwnerID,
+			AgentID:       entry.AgentID,
+			MandateDigest: cfg.Earning.MandateDigest,
+			Gates: FeatureGates{
+				Publication: true,
+				Execution:   true,
+			},
+			Authority:        authority,
+			PublicationSinks: map[string]PublicationSink{},
+			Collector:        Collector{Authority: trustedIntents},
+		}
 		if _, reconcileErr := engine.ReconcileApply(t.Context(), 1, fence); reconcileErr != nil {
 			t.Fatalf("startup reconciliation %s: %v", entry.Name, reconcileErr)
 		}
 		for _, carrier := range cfg.Earning.Carriers {
-			sink, sinkErr := NewHTTPPublicationSink(carrier.ID, carrier.Endpoint, carrier.RelayToken.String(), 30*time.Second)
+			sink, sinkErr := NewHTTPPublicationSink(
+				carrier.ID,
+				carrier.Endpoint,
+				carrier.RelayToken.String(),
+				30*time.Second,
+			)
 			if sinkErr != nil {
 				t.Fatal(sinkErr)
 			}
@@ -1020,36 +1340,100 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 		}
 		inventory := InventorySourceFunc(func(context.Context) (InventorySnapshot, error) {
 			now := time.Now().UTC()
-			return InventorySnapshot{OwnerID: entry.OwnerID, AgentID: entry.AgentID, CreatedAtUnix: uint64(now.Add(-time.Second).Unix()),
-				ExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix()), SourceGeneration: 1, PortfolioRevision: 1, PolicyRevision: 1,
-				ConsistencyToken: campaignDigest("inventory:" + entry.AgentID), Available: ResourceCapacity{CPUUnits: 64},
-				Capabilities: []Capability{{Namespace: "tos.skill", Identifier: entry.Capability, Version: "1.0.0", State: CapabilityReady,
-					Authority: entry.AuthorityID, EvidenceDigest: campaignDigest("capability:" + entry.Capability), RevocationGeneration: 1,
-					ExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix())}},
-				SupportedSettlementAdapters: []string{"tos.payment.direct.v1"}}, nil
+			return InventorySnapshot{
+				OwnerID:       entry.OwnerID,
+				AgentID:       entry.AgentID,
+				CreatedAtUnix: uint64(now.Add(-time.Second).Unix()),
+				ExpiresAtUnix: uint64(
+					now.Add(10 * time.Minute).Unix(),
+				),
+				SourceGeneration:  1,
+				PortfolioRevision: 1,
+				PolicyRevision:    1,
+				ConsistencyToken: campaignDigest(
+					"inventory:" + entry.AgentID,
+				),
+				Available: ResourceCapacity{CPUUnits: 64},
+				Capabilities: []Capability{
+					{
+						Namespace:            "tos.skill",
+						Identifier:           entry.Capability,
+						Version:              "1.0.0",
+						State:                CapabilityReady,
+						Authority:            entry.AuthorityID,
+						EvidenceDigest:       campaignDigest("capability:" + entry.Capability),
+						RevocationGeneration: 1,
+						ExpiresAtUnix:        uint64(now.Add(10 * time.Minute).Unix()),
+					},
+				},
+				SupportedSettlementAdapters: []string{"tos.payment.direct.v1"},
+			}, nil
 		})
 		carriers := make([]Carrier, 0, len(cfg.Earning.Carriers))
 		for _, carrierConfig := range cfg.Earning.Carriers {
-			carrier, carrierErr := NewHTTPCarrier(carrierConfig.ID, carrierConfig.Endpoint, carrierConfig.ReadToken.String(), 30*time.Second)
+			carrier, carrierErr := NewHTTPCarrier(
+				carrierConfig.ID,
+				carrierConfig.Endpoint,
+				carrierConfig.ReadToken.String(),
+				30*time.Second,
+			)
 			if carrierErr != nil {
 				t.Fatal(carrierErr)
 			}
 			carriers = append(carriers, carrier)
 		}
-		collector := Collector{Carriers: carriers, Authority: trustedIntents, Inventory: inventory,
-			Estimator: boundedCampaignEstimator{AI: LLMEconomicEstimator{Provider: provider, Model: model, AgentContext: agentContext}, Price: entry.Price},
-			Policy: EconomicPolicy{MinimumExpectedProfitAtomic: "1", MinimumROIPPM: 1, MaximumLossAtomic: strconv.FormatUint(entry.MaximumCost, 10),
-				MinimumPaymentProbabilityPPM: 500_000, MinimumCompletionProbabilityPPM: 500_000},
-			Shortlist: ShortlistPolicy{Size: 16, MaximumPerIssuer: 8, MaximumPerSource: 16, MaximumPerTaxonomy: 16, MaximumPerValueBand: 16}}
-		publisher, err := OpenPublicationManager(filepath.Join(cfg.Earning.StateDir, "campaign-publications-v3"), engine, inventory, identityKey,
-			PublicationPolicy{MinimumTTL: time.Hour, MaximumTTL: 24 * time.Hour, MinimumMarginPPM: 100_000,
-				MaximumPriceChangePPM: 1_000_000, MaximumActive: 64, MaximumRevisionsPerObject: 3,
-				MaximumPublicationsPerPeriod: 64, Period: 24 * time.Hour, AllowedAudiences: []string{"public:indexable"}, AllowDemand: true})
+		collector := Collector{
+			Carriers:  carriers,
+			Authority: trustedIntents,
+			Inventory: inventory,
+			Estimator: boundedCampaignEstimator{
+				AI:    LLMEconomicEstimator{Provider: provider, Model: model, AgentContext: agentContext},
+				Price: entry.Price,
+			},
+			Policy: EconomicPolicy{
+				MinimumExpectedProfitAtomic:     "1",
+				MinimumROIPPM:                   1,
+				MaximumLossAtomic:               strconv.FormatUint(entry.MaximumCost, 10),
+				MinimumPaymentProbabilityPPM:    500_000,
+				MinimumCompletionProbabilityPPM: 500_000,
+			},
+			Shortlist: ShortlistPolicy{
+				Size:                16,
+				MaximumPerIssuer:    8,
+				MaximumPerSource:    16,
+				MaximumPerTaxonomy:  16,
+				MaximumPerValueBand: 16,
+			},
+		}
+		publisher, err := OpenPublicationManager(
+			filepath.Join(cfg.Earning.StateDir, "campaign-publications-v3"),
+			engine,
+			inventory,
+			identityKey,
+			PublicationPolicy{
+				MinimumTTL:                   time.Hour,
+				MaximumTTL:                   24 * time.Hour,
+				MinimumMarginPPM:             100_000,
+				MaximumPriceChangePPM:        1_000_000,
+				MaximumActive:                64,
+				MaximumRevisionsPerObject:    3,
+				MaximumPublicationsPerPeriod: 64,
+				Period:                       24 * time.Hour,
+				AllowedAudiences:             []string{"public:indexable"},
+				AllowDemand:                  true,
+			},
+		)
 		if err != nil {
 			t.Fatal(err)
 		}
-		learning, err := NewEvolutionExecutionLearningRecorder(cfg.Evolution, cfg.WorkspacePath(), entry.AgentID, provider, model,
-			entry.Capability)
+		learning, err := NewEvolutionExecutionLearningRecorder(
+			cfg.Evolution,
+			cfg.WorkspacePath(),
+			entry.AgentID,
+			provider,
+			model,
+			entry.Capability,
+		)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1058,26 +1442,72 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 			t.Fatal(err)
 		}
 		bindCampaignPayer(t, entry, authorityKey, custodyDirectory)
-		payment := &TOSCTLPaymentSink{Authority: authority, Executable: mustEnv(t, "OPENFOX_TOSCTL"),
-			ConfigPath: mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG"), Wallet: entry.Wallet, SourceAccount: entry.Target,
-			NetworkGlobalID: 3, FeeReserveNanoTOS: 50_000_000,
-			RelayNetworkDomain:  liveTOSCustodyNetworkDomain(t, "tos:local-three-node", 3),
-			QuorumConfigPaths:   []string{mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_2"), mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_3")},
-			MaximumTransactions: 1000, VaultURL: mustEnv(t, "OPENFOX_TOS_VAULT_URL"),
-			EvidenceDirectory: filepath.Join(root, "campaign", "payment-evidence", entry.Name), ResolveAttempts: 60, ResolveInterval: time.Second}
-		runtimes = append(runtimes, &campaignRuntime{definition: entry, cfg: cfg, provider: provider, model: model, identity: identityKey,
-			authority: authority, fence: fence, publisher: publisher, payment: payment, learning: learning, collector: collector,
-			agentContext: agentContext})
+		payment := &TOSCTLPaymentSink{
+			Authority:          authority,
+			Executable:         mustEnv(t, "OPENFOX_TOSCTL"),
+			ConfigPath:         mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG"),
+			Wallet:             entry.Wallet,
+			SourceAccount:      entry.Target,
+			NetworkGlobalID:    3,
+			FeeReserveNanoTOS:  50_000_000,
+			RelayNetworkDomain: liveTOSCustodyNetworkDomain(t, "tos:local-three-node", 3),
+			QuorumConfigPaths: []string{
+				mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_2"),
+				mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_3"),
+			},
+			MaximumTransactions: 1000,
+			VaultURL:            mustEnv(t, "OPENFOX_TOS_VAULT_URL"),
+			EvidenceDirectory: filepath.Join(
+				root,
+				"campaign",
+				"payment-evidence",
+				entry.Name,
+			),
+			ResolveAttempts: 60,
+			ResolveInterval: time.Second,
+		}
+		runtimes = append(runtimes, &campaignRuntime{
+			definition:   entry,
+			cfg:          cfg,
+			provider:     provider,
+			model:        model,
+			identity:     identityKey,
+			authority:    authority,
+			fence:        fence,
+			publisher:    publisher,
+			payment:      payment,
+			learning:     learning,
+			collector:    collector,
+			agentContext: agentContext,
+		})
 	}
 	return runtimes
 }
 
 func bindCampaignPayer(t *testing.T, entry eightAgentManifestEntry, key ed25519.PrivateKey, journal string) {
 	t.Helper()
-	command := exec.Command(mustEnv(t, "OPENFOX_TOSCTL"), "agent", "wallet", "bind-runtime", "--name", entry.Wallet,
-		"--runner-id", "openfox-eight-agent-campaign", "--endpoint", "local://openfox/eight-agent-campaign",
-		"--economic-authority-id", entry.AuthorityID, "--economic-authority-public-key", hex.EncodeToString(key.Public().(ed25519.PublicKey)),
-		"--economic-custody-journal-directory", journal, "-c", mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG"), "--format", "json")
+	command := exec.Command(
+		mustEnv(t, "OPENFOX_TOSCTL"),
+		"agent",
+		"wallet",
+		"bind-runtime",
+		"--name",
+		entry.Wallet,
+		"--runner-id",
+		"openfox-eight-agent-campaign",
+		"--endpoint",
+		"local://openfox/eight-agent-campaign",
+		"--economic-authority-id",
+		entry.AuthorityID,
+		"--economic-authority-public-key",
+		hex.EncodeToString(key.Public().(ed25519.PublicKey)),
+		"--economic-custody-journal-directory",
+		journal,
+		"-c",
+		mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG"),
+		"--format",
+		"json",
+	)
 	command.Env = append(os.Environ(), "VAULT_URL="+mustEnv(t, "OPENFOX_TOS_VAULT_URL"))
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("bind %s: %v: %s", entry.Name, err, output)
@@ -1099,21 +1529,30 @@ func closeCampaignRuntimes(runtimes []*campaignRuntime) {
 }
 
 func runCampaignNegotiation(ctx context.Context, root string, sequence int, buyer, seller *campaignRuntime,
-	task string, now time.Time) ([]campaignConversationMessage, string, bool, error) {
+	task string, now time.Time,
+) ([]campaignConversationMessage, string, bool, error) {
 	if buyer == nil || seller == nil || buyer.provider == nil || seller.provider == nil {
 		return nil, "", false, errors.New("negotiation participants are incomplete")
 	}
-	conversationID := campaignDigest(fmt.Sprintf("conversation:%d:%s:%s:%s", sequence,
-		buyer.definition.AgentID, seller.definition.AgentID, task))
+	conversationID := campaignDigest(fmt.Sprintf(
+		"conversation:%d:%s:%s:%s",
+		sequence,
+		buyer.definition.AgentID,
+		seller.definition.AgentID,
+		task,
+	))
 	messages := make([]campaignConversationMessage, 0, 3)
 	appendSigned := func(sender, recipient *campaignRuntime, kind, text string) error {
 		text = strings.TrimSpace(text)
 		if text == "" || len(text) > 4096 || !utf8.ValidString(text) {
 			return errors.New("negotiation message is empty, oversized, or invalid UTF-8")
 		}
-		message := campaignConversationMessage{ConversationID: conversationID, Index: len(messages),
+		message := campaignConversationMessage{
+			ConversationID: conversationID, Index: len(messages),
 			SenderAgent: sender.definition.AgentID, RecipientAgent: recipient.definition.AgentID,
-			Kind: kind, Text: text, CreatedAt: now.Add(time.Duration(len(messages)) * time.Nanosecond).Format(time.RFC3339Nano)}
+			Kind: kind, Text: text,
+			CreatedAt: now.Add(time.Duration(len(messages)) * time.Nanosecond).Format(time.RFC3339Nano),
+		}
 		unsigned := message
 		unsigned.Digest, unsigned.Signature = "", ""
 		raw, err := json.Marshal(unsigned)
@@ -1133,18 +1572,39 @@ func runCampaignNegotiation(ctx context.Context, root string, sequence int, buye
 	if err := appendSigned(buyer, seller, "request", task); err != nil {
 		return nil, "", false, err
 	}
-	sellerPrompt := fmt.Sprintf("Buyer %s requests: %s\nYour signed catalog capability is %s and the fixed owner-authorized quote is %d nanotos. Reply in 2-5 concise sentences: confirm the exact bounded scope, state one important boundary or assumption, give the exact quote, and invite explicit acceptance. Do not claim authority to execute or collect payment and do not call tools.",
-		buyer.definition.Name, task, seller.definition.Capability, seller.definition.Price)
-	sellerReply, err := campaignConversationReply(ctx, seller, "You are an autonomous OpenFox negotiating a bounded service engagement. Be concrete, candid, and commercially useful; ordinary chat is not Agreement authorization.", sellerPrompt, 4096)
+	sellerPrompt := fmt.Sprintf(
+		"Buyer %s requests: %s\nYour signed catalog capability is %s and the fixed owner-authorized quote is %d nanotos. Reply in 2-5 concise sentences: confirm the exact bounded scope, state one important boundary or assumption, give the exact quote, and invite explicit acceptance. Do not claim authority to execute or collect payment and do not call tools.",
+		buyer.definition.Name,
+		task,
+		seller.definition.Capability,
+		seller.definition.Price,
+	)
+	sellerReply, err := campaignConversationReply(
+		ctx,
+		seller,
+		"You are an autonomous OpenFox negotiating a bounded service engagement. Be concrete, candid, and commercially useful; ordinary chat is not Agreement authorization.",
+		sellerPrompt,
+		4096,
+	)
 	if err != nil {
 		return nil, "", false, err
 	}
 	if err = appendSigned(seller, buyer, "scope-and-quote", sellerReply); err != nil {
 		return nil, "", false, err
 	}
-	decisionPrompt := fmt.Sprintf("Requested task: %s\nSeller response: %s\nFixed signed budget: %d nanotos. Decide whether this response matches the requested capability, scope, and budget. Return exactly one JSON object with decision equal to accept or decline and a concise message. Do not call tools. Chat is advisory; a later typed Agreement is required for authorization.",
-		task, sellerReply, seller.definition.Price)
-	buyerReply, err := campaignConversationReply(ctx, buyer, "You are an autonomous OpenFox buyer conducting a final commercial scope check. Reject material mismatch, unsafe ambiguity, or price deviation; otherwise accept the bounded offer.", decisionPrompt, 4096)
+	decisionPrompt := fmt.Sprintf(
+		"Requested task: %s\nSeller response: %s\nFixed signed budget: %d nanotos. Decide whether this response matches the requested capability, scope, and budget. Return exactly one JSON object with decision equal to accept or decline and a concise message. Do not call tools. Chat is advisory; a later typed Agreement is required for authorization.",
+		task,
+		sellerReply,
+		seller.definition.Price,
+	)
+	buyerReply, err := campaignConversationReply(
+		ctx,
+		buyer,
+		"You are an autonomous OpenFox buyer conducting a final commercial scope check. Reject material mismatch, unsafe ambiguity, or price deviation; otherwise accept the bounded offer.",
+		decisionPrompt,
+		4096,
+	)
 	if err != nil {
 		return nil, "", false, err
 	}
@@ -1158,8 +1618,10 @@ func runCampaignNegotiation(ctx context.Context, root string, sequence int, buye
 	if err = decoder.Decode(&decision); err == nil {
 		err = requireCampaignJSONEOF(decoder)
 	}
-	decision.Decision, decision.Message = strings.ToLower(strings.TrimSpace(decision.Decision)), strings.TrimSpace(decision.Message)
-	if err != nil || (decision.Decision != "accept" && decision.Decision != "decline") || decision.Message == "" || len(decision.Message) > 4096 {
+	decision.Decision = strings.ToLower(strings.TrimSpace(decision.Decision))
+	decision.Message = strings.TrimSpace(decision.Message)
+	if err != nil || (decision.Decision != "accept" && decision.Decision != "decline") ||
+		decision.Message == "" || len(decision.Message) > 4096 {
 		return nil, "", false, errors.New("buyer produced an invalid negotiation decision")
 	}
 	if err = appendSigned(buyer, seller, "decision:"+decision.Decision, decision.Message); err != nil {
@@ -1174,19 +1636,28 @@ func runCampaignNegotiation(ctx context.Context, root string, sequence int, buye
 	if err = os.MkdirAll(directory, 0o700); err != nil {
 		return nil, "", false, err
 	}
-	transcript := map[string]any{"schema": "tos.openfox.signed-negotiation.v1", "conversation_digest": conversationDigest,
-		"messages": messages, "agreement_authority": false}
+	transcript := map[string]any{
+		"schema": "tos.openfox.signed-negotiation.v1", "conversation_digest": conversationDigest,
+		"messages": messages, "agreement_authority": false,
+	}
 	raw, err := json.MarshalIndent(transcript, "", "  ")
 	if err != nil {
 		return nil, "", false, err
 	}
-	if err = fileutil.WriteFileAtomic(filepath.Join(directory, fmt.Sprintf("conversation-%03d.json", sequence)), raw, 0o600); err != nil {
+	if err = fileutil.WriteFileAtomic(
+		filepath.Join(directory, fmt.Sprintf("conversation-%03d.json", sequence)), raw, 0o600,
+	); err != nil {
 		return nil, "", false, err
 	}
 	return messages, conversationDigest, decision.Decision == "accept", nil
 }
 
-func campaignConversationReply(ctx context.Context, runtime *campaignRuntime, system, prompt string, maximum int) (string, error) {
+func campaignConversationReply(
+	ctx context.Context,
+	runtime *campaignRuntime,
+	system, prompt string,
+	maximum int,
+) (string, error) {
 	fullSystem, err := contextualAgentSystemPrompt(runtime.agentContext, system)
 	if err != nil {
 		return "", err
@@ -1197,14 +1668,17 @@ func campaignConversationReply(ctx context.Context, runtime *campaignRuntime, sy
 	if err != nil {
 		return "", err
 	}
-	if response == nil || len(response.ToolCalls) != 0 || len(response.Content) == 0 || len(response.Content) > maximum || !utf8.ValidString(response.Content) {
+	if response == nil || len(response.ToolCalls) != 0 || len(response.Content) == 0 ||
+		len(response.Content) > maximum ||
+		!utf8.ValidString(response.Content) {
 		return "", errors.New("negotiation model response is invalid")
 	}
 	return strings.TrimSpace(response.Content), nil
 }
 
 func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt int, buyer, seller *campaignRuntime,
-	task string, scheduledAt time.Time) (result eightAgentJobResult, err error) {
+	task string, scheduledAt time.Time,
+) (result eightAgentJobResult, err error) {
 	paymentStarted := false
 	defer func() {
 		if err != nil && !paymentStarted {
@@ -1222,10 +1696,12 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 	if err != nil {
 		return eightAgentJobResult{}, err
 	}
-	assessments, err := seller.collector.Collect(ctx, IntentQuery{Modes: []commerce.IntentMode{commerce.IntentRequest},
+	assessments, err := seller.collector.Collect(ctx, IntentQuery{
+		Modes:          []commerce.IntentMode{commerce.IntentRequest},
 		SubjectClasses: []commerce.SubjectClass{commerce.SubjectService},
 		TaxonomyPrefix: "tos.taxonomy.v1/service/" + seller.definition.Taxonomy + "/pilot",
-		Keywords:       []string{seller.definition.Capability}, MaximumResults: 100})
+		Keywords:       []string{seller.definition.Capability}, MaximumResults: 100,
+	})
 	if err != nil {
 		return eightAgentJobResult{}, fmt.Errorf("market discovery and economic analysis: %w", err)
 	}
@@ -1241,25 +1717,58 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 	}
 	analysisMode := "ai"
 	if !selected.Decision.Eligible {
-		return eightAgentJobResult{Sequence: sequence, Round: round, Disposition: "declined:" + selected.Decision.Reason,
-			Buyer: buyer.definition.Name, Seller: seller.definition.Name, Capability: seller.definition.Capability,
-			DemandIntentDigest: demand, EconomicEvidenceDigest: selected.Estimate.EvidenceDigest,
-			EconomicAnalysisMode: analysisMode, ExpectedNetNanoTOS: selected.Decision.ExpectedNetAtomic,
-			EconomicStrategyDisposition: string(selected.Decision.StrategyDisposition), EconomicStrategyRationale: selected.Decision.StrategyRationale,
-			CompletedAt: time.Now().UTC().Format(time.RFC3339Nano), CarrierIDs: append([]string(nil), selected.CarrierIDs...)}, nil
+		return eightAgentJobResult{
+			Sequence:               sequence,
+			Round:                  round,
+			Disposition:            "declined:" + selected.Decision.Reason,
+			Buyer:                  buyer.definition.Name,
+			Seller:                 seller.definition.Name,
+			Capability:             seller.definition.Capability,
+			DemandIntentDigest:     demand,
+			EconomicEvidenceDigest: selected.Estimate.EvidenceDigest,
+			EconomicAnalysisMode:   analysisMode,
+			ExpectedNetNanoTOS:     selected.Decision.ExpectedNetAtomic,
+			EconomicStrategyDisposition: string(
+				selected.Decision.StrategyDisposition,
+			),
+			EconomicStrategyRationale: selected.Decision.StrategyRationale,
+			CompletedAt:               time.Now().UTC().Format(time.RFC3339Nano),
+			CarrierIDs:                append([]string(nil), selected.CarrierIDs...),
+		}, nil
 	}
-	conversation, conversationDigest, accepted, err := runCampaignNegotiation(ctx, root, sequence, buyer, seller, task, now)
+	conversation, conversationDigest, accepted, err := runCampaignNegotiation(
+		ctx,
+		root,
+		sequence,
+		buyer,
+		seller,
+		task,
+		now,
+	)
 	if err != nil {
 		return eightAgentJobResult{}, fmt.Errorf("signed negotiation: %w", err)
 	}
 	if !accepted {
-		return eightAgentJobResult{Sequence: sequence, Round: round, Disposition: "declined:negotiation",
-			Buyer: buyer.definition.Name, Seller: seller.definition.Name, Capability: seller.definition.Capability,
-			DemandIntentDigest: demand, EconomicEvidenceDigest: selected.Estimate.EvidenceDigest,
-			EconomicAnalysisMode: analysisMode, ExpectedNetNanoTOS: selected.Decision.ExpectedNetAtomic,
-			EconomicStrategyDisposition: string(selected.Decision.StrategyDisposition), EconomicStrategyRationale: selected.Decision.StrategyRationale,
-			ConversationDigest: conversationDigest, ConversationMessageCount: len(conversation),
-			CompletedAt: time.Now().UTC().Format(time.RFC3339Nano), CarrierIDs: append([]string(nil), selected.CarrierIDs...)}, nil
+		return eightAgentJobResult{
+			Sequence:               sequence,
+			Round:                  round,
+			Disposition:            "declined:negotiation",
+			Buyer:                  buyer.definition.Name,
+			Seller:                 seller.definition.Name,
+			Capability:             seller.definition.Capability,
+			DemandIntentDigest:     demand,
+			EconomicEvidenceDigest: selected.Estimate.EvidenceDigest,
+			EconomicAnalysisMode:   analysisMode,
+			ExpectedNetNanoTOS:     selected.Decision.ExpectedNetAtomic,
+			EconomicStrategyDisposition: string(
+				selected.Decision.StrategyDisposition,
+			),
+			EconomicStrategyRationale: selected.Decision.StrategyRationale,
+			ConversationDigest:        conversationDigest,
+			ConversationMessageCount:  len(conversation),
+			CompletedAt:               time.Now().UTC().Format(time.RFC3339Nano),
+			CarrierIDs:                append([]string(nil), selected.CarrierIDs...),
+		}, nil
 	}
 	body, err := campaignAgreement(sequence, attempt, buyer.definition, seller.definition, task, now)
 	if err != nil {
@@ -1267,20 +1776,39 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 	}
 	digest, _ := commerce.AgreementBodyDigest(body)
 	for _, participant := range []*campaignRuntime{seller, buyer} {
-		if _, err = participant.authority.RecordAgreementProposal(body, buyer.definition.AgentID,
-			"evt_"+strings.TrimPrefix(campaignDigest("proposal:"+digest), "sha256:"), campaignDigest("envelope:"+digest)); err != nil {
+		if _, err = participant.authority.RecordAgreementProposal(
+			body,
+			buyer.definition.AgentID,
+			"evt_"+strings.TrimPrefix(
+				campaignDigest("proposal:"+digest),
+				"sha256:",
+			),
+			campaignDigest("envelope:"+digest),
+		); err != nil {
 			return eightAgentJobResult{}, err
 		}
 	}
-	resolver := agreementKeyResolver{buyer.definition.AgentID: buyer.identity.Public().(ed25519.PublicKey),
-		seller.definition.AgentID: seller.identity.Public().(ed25519.PublicKey)}
+	resolver := agreementKeyResolver{
+		buyer.definition.AgentID:  buyer.identity.Public().(ed25519.PublicKey),
+		seller.definition.AgentID: seller.identity.Public().(ed25519.PublicKey),
+	}
 	verifier := AgreementEvidenceRouter{AgentAuthority: resolver}
-	keys := map[string]ed25519.PrivateKey{buyer.definition.AgentID: buyer.identity, seller.definition.AgentID: seller.identity}
+	keys := map[string]ed25519.PrivateKey{
+		buyer.definition.AgentID:  buyer.identity,
+		seller.definition.AgentID: seller.identity,
+	}
 	for _, predicate := range body.AuthorizationPredicates {
-		acceptance, signErr := commerce.SignAgreementAcceptance(commerce.AgreementAcceptanceBody{AgreementID: body.AgreementID,
-			AgreementVersion: body.Version, AgreementBodyDigest: digest, AcceptingSubject: predicate.AuthoritySubject,
-			PredicateIDs: []string{predicate.PredicateID}, EvidenceTargetProjectionDigests: []string{predicate.EvidenceTargetProjectionDigest},
-			ExpiresAtUnix: body.ExpiresAtUnix}, keys[predicate.AuthoritySubject.SubjectIdentifier])
+		acceptance, signErr := commerce.SignAgreementAcceptance(commerce.AgreementAcceptanceBody{
+			AgreementID:         body.AgreementID,
+			AgreementVersion:    body.Version,
+			AgreementBodyDigest: digest,
+			AcceptingSubject:    predicate.AuthoritySubject,
+			PredicateIDs: []string{
+				predicate.PredicateID,
+			},
+			EvidenceTargetProjectionDigests: []string{predicate.EvidenceTargetProjectionDigest},
+			ExpiresAtUnix:                   body.ExpiresAtUnix,
+		}, keys[predicate.AuthoritySubject.SubjectIdentifier])
 		if signErr != nil {
 			return eightAgentJobResult{}, signErr
 		}
@@ -1289,24 +1817,49 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 			return eightAgentJobResult{}, evidenceErr
 		}
 		for _, participant := range []*campaignRuntime{seller, buyer} {
-			if _, evidenceErr = participant.authority.RecordAgreementEvidence(digest, evidence, verifier); evidenceErr != nil {
+			if _, evidenceErr = participant.authority.RecordAgreementEvidence(
+				digest,
+				evidence,
+				verifier,
+			); evidenceErr != nil {
 				return eightAgentJobResult{}, evidenceErr
 			}
 		}
 	}
-	sellerEngine := &Engine{OwnerID: seller.definition.OwnerID, AgentID: seller.definition.AgentID,
-		MandateDigest: seller.cfg.Earning.MandateDigest, Gates: FeatureGates{Execution: true}, Authority: seller.authority}
-	buyerEngine := &Engine{OwnerID: buyer.definition.OwnerID, AgentID: buyer.definition.AgentID,
-		MandateDigest: buyer.cfg.Earning.MandateDigest, Gates: FeatureGates{Execution: true}, Authority: buyer.authority}
-	reservation := ExposureReservation{ReservationID: campaignDigest(fmt.Sprintf("reservation:%d:%s", sequence, digest)), AgreementDigest: digest,
-		ComputeUnits: 1, ReceivableAtomic: seller.definition.Price, MaximumLossAtomic: seller.definition.MaximumCost}
+	sellerEngine := &Engine{
+		OwnerID:       seller.definition.OwnerID,
+		AgentID:       seller.definition.AgentID,
+		MandateDigest: seller.cfg.Earning.MandateDigest,
+		Gates:         FeatureGates{Execution: true},
+		Authority:     seller.authority,
+	}
+	buyerEngine := &Engine{
+		OwnerID:       buyer.definition.OwnerID,
+		AgentID:       buyer.definition.AgentID,
+		MandateDigest: buyer.cfg.Earning.MandateDigest,
+		Gates:         FeatureGates{Execution: true},
+		Authority:     buyer.authority,
+	}
+	reservation := ExposureReservation{
+		ReservationID: campaignDigest(fmt.Sprintf("reservation:%d:%s", sequence, digest)), AgreementDigest: digest,
+		ComputeUnits: 1, ReceivableAtomic: seller.definition.Price, MaximumLossAtomic: seller.definition.MaximumCost,
+	}
 	_, record, err := sellerEngine.ReserveAgreement(ctx, digest, reservation, allowSettlement{}, 1, seller.fence)
 	if err != nil {
 		return eightAgentJobResult{}, err
 	}
-	buyerReservation := ExposureReservation{ReservationID: campaignDigest(fmt.Sprintf("buyer-reservation:%d:%s", sequence, digest)),
-		AgreementDigest: digest, SpendAtomic: seller.definition.Price, MaximumLossAtomic: seller.definition.Price}
-	if _, _, err = buyerEngine.ReserveAgreement(ctx, digest, buyerReservation, allowSettlement{}, 1, buyer.fence); err != nil {
+	buyerReservation := ExposureReservation{
+		ReservationID:   campaignDigest(fmt.Sprintf("buyer-reservation:%d:%s", sequence, digest)),
+		AgreementDigest: digest, SpendAtomic: seller.definition.Price, MaximumLossAtomic: seller.definition.Price,
+	}
+	if _, _, err = buyerEngine.ReserveAgreement(
+		ctx,
+		digest,
+		buyerReservation,
+		allowSettlement{},
+		1,
+		buyer.fence,
+	); err != nil {
 		return eightAgentJobResult{}, err
 	}
 	gateDirectory := filepath.Join(root, "campaign", "execution-gates", seller.definition.Name)
@@ -1322,22 +1875,43 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 	if err != nil {
 		return eightAgentJobResult{}, err
 	}
-	plan := commercegate.Plan{OwnerID: seller.definition.OwnerID, AgentID: seller.definition.AgentID, AgreementBodyDigest: digest,
-		ExecutionObligationID: "work", AcceptedInputManifestDigest: acceptedInputDigest, AttemptIndex: 0,
-		PredecessorTerminalResolutionDigest: "sha256:" + strings.Repeat("0", 64), ReservationID: reservation.ReservationID,
-		PolicyRevision: 1, LeaseLossPolicy: commercegate.LeaseLossKill}
+	plan := commercegate.Plan{
+		OwnerID:                     seller.definition.OwnerID,
+		AgentID:                     seller.definition.AgentID,
+		AgreementBodyDigest:         digest,
+		ExecutionObligationID:       "work",
+		AcceptedInputManifestDigest: acceptedInputDigest,
+		AttemptIndex:                0,
+		PredecessorTerminalResolutionDigest: "sha256:" + strings.Repeat(
+			"0",
+			64,
+		),
+		ReservationID:   reservation.ReservationID,
+		PolicyRevision:  1,
+		LeaseLossPolicy: commercegate.LeaseLossKill,
+	}
 	before := campaignSkillNames(seller.cfg.WorkspacePath())
 	deliverableDirectory := filepath.Join(root, "campaign", "deliverables", seller.definition.Name)
 	executionStarted := time.Now()
 	record, err = (ExecutionService{Engine: sellerEngine, Gate: gate, Prerequisite: funded{}, Runner: LLMTaskRunner{
 		Provider: seller.provider, Model: seller.model, Agreement: body, OutputDirectory: deliverableDirectory,
-		SkillWorkspace: seller.cfg.WorkspacePath(), Learning: seller.learning, AgentContext: seller.agentContext}}).Execute(ctx, digest, plan, 1, seller.fence)
+		SkillWorkspace: seller.cfg.WorkspacePath(), Learning: seller.learning, AgentContext: seller.agentContext,
+	}}).Execute(ctx, digest, plan, 1, seller.fence)
 	if err != nil {
 		return eightAgentJobResult{}, err
 	}
 	executionElapsed := time.Since(executionStarted)
 	manifestDigest := record.ObligationRuntime["work"].ExecutionEvidence[0]
-	if _, err = sellerEngine.Deliver(ctx, digest, "work", buyer.definition.AgentID, manifestDigest, acceptedDelivery{}, 1, seller.fence); err != nil {
+	if _, err = sellerEngine.Deliver(
+		ctx,
+		digest,
+		"work",
+		buyer.definition.AgentID,
+		manifestDigest,
+		acceptedDelivery{},
+		1,
+		seller.fence,
+	); err != nil {
 		return eightAgentJobResult{}, err
 	}
 	if _, err = buyer.authority.ObserveAgreementDelivery(digest, "work", manifestDigest, seller.definition.AgentID,
@@ -1349,11 +1923,21 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 		return eightAgentJobResult{}, fmt.Errorf("billing ledgers=%d: %w", len(ledgers), err)
 	}
 	buyerLedgers, _, err := (BillingService{Engine: buyerEngine}).MaterializeAfterDelivery(digest, 1, buyer.fence)
-	if err != nil || len(buyerLedgers) != 1 || buyerLedgers[0].Obligation.ObligationInstanceID != ledgers[0].Obligation.ObligationInstanceID {
-		return eightAgentJobResult{}, fmt.Errorf("buyer billing projection differs: ledgers=%d: %w", len(buyerLedgers), err)
+	if err != nil || len(buyerLedgers) != 1 ||
+		buyerLedgers[0].Obligation.ObligationInstanceID != ledgers[0].Obligation.ObligationInstanceID {
+		return eightAgentJobResult{}, fmt.Errorf(
+			"buyer billing projection differs: ledgers=%d: %w",
+			len(buyerLedgers),
+			err,
+		)
 	}
-	request, err := commerce.BuildAgreementPaymentRequest(buyer.definition.OwnerID, buyer.definition.AgentID, "tos:local-three-node",
-		[]byte(seller.definition.Target), buyerLedgers[0].Obligation)
+	request, err := commerce.BuildAgreementPaymentRequest(
+		buyer.definition.OwnerID,
+		buyer.definition.AgentID,
+		"tos:local-three-node",
+		[]byte(seller.definition.Target),
+		buyerLedgers[0].Obligation,
+	)
 	if err != nil {
 		return eightAgentJobResult{}, err
 	}
@@ -1361,8 +1945,19 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 	if err != nil {
 		return eightAgentJobResult{}, err
 	}
-	action, err := commerce.BuildAuthorizedAction(buyer.definition.OwnerID, buyer.definition.AgentID, "payment.direct", fields, canonical,
-		buyer.fence, 1, ledgers[0].Obligation.MandateDigest, "", "pending", request.ExpiresAtUnix)
+	action, err := commerce.BuildAuthorizedAction(
+		buyer.definition.OwnerID,
+		buyer.definition.AgentID,
+		"payment.direct",
+		fields,
+		canonical,
+		buyer.fence,
+		1,
+		ledgers[0].Obligation.MandateDigest,
+		"",
+		"pending",
+		request.ExpiresAtUnix,
+	)
 	if err == nil {
 		action, err = buyer.authority.SignAction(action, buyer.fence)
 	}
@@ -1383,10 +1978,23 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 		paymentEvidence.ExactTransferReference, []string{paymentEvidence.FinalityReference}); err != nil {
 		return eightAgentJobResult{}, err
 	}
-	if _, _, err = (BillingService{Engine: buyerEngine}).ApplyPayment(request, paymentEvidence, buyer.payment, 1, buyer.fence); err != nil {
+	if _, _, err = (BillingService{Engine: buyerEngine}).ApplyPayment(
+		request,
+		paymentEvidence,
+		buyer.payment,
+		1,
+		buyer.fence,
+	); err != nil {
 		return eightAgentJobResult{}, fmt.Errorf("buyer payment reconciliation: %w", err)
 	}
-	if _, record, err = (BillingService{Engine: sellerEngine}).ApplyPayment(request, paymentEvidence, buyer.payment, 1, seller.fence); err != nil || record.State != EngagementSettled {
+	if _, record, err = (BillingService{Engine: sellerEngine}).ApplyPayment(
+		request,
+		paymentEvidence,
+		buyer.payment,
+		1,
+		seller.fence,
+	); err != nil ||
+		record.State != EngagementSettled {
 		return eightAgentJobResult{}, fmt.Errorf("provider payment reconciliation state=%s: %w", record.State, err)
 	}
 	if _, err = sellerEngine.ReconcileApply(ctx, 1, seller.fence); err != nil {
@@ -1396,51 +2004,125 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 		return eightAgentJobResult{}, fmt.Errorf("buyer reservation release: %w", err)
 	}
 	after := campaignSkillNames(seller.cfg.WorkspacePath())
-	return eightAgentJobResult{Sequence: sequence, Round: round, Disposition: "settled", Buyer: buyer.definition.Name, Seller: seller.definition.Name,
-		Capability: seller.definition.Capability, DemandIntentDigest: demand, AgreementDigest: digest, ExecutionID: record.ExecutionID,
-		DeliverableDigest: manifestDigest, PaymentTransaction: paymentEvidence.ExactTransferReference,
-		FinalityReference: paymentEvidence.FinalityReference, RevenueNanoTOS: seller.definition.Price,
-		MaximumInternalCostNanoTOS: seller.definition.MaximumCost, ProjectedNetNanoTOS: seller.definition.Price - seller.definition.MaximumCost,
-		SkillsBefore: before, SkillsAfter: after, ExecutionElapsedMillis: executionElapsed.Milliseconds(),
-		SettlementElapsedMillis: settlementElapsed.Milliseconds(), EconomicEvidenceDigest: selected.Estimate.EvidenceDigest, EconomicAnalysisMode: analysisMode,
-		EconomicStrategyDisposition: string(selected.Decision.StrategyDisposition), EconomicStrategyRationale: selected.Decision.StrategyRationale,
-		ExpectedNetNanoTOS: selected.Decision.ExpectedNetAtomic, CompletedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		ConversationDigest: conversationDigest, ConversationMessageCount: len(conversation),
-		CarrierIDs: append([]string(nil), selected.CarrierIDs...)}, nil
+	return eightAgentJobResult{
+		Sequence:                   sequence,
+		Round:                      round,
+		Disposition:                "settled",
+		Buyer:                      buyer.definition.Name,
+		Seller:                     seller.definition.Name,
+		Capability:                 seller.definition.Capability,
+		DemandIntentDigest:         demand,
+		AgreementDigest:            digest,
+		ExecutionID:                record.ExecutionID,
+		DeliverableDigest:          manifestDigest,
+		PaymentTransaction:         paymentEvidence.ExactTransferReference,
+		FinalityReference:          paymentEvidence.FinalityReference,
+		RevenueNanoTOS:             seller.definition.Price,
+		MaximumInternalCostNanoTOS: seller.definition.MaximumCost,
+		ProjectedNetNanoTOS:        seller.definition.Price - seller.definition.MaximumCost,
+		SkillsBefore:               before,
+		SkillsAfter:                after,
+		ExecutionElapsedMillis:     executionElapsed.Milliseconds(),
+		SettlementElapsedMillis:    settlementElapsed.Milliseconds(),
+		EconomicEvidenceDigest:     selected.Estimate.EvidenceDigest,
+		EconomicAnalysisMode:       analysisMode,
+		EconomicStrategyDisposition: string(
+			selected.Decision.StrategyDisposition,
+		),
+		EconomicStrategyRationale: selected.Decision.StrategyRationale,
+		ExpectedNetNanoTOS:        selected.Decision.ExpectedNetAtomic,
+		CompletedAt:               time.Now().UTC().Format(time.RFC3339Nano),
+		ConversationDigest:        conversationDigest,
+		ConversationMessageCount:  len(conversation),
+		CarrierIDs:                append([]string(nil), selected.CarrierIDs...),
+	}, nil
 }
 
-func publishCampaignDemand(ctx context.Context, sequence int, buyer, seller *campaignRuntime, task string, now time.Time) (string, error) {
+func publishCampaignDemand(
+	ctx context.Context,
+	sequence int,
+	buyer, seller *campaignRuntime,
+	task string,
+	now time.Time,
+) (string, error) {
 	detail := []byte(task)
 	objectID := "intent:" + strings.TrimPrefix(campaignDigest(fmt.Sprintf("demand:%d:%s", sequence, task)), "sha256:")
 	if existing, found := buyer.publisher.PublicationByObjectID(objectID); found {
-		if existing.Latest.Body.IssuerAgentID != buyer.definition.AgentID || existing.Latest.Body.Payload.DetailDescriptor.ContentDigest != campaignDigest(task) ||
+		if existing.Latest.Body.IssuerAgentID != buyer.definition.AgentID ||
+			existing.Latest.Body.Payload.DetailDescriptor.ContentDigest != campaignDigest(task) ||
 			(existing.Status != "active" && existing.Status != "publishing") {
 			return "", errors.New("durable campaign demand conflicts with the queued task")
 		}
 		if existing.Status == "active" {
 			return existing.LatestDigest, nil
 		}
-		recovered, err := buyer.publisher.Publish(ctx, PublicationDraft{Body: existing.Latest.Body, Economics: existing.Economics},
-			[]string{"carrier:gateway-local-pilot", "carrier:messenger-local-pilot"}, 1, buyer.fence)
+		recovered, err := buyer.publisher.Publish(
+			ctx,
+			PublicationDraft{Body: existing.Latest.Body, Economics: existing.Economics},
+			[]string{"carrier:gateway-local-pilot", "carrier:messenger-local-pilot"},
+			1,
+			buyer.fence,
+		)
 		if err != nil {
 			return "", err
 		}
 		return recovered.LatestDigest, nil
 	}
-	body := commerce.AgentIntentBody{SchemaVersion: 1, NetworkID: "tos:local-three-node", IssuerAgentID: buyer.definition.AgentID,
+	body := commerce.AgentIntentBody{
+		SchemaVersion: 1, NetworkID: "tos:local-three-node", IssuerAgentID: buyer.definition.AgentID,
 		Audience: "public:indexable", ObjectID: objectID,
 		Revision: 1, CreatedAtUnix: uint64(now.Unix()), ExpiresAtUnix: uint64(now.Add(4 * time.Hour).Unix()),
-		Payload: commerce.AgentIntentPayload{DiscoveryCard: commerce.DiscoveryCard{Summary: campaignDemandSummary(task), IntentModes: []commerce.IntentMode{commerce.IntentRequest},
-			SubjectClasses: []commerce.SubjectClass{commerce.SubjectService}, TaxonomyPaths: []string{"tos.taxonomy.v1/service/" + seller.definition.Taxonomy + "/pilot"},
-			Keywords: []commerce.IntentKeyword{{Text: seller.definition.Capability}}, CapabilityHints: []commerce.CapabilityHint{{Relation: "required",
-				CapabilityNamespace: "tos.skill", CapabilityIdentifier: seller.definition.Capability}}, ValueState: commerce.ValueSpecified,
-			ValueHints: []commerce.ValueHint{{Role: "budget", AssetNamespace: "tos.asset", AssetIdentifier: "native", AmountKind: "exact",
-				MinimumDecimal: strconv.FormatUint(seller.definition.Price, 10), MaximumDecimal: strconv.FormatUint(seller.definition.Price, 10), Unit: "nanotos"}},
-			Schedule: commerce.IntentSchedule{DesiredCompletionUnix: uint64(now.Add(time.Hour).Unix()), Flexibility: "flexible"}, FulfillmentModes: []string{"remote"}},
-			DetailDescriptor: commerce.ContentDescriptor{ContentType: "text/plain", ContentDigest: campaignDigest(task), ContentSize: uint64(len(detail)), InlineContent: detail},
-			ReplyRoutes:      []commerce.ReplyRoute{{ProfileURI: "tos.messenger.direct.v1", AgentID: buyer.definition.AgentID}},
-			SettlementPreferences: []commerce.SettlementPreference{{AdapterURI: "tos.payment.direct.v1", Required: true,
-				Parameters: []byte(`{"network_id":"tos:local-three-node","asset":"native","unit":"nanotos"}`)}}}}
+		Payload: commerce.AgentIntentPayload{
+			DiscoveryCard: commerce.DiscoveryCard{
+				Summary:     campaignDemandSummary(task),
+				IntentModes: []commerce.IntentMode{commerce.IntentRequest},
+				SubjectClasses: []commerce.SubjectClass{
+					commerce.SubjectService,
+				},
+				TaxonomyPaths: []string{"tos.taxonomy.v1/service/" + seller.definition.Taxonomy + "/pilot"},
+				Keywords: []commerce.IntentKeyword{
+					{Text: seller.definition.Capability},
+				},
+				CapabilityHints: []commerce.CapabilityHint{{
+					Relation:            "required",
+					CapabilityNamespace: "tos.skill", CapabilityIdentifier: seller.definition.Capability,
+				}},
+				ValueState: commerce.ValueSpecified,
+				ValueHints: []commerce.ValueHint{
+					{
+						Role:            "budget",
+						AssetNamespace:  "tos.asset",
+						AssetIdentifier: "native",
+						AmountKind:      "exact",
+						MinimumDecimal: strconv.FormatUint(
+							seller.definition.Price,
+							10,
+						),
+						MaximumDecimal: strconv.FormatUint(seller.definition.Price, 10),
+						Unit:           "nanotos",
+					},
+				},
+				Schedule: commerce.IntentSchedule{
+					DesiredCompletionUnix: uint64(now.Add(time.Hour).Unix()),
+					Flexibility:           "flexible",
+				},
+				FulfillmentModes: []string{"remote"},
+			},
+			DetailDescriptor: commerce.ContentDescriptor{
+				ContentType:   "text/plain",
+				ContentDigest: campaignDigest(task),
+				ContentSize:   uint64(len(detail)),
+				InlineContent: detail,
+			},
+			ReplyRoutes: []commerce.ReplyRoute{
+				{ProfileURI: "tos.messenger.direct.v1", AgentID: buyer.definition.AgentID},
+			},
+			SettlementPreferences: []commerce.SettlementPreference{{
+				AdapterURI: "tos.payment.direct.v1", Required: true,
+				Parameters: []byte(`{"network_id":"tos:local-three-node","asset":"native","unit":"nanotos"}`),
+			}},
+		},
+	}
 	record, err := buyer.publisher.Publish(ctx, PublicationDraft{Body: body},
 		[]string{"carrier:gateway-local-pilot", "carrier:messenger-local-pilot"}, 1, buyer.fence)
 	if err != nil {
@@ -1461,30 +2143,112 @@ func campaignDemandSummary(task string) string {
 	return strings.TrimSpace(task[:end])
 }
 
-func campaignAgreement(sequence, attempt int, buyer, seller eightAgentManifestEntry, task string, now time.Time) (commerce.AgentAgreementBody, error) {
+func campaignAgreement(
+	sequence, attempt int,
+	buyer, seller eightAgentManifestEntry,
+	task string,
+	now time.Time,
+) (commerce.AgentAgreementBody, error) {
 	if buyer.AgentID == "" || seller.AgentID == "" || buyer.AgentID == seller.AgentID {
-		return commerce.AgentAgreementBody{}, errors.New("campaign Agreement requires distinct buyer and provider Agents")
+		return commerce.AgentAgreementBody{}, errors.New(
+			"campaign Agreement requires distinct buyer and provider Agents",
+		)
 	}
 	profile := commerce.AgentSignatureProfileDigest()
-	body := commerce.AgentAgreementBody{SchemaVersion: 1, AgreementID: "agreement:" + strings.TrimPrefix(campaignDigest(fmt.Sprintf("campaign:v7:%d:%s", sequence, task)), "sha256:"),
-		Version: uint64(attempt + 1), NetworkContext: "tos:local-three-node", Participants: []commerce.AgreementParticipant{{AgentID: buyer.AgentID, Roles: []string{"buyer"}}, {AgentID: seller.AgentID, Roles: []string{"provider"}}},
-		TermsContentType: "text/plain", Terms: []byte(task), ValidFromUnix: uint64(now.Add(-time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(2 * time.Hour).Unix()),
-		Obligations: []commerce.AgreementObligation{{ObligationID: "pay", Kind: "payment", ObligorAgentID: buyer.AgentID, BeneficiaryAgentID: seller.AgentID,
-			DependsOnObligationIDs: []string{"work"}, SubjectContentType: "text/plain", Subject: []byte("pay after verified delivery"),
-			Amount:    &commerce.AgreementAmount{AssetNamespace: "tos.asset", AssetIdentifier: "native", AmountAtomic: strconv.FormatUint(seller.Price, 10), Unit: "nanotos"},
-			DueAtUnix: uint64(now.Add(40 * time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(50 * time.Minute).Unix()), ConfidentialityPolicy: "participants",
-			CancellationPolicy: "before-due", DisputePolicy: "evidence", SettlementAdapterURI: "tos.payment.direct.v1", SettlementParameters: []byte(seller.Target),
-			AuthorizationPredicateIDs: []string{"buyer-payment"}},
-			{ObligationID: "work", Kind: "service", ObligorAgentID: seller.AgentID, BeneficiaryAgentID: buyer.AgentID, SubjectContentType: "text/plain",
-				Subject: []byte(task), ConfidentialityPolicy: reusableLearningDisclosurePolicy, CancellationPolicy: "before-start", DisputePolicy: "evidence",
-				AuthorizationPredicateIDs: []string{"provider-work"}}},
-		AuthorizationPredicates: []commerce.AgreementAuthorizationPredicate{{PredicateID: "buyer-payment",
-			AuthoritySubject: commerce.AgreementAuthoritySubject{SubjectKind: "agent", SubjectNamespace: "tos.agent", SubjectIdentifier: buyer.AgentID},
-			ObligationIDs:    []string{"pay"}, EvidenceProfileURI: commerce.EvidenceProfileAgentSignature, EvidenceProfileVersion: 1,
-			EvidenceProfileDigest: profile, ExpiresAtUnix: uint64(now.Add(2 * time.Hour).Unix())}, {PredicateID: "provider-work",
-			AuthoritySubject: commerce.AgreementAuthoritySubject{SubjectKind: "agent", SubjectNamespace: "tos.agent", SubjectIdentifier: seller.AgentID},
-			ObligationIDs:    []string{"work"}, EvidenceProfileURI: commerce.EvidenceProfileAgentSignature, EvidenceProfileVersion: 1,
-			EvidenceProfileDigest: profile, ExpiresAtUnix: uint64(now.Add(2 * time.Hour).Unix())}}}
+	body := commerce.AgentAgreementBody{
+		SchemaVersion: 1,
+		AgreementID: "agreement:" + strings.TrimPrefix(
+			campaignDigest(fmt.Sprintf("campaign:v7:%d:%s", sequence, task)),
+			"sha256:",
+		),
+		Version: uint64(
+			attempt + 1,
+		),
+		NetworkContext: "tos:local-three-node",
+		Participants: []commerce.AgreementParticipant{
+			{AgentID: buyer.AgentID, Roles: []string{"buyer"}},
+			{AgentID: seller.AgentID, Roles: []string{"provider"}},
+		},
+		TermsContentType: "text/plain",
+		Terms:            []byte(task),
+		ValidFromUnix:    uint64(now.Add(-time.Minute).Unix()),
+		ExpiresAtUnix:    uint64(now.Add(2 * time.Hour).Unix()),
+		Obligations: []commerce.AgreementObligation{
+			{
+				ObligationID:       "pay",
+				Kind:               "payment",
+				ObligorAgentID:     buyer.AgentID,
+				BeneficiaryAgentID: seller.AgentID,
+				DependsOnObligationIDs: []string{
+					"work",
+				},
+				SubjectContentType: "text/plain",
+				Subject:            []byte("pay after verified delivery"),
+				Amount: &commerce.AgreementAmount{
+					AssetNamespace:  "tos.asset",
+					AssetIdentifier: "native",
+					AmountAtomic:    strconv.FormatUint(seller.Price, 10),
+					Unit:            "nanotos",
+				},
+				DueAtUnix: uint64(
+					now.Add(40 * time.Minute).Unix(),
+				),
+				ExpiresAtUnix:             uint64(now.Add(50 * time.Minute).Unix()),
+				ConfidentialityPolicy:     "participants",
+				CancellationPolicy:        "before-due",
+				DisputePolicy:             "evidence",
+				SettlementAdapterURI:      "tos.payment.direct.v1",
+				SettlementParameters:      []byte(seller.Target),
+				AuthorizationPredicateIDs: []string{"buyer-payment"},
+			},
+			{
+				ObligationID:       "work",
+				Kind:               "service",
+				ObligorAgentID:     seller.AgentID,
+				BeneficiaryAgentID: buyer.AgentID,
+				SubjectContentType: "text/plain",
+				Subject: []byte(
+					task,
+				),
+				ConfidentialityPolicy:     reusableLearningDisclosurePolicy,
+				CancellationPolicy:        "before-start",
+				DisputePolicy:             "evidence",
+				AuthorizationPredicateIDs: []string{"provider-work"},
+			},
+		},
+		AuthorizationPredicates: []commerce.AgreementAuthorizationPredicate{
+			{
+				PredicateID: "buyer-payment",
+				AuthoritySubject: commerce.AgreementAuthoritySubject{
+					SubjectKind:       "agent",
+					SubjectNamespace:  "tos.agent",
+					SubjectIdentifier: buyer.AgentID,
+				},
+				ObligationIDs: []string{
+					"pay",
+				},
+				EvidenceProfileURI:     commerce.EvidenceProfileAgentSignature,
+				EvidenceProfileVersion: 1,
+				EvidenceProfileDigest:  profile,
+				ExpiresAtUnix:          uint64(now.Add(2 * time.Hour).Unix()),
+			},
+			{
+				PredicateID: "provider-work",
+				AuthoritySubject: commerce.AgreementAuthoritySubject{
+					SubjectKind:       "agent",
+					SubjectNamespace:  "tos.agent",
+					SubjectIdentifier: seller.AgentID,
+				},
+				ObligationIDs: []string{
+					"work",
+				},
+				EvidenceProfileURI:     commerce.EvidenceProfileAgentSignature,
+				EvidenceProfileVersion: 1,
+				EvidenceProfileDigest:  profile,
+				ExpiresAtUnix:          uint64(now.Add(2 * time.Hour).Unix()),
+			},
+		},
+	}
 	if attempt > 0 {
 		predecessor, predecessorErr := campaignAgreement(sequence, attempt-1, buyer, seller, task, now)
 		if predecessorErr != nil {
@@ -1495,14 +2259,21 @@ func campaignAgreement(sequence, attempt int, buyer, seller eightAgentManifestEn
 			return commerce.AgentAgreementBody{}, predecessorErr
 		}
 	}
-	sort.Slice(body.Participants, func(i, j int) bool { return body.Participants[i].AgentID < body.Participants[j].AgentID })
+	sort.Slice(
+		body.Participants,
+		func(i, j int) bool { return body.Participants[i].AgentID < body.Participants[j].AgentID },
+	)
 	return commerce.PrepareAgreementTargets(body)
 }
 
 func TestCampaignAgreementRetryHasDeterministicPredecessor(t *testing.T) {
 	definitions := eightAgentDefinitions()
 	buyer := eightAgentManifestEntry{AgentID: definitions[1].AgentID}
-	seller := eightAgentManifestEntry{AgentID: definitions[0].AgentID, Target: "0:" + strings.Repeat("a", 64), Price: definitions[0].Price}
+	seller := eightAgentManifestEntry{
+		AgentID: definitions[0].AgentID,
+		Target:  "0:" + strings.Repeat("a", 64),
+		Price:   definitions[0].Price,
+	}
 	now := time.Unix(2_000_000_000, 0).UTC()
 	first, err := campaignAgreement(7, 0, buyer, seller, definitions[0].Tasks[0], now)
 	if err != nil {
@@ -1513,7 +2284,8 @@ func TestCampaignAgreementRetryHasDeterministicPredecessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstDigest, _ := commerce.AgreementBodyDigest(first)
-	if first.AgreementID != second.AgreementID || second.Version != 2 || second.PredecessorAgreementDigest != firstDigest {
+	if first.AgreementID != second.AgreementID || second.Version != 2 ||
+		second.PredecessorAgreementDigest != firstDigest {
 		t.Fatalf("retry lineage is not deterministic: first=%+v second=%+v", first, second)
 	}
 }
@@ -1545,13 +2317,23 @@ func writeCampaignSummaries(t *testing.T, root string, report eightAgentCampaign
 		"tos.openfox.eight-agent-financial-summary.v1")
 }
 
-func writeSixAgentCampaignSummaries(t *testing.T, root string, report eightAgentCampaignReport, manifest eightAgentManifest) {
+func writeSixAgentCampaignSummaries(
+	t *testing.T,
+	root string,
+	report eightAgentCampaignReport,
+	manifest eightAgentManifest,
+) {
 	writeNamedCampaignSummaries(t, root, report, manifest, "six-agent-financial-summary.json",
 		"tos.openfox.six-agent-financial-summary.v1")
 }
 
-func writeNamedCampaignSummaries(t *testing.T, root string, report eightAgentCampaignReport, manifest eightAgentManifest,
-	filename, schema string) {
+func writeNamedCampaignSummaries(
+	t *testing.T,
+	root string,
+	report eightAgentCampaignReport,
+	manifest eightAgentManifest,
+	filename, schema string,
+) {
 	t.Helper()
 	lines := make(map[string]*campaignFinancialLine, len(manifest.Agents))
 	for _, agent := range manifest.Agents {
@@ -1573,7 +2355,13 @@ func writeNamedCampaignSummaries(t *testing.T, root string, report eightAgentCam
 	for _, agent := range manifest.Agents {
 		line := lines[agent.Name]
 		line.TransferNetNanoTOS = int64(line.GrossRevenueNanoTOS) - int64(line.SpendNanoTOS)
-		line.ProjectedNetNanoTOS = int64(line.GrossRevenueNanoTOS) - int64(line.SpendNanoTOS) - int64(line.MaximumCostNanoTOS)
+		line.ProjectedNetNanoTOS = int64(
+			line.GrossRevenueNanoTOS,
+		) - int64(
+			line.SpendNanoTOS,
+		) - int64(
+			line.MaximumCostNanoTOS,
+		)
 		line.SkillsAtEnd = len(campaignSkillNames(filepath.Join(agent.ConfigDirectory, "workspace")))
 		totalRevenue += line.GrossRevenueNanoTOS
 		totalCost += line.MaximumCostNanoTOS
@@ -1607,10 +2395,24 @@ func writeNamedCampaignSummaries(t *testing.T, root string, report eightAgentCam
 	}
 	writeCampaignJSON(t, filepath.Join(root, "reports", filename), map[string]any{
 		"schema": schema, "generated_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"agents": ordered, "aggregate": map[string]any{"decisions": len(report.Results), "settled_jobs": settledJobs, "unique_payment_transactions": len(transactions),
-			"service_revenue_nanotos": totalRevenue, "internal_transfer_net_nanotos": 0, "maximum_internal_cost_nanotos": totalCost,
-			"closed_economy_projected_net_nanotos": -int64(totalCost), "economic_analysis_modes": modes, "dispositions": dispositions,
-			"average_execution_millis": averageExecution, "average_settlement_millis": averageSettlement}})
+		"agents": ordered, "aggregate": map[string]any{
+			"decisions": len(
+				report.Results,
+			),
+			"settled_jobs":                  settledJobs,
+			"unique_payment_transactions":   len(transactions),
+			"service_revenue_nanotos":       totalRevenue,
+			"internal_transfer_net_nanotos": 0,
+			"maximum_internal_cost_nanotos": totalCost,
+			"closed_economy_projected_net_nanotos": -int64(
+				totalCost,
+			),
+			"economic_analysis_modes":   modes,
+			"dispositions":              dispositions,
+			"average_execution_millis":  averageExecution,
+			"average_settlement_millis": averageSettlement,
+		},
+	})
 }
 
 func campaignResultSettled(result eightAgentJobResult) bool {
@@ -1624,22 +2426,45 @@ func TestCampaignEconomicEstimatorNeverSynthesizesFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	intent := earningIntent(t, now, privateKey)
-	inventory := InventorySnapshot{OwnerID: "owner:test", AgentID: "agent:worker", CreatedAtUnix: uint64(now.Unix()),
-		ExpiresAtUnix: uint64(now.Add(time.Minute).Unix()), SourceGeneration: 1, PortfolioRevision: 1, PolicyRevision: 1,
-		ConsistencyToken: "snapshot:1", SupportedSettlementAdapters: []string{"tos.payment.direct.v1"}}
-	estimator := boundedCampaignEstimator{AI: LLMEconomicEstimator{Provider: estimatorProvider{response: `{}`},
-		Now: func() time.Time { return now }}, Price: 100}
-	if estimate, err := estimator.Estimate(context.Background(), intent, inventory); err == nil || estimate.EvidenceDigest != "" {
+	inventory := InventorySnapshot{
+		OwnerID:       "owner:test",
+		AgentID:       "agent:worker",
+		CreatedAtUnix: uint64(now.Unix()),
+		ExpiresAtUnix: uint64(
+			now.Add(time.Minute).Unix(),
+		),
+		SourceGeneration:            1,
+		PortfolioRevision:           1,
+		PolicyRevision:              1,
+		ConsistencyToken:            "snapshot:1",
+		SupportedSettlementAdapters: []string{"tos.payment.direct.v1"},
+	}
+	estimator := boundedCampaignEstimator{AI: LLMEconomicEstimator{
+		Provider: estimatorProvider{response: `{}`},
+		Now:      func() time.Time { return now },
+	}, Price: 100}
+	if estimate, err := estimator.Estimate(
+		context.Background(),
+		intent,
+		inventory,
+	); err == nil ||
+		estimate.EvidenceDigest != "" {
 		t.Fatalf("invalid AI output produced synthetic evidence: estimate=%+v err=%v", estimate, err)
 	}
 }
 
 func TestAutonomousCampaignDemandPlannerPersistsExplicitSkip(t *testing.T) {
-	buyer := &campaignRuntime{definition: eightAgentManifestEntry{Name: "buyer", Capability: "buying"},
-		provider: estimatorProvider{response: `{"decision":"skip","seller_agent":"","capability":"","task":"","rationale":"none of the listed services advances my current strategy"}`},
-		model:    "test-model"}
-	seller := &campaignRuntime{definition: eightAgentManifestEntry{Name: "seller", Capability: "review", Taxonomy: "security",
-		Price: 100, Tasks: []string{"Review a bounded component."}}}
+	buyer := &campaignRuntime{
+		definition: eightAgentManifestEntry{Name: "buyer", Capability: "buying"},
+		provider: estimatorProvider{
+			response: `{"decision":"skip","seller_agent":"","capability":"","task":"","rationale":"none of the listed services advances my current strategy"}`,
+		},
+		model: "test-model",
+	}
+	seller := &campaignRuntime{definition: eightAgentManifestEntry{
+		Name: "seller", Capability: "review", Taxonomy: "security",
+		Price: 100, Tasks: []string{"Review a bounded component."},
+	}}
 	plan, err := planAutonomousCampaignDemand(context.Background(), 1, buyer, []*campaignRuntime{buyer, seller})
 	if err != nil || plan.Decision != "skip" || plan.SellerAgent != "" || plan.Task != "" {
 		t.Fatalf("skip plan=%+v err=%v", plan, err)
@@ -1647,12 +2472,23 @@ func TestAutonomousCampaignDemandPlannerPersistsExplicitSkip(t *testing.T) {
 }
 
 func TestAutonomousCampaignDemandPlannerRejectsHiddenActionOnSkip(t *testing.T) {
-	buyer := &campaignRuntime{definition: eightAgentManifestEntry{Name: "buyer", Capability: "buying"},
-		provider: estimatorProvider{response: `{"decision":"skip","seller_agent":"seller","capability":"review","task":"perform a hidden review despite skip","rationale":"skip"}`},
-		model:    "test-model"}
-	seller := &campaignRuntime{definition: eightAgentManifestEntry{Name: "seller", Capability: "review", Taxonomy: "security",
-		Price: 100, Tasks: []string{"Review a bounded component."}}}
-	if _, err := planAutonomousCampaignDemand(context.Background(), 1, buyer, []*campaignRuntime{buyer, seller}); err == nil {
+	buyer := &campaignRuntime{
+		definition: eightAgentManifestEntry{Name: "buyer", Capability: "buying"},
+		provider: estimatorProvider{
+			response: `{"decision":"skip","seller_agent":"seller","capability":"review","task":"perform a hidden review despite skip","rationale":"skip"}`,
+		},
+		model: "test-model",
+	}
+	seller := &campaignRuntime{definition: eightAgentManifestEntry{
+		Name: "seller", Capability: "review", Taxonomy: "security",
+		Price: 100, Tasks: []string{"Review a bounded component."},
+	}}
+	if _, err := planAutonomousCampaignDemand(
+		context.Background(),
+		1,
+		buyer,
+		[]*campaignRuntime{buyer, seller},
+	); err == nil {
 		t.Fatal("skip decision carrying a hidden trade action was accepted")
 	}
 }
@@ -1693,10 +2529,12 @@ func TestRealNativeStrategyCanSkipAndDecline(t *testing.T) {
 	}
 
 	codexProvider, codexModel := openProvider("software-builder")
-	buyer := &campaignRuntime{definition: byName["software-builder"], provider: codexProvider, model: codexModel,
+	buyer := &campaignRuntime{
+		definition: byName["software-builder"], provider: codexProvider, model: codexModel,
 		agentContext: func() string {
 			return "# Owner strategy\nBuy no services in this verification turn. Return a normal no-action decision."
-		}}
+		},
+	}
 	seller := &campaignRuntime{definition: byName["security-auditor"]}
 	plan, err := planAutonomousCampaignDemand(t.Context(), 1, buyer, []*campaignRuntime{buyer, seller})
 	if err != nil || plan.Decision != "skip" {
@@ -1710,14 +2548,18 @@ func TestRealNativeStrategyCanSkipAndDecline(t *testing.T) {
 		t.Fatal(err)
 	}
 	intent := earningIntent(t, now, privateKey)
-	inventory := InventorySnapshot{OwnerID: "owner:strategy-verifier", AgentID: "agent:strategy-verifier",
+	inventory := InventorySnapshot{
+		OwnerID: "owner:strategy-verifier", AgentID: "agent:strategy-verifier",
 		CreatedAtUnix: uint64(now.Unix()), ExpiresAtUnix: uint64(now.Add(time.Minute).Unix()), SourceGeneration: 1,
 		PortfolioRevision: 1, PolicyRevision: 1, ConsistencyToken: "strategy-verification:1",
-		SupportedSettlementAdapters: []string{"tos.payment.direct.v1"}}
-	estimate, err := (LLMEconomicEstimator{Provider: claudeProvider, Model: claudeModel, Now: func() time.Time { return now },
+		SupportedSettlementAdapters: []string{"tos.payment.direct.v1"},
+	}
+	estimate, err := (LLMEconomicEstimator{
+		Provider: claudeProvider, Model: claudeModel, Now: func() time.Time { return now },
 		AgentContext: func() string {
 			return "# Owner strategy\nDecline every paid opportunity in this verification turn, regardless of profitability."
-		}}).
+		},
+	}).
 		Estimate(t.Context(), intent, inventory)
 	if err != nil || estimate.StrategyDisposition != EconomicStrategyDecline || estimate.EvidenceDigest == "" {
 		t.Fatalf("real Claude strategy estimate=%+v err=%v", estimate, err)

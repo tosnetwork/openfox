@@ -51,11 +51,12 @@ type LLMTaskRunner struct {
 	AgentContext AgentContextSource
 }
 
-func (runner LLMTaskRunner) RunAgreement(ctx context.Context, launch commercegate.Launch,
+func (runner LLMTaskRunner) RunAgreement(ctx context.Context, launch commercegate.Launch, permit TrustedCapabilityExecutionPermit,
 	effects *ExecutionEffects) (ExecutionOutcome, error) {
 	if runner.Provider == nil || ctx == nil || launch.ExecutionID == "" ||
 		effects == nil || effects.Plan.ExecutionID != launch.ExecutionID || effects.Launch.PlanDigest != launch.PlanDigest ||
-		!filepath.IsAbs(runner.OutputDirectory) || filepath.Clean(runner.OutputDirectory) != runner.OutputDirectory {
+		!filepath.IsAbs(runner.OutputDirectory) || filepath.Clean(runner.OutputDirectory) != runner.OutputDirectory ||
+		permit.ExecutionID != launch.ExecutionID || len(permit.ArtifactDigest) != sha256.Size || len(permit.Instructions) == 0 || len(permit.Instructions) > maxLLMTaskSkillBytes {
 		return ExecutionOutcome{}, errors.New("LLM task runner is not safely configured")
 	}
 	agreementDigest, err := commerce.AgreementBodyDigest(runner.Agreement)
@@ -98,10 +99,10 @@ func (runner LLMTaskRunner) RunAgreement(ctx context.Context, launch commercegat
 			Base64 string `json:"base64"`
 		}{index, uint64(len(raw)), base64.RawStdEncoding.EncodeToString(raw)})
 	}
-	skillNames, skillContext, err := runner.loadProceduralSkills()
-	if err != nil {
-		return ExecutionOutcome{}, err
-	}
+	// Only the immutable instructions returned by capability admission are
+	// executable context. Ambient workspace Skills remain outside this path.
+	skillNames := []string{"admitted-capability"}
+	skillContext := string(permit.Instructions)
 	request := struct {
 		Agreement commerce.AgentAgreementBody `json:"authorized_agreement"`
 		Execution string                      `json:"execution_id"`
@@ -119,6 +120,9 @@ func (runner LLMTaskRunner) RunAgreement(ctx context.Context, launch commercegat
 	if err != nil {
 		return ExecutionOutcome{}, err
 	}
+	if err := effects.RevalidateCapability(ctx); err != nil {
+		return ExecutionOutcome{}, errors.New("trusted capability was revoked before provider submission")
+	}
 	response, err := runner.Provider.Chat(providers.WithInternalAgentBackendPrincipal(ctx), []providers.Message{{Role: "system", Content: system},
 		{Role: "user", Content: string(rawRequest)}}, nil, runner.model(), map[string]any{"temperature": 0, "max_tokens": 8192})
 	if err != nil {
@@ -132,6 +136,9 @@ func (runner LLMTaskRunner) RunAgreement(ctx context.Context, launch commercegat
 	}
 	if len(response.ToolCalls) != 0 {
 		return ExecutionOutcome{}, errors.New("bounded LLM task attempted a prohibited tool call")
+	}
+	if err := effects.RevalidateCapability(ctx); err != nil {
+		return ExecutionOutcome{}, errors.New("trusted capability was revoked before output persistence")
 	}
 	if err := os.MkdirAll(runner.OutputDirectory, 0o700); err != nil {
 		return ExecutionOutcome{}, err
@@ -150,10 +157,20 @@ func (runner LLMTaskRunner) RunAgreement(ctx context.Context, launch commercegat
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return ExecutionOutcome{}, readErr
+	} else if err := effects.RevalidateCapability(ctx); err != nil {
+		return ExecutionOutcome{}, errors.New("trusted capability was revoked at output commit")
 	} else if err := writeOwnerExclusive(path, output); err != nil {
 		return ExecutionOutcome{}, err
+	} else if err := effects.RevalidateCapability(ctx); err != nil {
+		// The output is local and content-addressed, so a losing authority race
+		// can be rolled back before the path or digest is released to any caller.
+		_ = os.Remove(path)
+		return ExecutionOutcome{}, errors.New("trusted capability was revoked during output commit")
 	}
 	if runner.Learning != nil {
+		if err := effects.RevalidateCapability(ctx); err != nil {
+			return ExecutionOutcome{}, errors.New("trusted capability was revoked before learning")
+		}
 		obligationSubject, reusable := reusableExecutionLearningSubject(runner.Agreement, effects.Plan.ExecutionObligationID)
 		if !reusable {
 			return ExecutionOutcome{OutcomeDigest: digest}, nil

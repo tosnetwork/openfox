@@ -2,6 +2,8 @@ package evolution
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	"github.com/tosnetwork/openfox/pkg/skills"
 )
@@ -17,15 +20,43 @@ import (
 type Applier struct {
 	paths Paths
 	now   func() time.Time
+	// quarantineOnly is used by every production constructor. It prevents a
+	// model-authored draft from becoming a loaded Skill without the trusted
+	// capability Admission and Promotion pipeline.
+	quarantineOnly   bool
+	acquisitionFence capabilitycontrol.CapabilityAcquisitionFence
+	ownerID, agentID []byte
 }
 
+// NewTrustedApplier creates the production fail-closed draft path. The draft
+// is materialized as evidence under the evolution quarantine, never under a
+// loader-visible skills directory.
+func NewTrustedApplier(paths Paths, now func() time.Time) *Applier {
+	return NewApplier(paths, now)
+}
+
+// NewTrustedApplierWithAcquisition is the only production materialization
+// constructor. Every model-authored draft enters the same Owner/Agent
+// acquisition namespace, quota ledger and external owner-exit fence as Web,
+// CLI and model-requested registry imports.
+func NewTrustedApplierWithAcquisition(paths Paths, now func() time.Time, fence capabilitycontrol.CapabilityAcquisitionFence, ownerID, agentID []byte) *Applier {
+	applier := NewApplier(paths, now)
+	applier.acquisitionFence = fence
+	applier.ownerID = append([]byte(nil), ownerID...)
+	applier.agentID = append([]byte(nil), agentID...)
+	return applier
+}
+
+// NewApplier is deliberately quarantine-only. There is no public constructor
+// for writing model-generated material into a loader-visible directory.
 func NewApplier(paths Paths, now func() time.Time) *Applier {
 	if now == nil {
 		now = time.Now
 	}
 	return &Applier{
-		paths: paths,
-		now:   now,
+		paths:          paths,
+		now:            now,
+		quarantineOnly: true,
 	}
 }
 
@@ -52,7 +83,14 @@ func (a *Applier) applyDraftWithRollback(
 		return nil, validateErr
 	}
 
-	existingBody, backupPath, hadOriginal, err := a.backupCurrentSkill(workspace, draft.TargetSkillName)
+	var existingBody, backupPath string
+	var hadOriginal bool
+	var err error
+	if a.quarantineOnly {
+		existingBody, hadOriginal, err = readCurrentSkill(workspace, draft.TargetSkillName)
+	} else {
+		existingBody, backupPath, hadOriginal, err = a.backupCurrentSkill(workspace, draft.TargetSkillName)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +108,9 @@ func (a *Applier) applyDraftWithRollback(
 		return nil, err
 	}
 
+	if a.quarantineOnly {
+		return a.quarantineDraft(ctx, workspace, draft, renderedBody)
+	}
 	skillDir := filepath.Join(workspace, "skills", draft.TargetSkillName)
 	if mkdirErr := os.MkdirAll(skillDir, 0o755); mkdirErr != nil {
 		return nil, mkdirErr
@@ -83,6 +124,68 @@ func (a *Applier) applyDraftWithRollback(
 	return func() error {
 		return a.rollbackSkill(skillPath, backupPath, hadOriginal)
 	}, nil
+}
+
+func (a *Applier) quarantineDraft(ctx context.Context, workspace string, draft SkillDraft, renderedBody string) (func() error, error) {
+	if a.acquisitionFence == nil || len(a.ownerID) == 0 || len(a.agentID) == 0 {
+		return nil, errors.New("adaptive draft materialization requires the common external capability-acquisition fence")
+	}
+	root := filepath.Join(workspace, "state", "trusted-capabilities", "quarantine")
+	ledger, err := capabilitycontrol.OpenQuarantineLedger(root, a.now, a.acquisitionFence, a.ownerID, a.agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer ledger.Close()
+	workspaceDigest := sha256.Sum256([]byte(filepath.Clean(workspace)))
+	reservation, err := ledger.Reserve(ctx, fmt.Sprintf("evolution:%x", workspaceDigest[:]), "adaptive-model-draft", 1)
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = ledger.Abort(reservation.ID)
+		}
+	}()
+	staging, err := os.MkdirTemp(root, ".evolution-draft-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+	skillDir := filepath.Join(staging, draft.TargetSkillName)
+	if err := os.Mkdir(skillDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := fileutil.WriteFileAtomic(filepath.Join(skillDir, "SKILL.md"), []byte(renderedBody), 0o600); err != nil {
+		return nil, err
+	}
+	digest, err := capabilitycontrol.HashTree(staging)
+	if err != nil {
+		return nil, err
+	}
+	if _, _, err := ledger.Commit(ctx, reservation.ID, staging, digest); err != nil {
+		return nil, err
+	}
+	committed = true
+	// Commit durably stores the exact registration receipt in the ledger object
+	// record. A later local audit/store failure or this API's error-only return
+	// shape therefore cannot strand the acknowledged candidate.
+	return func() error { return nil }, nil
+}
+
+func readCurrentSkill(workspace, skillName string) (string, bool, error) {
+	data, err := os.ReadFile(filepath.Join(workspace, "skills", skillName, "SKILL.md"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return string(data), true, nil
 }
 
 func (a *Applier) backupCurrentSkill(

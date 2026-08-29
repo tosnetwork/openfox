@@ -2,6 +2,7 @@ package tools
 
 import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 
 	"github.com/tosnetwork/openfox/pkg/audio/tts"
 	"github.com/tosnetwork/openfox/pkg/config"
@@ -48,6 +49,10 @@ func NewFindSkillsTool(registryMgr *skills.RegistryManager, cache *skills.Search
 
 func NewInstallSkillTool(registryMgr *skills.RegistryManager, workspace string) *InstallSkillTool {
 	return integrationtools.NewInstallSkillTool(registryMgr, workspace)
+}
+
+func NewInstallSkillToolWithAcquisitionFence(registryMgr *skills.RegistryManager, workspace string, fence capabilitycontrol.CapabilityAcquisitionFence, ownerID, agentID []byte) *InstallSkillTool {
+	return integrationtools.NewInstallSkillToolWithAcquisitionFence(registryMgr, workspace, fence, ownerID, agentID)
 }
 
 func NewMessageTool() *MessageTool {

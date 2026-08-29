@@ -1,14 +1,18 @@
 package mcp
 
 import (
-	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +21,7 @@ import (
 
 	"github.com/tosnetwork/openfox/pkg/config"
 	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
+	"github.com/tosnetwork/openfox/pkg/isolation"
 	"github.com/tosnetwork/openfox/pkg/logger"
 )
 
@@ -61,65 +66,11 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return base.RoundTrip(req)
 }
 
-// loadEnvFile loads environment variables from a file in .env format
-// Each line should be in the format: KEY=value
-// Lines starting with # are comments
-// Empty lines are ignored
-func loadEnvFile(path string) (map[string]string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open env file: %w", err)
-	}
-	defer file.Close()
-
-	envVars := make(map[string]string)
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-
-	for scanner.Scan() {
-		lineNum++
-		line := strings.TrimSpace(scanner.Text())
-
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		// Parse KEY=value
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid format at line %d: %s", lineNum, line)
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		if key == "" {
-			return nil, fmt.Errorf("invalid format at line %d: empty key", lineNum)
-		}
-
-		// Remove surrounding quotes if present
-		if len(value) >= 2 {
-			if (value[0] == '"' && value[len(value)-1] == '"') ||
-				(value[0] == '\'' && value[len(value)-1] == '\'') {
-				value = value[1 : len(value)-1]
-			}
-		}
-
-		envVars[key] = value
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading env file: %w", err)
-	}
-
-	return envVars, nil
-}
-
 // ServerConnection represents a connection to an MCP server
 type ServerConnection struct {
 	Name        string
 	Config      config.MCPServerConfig
+	Observation ConnectionObservation
 	Client      *mcp.Client
 	Session     *mcp.ClientSession
 	Tools       []*mcp.Tool
@@ -128,14 +79,64 @@ type ServerConnection struct {
 
 // Manager manages multiple MCP server connections
 type Manager struct {
-	servers       map[string]*ServerConnection
-	runtimeEvents runtimeevents.Bus
-	mu            sync.RWMutex
-	closed        atomic.Bool    // changed from bool to atomic.Bool to avoid TOCTOU race
-	wg            sync.WaitGroup // tracks in-flight CallTool calls
+	servers          map[string]*ServerConnection
+	runtimeEvents    runtimeevents.Bus
+	authorizer       ConnectionAuthorizer
+	verifier         SessionVerifier
+	effectAuthorizer EffectAuthorizer
+	effectJournal    EffectJournal
+	closeHooks       []func() error
+	mu               sync.RWMutex
+	closed           atomic.Bool    // changed from bool to atomic.Bool to avoid TOCTOU race
+	wg               sync.WaitGroup // tracks in-flight CallTool calls
+}
+
+type ConnectionAuthorization struct {
+	Executable *os.File
+	// BeforeStart revalidates the already-prepared one-shot use immediately
+	// before the isolated process is exec'd. Consequential local MCP is
+	// deliberately limited to a hermetic, no-ambient-resource profile.
+	BeforeStart func() error
+	Hermetic    bool
+	Resolve     func(disposition string) error
+}
+
+var (
+	ErrCapabilityAuthorizationRequired = errors.New("trusted capability authorization is required before MCP connection")
+	// ErrAmbiguousToolEffect means the request may have reached the MCP sink.
+	// Callers must resolve the same semantic Action; they must never retry it as
+	// a fresh tool invocation.
+	ErrAmbiguousToolEffect = errors.New("MCP tool effect outcome is ambiguous")
+)
+
+// ConnectionAuthorizer is the fail-closed boundary between untrusted MCP
+// configuration and process/network creation. Implementations must validate an
+// exact admitted artifact, current authority, use lease and use binding before
+// returning nil. The callback runs before env files are read or any endpoint is
+// contacted.
+type ConnectionAuthorizer func(context.Context, string, config.MCPServerConfig) (ConnectionAuthorization, error)
+
+type ConnectionObservation struct {
+	TransportType        string
+	ServerName           string
+	ServerVersion        string
+	ProtocolVersion      string
+	ToolDescriptorDigest []byte
+}
+
+type SessionVerifier func(context.Context, string, config.MCPServerConfig, ConnectionObservation) error
+
+// EffectAuthorizer returns the only released semantic Action identity allowed
+// for the exact request digest. The identity must be committed by the signed
+// capability-use closure; callers and the model cannot allocate it at runtime.
+type EffectAuthorizer func(context.Context, string, config.MCPServerConfig, ConnectionObservation, string, []byte, []byte) ([]byte, error)
+type EffectJournal interface {
+	PrepareMCPAction(actionID, exactRequestDigest []byte) ([]byte, error)
+	ResolveMCPAction(actionID, exactRequestDigest, resolutionToken []byte, disposition string) error
 }
 
 var connectServerFunc = connectServer
+var safeMCPHTTPClientFunc = safeMCPHTTPClient
 
 // ManagerOption configures an MCP manager.
 type ManagerOption func(*Manager)
@@ -144,6 +145,34 @@ type ManagerOption func(*Manager)
 func WithRuntimeEvents(eventBus runtimeevents.Bus) ManagerOption {
 	return func(m *Manager) {
 		m.runtimeEvents = eventBus
+	}
+}
+
+func WithConnectionAuthorizer(authorizer ConnectionAuthorizer) ManagerOption {
+	return func(m *Manager) {
+		m.authorizer = authorizer
+	}
+}
+
+func WithSessionVerifier(verifier SessionVerifier) ManagerOption {
+	return func(m *Manager) {
+		m.verifier = verifier
+	}
+}
+
+func WithEffectAuthorizer(authorizer EffectAuthorizer) ManagerOption {
+	return func(m *Manager) { m.effectAuthorizer = authorizer }
+}
+
+func WithEffectJournal(journal EffectJournal) ManagerOption {
+	return func(m *Manager) { m.effectJournal = journal }
+}
+
+func WithCloseHook(hook func() error) ManagerOption {
+	return func(m *Manager) {
+		if hook != nil {
+			m.closeHooks = append(m.closeHooks, hook)
+		}
 	}
 }
 
@@ -293,11 +322,41 @@ func (m *Manager) ConnectServer(
 	name string,
 	cfg config.MCPServerConfig,
 ) error {
-	m.publishServerEvent(runtimeevents.KindMCPServerConnecting, name, cfg, 0, nil)
-	conn, err := connectServerFunc(ctx, name, cfg)
+	if m.authorizer == nil {
+		return ErrCapabilityAuthorizationRequired
+	}
+	if cfg.EnvFile != "" {
+		return errors.New("ambient MCP environment files are forbidden; use immutable broker handles")
+	}
+	authorization, err := m.authorizer(ctx, name, cfg)
 	if err != nil {
+		return fmt.Errorf("authorize MCP server %q: %w", name, err)
+	}
+	if authorization.Executable != nil {
+		defer authorization.Executable.Close()
+	}
+	m.publishServerEvent(runtimeevents.KindMCPServerConnecting, name, cfg, 0, nil)
+	conn, err := connectServerFunc(ctx, name, cfg, authorization.Executable, authorization.BeforeStart, authorization.Hermetic)
+	if err != nil {
+		if authorization.Resolve != nil {
+			_ = authorization.Resolve("failed")
+		}
 		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
 		return err
+	}
+	if m.verifier == nil {
+		_ = conn.Session.Close()
+		if authorization.Resolve != nil {
+			_ = authorization.Resolve("failed")
+		}
+		return errors.New("trusted capability session verifier is required after MCP connection")
+	}
+	if err := m.verifier(ctx, name, cfg, conn.Observation); err != nil {
+		_ = conn.Session.Close()
+		if authorization.Resolve != nil {
+			_ = authorization.Resolve("failed")
+		}
+		return fmt.Errorf("verify MCP session %q: %w", name, err)
 	}
 
 	m.mu.Lock()
@@ -305,11 +364,18 @@ func (m *Manager) ConnectServer(
 
 	if m.closed.Load() {
 		_ = conn.Session.Close()
+		if authorization.Resolve != nil {
+			_ = authorization.Resolve("killed")
+		}
 		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, fmt.Errorf("manager is closed"))
 		return fmt.Errorf("manager is closed")
 	}
 
 	m.servers[name] = conn
+	if authorization.Resolve != nil {
+		resolve := authorization.Resolve
+		m.closeHooks = append(m.closeHooks, func() error { return resolve("succeeded") })
+	}
 	for _, tool := range conn.Tools {
 		toolName := ""
 		if tool != nil {
@@ -325,6 +391,9 @@ func connectServer(
 	ctx context.Context,
 	name string,
 	cfg config.MCPServerConfig,
+	sealedExecutable *os.File,
+	beforeStart func() error,
+	hermetic bool,
 ) (*ServerConnection, error) {
 	logger.InfoCF("mcp", "Connecting to MCP server",
 		map[string]any{
@@ -369,20 +438,17 @@ func connectServer(
 				"disableStandaloneSSE": disableStandaloneSSE,
 			})
 
+		httpClient, err := safeMCPHTTPClientFunc(cfg.URL, cfg.Headers)
+		if err != nil {
+			return nil, err
+		}
 		sseTransport := &mcp.StreamableClientTransport{
 			Endpoint:             cfg.URL,
 			DisableStandaloneSSE: disableStandaloneSSE,
+			HTTPClient:           httpClient,
 		}
 
-		// Add custom headers if provided
 		if len(cfg.Headers) > 0 {
-			// Create a custom HTTP client with header-injecting transport
-			sseTransport.HTTPClient = &http.Client{
-				Transport: &headerTransport{
-					base:    http.DefaultTransport,
-					headers: cfg.Headers,
-				},
-			}
 			logger.DebugCF("mcp", "Added custom HTTP headers",
 				map[string]any{
 					"server":       name,
@@ -395,54 +461,33 @@ func connectServer(
 		if cfg.Command == "" {
 			return nil, fmt.Errorf("command is required for stdio transport")
 		}
+		cfg.Command = expandHomeCommandPath(cfg.Command)
+		if !filepath.IsAbs(cfg.Command) {
+			return nil, errors.New("admitted MCP stdio entrypoint must be an absolute executable path")
+		}
+		if !isolation.CurrentConfig().Enabled {
+			return nil, errors.New("consequential MCP stdio execution requires enabled process isolation")
+		}
+		if sealedExecutable == nil || runtime.GOOS != "linux" {
+			return nil, errors.New("consequential MCP stdio requires a sealed executable handle on Linux")
+		}
+		if !hermetic || beforeStart == nil {
+			return nil, errors.New("consequential MCP stdio requires a current-authority guard and hermetic launch profile")
+		}
+		if len(cfg.Env) != 0 || cfg.EnvFile != "" {
+			return nil, errors.New("consequential MCP stdio forbids ambient environment configuration")
+		}
 		logger.DebugCF("mcp", "Using stdio transport",
 			map[string]any{
 				"server":  name,
 				"command": cfg.Command,
 			})
 		// Create command with context
-		cmd := exec.CommandContext(ctx, expandHomeCommandPath(cfg.Command), cfg.Args...)
+		cmd := exec.CommandContext(ctx, "/proc/self/fd/3", cfg.Args...)
+		cmd.ExtraFiles = []*os.File{sealedExecutable}
 
-		// Build environment variables with proper override semantics
-		// Use a map to ensure config variables override file variables
-		envMap := make(map[string]string)
-
-		// Start with parent process environment
-		for _, e := range cmd.Environ() {
-			if idx := strings.Index(e, "="); idx > 0 {
-				envMap[e[:idx]] = e[idx+1:]
-			}
-		}
-
-		// Load environment variables from file if specified
-		if cfg.EnvFile != "" {
-			envVars, err := loadEnvFile(cfg.EnvFile)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load env file %s: %w", cfg.EnvFile, err)
-			}
-			for k, v := range envVars {
-				envMap[k] = v
-			}
-			logger.DebugCF("mcp", "Loaded environment variables from file",
-				map[string]any{
-					"server":    name,
-					"envFile":   cfg.EnvFile,
-					"var_count": len(envVars),
-				})
-		}
-
-		// Environment variables from config override those from file
-		for k, v := range cfg.Env {
-			envMap[k] = v
-		}
-
-		// Convert map to slice
-		env := make([]string, 0, len(envMap))
-		for k, v := range envMap {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		cmd.Env = env
-		transport = &isolatedCommandTransport{Command: cmd}
+		cmd.Env = []string{}
+		transport = &isolatedCommandTransport{Command: cmd, BeforeStart: beforeStart, Hermetic: true}
 	default:
 		return nil, fmt.Errorf(
 			"unsupported transport type: %s (supported: stdio, sse, http, streamable-http)",
@@ -472,10 +517,18 @@ func connectServer(
 		_ = session.Close()
 		return nil, err
 	}
+	descriptorBytes, err := json.Marshal(tools)
+	if err != nil {
+		_ = session.Close()
+		return nil, fmt.Errorf("encode MCP tool descriptors: %w", err)
+	}
+	descriptorDigest := sha256.Sum256(descriptorBytes)
 
 	return &ServerConnection{
-		Name:    name,
-		Config:  cfg,
+		Name:   name,
+		Config: cfg,
+		Observation: ConnectionObservation{TransportType: transportType, ServerName: initResult.ServerInfo.Name,
+			ServerVersion: initResult.ServerInfo.Version, ProtocolVersion: initResult.ProtocolVersion, ToolDescriptorDigest: descriptorDigest[:]},
 		Client:  client,
 		Session: session,
 		Tools:   tools,
@@ -509,6 +562,22 @@ func (m *Manager) CallTool(
 	serverName, toolName string,
 	arguments map[string]any,
 ) (*mcp.CallToolResult, error) {
+	return m.callToolWithExpectedAction(ctx, nil, serverName, toolName, arguments)
+}
+
+// CallToolWithAction executes one exact request under a caller-retained stable
+// Action ID. Retrying an ambiguous Action, or allocating a new Action for an
+// identical still-ambiguous request, is rejected by the durable journal.
+func (m *Manager) CallToolWithAction(
+	ctx context.Context,
+	actionID []byte,
+	serverName, toolName string,
+	arguments map[string]any,
+) (*mcp.CallToolResult, error) {
+	return m.callToolWithExpectedAction(ctx, actionID, serverName, toolName, arguments)
+}
+
+func (m *Manager) callToolWithExpectedAction(ctx context.Context, expectedActionID []byte, serverName, toolName string, arguments map[string]any) (*mcp.CallToolResult, error) {
 	// Check if closed before acquiring lock (fast path)
 	if m.closed.Load() {
 		return nil, fmt.Errorf("manager is closed")
@@ -530,37 +599,117 @@ func (m *Manager) CallTool(
 		return nil, fmt.Errorf("server %s not found", serverName)
 	}
 	defer m.wg.Done()
-
-	params := &mcp.CallToolParams{
-		Name:      toolName,
-		Arguments: arguments,
+	if m.effectAuthorizer == nil {
+		return nil, ErrCapabilityAuthorizationRequired
+	}
+	if m.effectJournal == nil {
+		return nil, errors.New("durable MCP Action journal is required")
+	}
+	argumentWire, err := freezeMCPArguments(arguments)
+	if err != nil {
+		return nil, errors.New("encode exact MCP arguments")
+	}
+	params := &mcp.CallToolParams{Name: toolName, Arguments: json.RawMessage(argumentWire)}
+	requestDigest, err := mcpToolEffectRequestDigestFromWire(serverName, conn.Observation, toolName, argumentWire)
+	if err != nil {
+		return nil, errors.New("encode exact MCP request")
+	}
+	actionID, err := m.effectAuthorizer(ctx, serverName, conn.Config, conn.Observation, toolName, argumentWire, requestDigest)
+	if err != nil {
+		_ = conn.Session.Close()
+		return nil, fmt.Errorf("authorize MCP tool effect: %w", err)
+	}
+	if len(actionID) != sha256.Size {
+		return nil, errors.New("MCP effect authority did not return a released 32-byte Action ID")
+	}
+	if expectedActionID != nil && !bytes.Equal(expectedActionID, actionID) {
+		return nil, errors.New("caller-retained MCP Action ID conflicts with the signed effect authorization")
+	}
+	resolutionToken, err := m.effectJournal.PrepareMCPAction(actionID, requestDigest)
+	if err != nil {
+		return nil, fmt.Errorf("prepare MCP Action %x: %w", actionID, err)
 	}
 
 	result, err := conn.Session.CallTool(ctx, params)
 	if err != nil {
+		_ = m.effectJournal.ResolveMCPAction(actionID, requestDigest, resolutionToken, "ambiguous")
 		if shouldReconnectCallError(err) {
-			logger.WarnCF("mcp", "MCP server session was lost during tool call, reconnecting",
+			logger.WarnCF("mcp", "MCP server session was lost during tool call; refusing unsafe replay",
 				map[string]any{
 					"server": serverName,
 					"tool":   toolName,
 					"error":  err.Error(),
 				})
 
-			reconnectedConn, reconnectErr := m.reconnectServer(ctx, serverName, conn)
-			if reconnectErr != nil {
-				return nil, fmt.Errorf("failed to recover lost MCP session: %w", reconnectErr)
-			}
-
-			result, err = reconnectedConn.Session.CallTool(ctx, params)
-			if err == nil {
-				return result, nil
-			}
+			_ = conn.Session.Close()
+			return nil, fmt.Errorf("%w: %v", ErrAmbiguousToolEffect, err)
 		}
 
 		return nil, fmt.Errorf("failed to call tool: %w", err)
 	}
+	disposition := "succeeded"
+	if result == nil || result.IsError {
+		disposition = "failed"
+	}
+	if err := m.effectJournal.ResolveMCPAction(actionID, requestDigest, resolutionToken, disposition); err != nil {
+		return nil, fmt.Errorf("%w: MCP Action %x result could not be durably resolved: %v", ErrAmbiguousToolEffect, actionID, err)
+	}
 
 	return result, nil
+}
+
+// MCPToolEffectRequestDigest is the single canonical request projection used
+// by the plan compiler and immediately before the MCP pipe write.
+func MCPToolEffectRequestDigest(serverName string, observation ConnectionObservation, toolName string, arguments map[string]any) ([]byte, error) {
+	argumentWire, err := freezeMCPArguments(arguments)
+	if err != nil {
+		return nil, err
+	}
+	return mcpToolEffectRequestDigestFromWire(serverName, observation, toolName, argumentWire)
+}
+
+func freezeMCPArguments(arguments map[string]any) ([]byte, error) {
+	if arguments == nil {
+		arguments = map[string]any{}
+	}
+	raw, err := json.Marshal(arguments)
+	if err != nil {
+		return nil, err
+	}
+	// Decode and encode a closed plain-JSON object. This invokes any caller
+	// supplied Marshaler exactly once, rejects trailing data/non-objects, and
+	// detaches every nested map/slice before authorization and transport use.
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var closed map[string]any
+	if decoder.Decode(&closed) != nil || decoder.Decode(&struct{}{}) != io.EOF || closed == nil {
+		return nil, errors.New("MCP arguments must be one plain JSON object")
+	}
+	canonical, err := json.Marshal(closed)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), canonical...), nil
+}
+
+func mcpToolEffectRequestDigestFromWire(serverName string, observation ConnectionObservation, toolName string, argumentWire []byte) ([]byte, error) {
+	if serverName == "" || toolName == "" {
+		return nil, errors.New("MCP effect server and tool are required")
+	}
+	if len(argumentWire) == 0 || !json.Valid(argumentWire) {
+		return nil, errors.New("MCP effect arguments are not canonical JSON")
+	}
+	requestWire, err := json.Marshal(struct {
+		Server      string                `json:"server"`
+		Observation ConnectionObservation `json:"observation"`
+		Tool        string                `json:"tool"`
+		Arguments   json.RawMessage       `json:"arguments"`
+	}{serverName, observation, toolName, json.RawMessage(argumentWire)})
+	if err != nil {
+		return nil, err
+	}
+	requestDigest := sha256.Sum256(append([]byte("tos.openfox-mcp-tool-action.v1\x00"), requestWire...))
+	return requestDigest[:], nil
 }
 
 func listServerTools(
@@ -631,9 +780,23 @@ func (m *Manager) reconnectServer(
 		return currentConn, nil
 	}
 
-	freshConn, err := connectServerFunc(ctx, serverName, staleConn.Config)
+	if m.authorizer == nil || m.verifier == nil {
+		return nil, ErrCapabilityAuthorizationRequired
+	}
+	authorization, err := m.authorizer(ctx, serverName, staleConn.Config)
+	if err != nil {
+		return nil, fmt.Errorf("authorize MCP reconnect: %w", err)
+	}
+	if authorization.Executable != nil {
+		defer authorization.Executable.Close()
+	}
+	freshConn, err := connectServerFunc(ctx, serverName, staleConn.Config, authorization.Executable, authorization.BeforeStart, authorization.Hermetic)
 	if err != nil {
 		return nil, err
+	}
+	if err := m.verifier(ctx, serverName, staleConn.Config, freshConn.Observation); err != nil {
+		_ = freshConn.Session.Close()
+		return nil, fmt.Errorf("verify MCP reconnect: %w", err)
 	}
 
 	m.mu.Lock()
@@ -694,6 +857,12 @@ func (m *Manager) Close() error {
 			errs = append(errs, fmt.Errorf("server %s: %w", name, err))
 		}
 	}
+	for _, hook := range m.closeHooks {
+		if err := hook(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	m.closeHooks = nil
 
 	m.servers = make(map[string]*ServerConnection)
 

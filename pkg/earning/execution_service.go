@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/tos-ai/pkg/commercegate"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
@@ -22,12 +23,31 @@ type NativeExecutionAdmission interface {
 	AdmitNativeExecution(context.Context, EngagementRecord, commercegate.Plan) (required bool, evidenceDigests []string, err error)
 }
 
+// TrustedCapabilityExecutionAdmission is the mandatory repository-wide
+// cutover fence. It must validate CapabilityUseBindingV1 at the actual sink
+// immediately before any execution start. Legacy runners may not bypass it.
+type TrustedCapabilityExecutionAdmission interface {
+	StartTrustedCapabilityExecution(context.Context, EngagementRecord, commercegate.Plan) (TrustedCapabilityExecutionPermit, error)
+	RevalidateTrustedCapabilityExecution(context.Context, TrustedCapabilityExecutionPermit) error
+	ResolveTrustedCapabilityExecution(context.Context, TrustedCapabilityExecutionPermit, string) error
+}
+
+type TrustedCapabilityExecutionPermit struct {
+	ExecutionID      string
+	ArtifactDigest   []byte
+	Instructions     []byte
+	Evidence         []string
+	RevocationPolicy string
+	startRequest     capabilitycontrol.StartRequest
+	resolutionToken  []byte
+}
+
 type ExecutionOutcome struct {
 	OutcomeDigest string
 }
 
 type AgreementRunner interface {
-	RunAgreement(context.Context, commercegate.Launch, *ExecutionEffects) (ExecutionOutcome, error)
+	RunAgreement(context.Context, commercegate.Launch, TrustedCapabilityExecutionPermit, *ExecutionEffects) (ExecutionOutcome, error)
 }
 
 type ExecutionService struct {
@@ -35,6 +55,7 @@ type ExecutionService struct {
 	Gate         *commercegate.Gate
 	Prerequisite ExecutionPrerequisiteVerifier
 	Native       NativeExecutionAdmission
+	Capability   TrustedCapabilityExecutionAdmission
 	Runner       AgreementRunner
 	Credentials  commercegate.CredentialResolver
 }
@@ -48,10 +69,19 @@ type ExecutionEffects struct {
 	PolicyRevision uint64
 	MandateDigest  string
 	Credentials    commercegate.CredentialResolver
+	Capability     TrustedCapabilityExecutionAdmission
+	Permit         TrustedCapabilityExecutionPermit
+}
+
+func (effects *ExecutionEffects) RevalidateCapability(ctx context.Context) error {
+	if effects == nil || effects.Capability == nil {
+		return errors.New("trusted capability effect authority is unavailable")
+	}
+	return effects.Capability.RevalidateTrustedCapabilityExecution(ctx, effects.Permit)
 }
 
 func (effects *ExecutionEffects) HTTPS(ctx context.Context, request commercegate.HTTPSRequest) (commercegate.HTTPSResponse, error) {
-	if effects == nil || effects.Authority == nil || effects.Gate == nil {
+	if effects == nil || effects.Authority == nil || effects.Gate == nil || effects.RevalidateCapability(ctx) != nil {
 		return commercegate.HTTPSResponse{}, errors.New("execution effect broker is unavailable")
 	}
 	canonical, fields, err := commercegate.EffectAuthorizationMaterial(effects.Plan, request)
@@ -74,7 +104,10 @@ func (effects *ExecutionEffects) HTTPS(ctx context.Context, request commercegate
 	if admitted.State == commerce.ActionAccepted || admitted.State == commerce.ActionTerminal {
 		return commercegate.HTTPSResponse{}, errors.New("effect already resolved; runner must recover its exact output")
 	}
-	response, err := effects.Gate.PerformHTTPS(ctx, effects.Launch, request, action, effects.Fence, effects.Credentials)
+	if err := effects.RevalidateCapability(ctx); err != nil {
+		return commercegate.HTTPSResponse{}, errors.New("trusted capability was revoked at HTTPS submission")
+	}
+	response, err := effects.Gate.PerformHTTPS(ctx, effects.Launch, request, action, effects.Fence, effects.Credentials, effects.RevalidateCapability)
 	if err != nil {
 		return commercegate.HTTPSResponse{}, err
 	}
@@ -85,7 +118,7 @@ func (effects *ExecutionEffects) HTTPS(ctx context.Context, request commercegate
 
 func (service ExecutionService) Execute(ctx context.Context, agreementDigest string, plan commercegate.Plan,
 	policyRevision uint64, fence commerce.WriterFence) (EngagementRecord, error) {
-	if service.Engine == nil || service.Engine.Authority == nil || service.Gate == nil || service.Prerequisite == nil || service.Runner == nil ||
+	if service.Engine == nil || service.Engine.Authority == nil || service.Gate == nil || service.Prerequisite == nil || service.Runner == nil || service.Capability == nil ||
 		!service.Engine.permits("execution", service.Engine.Gates.Execution, false) {
 		return EngagementRecord{}, errors.New("Agreement execution is disabled or incomplete")
 	}
@@ -186,6 +219,32 @@ func (service ExecutionService) Execute(ctx context.Context, agreementDigest str
 			ObligationExecutionPrepared, ObligationAmbiguous, preparedPlan.ExecutionID, nil, "")
 		return EngagementRecord{}, err
 	}
+	// The capability use slot is the final start linearization. The commerce
+	// launch is still PREPARED here and no runner/effect may begin before this
+	// exact artifact and its current generations are sealed.
+	permit, err := service.Capability.StartTrustedCapabilityExecution(ctx, record, preparedPlan)
+	if err != nil || permit.ExecutionID != preparedPlan.ExecutionID || len(permit.Evidence) == 0 || len(permit.Instructions) == 0 {
+		failureDigest, _ := codec.Digest("tos.capability-start-failure.v1", preparedPlan.ExecutionID)
+		_ = service.Gate.Complete(launch, commercegate.StateKilled, failureDigest)
+		if err == nil {
+			err = errors.New("trusted capability Gate returned no sealed execution permit")
+		}
+		return EngagementRecord{}, err
+	}
+	capabilityResolved := false
+	defer func() {
+		if !capabilityResolved {
+			_ = service.Capability.ResolveTrustedCapabilityExecution(context.Background(), permit, "ambiguous")
+		}
+	}()
+	switch permit.RevocationPolicy {
+	case "kill-and-reconcile", "checkpoint-and-stop", "drain":
+	default:
+		_ = service.Capability.ResolveTrustedCapabilityExecution(ctx, permit, "rejected")
+		capabilityResolved = true
+		return EngagementRecord{}, errors.New("trusted capability permit has no released in-flight revocation policy")
+	}
+	fundingEvidence = appendUniqueSorted(fundingEvidence, permit.Evidence...)
 	if _, err := service.Engine.Authority.Transition(startAction.StableActionID, startAction.ExactRequestDigest,
 		commerce.ActionAccepted, preparedPlan.ExecutionID, nil); err != nil {
 		return EngagementRecord{}, err
@@ -199,7 +258,8 @@ func (service ExecutionService) Execute(ctx context.Context, agreementDigest str
 		return EngagementRecord{}, err
 	}
 	effects := &ExecutionEffects{Authority: service.Engine.Authority, Gate: service.Gate, Launch: launch, Plan: preparedPlan,
-		Fence: fence, PolicyRevision: policyRevision, MandateDigest: service.Engine.MandateDigest, Credentials: service.Credentials}
+		Fence: fence, PolicyRevision: policyRevision, MandateDigest: service.Engine.MandateDigest, Credentials: service.Credentials,
+		Capability: service.Capability, Permit: permit}
 	runContext := ctx
 	var cancel context.CancelFunc
 	if obligation, present := obligationByID(record, plan.ExecutionObligationID); present {
@@ -210,43 +270,49 @@ func (service ExecutionService) Execute(ctx context.Context, agreementDigest str
 		}
 	}
 	var leaseLost atomic.Bool
+	var capabilityLost atomic.Bool
 	monitorDone := make(chan struct{})
-	if preparedPlan.LeaseLossPolicy == commercegate.LeaseLossKill {
-		var leaseCancel context.CancelFunc
-		runContext, leaseCancel = context.WithCancel(runContext)
-		priorCancel := cancel
-		cancel = func() {
-			leaseCancel()
-			if priorCancel != nil {
-				priorCancel()
-			}
+	var leaseCancel context.CancelFunc
+	runContext, leaseCancel = context.WithCancel(runContext)
+	priorCancel := cancel
+	cancel = func() {
+		leaseCancel()
+		if priorCancel != nil {
+			priorCancel()
 		}
-		go func() {
-			ticker := time.NewTicker(250 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-monitorDone:
+	}
+	go func() {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-monitorDone:
+				return
+			case <-ticker.C:
+				if preparedPlan.LeaseLossPolicy == commercegate.LeaseLossKill && service.Engine.Authority.ConfirmCurrentWriterFence(fence, service.Engine.now()) != nil {
+					leaseLost.Store(true)
+					cancel()
 					return
-				case <-ticker.C:
-					if service.Engine.Authority.ConfirmCurrentWriterFence(fence, service.Engine.now()) != nil {
-						leaseLost.Store(true)
-						cancel()
-						return
-					}
+				}
+				if service.Capability.RevalidateTrustedCapabilityExecution(runContext, permit) != nil {
+					capabilityLost.Store(true)
+					cancel()
+					return
 				}
 			}
-		}()
-	}
-	outcome, runErr := service.Runner.RunAgreement(runContext, launch, effects)
+		}
+	}()
+	outcome, runErr := service.Runner.RunAgreement(runContext, launch, permit, effects)
 	close(monitorDone)
 	if cancel != nil {
 		cancel()
 	}
-	if preparedPlan.LeaseLossPolicy == commercegate.LeaseLossKill &&
+	if capabilityLost.Load() || preparedPlan.LeaseLossPolicy == commercegate.LeaseLossKill &&
 		(service.Engine.Authority.ConfirmCurrentWriterFence(fence, service.Engine.now()) != nil || leaseLost.Load()) {
 		failureDigest, _ := codec.Digest("tos.execution-lease-loss.v1", preparedPlan.ExecutionID)
 		_ = service.Gate.Complete(launch, commercegate.StateKilled, failureDigest)
+		_ = service.Capability.ResolveTrustedCapabilityExecution(ctx, permit, "killed")
+		capabilityResolved = true
 		record, _ = service.Engine.Authority.transitionObligation(agreementDigest, plan.ExecutionObligationID,
 			ObligationExecuting, ObligationFailed, preparedPlan.ExecutionID, []string{failureDigest}, "")
 		return record, errors.New("execution was killed after writer authority was superseded")
@@ -254,13 +320,26 @@ func (service ExecutionService) Execute(ctx context.Context, agreementDigest str
 	if runErr != nil {
 		failureDigest, _ := codec.Digest("tos.execution-failure.v1", runErr.Error())
 		_ = service.Gate.Complete(launch, commercegate.StateFailed, failureDigest)
+		_ = service.Capability.ResolveTrustedCapabilityExecution(ctx, permit, "failed")
+		capabilityResolved = true
 		record, _ = service.Engine.Authority.transitionObligation(agreementDigest, plan.ExecutionObligationID,
 			ObligationExecuting, ObligationFailed, preparedPlan.ExecutionID, []string{failureDigest}, "")
 		return record, runErr
 	}
+	if err := service.Capability.RevalidateTrustedCapabilityExecution(ctx, permit); err != nil {
+		failureDigest, _ := codec.Digest("tos.execution-capability-finalization-loss.v1", preparedPlan.ExecutionID)
+		_ = service.Gate.Complete(launch, commercegate.StateKilled, failureDigest)
+		_ = service.Capability.ResolveTrustedCapabilityExecution(ctx, permit, "killed")
+		capabilityResolved = true
+		return EngagementRecord{}, errors.New("trusted capability was revoked before execution success")
+	}
 	if len(outcome.OutcomeDigest) != 71 {
 		return EngagementRecord{}, errors.New("runner returned no canonical outcome digest")
 	}
+	if err := service.Capability.ResolveTrustedCapabilityExecution(ctx, permit, "succeeded"); err != nil {
+		return EngagementRecord{}, err
+	}
+	capabilityResolved = true
 	if err := service.Gate.Complete(launch, commercegate.StateSucceeded, outcome.OutcomeDigest); err != nil {
 		return EngagementRecord{}, err
 	}

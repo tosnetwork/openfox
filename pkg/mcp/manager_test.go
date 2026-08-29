@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,130 +24,6 @@ import (
 	"github.com/tosnetwork/openfox/pkg/config"
 	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
 )
-
-func TestLoadEnvFile(t *testing.T) {
-	tests := []struct {
-		name      string
-		content   string
-		expected  map[string]string
-		expectErr bool
-	}{
-		{
-			name: "basic env file",
-			content: `API_KEY=secret123
-DATABASE_URL=postgres://localhost/db
-PORT=8080`,
-			expected: map[string]string{
-				"API_KEY":      "secret123",
-				"DATABASE_URL": "postgres://localhost/db",
-				"PORT":         "8080",
-			},
-			expectErr: false,
-		},
-		{
-			name: "with comments and empty lines",
-			content: `# This is a comment
-API_KEY=secret123
-
-# Another comment
-DATABASE_URL=postgres://localhost/db
-
-PORT=8080`,
-			expected: map[string]string{
-				"API_KEY":      "secret123",
-				"DATABASE_URL": "postgres://localhost/db",
-				"PORT":         "8080",
-			},
-			expectErr: false,
-		},
-		{
-			name: "with quoted values",
-			content: `API_KEY="secret with spaces"
-NAME='single quoted'
-PLAIN=no-quotes`,
-			expected: map[string]string{
-				"API_KEY": "secret with spaces",
-				"NAME":    "single quoted",
-				"PLAIN":   "no-quotes",
-			},
-			expectErr: false,
-		},
-		{
-			name: "with spaces around equals",
-			content: `API_KEY = secret123
-DATABASE_URL= postgres://localhost/db
-PORT =8080`,
-			expected: map[string]string{
-				"API_KEY":      "secret123",
-				"DATABASE_URL": "postgres://localhost/db",
-				"PORT":         "8080",
-			},
-			expectErr: false,
-		},
-		{
-			name:      "invalid format - no equals",
-			content:   `INVALID_LINE`,
-			expectErr: true,
-		},
-		{
-			name:      "empty file",
-			content:   ``,
-			expected:  map[string]string{},
-			expectErr: false,
-		},
-		{
-			name: "only comments",
-			content: `# Comment 1
-# Comment 2`,
-			expected:  map[string]string{},
-			expectErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			envFile := filepath.Join(tmpDir, ".env")
-
-			if err := os.WriteFile(envFile, []byte(tt.content), 0o644); err != nil {
-				t.Fatalf("Failed to create test file: %v", err)
-			}
-
-			result, err := loadEnvFile(envFile)
-
-			if tt.expectErr {
-				if err == nil {
-					t.Errorf("Expected error but got none")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-				return
-			}
-
-			if len(result) != len(tt.expected) {
-				t.Errorf("Expected %d variables, got %d", len(tt.expected), len(result))
-			}
-
-			for key, expectedValue := range tt.expected {
-				if actualValue, ok := result[key]; !ok {
-					t.Errorf("Expected key %s not found", key)
-				} else if actualValue != expectedValue {
-					t.Errorf("For key %s: expected %q, got %q", key, expectedValue, actualValue)
-				}
-			}
-		})
-	}
-}
-
-func TestLoadEnvFileNotFound(t *testing.T) {
-	_, err := loadEnvFile("/nonexistent/file.env")
-	if err == nil {
-		t.Error("Expected error for nonexistent file")
-	}
-}
 
 func TestExpandHomeCommandPath(t *testing.T) {
 	homeDir := t.TempDir()
@@ -161,62 +41,8 @@ func TestExpandHomeCommandPath(t *testing.T) {
 	}
 }
 
-func TestEnvFilePriority(t *testing.T) {
-	// Create a temporary .env file
-	tmpDir := t.TempDir()
-	envFile := filepath.Join(tmpDir, ".env")
-
-	envContent := `API_KEY=from_file
-DATABASE_URL=from_file
-SHARED_VAR=from_file`
-
-	if err := os.WriteFile(envFile, []byte(envContent), 0o644); err != nil {
-		t.Fatalf("Failed to create .env file: %v", err)
-	}
-
-	// Load envFile
-	envVars, err := loadEnvFile(envFile)
-	if err != nil {
-		t.Fatalf("Failed to load env file: %v", err)
-	}
-
-	// Verify envFile variables
-	if envVars["API_KEY"] != "from_file" {
-		t.Errorf("Expected API_KEY=from_file, got %s", envVars["API_KEY"])
-	}
-
-	// Simulate config.Env overriding envFile
-	configEnv := map[string]string{
-		"SHARED_VAR": "from_config",
-		"NEW_VAR":    "from_config",
-	}
-
-	// Merge: envFile first, then config overrides
-	merged := make(map[string]string)
-	for k, v := range envVars {
-		merged[k] = v
-	}
-	for k, v := range configEnv {
-		merged[k] = v
-	}
-
-	// Verify priority: config.Env should override envFile
-	if merged["SHARED_VAR"] != "from_config" {
-		t.Errorf(
-			"Expected SHARED_VAR=from_config (config should override file), got %s",
-			merged["SHARED_VAR"],
-		)
-	}
-	if merged["API_KEY"] != "from_file" {
-		t.Errorf("Expected API_KEY=from_file, got %s", merged["API_KEY"])
-	}
-	if merged["NEW_VAR"] != "from_config" {
-		t.Errorf("Expected NEW_VAR=from_config, got %s", merged["NEW_VAR"])
-	}
-}
-
 func TestLoadFromMCPConfig_EmptyWorkspaceWithRelativeEnvFile(t *testing.T) {
-	mgr := NewManager()
+	mgr := newTestManager()
 
 	mcpCfg := config.MCPConfig{
 		ToolConfig: config.ToolConfig{
@@ -243,7 +69,7 @@ func TestLoadFromMCPConfig_EmptyWorkspaceWithRelativeEnvFile(t *testing.T) {
 }
 
 func TestNewManager_InitialState(t *testing.T) {
-	mgr := NewManager()
+	mgr := newTestManager()
 	if mgr == nil {
 		t.Fatal("expected manager instance, got nil")
 	}
@@ -277,6 +103,9 @@ func TestConnectServerPublishesRuntimeEvents(t *testing.T) {
 		_ context.Context,
 		name string,
 		cfg config.MCPServerConfig,
+		_ *os.File,
+		_ func() error,
+		_ bool,
 	) (*ServerConnection, error) {
 		if name == "bad" {
 			return nil, fmt.Errorf("connect failed")
@@ -288,7 +117,7 @@ func TestConnectServerPublishesRuntimeEvents(t *testing.T) {
 		}, nil
 	}
 
-	mgr := NewManager(WithRuntimeEvents(eventBus))
+	mgr := newTestManager(WithRuntimeEvents(eventBus))
 	err = mgr.ConnectServer(context.Background(), "good", config.MCPServerConfig{
 		Type:    "stdio",
 		Command: "echo",
@@ -342,7 +171,7 @@ func receiveMCPRuntimeEvent(t *testing.T, ch <-chan runtimeevents.Event) runtime
 }
 
 func TestLoadFromMCPConfig_DisabledOrEmptyServers(t *testing.T) {
-	mgr := NewManager()
+	mgr := newTestManager()
 
 	err := mgr.LoadFromMCPConfig(
 		context.Background(),
@@ -364,7 +193,7 @@ func TestLoadFromMCPConfig_DisabledOrEmptyServers(t *testing.T) {
 }
 
 func TestGetServers_ReturnsCopy(t *testing.T) {
-	mgr := NewManager()
+	mgr := newTestManager()
 	mgr.servers["s1"] = &ServerConnection{Name: "s1"}
 
 	servers := mgr.GetServers()
@@ -376,7 +205,7 @@ func TestGetServers_ReturnsCopy(t *testing.T) {
 }
 
 func TestGetAllTools_FiltersEmptyTools(t *testing.T) {
-	mgr := NewManager()
+	mgr := newTestManager()
 	mgr.servers["empty"] = &ServerConnection{Name: "empty", Tools: nil}
 	mgr.servers["with-tools"] = &ServerConnection{Name: "with-tools", Tools: []*sdkmcp.Tool{{}}}
 
@@ -391,7 +220,7 @@ func TestGetAllTools_FiltersEmptyTools(t *testing.T) {
 
 func TestCallTool_ErrorsForClosedOrMissingServer(t *testing.T) {
 	t.Run("manager closed", func(t *testing.T) {
-		mgr := NewManager()
+		mgr := newTestManager()
 		mgr.closed.Store(true)
 
 		_, err := mgr.CallTool(context.Background(), "s1", "tool", nil)
@@ -401,7 +230,7 @@ func TestCallTool_ErrorsForClosedOrMissingServer(t *testing.T) {
 	})
 
 	t.Run("server missing", func(t *testing.T) {
-		mgr := NewManager()
+		mgr := newTestManager()
 
 		_, err := mgr.CallTool(context.Background(), "missing", "tool", nil)
 		if err == nil || !strings.Contains(err.Error(), "not found") {
@@ -411,12 +240,8 @@ func TestCallTool_ErrorsForClosedOrMissingServer(t *testing.T) {
 }
 
 func TestConnectServer_StreamableHTTPRequestResponseMode(t *testing.T) {
-	t.Parallel()
-
 	for _, transportType := range []string{"http", "streamable-http"} {
 		t.Run(transportType, func(t *testing.T) {
-			t.Parallel()
-
 			server := sdkmcp.NewServer(&sdkmcp.Implementation{
 				Name:    "streamable-test-server",
 				Version: "1.0.0",
@@ -457,6 +282,13 @@ func TestConnectServer_StreamableHTTPRequestResponseMode(t *testing.T) {
 				handler.ServeHTTP(w, r)
 			}))
 			defer httpServer.Close()
+			priorSafeClient := safeMCPHTTPClientFunc
+			safeMCPHTTPClientFunc = func(_ string, headers map[string]string) (*http.Client, error) {
+				client := httpServer.Client()
+				client.Transport = &headerTransport{base: client.Transport, headers: headers}
+				return client, nil
+			}
+			defer func() { safeMCPHTTPClientFunc = priorSafeClient }()
 
 			conn, err := connectServer(context.Background(), "streamable", config.MCPServerConfig{
 				Enabled: true,
@@ -465,7 +297,7 @@ func TestConnectServer_StreamableHTTPRequestResponseMode(t *testing.T) {
 				Headers: map[string]string{
 					"Authorization": "Bearer test-token",
 				},
-			})
+			}, nil, nil, false)
 			if err != nil {
 				t.Fatalf("connectServer(%q) error = %v", transportType, err)
 			}
@@ -537,7 +369,7 @@ func TestConnectServer_StreamableHTTPRequestResponseMode(t *testing.T) {
 	}
 }
 
-func TestCallTool_ReconnectsWhenHTTPServerLosesSession(t *testing.T) {
+func TestCallTool_DoesNotReplayWhenHTTPServerLosesSession(t *testing.T) {
 	originalConnectServerFunc := connectServerFunc
 	t.Cleanup(func() {
 		connectServerFunc = originalConnectServerFunc
@@ -565,7 +397,7 @@ func TestCallTool_ReconnectsWhenHTTPServerLosesSession(t *testing.T) {
 	}
 
 	connectCalls := 0
-	connectServerFunc = func(ctx context.Context, name string, cfg config.MCPServerConfig) (*ServerConnection, error) {
+	connectServerFunc = func(ctx context.Context, name string, cfg config.MCPServerConfig, _ *os.File, _ func() error, _ bool) (*ServerConnection, error) {
 		connectCalls++
 		if connectCalls == 1 {
 			return freshConn, nil
@@ -573,47 +405,33 @@ func TestCallTool_ReconnectsWhenHTTPServerLosesSession(t *testing.T) {
 		return nil, fmt.Errorf("unexpected reconnect attempt %d", connectCalls)
 	}
 
-	mgr := NewManager()
+	mgr := newTestManager()
 	mgr.servers["flaky"] = staleConn
 
-	result, err := mgr.CallTool(context.Background(), "flaky", "echo", map[string]any{
+	actionID := bytes.Repeat([]byte{31}, 32)
+	result, err := mgr.CallToolWithAction(context.Background(), actionID, "flaky", "echo", map[string]any{
 		"query": "hello",
 	})
-	if err != nil {
-		t.Fatalf("CallTool() error = %v", err)
+	if result != nil || !errors.Is(err, ErrAmbiguousToolEffect) {
+		t.Fatalf("CallTool() = %#v, %v; want ambiguous without replay", result, err)
 	}
-	if result == nil || len(result.Content) != 1 {
-		t.Fatalf("CallTool() returned unexpected content: %#v", result)
-	}
-
-	text, ok := result.Content[0].(*sdkmcp.TextContent)
-	if !ok {
-		t.Fatalf("CallTool() content type = %T, want *sdkmcp.TextContent", result.Content[0])
-	}
-	if text.Text != "reconnected" {
-		t.Fatalf("CallTool() text = %q, want %q", text.Text, "reconnected")
-	}
-
-	conn, ok := mgr.GetServer("flaky")
-	if !ok {
-		t.Fatal("expected flaky server to remain connected after reconnect")
-	}
-	if conn.Session.ID() != "session-2" {
-		t.Fatalf("Session.ID() = %q, want %q", conn.Session.ID(), "session-2")
-	}
-	if connectCalls != 1 {
-		t.Fatalf("connectCalls = %d, want 1", connectCalls)
+	if connectCalls != 0 {
+		t.Fatalf("connectCalls = %d, want 0", connectCalls)
 	}
 	if staleTransport.toolCallCalls != 1 {
 		t.Fatalf("stale toolCallCalls = %d, want 1", staleTransport.toolCallCalls)
 	}
-	if freshTransport.toolCallCalls != 1 {
-		t.Fatalf("fresh toolCallCalls = %d, want 1", freshTransport.toolCallCalls)
+	if freshTransport.toolCallCalls != 0 {
+		t.Fatalf("fresh toolCallCalls = %d, want 0", freshTransport.toolCallCalls)
 	}
+	if _, retryErr := mgr.CallToolWithAction(context.Background(), actionID, "flaky", "echo", map[string]any{"query": "hello"}); retryErr == nil {
+		t.Fatal("ambiguous MCP Action was replayed")
+	}
+	_ = freshConn
 }
 
 func TestClose_IdempotentOnEmptyManager(t *testing.T) {
-	mgr := NewManager()
+	mgr := newTestManager()
 
 	if err := mgr.Close(); err != nil {
 		t.Fatalf("first close should succeed, got: %v", err)
@@ -663,10 +481,11 @@ type scriptedTransport struct {
 	toolCallResult *sdkmcp.CallToolResult
 	toolCallErr    error
 
-	mu            sync.Mutex
-	toolCallCalls int
-	closed        bool
-	incoming      chan jsonrpc.Message
+	mu             sync.Mutex
+	toolCallCalls  int
+	lastToolParams []byte
+	closed         bool
+	incoming       chan jsonrpc.Message
 }
 
 func (t *scriptedTransport) Connect(context.Context) (sdkmcp.Connection, error) {
@@ -733,6 +552,7 @@ func (t *scriptedTransport) Write(ctx context.Context, msg jsonrpc.Message) erro
 	case "tools/call":
 		t.mu.Lock()
 		t.toolCallCalls++
+		t.lastToolParams = append([]byte(nil), req.Params...)
 		t.mu.Unlock()
 
 		if t.toolCallErr != nil {
@@ -767,4 +587,78 @@ func (t *scriptedTransport) Close() error {
 
 func (t *scriptedTransport) SessionID() string {
 	return t.sessionID
+}
+
+type statefulJSONArgument struct{ calls atomic.Int32 }
+
+func (value *statefulJSONArgument) MarshalJSON() ([]byte, error) {
+	if value.calls.Add(1) == 1 {
+		return []byte(`{"value":"authorized"}`), nil
+	}
+	return []byte(`{"value":"substituted"}`), nil
+}
+
+func TestCallToolFreezesPlainJSONOnceBeforeAuthorizationAndPipeWrite(t *testing.T) {
+	connection, transport, err := newScriptedServerConnection("sealed", &sdkmcp.CallToolResult{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := &statefulJSONArgument{}
+	mgr := newTestManager(WithEffectAuthorizer(func(_ context.Context, server string, _ config.MCPServerConfig, observation ConnectionObservation, tool string, exact, digest []byte) ([]byte, error) {
+		want, err := mcpToolEffectRequestDigestFromWire(server, observation, tool, exact)
+		if err != nil || !bytes.Equal(want, digest) || !bytes.Contains(exact, []byte(`"authorized"`)) {
+			return nil, errors.New("authorizer did not receive exact frozen arguments")
+		}
+		return bytes.Repeat([]byte{31}, sha256.Size), nil
+	}))
+	mgr.servers["sealed"] = connection
+	if _, err := mgr.CallTool(context.Background(), "sealed", "write", map[string]any{"payload": value}); err != nil {
+		t.Fatal(err)
+	}
+	transport.mu.Lock()
+	wire := append([]byte(nil), transport.lastToolParams...)
+	transport.mu.Unlock()
+	if value.calls.Load() != 1 || !bytes.Contains(wire, []byte(`"authorized"`)) || bytes.Contains(wire, []byte(`"substituted"`)) {
+		t.Fatalf("pipe bytes were reserialized from mutable arguments: calls=%d wire=%s", value.calls.Load(), wire)
+	}
+}
+
+func newTestManager(opts ...ManagerOption) *Manager {
+	journal := &testEffectJournal{records: map[string][]byte{}}
+	opts = append(opts,
+		WithConnectionAuthorizer(func(context.Context, string, config.MCPServerConfig) (ConnectionAuthorization, error) {
+			return ConnectionAuthorization{}, nil
+		}),
+		WithSessionVerifier(func(context.Context, string, config.MCPServerConfig, ConnectionObservation) error { return nil }),
+		WithEffectAuthorizer(func(context.Context, string, config.MCPServerConfig, ConnectionObservation, string, []byte, []byte) ([]byte, error) {
+			return bytes.Repeat([]byte{31}, sha256.Size), nil
+		}),
+		WithEffectJournal(journal),
+	)
+	return NewManager(opts...)
+}
+
+type testEffectJournal struct {
+	mu      sync.Mutex
+	records map[string][]byte
+}
+
+func (j *testEffectJournal) PrepareMCPAction(actionID, request []byte) ([]byte, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	key := string(actionID)
+	if _, exists := j.records[key]; exists {
+		return nil, ErrAmbiguousToolEffect
+	}
+	j.records[key] = append([]byte(nil), request...)
+	return bytes.Repeat([]byte{9}, sha256.Size), nil
+}
+
+func (j *testEffectJournal) ResolveMCPAction(actionID, request, token []byte, disposition string) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if prior, exists := j.records[string(actionID)]; !exists || !bytes.Equal(prior, request) || !bytes.Equal(token, bytes.Repeat([]byte{9}, sha256.Size)) {
+		return errors.New("unknown test MCP Action")
+	}
+	return nil
 }

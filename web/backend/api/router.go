@@ -5,7 +5,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/web/backend/launcherconfig"
+	ownercontrol "github.com/tosnetwork/tos-messenger/pkg/ownercontrol"
 )
 
 // Handler serves HTTP API requests.
@@ -22,14 +24,20 @@ type Handler struct {
 	debug                      bool
 	// Serializes model-related config writes. Other config endpoints still
 	// coordinate their own load-modify-save cycles.
-	configMu    sync.Mutex
-	oauthMu     sync.Mutex
-	oauthFlows  map[string]*oauthFlow
-	oauthState  map[string]string
-	weixinMu    sync.Mutex
-	weixinFlows map[string]*weixinFlow
-	wecomMu     sync.Mutex
-	wecomFlows  map[string]*wecomFlow
+	configMu                   sync.Mutex
+	oauthMu                    sync.Mutex
+	oauthFlows                 map[string]*oauthFlow
+	oauthState                 map[string]string
+	weixinMu                   sync.Mutex
+	weixinFlows                map[string]*weixinFlow
+	wecomMu                    sync.Mutex
+	wecomFlows                 map[string]*wecomFlow
+	capabilityMu               sync.Mutex
+	capabilityStoreInstance    *capabilitycontrol.Store
+	capabilityAuthority        capabilitycontrol.ProductionAuthority
+	capabilityAcquisitionFence capabilitycontrol.CapabilityAcquisitionFence
+	ownerCommandService        *ownercontrol.Service
+	ownerCommandJournal        *ownercontrol.FileJournal
 }
 
 // NewHandler creates an instance of the API handler.
@@ -99,6 +107,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Skills and tools support/actions
 	h.registerSkillRoutes(mux)
+	h.registerCapabilityRoutes(mux)
+	h.registerOwnerControlRoutes(mux)
 	h.registerToolRoutes(mux)
 
 	// OS startup / launch-at-login
@@ -123,4 +133,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 // Shutdown gracefully shuts down the handler, stopping the gateway if it was started by this handler.
 func (h *Handler) Shutdown() {
 	h.StopGateway()
+	h.capabilityMu.Lock()
+	if h.capabilityStoreInstance != nil {
+		_ = h.capabilityStoreInstance.Close()
+	}
+	if h.capabilityAuthority != nil {
+		_ = h.capabilityAuthority.Close()
+	}
+	if h.ownerCommandJournal != nil {
+		_ = h.ownerCommandJournal.Close()
+	}
+	h.capabilityStoreInstance = nil
+	h.capabilityAuthority = nil
+	h.ownerCommandService = nil
+	h.ownerCommandJournal = nil
+	h.capabilityMu.Unlock()
 }

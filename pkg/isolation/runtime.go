@@ -1,6 +1,7 @@
 package isolation
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -384,6 +385,44 @@ func Start(cmd *exec.Cmd) error {
 		return err
 	}
 	return nil
+}
+
+// StartHermetic starts a consequential compute-only capability with no
+// instance-root mount, no host network, no inherited environment and no
+// owner-configured exposure paths. It is intentionally Linux-only until an
+// equivalent platform backend exists.
+func StartHermetic(cmd *exec.Cmd) error {
+	if err := PrepareHermeticCommand(cmd); err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		cleanupPendingPlatformResources(cmd)
+		return err
+	}
+	return nil
+}
+
+// HermeticRuntimeAndSandboxDigest measures the exact administrator-pinned
+// launcher selected by the released compute-only sandbox profile.
+func HermeticRuntimeAndSandboxDigest() ([]byte, error) {
+	return hermeticRuntimeAndSandboxDigestPlatform()
+}
+
+// PrepareHermeticCommand applies the fixed compute-only sandbox profile.
+func PrepareHermeticCommand(cmd *exec.Cmd) error {
+	if cmd == nil {
+		return errors.New("hermetic command is required")
+	}
+	isolation := CurrentConfig()
+	if !isolation.Enabled {
+		return errors.New("hermetic capability execution requires enabled isolation")
+	}
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("hermetic capability execution is unsupported on %s", runtime.GOOS)
+	}
+	cmd.Env = []string{"HOME=/home/openfox", "TMPDIR=/tmp", "XDG_CONFIG_HOME=/home/openfox/.config", "XDG_CACHE_HOME=/home/openfox/.cache", "XDG_STATE_HOME=/home/openfox/.state"}
+	cmd.Dir = ""
+	return applyHermeticPlatformIsolation(cmd)
 }
 
 // Run is the Start-and-Wait helper that keeps the same isolation behavior as

@@ -77,8 +77,14 @@ func NewDefaultDraftGenerator(workspace string) *DefaultDraftGenerator {
 
 	globalSkillsDir := filepath.Join(config.GetHome(), "skills")
 	return &DefaultDraftGenerator{
+		// Draft generation is observation-only; the production applier retains
+		// its output in quarantine and grants no execution authority.
 		loader: skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),
 	}
+}
+
+func NewDefaultDraftGeneratorFromLoader(loader *skills.SkillsLoader) *DefaultDraftGenerator {
+	return &DefaultDraftGenerator{loader: loader}
 }
 
 func (g *DefaultDraftGenerator) GenerateDraft(

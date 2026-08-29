@@ -39,6 +39,7 @@ func TestNewOpenfoxCommand(t *testing.T) {
 	allowedCommands := []string{
 		"agent",
 		"auth",
+		"capability",
 		"config",
 		"cron",
 		"earning",

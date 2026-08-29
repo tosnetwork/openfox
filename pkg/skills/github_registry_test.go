@@ -84,7 +84,7 @@ func TestGitHubRegistrySearch(t *testing.T) {
 	assert.Equal(t, "master", results[1].Version)
 }
 
-func TestGitHubRegistryProviderDecodesProxyParam(t *testing.T) {
+func TestGitHubRegistryProviderRejectsUnboundProxyParam(t *testing.T) {
 	builder := buildRegistryProvider("github", config.SkillRegistryConfig{
 		Name:      "github",
 		Enabled:   true,
@@ -97,10 +97,7 @@ func TestGitHubRegistryProviderDecodesProxyParam(t *testing.T) {
 	require.NotNil(t, builder)
 
 	registry := builder.BuildRegistry()
-	require.NotNil(t, registry)
-	ghRegistry, ok := registry.(*GitHubRegistry)
-	require.True(t, ok)
-	assert.Equal(t, "http://127.0.0.1:7890", ghRegistry.installer.proxy)
+	require.Nil(t, registry)
 }
 
 func TestGitHubRegistrySearchReturnsNoResultsOnUnauthenticatedRateLimit(t *testing.T) {

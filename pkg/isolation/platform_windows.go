@@ -137,6 +137,14 @@ func cleanupPendingPlatformResources(cmd *exec.Cmd) {
 	}
 }
 
+func applyHermeticPlatformIsolation(*exec.Cmd) error {
+	return fmt.Errorf("hermetic capability isolation is unsupported on Windows")
+}
+
+func hermeticRuntimeAndSandboxDigestPlatform() ([]byte, error) {
+	return nil, fmt.Errorf("hermetic capability isolation is unsupported on Windows")
+}
+
 func reapWindowsProcessResources(pid int, proc windows.Handle, job windows.Handle) {
 	_, _ = windows.WaitForSingleObject(proc, windows.INFINITE)
 	_ = windows.CloseHandle(proc)

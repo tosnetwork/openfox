@@ -3,8 +3,10 @@ package skills
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,6 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	"github.com/tosnetwork/openfox/pkg/utils"
@@ -39,6 +44,22 @@ type gitHubTarget struct {
 	Endpoints gitHubEndpoints
 }
 
+const (
+	maxGitHubArtifactFiles = 4096
+	maxGitHubArtifactDepth = 16
+	maxGitHubFileBytes     = 5 << 20
+	maxGitHubArtifactBytes = 64 << 20
+	maxGitHubMetadataBytes = 2 << 20
+)
+
+type githubRetrievalBudget struct {
+	apiOrigin  string
+	apiPrefix  string
+	rawOrigins map[string]struct{}
+	files      int
+	bytes      int64
+}
+
 type SkillInstaller struct {
 	workspace        string
 	client           *http.Client
@@ -58,13 +79,13 @@ func NewSkillInstaller(workspace, githubToken, proxy string) (*SkillInstaller, e
 // NewSkillInstallerWithBaseURL creates a new skill installer with a custom GitHub base URL.
 // For github.com this can be left empty. For GitHub Enterprise, set it to the web URL.
 func NewSkillInstallerWithBaseURL(workspace, githubBaseURL, githubToken, proxy string) (*SkillInstaller, error) {
-	client, err := utils.CreateHTTPClient(proxy, 15*time.Second)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
-	}
 	endpoints, err := resolveGitHubEndpoints(githubBaseURL)
 	if err != nil {
 		return nil, err
+	}
+	client, err := newRegistryHTTPClient(endpoints.WebBaseURL, githubToken, proxy, 15*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create bounded GitHub client: %w", err)
 	}
 
 	return &SkillInstaller{
@@ -98,8 +119,11 @@ func resolveGitHubEndpoints(baseURL string) (gitHubEndpoints, error) {
 	if err != nil {
 		return gitHubEndpoints{}, fmt.Errorf("invalid github base url: %w", err)
 	}
-	if u.Scheme == "" || u.Host == "" {
+	if u.Scheme == "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return gitHubEndpoints{}, fmt.Errorf("invalid github base url %q", baseURL)
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackRegistryHost(u.Hostname())) {
+		return gitHubEndpoints{}, fmt.Errorf("github base url must use HTTPS outside explicit loopback development")
 	}
 
 	trimmedPath := strings.TrimSuffix(u.Path, "/")
@@ -358,7 +382,7 @@ func (si *SkillInstaller) fetchDefaultBranchWithAPIBaseURL(
 		req.Header.Set("Authorization", "Bearer "+si.githubToken)
 	}
 
-	resp, err := utils.DoRequestWithRetry(si.client, req)
+	resp, err := utils.DoRequestWithRetry(restrictedHTTPClient(si.client, urlOrigin(req.URL), si.githubToken != ""), req)
 	if err != nil {
 		return "", err
 	}
@@ -406,17 +430,8 @@ func githubInstallDirNameWithBaseURL(repo, githubBaseURL string) (string, error)
 }
 
 func (si *SkillInstaller) InstallFromGitHub(ctx context.Context, repo string) error {
-	skillName, err := githubInstallDirNameWithBaseURL(repo, si.githubBaseURL)
-	if err != nil {
-		return err
-	}
-	skillDirectory := filepath.Join(si.workspace, "skills", skillName)
-
-	if _, statErr := os.Stat(skillDirectory); statErr == nil {
-		return fmt.Errorf("skill '%s' already exists", skillName)
-	}
-	_, err = si.InstallFromGitHubToDir(ctx, repo, "", skillDirectory)
-	return err
+	_, _ = ctx, repo
+	return errors.New("direct workspace Skill installation is disabled; use the trusted quarantine, evaluation, Admission, Promotion, and installation pipeline")
 }
 
 func (si *SkillInstaller) InstallFromGitHubToDir(
@@ -467,6 +482,26 @@ func (si *SkillInstaller) InstallFromGitHubToDir(
 // downloadDir recursively downloads a directory from GitHub API
 // isRoot: true if this is the skill root directory (only download SKILL.md at root)
 func (si *SkillInstaller) getGithubDirAllFiles(ctx context.Context, apiURL, localDir string, isRoot bool) error {
+	parsed, err := url.Parse(apiURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return errors.New("invalid GitHub API URL")
+	}
+	prefix := parsed.Path
+	if index := strings.Index(prefix, "/contents"); index >= 0 {
+		prefix = prefix[:index+len("/contents")]
+	}
+	rawOrigins := map[string]struct{}{urlOrigin(parsed): {}}
+	if raw, parseErr := url.Parse(si.githubRawBaseURL); parseErr == nil && raw.Scheme != "" && raw.Host != "" {
+		rawOrigins[urlOrigin(raw)] = struct{}{}
+	}
+	budget := &githubRetrievalBudget{apiOrigin: urlOrigin(parsed), apiPrefix: prefix, rawOrigins: rawOrigins}
+	return si.getGithubDirAllFilesBounded(ctx, apiURL, localDir, isRoot, 0, budget)
+}
+
+func (si *SkillInstaller) getGithubDirAllFilesBounded(ctx context.Context, apiURL, localDir string, isRoot bool, depth int, budget *githubRetrievalBudget) error {
+	if depth > maxGitHubArtifactDepth || !urlWithin(apiURL, budget.apiOrigin, budget.apiPrefix) {
+		return errors.New("GitHub API traversal escaped the pinned repository origin")
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return err
@@ -475,7 +510,7 @@ func (si *SkillInstaller) getGithubDirAllFiles(ctx context.Context, apiURL, loca
 		req.Header.Set("Authorization", "Bearer "+si.githubToken)
 	}
 
-	resp, err := utils.DoRequestWithRetry(si.client, req)
+	resp, err := utils.DoRequestWithRetry(restrictedHTTPClient(si.client, budget.apiOrigin, si.githubToken != ""), req)
 	if err != nil {
 		return err
 	}
@@ -485,12 +520,24 @@ func (si *SkillInstaller) getGithubDirAllFiles(ctx context.Context, apiURL, loca
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	var items []GitHubContent
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-		return err
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, maxGitHubMetadataBytes+1))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('[') {
+		return errors.New("GitHub metadata must be a bounded JSON array")
 	}
-
-	for _, item := range items {
+	itemCount := 0
+	for decoder.More() {
+		itemCount++
+		if itemCount > maxGitHubArtifactFiles {
+			return errors.New("GitHub metadata exceeds item-count limit")
+		}
+		var item GitHubContent
+		if err := decoder.Decode(&item); err != nil {
+			return err
+		}
+		if !canonicalPathSegment(item.Name) {
+			return fmt.Errorf("GitHub API returned unsafe path segment %q", item.Name)
+		}
 		localPath := filepath.Join(localDir, item.Name)
 
 		switch item.Type {
@@ -498,17 +545,27 @@ func (si *SkillInstaller) getGithubDirAllFiles(ctx context.Context, apiURL, loca
 			if !shouldDownload(item.Name, isRoot) {
 				continue
 			}
-			if err := si.downloadFile(ctx, item.DownloadURL, localPath); err != nil {
+			budget.files++
+			if budget.files > maxGitHubArtifactFiles {
+				return errors.New("GitHub artifact exceeds file-count limit")
+			}
+			if err := si.downloadFileBounded(ctx, item.DownloadURL, localPath, budget); err != nil {
 				return fmt.Errorf("download %s: %w", item.Name, err)
 			}
 		case "dir":
 			if !isSkillDirectory(item.Name) {
 				continue
 			}
-			if err := si.getGithubDirAllFiles(ctx, item.URL, localPath, false); err != nil {
+			if err := si.getGithubDirAllFilesBounded(ctx, item.URL, localPath, false, depth+1, budget); err != nil {
 				return err
 			}
 		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return err
+	}
+	if decoder.More() {
+		return errors.New("GitHub metadata contains trailing data")
 	}
 	return nil
 }
@@ -526,15 +583,19 @@ func (si *SkillInstaller) downloadRaw(
 			urlPath = path.Join(urlPath, subPath)
 		}
 	}
-	url := fmt.Sprintf("%s/%s/SKILL.md", strings.TrimRight(rawBaseURL, "/"), urlPath)
+	rawURL := fmt.Sprintf("%s/%s/SKILL.md", strings.TrimRight(rawBaseURL, "/"), urlPath)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Use chunked download to temporary file.
-	tmpPath, err := utils.DownloadToFile(ctx, si.client, req, 0)
+	parsedRaw, parseErr := url.Parse(rawURL)
+	if parseErr != nil || parsedRaw.User != nil {
+		return errors.New("invalid pinned raw download URL")
+	}
+	tmpPath, err := utils.DownloadToFile(ctx, restrictedHTTPClient(si.client, urlOrigin(parsedRaw), false), req, maxGitHubFileBytes)
 	if err != nil {
 		return fmt.Errorf("failed to fetch skill: %w", err)
 	}
@@ -552,18 +613,43 @@ func (si *SkillInstaller) downloadRaw(
 	return nil
 }
 
-func (si *SkillInstaller) downloadFile(ctx context.Context, url, localPath string) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+func (si *SkillInstaller) downloadFile(ctx context.Context, rawURL, localPath string) error {
+	budget := &githubRetrievalBudget{rawOrigins: map[string]struct{}{}}
+	parsed, err := url.Parse(rawURL)
+	if err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		budget.rawOrigins[urlOrigin(parsed)] = struct{}{}
+	}
+	return si.downloadFileBounded(ctx, rawURL, localPath, budget)
+}
+
+func (si *SkillInstaller) downloadFileBounded(ctx context.Context, rawURL, localPath string, budget *githubRetrievalBudget) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	origin := urlOrigin(parsed)
+	if _, ok := budget.rawOrigins[origin]; !ok || parsed.User != nil {
+		return errors.New("download URL escaped the pinned origin")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		return err
 	}
 
 	// Use chunked download to temporary file, then move atomically to target.
-	tmpPath, err := utils.DownloadToFile(ctx, si.client, req, 0)
+	tmpPath, err := utils.DownloadToFile(ctx, restrictedHTTPClient(si.client, origin, false), req, maxGitHubFileBytes)
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmpPath)
+	info, err := os.Stat(tmpPath)
+	if err != nil {
+		return err
+	}
+	if info.Size() > maxGitHubArtifactBytes-budget.bytes {
+		return errors.New("GitHub artifact exceeds aggregate byte limit")
+	}
+	budget.bytes += info.Size()
 
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return err
@@ -573,6 +659,80 @@ func (si *SkillInstaller) downloadFile(ctx context.Context, url, localPath strin
 		return fmt.Errorf("failed to move downloaded file: %w", err)
 	}
 	return nil
+}
+
+func canonicalPathSegment(name string) bool {
+	return name != "" && name != "." && name != ".." && utf8.ValidString(name) && norm.NFC.IsNormalString(name) &&
+		!strings.ContainsAny(name, "/\\") && filepath.Base(name) == name
+}
+
+func urlOrigin(value *url.URL) string {
+	return strings.ToLower(value.Scheme) + "://" + strings.ToLower(value.Host)
+}
+
+func urlWithin(raw, origin, pathPrefix string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.User != nil || urlOrigin(parsed) != origin {
+		return false
+	}
+	clean := path.Clean(parsed.Path)
+	return clean == pathPrefix || strings.HasPrefix(clean, strings.TrimRight(pathPrefix, "/")+"/")
+}
+
+func restrictedHTTPClient(base *http.Client, origin string, credentialed bool) *http.Client {
+	clone := *base
+	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req.URL.User != nil || urlOrigin(req.URL) != origin {
+			return errors.New("redirect escaped pinned origin")
+		}
+		if credentialed {
+			return errors.New("credentialed registry redirects are forbidden")
+		}
+		if len(via) >= 3 {
+			return errors.New("too many redirects")
+		}
+		return nil
+	}
+	return &clone
+}
+
+func newRegistryHTTPClient(baseURL, token, proxy string, timeout time.Duration) (*http.Client, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("registry base URL is invalid")
+	}
+	localDevelopment := parsed.Scheme == "http" && isLoopbackRegistryHost(parsed.Hostname())
+	if parsed.Scheme != "https" && !localDevelopment {
+		return nil, errors.New("registry base URL must use HTTPS; HTTP is limited to a literal loopback development address")
+	}
+	if strings.TrimSpace(proxy) != "" {
+		return nil, errors.New("trusted registry retrieval forbids proxies until an authenticated proxy profile is admitted")
+	}
+	whitelist := []string(nil)
+	if localDevelopment {
+		whitelist = []string{parsed.Hostname()}
+	}
+	client, err := utils.CreateSafeHTTPClient(utils.SafeHTTPClientOptions{Timeout: timeout, MaxRedirects: 3,
+		PrivateHostWhitelist: whitelist})
+	if err != nil {
+		return nil, err
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		// CreateSafeHTTPClient preserves the general application's proxy behavior.
+		// Capability acquisition is stricter: no ambient or caller-selected proxy
+		// may become an unbound credential/destination authority.
+		transport.Proxy = nil
+		transport.DialTLS = nil
+		transport.DialTLSContext = nil
+	}
+	origin := urlOrigin(parsed)
+	client.CheckRedirect = restrictedHTTPClient(client, origin, token != "").CheckRedirect
+	return client, nil
+}
+
+func isLoopbackRegistryHost(host string) bool {
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback()
 }
 
 // shouldDownload determines if a file should be downloaded
@@ -594,27 +754,6 @@ func isSkillDirectory(name string) bool {
 }
 
 func (si *SkillInstaller) Uninstall(skillName string) error {
-	parts := strings.Split(skillName, "/")
-	var finalSkillName string
-	for i := len(parts) - 1; i >= 0; i-- {
-		if parts[i] != "" {
-			finalSkillName = parts[i]
-			break
-		}
-	}
-	if finalSkillName == "" {
-		finalSkillName = skillName
-	}
-
-	skillDir := filepath.Join(si.workspace, "skills", finalSkillName)
-
-	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
-		return fmt.Errorf("skill '%s' not found (processed as '%s')", skillName, finalSkillName)
-	}
-
-	if err := os.RemoveAll(skillDir); err != nil {
-		return fmt.Errorf("failed to remove skill '%s': %w", finalSkillName, err)
-	}
-
-	return nil
+	_, _ = si, skillName
+	return errors.New("direct Skill removal is disabled; use an authorized capability.remove action so leases, references, and tombstones are preserved")
 }

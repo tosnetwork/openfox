@@ -5,15 +5,14 @@ import "github.com/spf13/cobra"
 func newInstallBuiltinCommand(workspaceFn func() (string, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "install-builtin",
-		Short:   "Install all builtin skills to workspace",
+		Short:   "Explain why build-pinned builtin skills are not copied to workspace",
 		Example: `openfox skills install-builtin`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			workspace, err := workspaceFn()
 			if err != nil {
 				return err
 			}
-			skillsInstallBuiltinCmd(workspace)
-			return nil
+			return skillsInstallBuiltinCmd(workspace)
 		},
 	}
 

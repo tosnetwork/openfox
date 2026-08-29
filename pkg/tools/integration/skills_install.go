@@ -2,6 +2,7 @@ package integrationtools
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/skills"
@@ -24,19 +26,31 @@ var persistInstalledSkillOriginMeta = writeOriginMeta
 // It shares the same RegistryManager that FindSkillsTool uses,
 // so all registries configured in config are available for installation.
 type InstallSkillTool struct {
-	registryMgr *skills.RegistryManager
-	workspace   string
-	mu          sync.Mutex
+	registryMgr      *skills.RegistryManager
+	workspace        string
+	acquisitionFence capabilitycontrol.CapabilityAcquisitionFence
+	ownerID, agentID []byte
+	mu               sync.Mutex
 }
 
 // NewInstallSkillTool creates a new InstallSkillTool.
 // registryMgr is the shared registry manager (same instance as FindSkillsTool).
 // workspace is the root workspace directory; skills install to {workspace}/skills/{slug}/.
 func NewInstallSkillTool(registryMgr *skills.RegistryManager, workspace string) *InstallSkillTool {
+	return NewInstallSkillToolWithAcquisitionFence(registryMgr, workspace, nil, nil, nil)
+}
+
+// NewInstallSkillToolWithAcquisitionFence is the production constructor. A
+// missing external fence leaves the tool visible for compatibility but every
+// acquisition fails closed before network retrieval.
+func NewInstallSkillToolWithAcquisitionFence(registryMgr *skills.RegistryManager, workspace string, fence capabilitycontrol.CapabilityAcquisitionFence, ownerID, agentID []byte) *InstallSkillTool {
 	return &InstallSkillTool{
-		registryMgr: registryMgr,
-		workspace:   workspace,
-		mu:          sync.Mutex{},
+		registryMgr:      registryMgr,
+		workspace:        workspace,
+		acquisitionFence: fence,
+		ownerID:          append([]byte(nil), ownerID...),
+		agentID:          append([]byte(nil), agentID...),
+		mu:               sync.Mutex{},
 	}
 }
 
@@ -106,58 +120,38 @@ func (t *InstallSkillTool) Execute(ctx context.Context, args map[string]any) *To
 	}
 
 	version, _ := args["version"].(string)
-	force, _ := args["force"].(bool)
+	_, _ = args["force"].(bool) // Retained for API compatibility; quarantine is content-addressed.
 
-	// Check if already installed.
-	skillsDir := filepath.Join(t.workspace, "skills")
-	targetDir := filepath.Join(skillsDir, dirName)
-	backupDir := ""
-	restorePreviousInstall := func() {
-		if backupDir == "" {
-			return
-		}
-		if rmErr := os.RemoveAll(targetDir); rmErr != nil {
-			logger.ErrorCF("tool", "Failed to remove failed install before restore",
-				map[string]any{
-					"tool":       "install_skill",
-					"target_dir": targetDir,
-					"error":      rmErr.Error(),
-				})
-			return
-		}
-		if restoreErr := os.Rename(backupDir, targetDir); restoreErr != nil {
-			logger.ErrorCF("tool", "Failed to restore previous install after failed reinstall",
-				map[string]any{
-					"tool":       "install_skill",
-					"backup_dir": backupDir,
-					"target_dir": targetDir,
-					"error":      restoreErr.Error(),
-				})
-			return
-		}
-		backupDir = ""
+	// Model-requested acquisition is quarantine-only. It cannot write into any
+	// loader-visible Skill root or replace an active capability.
+	skillsDir := filepath.Join(t.workspace, "state", "trusted-capabilities", "quarantine")
+	if err := os.MkdirAll(skillsDir, 0o700); err != nil {
+		return ErrorResult(err.Error())
 	}
-
-	if !force {
-		if _, statErr := os.Stat(targetDir); statErr == nil {
-			return ErrorResult(
-				fmt.Sprintf("skill %q already installed at %s. Use force=true to reinstall.", slug, targetDir),
-			)
-		}
-	} else {
-		if _, statErr := os.Stat(targetDir); statErr == nil {
-			backupDir = filepath.Join(skillsDir, fmt.Sprintf(".%s.openfox-backup-%d", dirName, time.Now().UnixNano()))
-			if renameErr := os.Rename(targetDir, backupDir); renameErr != nil {
-				return ErrorResult(fmt.Sprintf("failed to prepare reinstall for %q: %v", slug, renameErr))
-			}
-		} else if !os.IsNotExist(statErr) {
-			return ErrorResult(fmt.Sprintf("failed to inspect existing install for %q: %v", slug, statErr))
-		}
+	ledger, err := capabilitycontrol.OpenQuarantineLedger(skillsDir, time.Now, t.acquisitionFence, t.ownerID, t.agentID)
+	if err != nil {
+		return ErrorResult("quarantine accounting is unavailable: " + err.Error())
 	}
+	defer ledger.Close()
+	principalDigest := sha256.Sum256([]byte(filepath.Clean(t.workspace)))
+	reservation, err := ledger.Reserve(ctx, fmt.Sprintf("workspace:%x", principalDigest[:]), "registry:"+registryName, 1)
+	if err != nil {
+		return ErrorResult(err.Error())
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = ledger.Abort(reservation.ID)
+		}
+	}()
+	targetDir, err := os.MkdirTemp(skillsDir, ".model-download-"+dirName+"-")
+	if err != nil {
+		return ErrorResult(err.Error())
+	}
+	defer os.RemoveAll(targetDir)
 
 	// Ensure skills directory exists.
 	if mkdirErr := os.MkdirAll(skillsDir, 0o755); mkdirErr != nil {
-		restorePreviousInstall()
 		return ErrorResult(fmt.Sprintf("failed to create skills directory: %v", mkdirErr))
 	}
 
@@ -174,7 +168,6 @@ func (t *InstallSkillTool) Execute(ctx context.Context, args map[string]any) *To
 					"error":      rmErr.Error(),
 				})
 		}
-		restorePreviousInstall()
 		return ErrorResult(fmt.Sprintf("failed to install %q: %v", slug, err))
 	}
 
@@ -189,11 +182,10 @@ func (t *InstallSkillTool) Execute(ctx context.Context, args map[string]any) *To
 					"error":      rmErr.Error(),
 				})
 		}
-		restorePreviousInstall()
 		return ErrorResult(fmt.Sprintf("skill %q is flagged as malicious and cannot be installed", slug))
 	}
 
-	if !workspaceHasValidInstalledSkill(t.workspace, dirName) {
+	if _, validateErr := skills.ValidateSkillDirectory(targetDir); validateErr != nil {
 		rmErr := os.RemoveAll(targetDir)
 		if rmErr != nil {
 			logger.ErrorCF("tool", "Failed to remove invalid installed skill",
@@ -203,7 +195,6 @@ func (t *InstallSkillTool) Execute(ctx context.Context, args map[string]any) *To
 					"error":      rmErr.Error(),
 				})
 		}
-		restorePreviousInstall()
 		return ErrorResult(fmt.Sprintf("failed to install %q: registry archive is not a valid skill", slug))
 	}
 
@@ -227,32 +218,35 @@ func (t *InstallSkillTool) Execute(ctx context.Context, args map[string]any) *To
 					"error":      rmErr.Error(),
 				})
 		}
-		restorePreviousInstall()
 		return ErrorResult(fmt.Sprintf("failed to persist skill metadata for %q: %v", slug, err))
 	}
-	if backupDir != "" {
-		if rmErr := os.RemoveAll(backupDir); rmErr != nil {
-			logger.ErrorCF("tool", "Failed to remove previous install backup after successful reinstall",
-				map[string]any{
-					"tool":       "install_skill",
-					"backup_dir": backupDir,
-					"error":      rmErr.Error(),
-				})
-		}
+	artifactDigest, digestErr := capabilitycontrol.HashTree(targetDir)
+	if digestErr != nil {
+		return ErrorResult(digestErr.Error())
 	}
+	quarantineDir, receipt, err := ledger.Commit(ctx, reservation.ID, targetDir, artifactDigest)
+	if err != nil {
+		return ErrorResult(err.Error())
+	}
+	committed = true
 
 	// Build result with moderation warning if suspicious.
 	var output string
 	if result.IsSuspicious {
 		output = fmt.Sprintf("⚠️ Warning: skill %q is flagged as suspicious (may contain risky patterns).\n\n", slug)
 	}
-	output += fmt.Sprintf("Successfully installed skill %q v%s from %s registry.\nLocation: %s\n",
-		slug, result.Version, registry.Name(), targetDir)
+	output += fmt.Sprintf("Retained skill %q v%s from %s registry in quarantine.\nLocation: %s\n",
+		slug, result.Version, registry.Name(), quarantineDir)
+	receiptJSON, marshalErr := json.Marshal(receipt)
+	if marshalErr != nil {
+		return ErrorResult("failed to encode the durable quarantine receipt")
+	}
+	output += fmt.Sprintf("Inventory registration receipt: %s\n", receiptJSON)
 
 	if result.Summary != "" {
 		output += fmt.Sprintf("Description: %s\n", result.Summary)
 	}
-	output += "\nThe skill is now available and can be loaded in the current session."
+	output += "\nThe skill is not active; evaluation, Admission, Promotion when required, and an exact Use Binding are still required."
 
 	return SilentResult(output)
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tosnetwork/openfox/web/backend/authcontext"
 )
 
 // LauncherDashboardCookieName is the HttpOnly cookie set after a successful password login.
@@ -143,7 +145,10 @@ func LauncherDashboardAuth(cfg LauncherDashboardAuthConfig, next http.Handler) h
 			return
 		}
 		if validLauncherDashboardAuth(r, cfg) {
-			next.ServeHTTP(w, r)
+			// The channel binding is derived only after constant-time validation
+			// of the server-owned credential. Downstream code cannot recreate it
+			// from caller-selected headers.
+			next.ServeHTTP(w, r.WithContext(authcontext.WithDashboardClaims(r.Context(), cfg.ExpectedCookie)))
 			return
 		}
 		rejectLauncherDashboardAuth(w, r, p)

@@ -1,10 +1,13 @@
 package middleware
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/tosnetwork/openfox/web/backend/authcontext"
 )
 
 func TestNewLauncherDashboardSessionCookie(t *testing.T) {
@@ -21,6 +24,38 @@ func TestNewLauncherDashboardSessionCookie(t *testing.T) {
 	}
 	if a == b {
 		t.Fatal("session cookie values should be random")
+	}
+}
+
+func TestLauncherDashboardAuthInjectsServerDerivedChannelBinding(t *testing.T) {
+	const credential = "server-owned-session-credential"
+	var first []byte
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := authcontext.DashboardClaimsFrom(r.Context())
+		if !ok || claims.Audience != authcontext.LauncherDashboardAudience || !claims.MayReadEvidence {
+			t.Fatal("authenticated dashboard claims were not injected")
+		}
+		first = append([]byte(nil), claims.ChannelBindingDigest...)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := LauncherDashboardAuth(LauncherDashboardAuthConfig{ExpectedCookie: credential}, next)
+	request := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	request.AddCookie(&http.Cookie{Name: LauncherDashboardCookieName, Value: credential})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || len(first) != 32 {
+		t.Fatalf("status=%d binding=%x", response.Code, first)
+	}
+	var second []byte
+	other := LauncherDashboardAuth(LauncherDashboardAuthConfig{ExpectedCookie: "different-server-credential"}, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		claims, _ := authcontext.DashboardClaimsFrom(r.Context())
+		second = claims.ChannelBindingDigest
+	}))
+	request = httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	request.AddCookie(&http.Cookie{Name: LauncherDashboardCookieName, Value: "different-server-credential"})
+	other.ServeHTTP(httptest.NewRecorder(), request)
+	if bytes.Equal(first, second) {
+		t.Fatal("different authenticated channels produced the same binding")
 	}
 }
 

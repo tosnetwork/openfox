@@ -8,25 +8,28 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 	runtimeevents "github.com/tosnetwork/openfox/pkg/events"
 	"github.com/tosnetwork/openfox/pkg/evolution"
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/providers"
+	"github.com/tosnetwork/openfox/pkg/skills"
 )
 
 type evolutionBridge struct {
-	cfg            config.EvolutionConfig
-	registry       *AgentRegistry
-	runtime        *evolution.Runtime
-	coldPathRunner *evolution.ColdPathRunner
-	runtimeSub     runtimeevents.Subscription
-	bgCtx          context.Context
-	cancel         context.CancelFunc
-	closeMu        sync.Mutex
-	closed         bool
-	wg             sync.WaitGroup
-	isCurrent      func(*evolutionBridge) bool
+	cfg                  config.EvolutionConfig
+	registry             *AgentRegistry
+	runtime              *evolution.Runtime
+	coldPathRunner       *evolution.ColdPathRunner
+	runtimeSub           runtimeevents.Subscription
+	bgCtx                context.Context
+	cancel               context.CancelFunc
+	closeMu              sync.Mutex
+	closed               bool
+	wg                   sync.WaitGroup
+	acquisitionAuthority *capabilitycontrol.HTTPSControlAuthority
+	isCurrent            func(*evolutionBridge) bool
 
 	scheduledMu         sync.Mutex
 	scheduledWorkspaces map[string]struct{}
@@ -44,8 +47,22 @@ func newEvolutionBridge(
 	}
 
 	modelID := resolvedEvolutionModelID(cfg, provider)
+	var acquisitionAuthority *capabilitycontrol.HTTPSControlAuthority
+	if cfg.Evolution.EffectiveMode() == "apply" {
+		settings := cfg.Earning.TrustedCapability
+		var authorityErr error
+		acquisitionAuthority, authorityErr = capabilitycontrol.OpenHTTPSControlAuthorityFromFile(settings.ControlAuthorityEndpoint, settings.ControlAuthorityTokenFile, settings.ControlAuthorityPublicKey)
+		if authorityErr != nil {
+			// Keep observation/drafting available, but the Applier receives no
+			// fence and therefore fails closed before any materialized quarantine
+			// write. This is safer than disabling the entire feedback loop.
+			logger.WarnCF("agent", "Adaptive draft materialization is fenced because the common acquisition authority is unavailable", map[string]any{"error": authorityErr.Error()})
+		}
+	}
 	runtime, err := evolution.NewRuntime(evolution.RuntimeOptions{
-		Config: cfg.Evolution,
+		Config:         cfg.Evolution,
+		SkillsRecaller: evolution.NewSkillsRecallerFromLoader(cfg.WorkspacePath(), skills.NewEmptySkillsLoader()),
+		DraftGenerator: evolution.NewDefaultDraftGeneratorFromLoader(skills.NewEmptySkillsLoader()),
 		PatternClusterer: evolution.NewLLMPatternClusterer(
 			provider,
 			modelID,
@@ -60,20 +77,25 @@ func newEvolutionBridge(
 			return evolution.NewLLMTaskSuccessJudge(provider, modelID, &evolution.HeuristicSuccessJudge{})
 		},
 		ApplierFactory: func(workspace string) *evolution.Applier {
-			return evolution.NewApplier(evolution.NewPaths(workspace, cfg.Evolution.StateDir), nil)
+			return evolution.NewTrustedApplierWithAcquisition(evolution.NewPaths(workspace, cfg.Evolution.StateDir), nil,
+				acquisitionAuthority, []byte(cfg.Earning.OwnerID), []byte(cfg.Earning.AgentID))
 		},
 	})
 	if err != nil {
+		if acquisitionAuthority != nil {
+			_ = acquisitionAuthority.Close()
+		}
 		return nil, err
 	}
 	bgCtx, cancel := context.WithCancel(context.Background())
 
 	bridge := &evolutionBridge{
-		cfg:      cfg.Evolution,
-		registry: registry,
-		runtime:  runtime,
-		bgCtx:    bgCtx,
-		cancel:   cancel,
+		cfg:                  cfg.Evolution,
+		registry:             registry,
+		runtime:              runtime,
+		bgCtx:                bgCtx,
+		cancel:               cancel,
+		acquisitionAuthority: acquisitionAuthority,
 	}
 	if cfg.Evolution.RunsColdPathAutomatically() {
 		bridge.coldPathRunner = evolution.NewColdPathRunnerWithErrorHandler(runtime, func(err error) {
@@ -125,6 +147,9 @@ func (b *evolutionBridge) Close() error {
 	}
 	if b.cancel != nil {
 		b.cancel()
+	}
+	if b.acquisitionAuthority != nil {
+		_ = b.acquisitionAuthority.Close()
 	}
 	var closeErr error
 	if b.coldPathRunner != nil {

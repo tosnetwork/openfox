@@ -94,6 +94,34 @@ func NewSkillsLoader(workspace string, globalSkills string, builtinSkills string
 	}
 }
 
+// NewRuntimeSkillsLoader returns the production prompt/runtime loader. External
+// workspace and global directories are deliberately excluded: filesystem
+// presence is not capability authority. Build-pinned builtins remain available;
+// admitted external Skills must be exposed through a lease-bound execution
+// adapter, not by adding their directory to this loader.
+func NewRuntimeSkillsLoader(builtinSkills string) *SkillsLoader {
+	return &SkillsLoader{builtinSkills: builtinSkills}
+}
+
+func NewEmptySkillsLoader() *SkillsLoader { return &SkillsLoader{} }
+
+// ValidateSkillDirectory validates one quarantined Skill without making its
+// directory loader-visible. It is intentionally read-only.
+func ValidateSkillDirectory(directory string) (SkillInfo, error) {
+	path := filepath.Join(directory, "SKILL.md")
+	info := SkillInfo{Name: filepath.Base(directory), Path: path, Source: "quarantine"}
+	loader := &SkillsLoader{}
+	metadata := loader.getSkillMetadata(path)
+	if metadata == nil {
+		return SkillInfo{}, errors.New("SKILL.md is missing or unreadable")
+	}
+	info.Name, info.Description = metadata.Name, metadata.Description
+	if err := info.validate(); err != nil {
+		return SkillInfo{}, err
+	}
+	return info, nil
+}
+
 func (sl *SkillsLoader) ListSkills() []SkillInfo {
 	skills := make([]SkillInfo, 0)
 	seen := make(map[string]bool)

@@ -118,6 +118,19 @@ func (settings EarningSettings) Validate() error {
 	if settings.Gates.Contact && (!filepath.IsAbs(settings.MessengerSocket) || filepath.Clean(settings.MessengerSocket) != settings.MessengerSocket) {
 		return errors.New("autonomous contact requires an absolute Messenger authority socket")
 	}
+	if settings.Gates.Execution {
+		paths := []string{settings.TrustedCapability.ProjectionDirectory,
+			settings.TrustedCapability.PublisherObservationDirectory,
+			settings.TrustedCapability.ExecutionBundleDirectory, settings.TrustedCapability.SinkJournalDirectory, settings.TrustedCapability.ControlAuthorityTokenFile}
+		for _, path := range paths {
+			if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+				return errors.New("execution requires every trusted_capability directory to be canonical and absolute")
+			}
+		}
+		if !strings.HasPrefix(settings.TrustedCapability.ControlAuthorityEndpoint, "https://") || !earningEd25519KeyPattern.MatchString(settings.TrustedCapability.ControlAuthorityPublicKey) {
+			return errors.New("execution requires an external HTTPS trusted capability authority and pinned Ed25519 key")
+		}
+	}
 	if len(settings.TrustedIntentIssuerKeys) == 0 {
 		return errors.New("enabled earning requires at least one trusted Intent issuer key")
 	}

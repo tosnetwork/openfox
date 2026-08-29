@@ -3,6 +3,7 @@
 package isolation
 
 import (
+	"fmt"
 	"os/exec"
 
 	"github.com/tosnetwork/openfox/pkg/config"
@@ -19,4 +20,12 @@ func postStartPlatformIsolation(cmd *exec.Cmd, isolation config.IsolationConfig,
 }
 
 func cleanupPendingPlatformResources(cmd *exec.Cmd) {
+}
+
+func applyHermeticPlatformIsolation(*exec.Cmd) error {
+	return fmt.Errorf("hermetic capability isolation is unsupported on this platform")
+}
+
+func hermeticRuntimeAndSandboxDigestPlatform() ([]byte, error) {
+	return nil, fmt.Errorf("hermetic capability isolation is unsupported on this platform")
 }

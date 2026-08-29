@@ -400,7 +400,7 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 	prerequisite := AdapterPrerequisitePolicy{LocalAgentID: providerID, PrepaidAdapters: []string{paiddemand.SettlementAdapterURI},
 		Funding: PaidDemandFundingPrerequisite{Resolver: escrowResolver, Network: network, ProviderOffers: offerAuthorities}}
 	outcomeDigest := threeNodeDigest("completed-security-review:" + agreementDigest)
-	executed, err := (ExecutionService{Engine: providerEngine, Gate: localGate, Prerequisite: prerequisite,
+	executed, err := (ExecutionService{Engine: providerEngine, Gate: localGate, Prerequisite: prerequisite, Capability: trustedCapabilityForTest{},
 		Native: nativeGate, Runner: successRunner{digest: outcomeDigest}}).Execute(ctx, agreementDigest, planned.ExecutionPlan, 1, providerFence)
 	if err != nil || executed.State != EngagementExecutionSucceeded {
 		t.Fatalf("provider execution state=%s err=%v", executed.State, err)

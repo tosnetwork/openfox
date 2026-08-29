@@ -77,7 +77,7 @@ func NewEvolutionExecutionLearningRecorder(cfg config.EvolutionConfig, workspace
 			return evolution.NewLLMTaskSuccessJudge(provider, model, &evolution.HeuristicSuccessJudge{})
 		},
 		ApplierFactory: func(current string) *evolution.Applier {
-			return evolution.NewApplier(evolution.NewPaths(current, cfg.StateDir), nil)
+			return evolution.NewTrustedApplier(evolution.NewPaths(current, cfg.StateDir), nil)
 		},
 	})
 	if err != nil {

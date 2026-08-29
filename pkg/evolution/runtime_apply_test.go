@@ -35,7 +35,7 @@ func TestRuntime_RunColdPathOnce_ApplyModeWritesSkillAndProfile(t *testing.T) {
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(evolution.NewPaths(root, ""), func() time.Time {
+		Applier: evolution.NewUnsafeApplierForTest(evolution.NewPaths(root, ""), func() time.Time {
 			return time.Unix(1700001000, 0).UTC()
 		}),
 		DraftGenerator: stubDraftGenerator{
@@ -128,7 +128,7 @@ func TestRuntime_RunColdPathOnce_DraftModeKeepsCandidateDraft(t *testing.T) {
 		Config: config.EvolutionConfig{Enabled: true, Mode: "draft"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(evolution.NewPaths(root, ""), func() time.Time {
+		Applier: evolution.NewUnsafeApplierForTest(evolution.NewPaths(root, ""), func() time.Time {
 			return time.Unix(1700001000, 0).UTC()
 		}),
 		DraftGenerator: stubDraftGenerator{
@@ -307,7 +307,7 @@ func TestRuntime_RunColdPathOnce_ApplyModeAppliesExistingCandidateDraft(t *testi
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(evolution.NewPaths(root, ""), func() time.Time {
+		Applier: evolution.NewUnsafeApplierForTest(evolution.NewPaths(root, ""), func() time.Time {
 			return time.Unix(1700001000, 0).UTC()
 		}),
 		DraftGenerator: stubDraftGenerator{
@@ -395,7 +395,7 @@ func TestRuntime_RunColdPathOnce_ApplyModeSkipsOrphanCandidateDraft(t *testing.T
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(evolution.NewPaths(root, ""), func() time.Time {
+		Applier: evolution.NewUnsafeApplierForTest(evolution.NewPaths(root, ""), func() time.Time {
 			return time.Unix(1700001000, 0).UTC()
 		}),
 		DraftGenerator: stubDraftGenerator{
@@ -489,7 +489,7 @@ func TestRuntime_RunColdPathOnce_ApplyModeNormalizesExistingCombinedCandidateDra
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(
+		Applier: evolution.NewUnsafeApplierForTest(
 			evolution.NewPaths(root, ""),
 			func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		),
@@ -562,7 +562,7 @@ func TestRuntime_RunColdPathOnce_ApplyModeRetargetsStableMultiSkillPathIntoCombi
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(evolution.NewPaths(root, ""), func() time.Time {
+		Applier: evolution.NewUnsafeApplierForTest(evolution.NewPaths(root, ""), func() time.Time {
 			return time.Unix(1700001000, 0).UTC()
 		}),
 		DraftGenerator: stubDraftGenerator{
@@ -690,7 +690,7 @@ func TestRuntime_RunColdPathOnce_CombinedShortcutKeepsReadableLongGuidance(t *te
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(
+		Applier: evolution.NewUnsafeApplierForTest(
 			evolution.NewPaths(root, ""),
 			func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		),
@@ -807,7 +807,7 @@ func TestRuntime_RunColdPathOnce_ApplyFailureQuarantinesDraftAndWritesRollbackAu
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(evolution.NewPaths(root, ""), func() time.Time {
+		Applier: evolution.NewUnsafeApplierForTest(evolution.NewPaths(root, ""), func() time.Time {
 			return time.Unix(1700001000, 0).UTC()
 		}),
 		DraftGenerator: stubDraftGenerator{
@@ -896,7 +896,7 @@ func TestRuntime_RunColdPathOnce_FirstApplyFailureDoesNotCreateGhostProfile(t *t
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(evolution.NewPaths(root, ""), func() time.Time {
+		Applier: evolution.NewUnsafeApplierForTest(evolution.NewPaths(root, ""), func() time.Time {
 			return time.Unix(1700001000, 0).UTC()
 		}),
 		DraftGenerator: stubDraftGenerator{
@@ -964,7 +964,7 @@ func TestRuntime_RunColdPathOnce_DraftSaveFailureRollsBackAppliedSkill(t *testin
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(paths, func() time.Time {
+		Applier: evolution.NewUnsafeApplierForTest(paths, func() time.Time {
 			return time.Unix(1700001000, 0).UTC()
 		}),
 		DraftGenerator: stubDraftGenerator{
@@ -1049,7 +1049,7 @@ func TestRuntime_RunColdPathOnce_AutoRunsLifecycleMaintenance(t *testing.T) {
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return now },
 		Store:  store,
-		Applier: evolution.NewApplier(paths, func() time.Time {
+		Applier: evolution.NewUnsafeApplierForTest(paths, func() time.Time {
 			return now
 		}),
 		Organizer:      evolution.NewOrganizer(evolution.OrganizerOptions{MinCaseCount: 3, MinSuccessRate: 0.7}),
@@ -1119,7 +1119,7 @@ func TestRuntime_RunColdPathOnce_ProfileSaveFailureRollsBackSkillAndQuarantinesD
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
 		Store:  store,
-		Applier: evolution.NewApplier(paths, func() time.Time {
+		Applier: evolution.NewUnsafeApplierForTest(paths, func() time.Time {
 			return time.Unix(1700001000, 0).UTC()
 		}),
 		DraftGenerator: stubDraftGenerator{

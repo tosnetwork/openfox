@@ -15,6 +15,7 @@ import (
 	"github.com/tosnetwork/openfox/pkg/agent/interfaces"
 	"github.com/tosnetwork/openfox/pkg/audio/tts"
 	"github.com/tosnetwork/openfox/pkg/bus"
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/channels"
 	"github.com/tosnetwork/openfox/pkg/commands"
 	"github.com/tosnetwork/openfox/pkg/config"
@@ -322,8 +323,13 @@ func registerSharedTools(
 			}
 
 			if install_skills_enable {
+				settings := cfg.Earning.TrustedCapability
+				acquisitionFence, fenceErr := capabilitycontrol.OpenHTTPSControlAuthorityFromFile(settings.ControlAuthorityEndpoint, settings.ControlAuthorityTokenFile, settings.ControlAuthorityPublicKey)
+				if fenceErr != nil {
+					logger.WarnCF("agent", "Skill acquisition disabled because the external owner-exit fence is unavailable", map[string]any{"error": fenceErr.Error()})
+				}
 				agent.Tools.RegisterWithEffect(
-					tools.NewInstallSkillTool(registryMgr, agent.Workspace),
+					tools.NewInstallSkillToolWithAcquisitionFence(registryMgr, agent.Workspace, acquisitionFence, []byte(cfg.Earning.OwnerID), []byte(cfg.Earning.AgentID)),
 					actionauth.EffectConfiguration,
 				)
 			}

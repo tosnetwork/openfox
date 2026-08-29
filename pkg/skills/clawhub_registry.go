@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/tosnetwork/openfox/pkg/config"
@@ -60,6 +62,7 @@ type ClawHubRegistry struct {
 	maxZipSize      int
 	maxResponseSize int
 	client          *http.Client
+	initErr         error
 }
 
 // NewClawHubRegistry creates a new ClawHub registry client from config.
@@ -96,6 +99,12 @@ func NewClawHubRegistry(cfg ClawHubConfig) *ClawHubRegistry {
 		maxResp = cfg.MaxResponseSize
 	}
 
+	client, clientErr := newRegistryHTTPClient(baseURL, cfg.AuthToken, "", timeout)
+	for _, endpointPath := range []string{searchPath, skillsPath, downloadPath} {
+		if endpointPath == "" || !strings.HasPrefix(endpointPath, "/") || path.Clean(endpointPath) != endpointPath || strings.HasPrefix(endpointPath, "//") {
+			clientErr = fmt.Errorf("ClawHub endpoint path %q is not canonical", endpointPath)
+		}
+	}
 	return &ClawHubRegistry{
 		baseURL:         baseURL,
 		authToken:       cfg.AuthToken,
@@ -104,14 +113,8 @@ func NewClawHubRegistry(cfg ClawHubConfig) *ClawHubRegistry {
 		downloadPath:    downloadPath,
 		maxZipSize:      maxZip,
 		maxResponseSize: maxResp,
-		client: &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        5,
-				IdleConnTimeout:     30 * time.Second,
-				TLSHandshakeTimeout: 10 * time.Second,
-			},
-		},
+		client:          client,
+		initErr:         clientErr,
 	}
 }
 
@@ -329,6 +332,9 @@ func (c *ClawHubRegistry) DownloadAndInstall(
 // --- HTTP helper ---
 
 func (c *ClawHubRegistry) doGet(ctx context.Context, urlStr string) ([]byte, error) {
+	if c.initErr != nil || c.client == nil {
+		return nil, fmt.Errorf("registry transport is unavailable: %w", c.initErr)
+	}
 	req, err := c.newGetRequest(ctx, urlStr, "application/json")
 	if err != nil {
 		return nil, err
@@ -354,6 +360,9 @@ func (c *ClawHubRegistry) doGet(ctx context.Context, urlStr string) ([]byte, err
 }
 
 func (c *ClawHubRegistry) newGetRequest(ctx context.Context, urlStr, accept string) (*http.Request, error) {
+	if c.initErr != nil {
+		return nil, c.initErr
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return nil, err

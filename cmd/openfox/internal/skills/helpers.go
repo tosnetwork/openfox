@@ -2,15 +2,17 @@ package skills
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	"github.com/tosnetwork/openfox/pkg/skills"
@@ -49,6 +51,19 @@ func skillsListCmd(loader *skills.SkillsLoader) {
 
 // skillsInstallFromRegistry installs a skill from a named registry (e.g. clawhub).
 func skillsInstallFromRegistry(cfg *config.Config, registryName, target string) error {
+	settings := cfg.Earning.TrustedCapability
+	acquisitionFence, err := capabilitycontrol.OpenHTTPSControlAuthorityFromFile(settings.ControlAuthorityEndpoint, settings.ControlAuthorityTokenFile, settings.ControlAuthorityPublicKey)
+	if err != nil {
+		return fmt.Errorf("trusted owner-exit acquisition fence is unavailable: %w", err)
+	}
+	defer acquisitionFence.Close()
+	return skillsInstallFromRegistryWithFence(cfg, registryName, target, acquisitionFence)
+}
+
+func skillsInstallFromRegistryWithFence(cfg *config.Config, registryName, target string, acquisitionFence capabilitycontrol.CapabilityAcquisitionFence) error {
+	if acquisitionFence == nil {
+		return errors.New("trusted owner-exit acquisition fence is unavailable")
+	}
 	err := utils.ValidateSkillIdentifier(registryName)
 	if err != nil {
 		return fmt.Errorf("✗  invalid registry name: %w", err)
@@ -65,22 +80,40 @@ func skillsInstallFromRegistry(cfg *config.Config, registryName, target string) 
 	if err != nil {
 		return fmt.Errorf("✗  invalid install target %q: %w", target, err)
 	}
-
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 	fmt.Printf("Installing skill '%s' from %s registry...\n", target, registryName)
 
 	workspace := cfg.WorkspacePath()
-	targetDir := filepath.Join(workspace, "skills", dirName)
-
-	if _, err = os.Stat(targetDir); err == nil {
-		return fmt.Errorf("\u2717 skill '%s' already installed at %s", dirName, targetDir)
+	quarantineRoot := filepath.Join(workspace, "state", "trusted-capabilities", "quarantine")
+	if err = os.MkdirAll(quarantineRoot, 0o700); err != nil {
+		return fmt.Errorf("failed to create trusted capability quarantine: %w", err)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	if err = os.MkdirAll(filepath.Join(workspace, "skills"), 0o755); err != nil {
-		return fmt.Errorf("\u2717 failed to create skills directory: %w", err)
+	ledger, err := capabilitycontrol.OpenQuarantineLedger(quarantineRoot, time.Now, acquisitionFence, []byte(cfg.Earning.OwnerID), []byte(cfg.Earning.AgentID))
+	if err != nil {
+		return fmt.Errorf("trusted capability quarantine accounting is unavailable: %w", err)
 	}
+	defer ledger.Close()
+	principalDigest := sha256.Sum256([]byte(filepath.Clean(workspace)))
+	reservation, err := ledger.Reserve(ctx, fmt.Sprintf("cli:%x", principalDigest[:]), "registry:"+registry.Name(), 1)
+	if err != nil {
+		return fmt.Errorf("owner control rejected Skill acquisition: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = ledger.Abort(reservation.ID)
+		}
+	}()
+	targetDir, err := os.MkdirTemp(quarantineRoot, ".download-")
+	if err != nil {
+		return fmt.Errorf("failed to allocate trusted capability quarantine: %w", err)
+	}
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(targetDir)
+		}
+	}()
 
 	result, err := registry.DownloadAndInstall(ctx, target, "", targetDir)
 	if err != nil {
@@ -104,8 +137,7 @@ func skillsInstallFromRegistry(cfg *config.Config, registryName, target string) 
 		fmt.Printf("\u26a0\ufe0f  Warning: skill '%s' is flagged as suspicious.\n", target)
 	}
 
-	if !workspaceHasValidSkillDirectory(workspace, dirName) {
-		_ = os.RemoveAll(targetDir)
+	if _, validateErr := skills.ValidateSkillDirectory(targetDir); validateErr != nil {
 		return fmt.Errorf("✗ failed to install skill: registry archive for %q is not a valid skill", target)
 	}
 
@@ -120,11 +152,23 @@ func skillsInstallFromRegistry(cfg *config.Config, registryName, target string) 
 		InstalledVersion: result.Version,
 		InstalledAt:      installedAt,
 	}); err != nil {
-		_ = os.RemoveAll(targetDir)
 		return fmt.Errorf("✗ failed to persist skill metadata: %w", err)
 	}
-
-	fmt.Printf("\u2713 Skill '%s' v%s installed successfully!\n", dirName, result.Version)
+	artifactDigest, err := capabilitycontrol.HashTree(targetDir)
+	if err != nil {
+		return fmt.Errorf("failed to hash quarantined Skill: %w", err)
+	}
+	finalDir, receipt, err := ledger.Commit(ctx, reservation.ID, targetDir, artifactDigest)
+	if err != nil {
+		return fmt.Errorf("failed to commit trusted capability quarantine: %w", err)
+	}
+	committed = true
+	fmt.Printf("Skill '%s' v%s retained in quarantine at %s; it is not active pending evaluation, Admission, and Promotion.\n", dirName, result.Version, finalDir)
+	receiptJSON, marshalErr := json.Marshal(receipt)
+	if marshalErr != nil {
+		return fmt.Errorf("encode durable quarantine receipt: %w", marshalErr)
+	}
+	fmt.Printf("Quarantine receipt: %s\n", receiptJSON)
 	if result.Summary != "" {
 		fmt.Printf("  %s\n", result.Summary)
 	}
@@ -154,65 +198,13 @@ func workspaceHasValidSkillDirectory(workspace, directory string) bool {
 }
 
 func skillsRemoveFromWorkspace(workspace string, toolsConfig config.SkillsToolsConfig, skillName string) error {
-	name := strings.TrimSpace(skillName)
-	name = strings.Trim(name, "/")
-	if name == "" {
-		return fmt.Errorf("skill name is required")
-	}
-	if strings.Contains(name, "/") {
-		dirName, err := skills.GitHubInstallDirNameFromToolsConfig(toolsConfig, name)
-		if err != nil || dirName == "" {
-			return fmt.Errorf("invalid skill name %q", skillName)
-		}
-		name = dirName
-	}
-	if name == "." || name == ".." {
-		return fmt.Errorf("invalid skill name %q", skillName)
-	}
-	skillDir := filepath.Join(workspace, "skills", name)
-	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
-		return fmt.Errorf("skill '%s' not found", name)
-	}
-	if err := os.RemoveAll(skillDir); err != nil {
-		return fmt.Errorf("failed to remove skill '%s': %w", name, err)
-	}
-	return nil
+	_, _, _ = workspace, toolsConfig, skillName
+	return fmt.Errorf("direct Skill deletion is disabled; use an authorized capability.remove action so leases, references, and tombstones are preserved")
 }
 
-func skillsInstallBuiltinCmd(workspace string) {
-	builtinSkillsDir := "./openfox/skills"
-	workspaceSkillsDir := filepath.Join(workspace, "skills")
-
-	fmt.Printf("Copying builtin skills to workspace...\n")
-
-	skillsToInstall := []string{
-		"weather",
-		"news",
-		"stock",
-		"calculator",
-	}
-
-	for _, skillName := range skillsToInstall {
-		builtinPath := filepath.Join(builtinSkillsDir, skillName)
-		workspacePath := filepath.Join(workspaceSkillsDir, skillName)
-
-		if _, err := os.Stat(builtinPath); err != nil {
-			fmt.Printf("⊘ Builtin skill '%s' not found: %v\n", skillName, err)
-			continue
-		}
-
-		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
-			fmt.Printf("✗ Failed to create directory for %s: %v\n", skillName, err)
-			continue
-		}
-
-		if err := copyDirectory(builtinPath, workspacePath); err != nil {
-			fmt.Printf("✗ Failed to copy %s: %v\n", skillName, err)
-		}
-	}
-
-	fmt.Println("\n✓ All builtin skills installed!")
-	fmt.Println("Now you can use them in your workspace.")
+func skillsInstallBuiltinCmd(workspace string) error {
+	_ = workspace
+	return errors.New("builtin Skills are build-pinned and already available through the trusted loader; direct workspace copying is disabled")
 }
 
 func skillsListBuiltinCmd() {
@@ -321,40 +313,4 @@ func skillsShowCmd(loader *skills.SkillsLoader, skillName string) {
 	fmt.Printf("\n📦 Skill: %s\n", skillName)
 	fmt.Println("----------------------")
 	fmt.Println(content)
-}
-
-func copyDirectory(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		relPath, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-
-		dstPath := filepath.Join(dst, relPath)
-
-		if info.IsDir() {
-			return os.MkdirAll(dstPath, info.Mode())
-		}
-
-		srcFile, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer srcFile.Close()
-
-		dstFile, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
-		if err != nil {
-			return err
-		}
-
-		_, copyErr := io.Copy(dstFile, srcFile)
-		if closeErr := dstFile.Close(); closeErr != nil && copyErr == nil {
-			return fmt.Errorf("close destination file %s: %w", dstPath, closeErr)
-		}
-		return copyErr
-	})
 }

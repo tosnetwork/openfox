@@ -486,29 +486,20 @@ func TestNewSkillInstaller(t *testing.T) {
 	}
 }
 
-func TestNewSkillInstaller_WithProxy(t *testing.T) {
+func TestNewSkillInstaller_RejectsUnboundProxy(t *testing.T) {
 	tmpDir := t.TempDir()
-	installer, err := NewSkillInstaller(tmpDir, "test-token", "http://127.0.0.1:7890")
-	if err != nil {
-		t.Fatalf("NewSkillInstaller() error = %v", err)
+	_, err := NewSkillInstaller(tmpDir, "test-token", "http://127.0.0.1:7890")
+	if err == nil || !strings.Contains(err.Error(), "forbids proxies") {
+		t.Fatalf("NewSkillInstaller() error = %v, want unbound proxy rejection", err)
 	}
+}
 
-	if installer.proxy != "http://127.0.0.1:7890" {
-		t.Errorf("proxy = %v, want 'http://127.0.0.1:7890'", installer.proxy)
+func TestRegistryHTTPDevelopmentRequiresLiteralLoopback(t *testing.T) {
+	if _, err := newRegistryHTTPClient("http://localhost:8080", "token", "", time.Second); err == nil {
+		t.Fatal("localhost hostname enabled plaintext/private-address bypass")
 	}
-
-	if installer.client == nil {
-		t.Fatal("client is nil")
-	}
-
-	// Verify the transport has proxy configured
-	transport, ok := installer.client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatal("client.Transport is not *http.Transport")
-	}
-
-	if transport.Proxy == nil {
-		t.Error("transport.Proxy is nil, expected non-nil")
+	if _, err := newRegistryHTTPClient("http://127.0.0.1:8080", "token", "", time.Second); err != nil {
+		t.Fatalf("literal loopback development endpoint rejected: %v", err)
 	}
 }
 
@@ -558,6 +549,10 @@ func TestSkillInstaller_DownloadFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSkillInstaller() error = %v", err)
 	}
+	installer.client, err = newRegistryHTTPClient(server.URL, "", "", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("successful download", func(t *testing.T) {
 		localPath := filepath.Join(tmpDir, "test-skill", "SKILL.md")
@@ -605,6 +600,28 @@ func TestSkillInstaller_DownloadFile(t *testing.T) {
 	})
 }
 
+func TestCredentialedRegistryRedirectIsRejectedWithoutTokenForwarding(t *testing.T) {
+	destinationHits := 0
+	destination := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { destinationHits++ }))
+	defer destination.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+	client, err := newRegistryHTTPClient(source.URL, "secret-token", "", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, source.URL, nil)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	if _, err := client.Do(request); err == nil {
+		t.Fatal("credentialed registry redirect was followed")
+	}
+	if destinationHits != 0 {
+		t.Fatal("registry credential reached redirect destination")
+	}
+}
+
 func TestSkillInstaller_DownloadRaw(t *testing.T) {
 	content := "raw skill content"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -617,6 +634,10 @@ func TestSkillInstaller_DownloadRaw(t *testing.T) {
 	installer, err := NewSkillInstaller(tmpDir, "", "")
 	if err != nil {
 		t.Fatalf("NewSkillInstaller() error = %v", err)
+	}
+	installer.client, err = newRegistryHTTPClient(server.URL, "", "", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// Replace the client with one that points to our test server
@@ -647,73 +668,20 @@ func TestSkillInstaller_DownloadRaw(t *testing.T) {
 
 func TestSkillInstaller_Uninstall(t *testing.T) {
 	tmpDir := t.TempDir()
-	skillsDir := filepath.Join(tmpDir, "skills")
-	os.MkdirAll(skillsDir, 0o755)
-
 	installer, err := NewSkillInstaller(tmpDir, "", "")
 	if err != nil {
 		t.Fatalf("NewSkillInstaller() error = %v", err)
 	}
-
-	t.Run("uninstall existing skill", func(t *testing.T) {
-		skillName := "test-skill"
-		skillDir := filepath.Join(skillsDir, skillName)
-
-		// Create skill directory with a file
-		os.MkdirAll(skillDir, 0o755)
-		os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("test"), 0o644)
-
-		if err := installer.Uninstall(skillName); err != nil {
-			t.Errorf("Uninstall() error = %v", err)
-		}
-
-		// Verify directory was removed
-		if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
-			t.Error("skill directory still exists after uninstall")
-		}
-	})
-
-	t.Run("uninstall non-existent skill", func(t *testing.T) {
-		if err := installer.Uninstall("non-existent-skill"); err == nil {
-			t.Error("Uninstall() expected error for non-existent skill, got nil")
-		} else if !strings.Contains(err.Error(), "not found") {
-			t.Errorf("error message = %q, want 'not found'", err.Error())
-		}
-	})
-
-	t.Run("uninstall with path separator", func(t *testing.T) {
-		skillName := "owner/repo/skill-name"
-		skillDir := filepath.Join(skillsDir, "skill-name")
-
-		// Create skill directory
-		os.MkdirAll(skillDir, 0o755)
-		os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("test"), 0o644)
-
-		if err := installer.Uninstall(skillName); err != nil {
-			t.Errorf("Uninstall() error = %v", err)
-		}
-
-		if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
-			t.Error("skill directory still exists after uninstall")
-		}
-	})
-
-	t.Run("uninstall with trailing slash", func(t *testing.T) {
-		skillName := "skill-name/"
-		skillDir := filepath.Join(skillsDir, "skill-name")
-
-		// Create skill directory
-		os.MkdirAll(skillDir, 0o755)
-		os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("test"), 0o644)
-
-		if err := installer.Uninstall(skillName); err != nil {
-			t.Errorf("Uninstall() error = %v", err)
-		}
-
-		if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
-			t.Error("skill directory still exists after uninstall")
-		}
-	})
+	skillDir := filepath.Join(tmpDir, "skills", "test-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := installer.Uninstall("test-skill"); err == nil || !strings.Contains(err.Error(), "authorized capability.remove") {
+		t.Fatalf("direct uninstall did not fail closed: %v", err)
+	}
+	if _, err := os.Stat(skillDir); err != nil {
+		t.Fatal("disabled direct uninstall modified the active Skill")
+	}
 }
 
 func TestSkillInstaller_InstallFromGitHub_SkillAlreadyExists(t *testing.T) {
@@ -736,8 +704,8 @@ func TestSkillInstaller_InstallFromGitHub_SkillAlreadyExists(t *testing.T) {
 	if err == nil {
 		t.Error("InstallFromGitHub() expected error for existing skill, got nil")
 	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("error message = %q, want 'already exists'", err.Error())
+	if !strings.Contains(err.Error(), "direct workspace Skill installation is disabled") {
+		t.Errorf("unexpected direct-install error: %q", err.Error())
 	}
 }
 
@@ -786,7 +754,21 @@ func TestSkillInstaller_GetGithubDirAllFiles(t *testing.T) {
 		}
 
 		// Return different responses based on path
-		if strings.Contains(r.URL.Path, "/contents") {
+		if strings.Contains(r.URL.Path, "/contents/scripts") {
+			// API response for scripts subdirectory
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+
+			items := []map[string]any{
+				{
+					"name":         "test.py",
+					"path":         "scripts/test.py",
+					"type":         "file",
+					"download_url": serverURL + "/download/test.py",
+				},
+			}
+			json.NewEncoder(w).Encode(items)
+		} else if strings.Contains(r.URL.Path, "/contents") {
 			// API response for directory listing
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -802,21 +784,7 @@ func TestSkillInstaller_GetGithubDirAllFiles(t *testing.T) {
 					"name": "scripts",
 					"path": "scripts",
 					"type": "dir",
-					"url":  serverURL + "/api/scripts",
-				},
-			}
-			json.NewEncoder(w).Encode(items)
-		} else if strings.Contains(r.URL.Path, "/api/scripts") {
-			// API response for scripts subdirectory
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-
-			items := []map[string]any{
-				{
-					"name":         "test.py",
-					"path":         "scripts/test.py",
-					"type":         "file",
-					"download_url": serverURL + "/download/test.py",
+					"url":  serverURL + "/contents/scripts",
 				},
 			}
 			json.NewEncoder(w).Encode(items)
@@ -830,6 +798,10 @@ func TestSkillInstaller_GetGithubDirAllFiles(t *testing.T) {
 	}))
 	serverURL = server.URL
 	defer server.Close()
+	installer.client, err = newRegistryHTTPClient(server.URL, "", "", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	localDir := filepath.Join(tmpDir, "test-skill")
 

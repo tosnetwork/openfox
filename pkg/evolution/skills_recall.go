@@ -32,6 +32,10 @@ func NewSkillsRecaller(workspace string) *SkillsRecaller {
 	}
 }
 
+func NewSkillsRecallerFromLoader(workspace string, loader *skills.SkillsLoader) *SkillsRecaller {
+	return &SkillsRecaller{workspace: workspace, loader: loader}
+}
+
 func (r *SkillsRecaller) RecallSimilarSkills(rule LearningRecord) ([]skills.SkillInfo, error) {
 	if r == nil || r.loader == nil {
 		return nil, nil

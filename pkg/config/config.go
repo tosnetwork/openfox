@@ -856,9 +856,20 @@ type EarningSettings struct {
 	Outcome                    EarningOutcomeSettings            `json:"outcome"`
 	AgentRelay                 EarningAgentRelaySettings         `json:"agent_relay"`
 	AgentGuarantor             EarningAgentGuarantorSettings     `json:"agent_guarantor"`
+	TrustedCapability          TrustedCapabilitySettings         `json:"trusted_capability"`
 	IntervalSeconds            uint32                            `json:"interval_seconds,omitempty"`
 	JitterSeconds              uint32                            `json:"jitter_seconds,omitempty"`
 	CycleTimeoutSeconds        uint32                            `json:"cycle_timeout_seconds,omitempty"`
+}
+
+type TrustedCapabilitySettings struct {
+	ProjectionDirectory           string `json:"projection_directory,omitempty"`
+	PublisherObservationDirectory string `json:"publisher_observation_directory,omitempty"`
+	ExecutionBundleDirectory      string `json:"execution_bundle_directory,omitempty"`
+	SinkJournalDirectory          string `json:"sink_journal_directory,omitempty"`
+	ControlAuthorityEndpoint      string `json:"control_authority_endpoint,omitempty"`
+	ControlAuthorityTokenFile     string `json:"control_authority_token_file,omitempty"`
+	ControlAuthorityPublicKey     string `json:"control_authority_public_key,omitempty"`
 }
 
 // EarningOutcomeSettings is a separate declassification switch. General
@@ -1894,6 +1905,9 @@ type MCPServerConfig struct {
 	URL string `json:"url,omitempty"`
 	// Headers are HTTP headers to send with requests (sse/http only)
 	Headers map[string]string `json:"headers,omitempty"`
+	// CapabilityAuthorizationFile is an owner-controlled immutable bundle. It
+	// is mandatory for enabled production MCP servers.
+	CapabilityAuthorizationFile string `json:"capability_authorization_file,omitempty"`
 }
 
 // MCPConfig defines configuration for all MCP servers

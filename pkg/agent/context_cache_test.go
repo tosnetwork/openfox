@@ -445,9 +445,9 @@ Updated content.`
 	}
 }
 
-// TestGlobalSkillFileContentChange verifies that modifying a global skill
-// (~/.openfox/skills) invalidates the cached system prompt.
-func TestGlobalSkillFileContentChange(t *testing.T) {
+// TestUnverifiedGlobalSkillCannotEnterPrompt verifies ambient legacy content
+// never becomes executable prompt or cache authority.
+func TestUnverifiedGlobalSkillCannotEnterPrompt(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
@@ -469,8 +469,8 @@ description: global-v1
 
 	cb := NewContextBuilder(tmpDir)
 	sp1 := cb.BuildSystemPromptWithCache()
-	if !strings.Contains(sp1, "global-v1") {
-		t.Fatal("expected initial prompt to contain global skill description")
+	if strings.Contains(sp1, "global-v1") {
+		t.Fatal("unverified global skill entered the system prompt")
 	}
 
 	v2 := `---
@@ -489,16 +489,13 @@ description: global-v2
 	cb.systemPromptMutex.RLock()
 	changed := cb.sourceFilesChangedLocked()
 	cb.systemPromptMutex.RUnlock()
-	if !changed {
-		t.Fatal("sourceFilesChangedLocked() should detect global skill file content change")
+	if changed {
+		t.Fatal("unverified global skill influenced prompt cache authority")
 	}
 
 	sp2 := cb.BuildSystemPromptWithCache()
-	if !strings.Contains(sp2, "global-v2") {
-		t.Error("rebuilt prompt should contain updated global skill description")
-	}
-	if sp1 == sp2 {
-		t.Error("cache should be invalidated when global skill file content changes")
+	if strings.Contains(sp2, "global-v2") || sp1 != sp2 {
+		t.Error("unverified global skill changed the system prompt")
 	}
 }
 

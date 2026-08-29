@@ -22,6 +22,8 @@ var isolatedCommandTerminateDuration = 5 * time.Second
 // process startup through pkg/isolation so Windows post-start hooks run too.
 type isolatedCommandTransport struct {
 	Command           *exec.Cmd
+	BeforeStart       func() error
+	Hermetic          bool
 	TerminateDuration time.Duration
 }
 
@@ -35,7 +37,17 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 	if err != nil {
 		return nil, err
 	}
-	if err := isolation.Start(t.Command); err != nil {
+	if t.BeforeStart == nil {
+		return nil, fmt.Errorf("isolated MCP start guard is required")
+	}
+	if err := t.BeforeStart(); err != nil {
+		return nil, fmt.Errorf("MCP authority changed before exec: %w", err)
+	}
+	start := isolation.Start
+	if t.Hermetic {
+		start = isolation.StartHermetic
+	}
+	if err := start(t.Command); err != nil {
 		return nil, err
 	}
 	td := t.TerminateDuration

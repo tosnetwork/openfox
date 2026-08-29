@@ -225,7 +225,7 @@ func runThreeRoleSeller(t *testing.T, spec threeRolePilotSpec, outputDirectory s
 		PolicyRevision: 1, LeaseLossPolicy: commercegate.LeaseLossKill}
 	deliverableDirectory := filepath.Join(outputDirectory, spec.Name+"-deliverables")
 	started := time.Now()
-	record, err = (ExecutionService{Engine: engine, Gate: gate, Prerequisite: funded{},
+	record, err = (ExecutionService{Engine: engine, Gate: gate, Prerequisite: funded{}, Capability: trustedCapabilityForTest{},
 		Runner: LLMTaskRunner{Provider: provider, Model: model, Agreement: body, OutputDirectory: deliverableDirectory}}).
 		Execute(context.Background(), digest, plan, 1, fence)
 	if err != nil {

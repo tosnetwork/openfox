@@ -1893,7 +1893,7 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 	before := campaignSkillNames(seller.cfg.WorkspacePath())
 	deliverableDirectory := filepath.Join(root, "campaign", "deliverables", seller.definition.Name)
 	executionStarted := time.Now()
-	record, err = (ExecutionService{Engine: sellerEngine, Gate: gate, Prerequisite: funded{}, Runner: LLMTaskRunner{
+	record, err = (ExecutionService{Engine: sellerEngine, Gate: gate, Prerequisite: funded{}, Capability: trustedCapabilityForTest{}, Runner: LLMTaskRunner{
 		Provider: seller.provider, Model: seller.model, Agreement: body, OutputDirectory: deliverableDirectory,
 		SkillWorkspace: seller.cfg.WorkspacePath(), Learning: seller.learning, AgentContext: seller.agentContext,
 	}}).Execute(ctx, digest, plan, 1, seller.fence)

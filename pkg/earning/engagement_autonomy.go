@@ -223,6 +223,7 @@ type EngagementAutonomy struct {
 	Planner        EngagementPlanner
 	Prerequisite   AdapterPrerequisitePolicy
 	Native         NativeExecutionAdmission
+	Capability     TrustedCapabilityExecutionAdmission
 	Gate           *commercegate.Gate
 	Scheduler      *SchedulerService
 	Runners        AgreementRunnerFactory
@@ -511,7 +512,7 @@ func (service EngagementAutonomy) processActiveEngagement(ctx context.Context, s
 			return false, err
 		}
 		executor := ExecutionService{Engine: service.Engine, Gate: service.Gate, Prerequisite: service.Prerequisite,
-			Native: service.Native, Runner: runner}
+			Native: service.Native, Capability: service.Capability, Runner: runner}
 		executed, executeErr := executor.Execute(ctx, snapshot.AgreementDigest, execution.ExecutionPlan, inventory.PolicyRevision, fence)
 		if executeErr != nil {
 			target := commerce.ScheduleAmbiguous

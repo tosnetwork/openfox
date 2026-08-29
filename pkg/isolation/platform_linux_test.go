@@ -4,7 +4,9 @@ package isolation
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tosnetwork/openfox/pkg/config"
@@ -144,5 +146,36 @@ func TestAppendLinuxArgumentMounts_AddsAbsoluteArgumentPaths(t *testing.T) {
 	}
 	if plan[1].Source != filepath.Dir(output) || plan[1].Mode != "rw" {
 		t.Fatalf("appendLinuxArgumentMounts()[1] = %+v, want source=%q mode=rw", plan[1], filepath.Dir(output))
+	}
+}
+
+func TestHermeticCapabilitySandboxHasNoNetworkOrInstanceMount(t *testing.T) {
+	fakeBin := t.TempDir()
+	fakeBwrap := filepath.Join(fakeBin, "bwrap")
+	if err := os.WriteFile(fakeBwrap, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin)
+	sealed, err := os.CreateTemp(t.TempDir(), "sealed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sealed.Close()
+	cmd := exec.Command("/proc/self/fd/3", "--compute")
+	cmd.ExtraFiles = []*os.File{sealed}
+	if err := applyHermeticPlatformIsolation(cmd); err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Path != trustedBubblewrapPath {
+		t.Fatalf("hermetic sandbox selected %q from ambient PATH, want %q", cmd.Path, trustedBubblewrapPath)
+	}
+	joined := strings.Join(cmd.Args, "\x00")
+	for _, required := range []string{"--unshare-all", "--new-session", "--ro-bind-fd", "/run/openfox/entrypoint"} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("hermetic bwrap args lack %q: %v", required, cmd.Args)
+		}
+	}
+	if strings.Contains(joined, config.GetHome()) || strings.Contains(joined, "/etc/resolv.conf") || strings.Contains(joined, "/etc/hosts") {
+		t.Fatalf("hermetic sandbox exposed instance or resolver state: %v", cmd.Args)
 	}
 }

@@ -1410,6 +1410,11 @@ func (rt *Runtime) applyCandidateDraft(
 	}
 
 	draft.Status = DraftStatusAccepted
+	if applier.quarantineOnly {
+		draft.Status = DraftStatusQuarantined
+		draft.ScanFindings = appendUniqueStrings(draft.ScanFindings,
+			"trusted capability control: draft retained in quarantine pending evaluation, Admission, and Promotion")
+	}
 	if saveErr := store.SaveDrafts([]SkillDraft{draft}); saveErr != nil {
 		logger.WarnCF("evolution", "Skill draft save failed after apply", map[string]any{
 			"workspace":    workspace,
@@ -1424,6 +1429,12 @@ func (rt *Runtime) applyCandidateDraft(
 		return draft, fmt.Errorf("%w: %v", ErrApplyDraftFailed, saveErr)
 	}
 
+	if draft.Status == DraftStatusQuarantined {
+		logger.InfoCF("evolution", "Quarantined skill draft pending trusted capability admission", map[string]any{
+			"workspace": workspace, "draft_id": draft.ID, "target_skill": draft.TargetSkillName, "run_id": runID,
+		})
+		return draft, nil
+	}
 	if err := rt.saveAppliedProfile(store, workspace, draft); err != nil {
 		logger.WarnCF("evolution", "Skill profile save failed after apply", map[string]any{
 			"workspace":    workspace,

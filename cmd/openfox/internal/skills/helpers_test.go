@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,12 +12,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 )
+
+type allowCLIacquisitionFence struct{}
+
+func (allowCLIacquisitionFence) AdmitCapabilityAcquisition(context.Context, capabilitycontrol.CapabilityAcquisitionRequest) error {
+	return nil
+}
 
 func TestSkillsInstallFromRegistryWritesOriginMetadata(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := config.DefaultConfig()
+	cfg.Earning.OwnerID, cfg.Earning.AgentID = "owner", "agent"
 	cfg.Agents.Defaults.Workspace = workspace
 
 	var server *httptest.Server
@@ -45,25 +54,19 @@ func TestSkillsInstallFromRegistryWritesOriginMetadata(t *testing.T) {
 	cfg.Tools.Skills.Registries.Set("github", githubRegistry)
 
 	target := server.URL + "/foo/bar/tree/master/.agents/skills/pr-review"
-	require.NoError(t, skillsInstallFromRegistry(cfg, "github", target))
+	require.NoError(t, skillsInstallFromRegistryWithFence(cfg, "github", target, allowCLIacquisitionFence{}))
 
-	metaPath := filepath.Join(workspace, "skills", "pr-review", ".skill-origin.json")
-	data, err := os.ReadFile(metaPath)
-	require.NoError(t, err)
-
-	var meta installedSkillOriginMeta
-	require.NoError(t, json.Unmarshal(data, &meta))
-	assert.Equal(t, "third_party", meta.OriginKind)
-	assert.Equal(t, "github", meta.Registry)
-	assert.Equal(t, "foo/bar/.agents/skills/pr-review", meta.Slug)
-	assert.Equal(t, server.URL+"/foo/bar/tree/master/.agents/skills/pr-review", meta.RegistryURL)
-	assert.Equal(t, "master", meta.InstalledVersion)
-	assert.NotZero(t, meta.InstalledAt)
+	matches, globErr := filepath.Glob(filepath.Join(workspace, "state", "trusted-capabilities", "quarantine", "*", ".skill-origin.json"))
+	require.NoError(t, globErr)
+	require.Empty(t, matches, "mutable origin metadata must not be retained inside the committed executable closure")
+	_, activeErr := os.Stat(filepath.Join(workspace, "skills", "pr-review", "SKILL.md"))
+	assert.True(t, os.IsNotExist(activeErr), "quarantined Skill must not be loader-visible")
 }
 
 func TestSkillsInstallFromRegistryRejectsInvalidSkillArchive(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := config.DefaultConfig()
+	cfg.Earning.OwnerID, cfg.Earning.AgentID = "owner", "agent"
 	cfg.Agents.Defaults.Workspace = workspace
 
 	var server *httptest.Server
@@ -91,7 +94,7 @@ func TestSkillsInstallFromRegistryRejectsInvalidSkillArchive(t *testing.T) {
 	cfg.Tools.Skills.Registries.Set("github", githubRegistry)
 
 	target := server.URL + "/foo/bar/tree/master/.agents/skills/pr-review"
-	err := skillsInstallFromRegistry(cfg, "github", target)
+	err := skillsInstallFromRegistryWithFence(cfg, "github", target, allowCLIacquisitionFence{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is not a valid skill")
 	_, statErr := os.Stat(filepath.Join(workspace, "skills", "pr-review"))
@@ -106,7 +109,7 @@ func TestSkillsRemoveFromWorkspaceRejectsDotTarget(t *testing.T) {
 
 	err := skillsRemoveFromWorkspace(workspace, config.DefaultConfig().Tools.Skills, ".")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid skill name")
+	assert.Contains(t, err.Error(), "direct Skill deletion is disabled")
 
 	_, statErr := os.Stat(skillsDir)
 	assert.NoError(t, statErr)
@@ -124,10 +127,10 @@ func TestSkillsRemoveFromWorkspaceUsesLastPathSegment(t *testing.T) {
 		config.DefaultConfig().Tools.Skills,
 		"https://github.com/foo/bar/tree/main/.agents/skills/pr-review",
 	)
-	require.NoError(t, err)
+	require.Error(t, err)
 
 	_, statErr := os.Stat(targetDir)
-	assert.True(t, os.IsNotExist(statErr))
+	assert.NoError(t, statErr)
 }
 
 func TestSkillsRemoveFromWorkspaceSupportsRepoRootGitHubBlobURL(t *testing.T) {
@@ -140,10 +143,10 @@ func TestSkillsRemoveFromWorkspaceSupportsRepoRootGitHubBlobURL(t *testing.T) {
 		config.DefaultConfig().Tools.Skills,
 		"https://github.com/foo/bar/blob/feature/skills-registry/SKILL.md",
 	)
-	require.NoError(t, err)
+	require.Error(t, err)
 
 	_, statErr := os.Stat(targetDir)
-	assert.True(t, os.IsNotExist(statErr))
+	assert.NoError(t, statErr)
 }
 
 func TestSkillsRemoveFromWorkspaceSupportsGitHubEnterpriseURL(t *testing.T) {
@@ -162,10 +165,10 @@ func TestSkillsRemoveFromWorkspaceSupportsGitHubEnterpriseURL(t *testing.T) {
 		cfg.Tools.Skills,
 		"https://ghe.example.com/git/foo/bar/tree/main/.agents/skills/pr-review",
 	)
-	require.NoError(t, err)
+	require.Error(t, err)
 
 	_, statErr := os.Stat(targetDir)
-	assert.True(t, os.IsNotExist(statErr))
+	assert.NoError(t, statErr)
 }
 
 func TestSkillsRemoveFromWorkspaceDoesNotRequireEnabledGitHubRegistry(t *testing.T) {
@@ -184,8 +187,8 @@ func TestSkillsRemoveFromWorkspaceDoesNotRequireEnabledGitHubRegistry(t *testing
 		cfg.Tools.Skills,
 		"https://github.com/foo/bar/tree/main/.agents/skills/pr-review",
 	)
-	require.NoError(t, err)
+	require.Error(t, err)
 
 	_, statErr := os.Stat(targetDir)
-	assert.True(t, os.IsNotExist(statErr))
+	assert.NoError(t, statErr)
 }

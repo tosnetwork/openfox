@@ -97,25 +97,19 @@ func getGlobalConfigDir() string {
 	return config.GetHome()
 }
 
+var runtimeSkillsLoaderFactory = func(string) *skills.SkillsLoader {
+	return skills.NewRuntimeSkillsLoader("")
+}
+
 func NewContextBuilder(workspace string) *ContextBuilder {
 	// builtin skills: skills directory in current project
 	// Use the skills/ directory under the current working directory
-	builtinSkillsDir := strings.TrimSpace(os.Getenv(config.EnvBuiltinSkills))
-	if builtinSkillsDir == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			// os.Getwd failure is extremely rare; fall back to empty
-			// string so that filepath.Join produces a relative "skills"
-			// path, preserving the original lookup behavior.
-			wd = ""
-		}
-		builtinSkillsDir = filepath.Join(wd, "skills")
-	}
-	globalSkillsDir := filepath.Join(getGlobalConfigDir(), "skills")
-
 	return &ContextBuilder{
-		workspace:      workspace,
-		skillsLoader:   skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),
+		workspace: workspace,
+		// Mutable working-directory and environment-selected paths are not
+		// build-pinned capabilities. Runtime Skills are supplied only by the
+		// admitted, lease-bound loader integration.
+		skillsLoader:   runtimeSkillsLoaderFactory(workspace),
 		memory:         NewMemoryStore(workspace),
 		promptRegistry: NewPromptRegistry(),
 	}

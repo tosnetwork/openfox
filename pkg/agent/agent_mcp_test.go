@@ -9,6 +9,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -269,7 +271,7 @@ func TestAgentHasDiscoverableMCPServers(t *testing.T) {
 	}
 }
 
-func TestEnsureMCPInitialized_LoadFailureSetsInitErr(t *testing.T) {
+func TestEnsureMCPInitialized_ControlAuthorityFailureSetsInitErr(t *testing.T) {
 	al, cfg, _, _, cleanup := newTestAgentLoop(t)
 	defer cleanup()
 	defer al.Close()
@@ -279,27 +281,41 @@ func TestEnsureMCPInitialized_LoadFailureSetsInitErr(t *testing.T) {
 			ToolConfig: config.ToolConfig{Enabled: true},
 			Servers: map[string]config.MCPServerConfig{
 				"broken": {
-					Enabled: true,
-					Command: "openfox-command-that-does-not-exist-for-mcp-tests",
+					Enabled:                     true,
+					Command:                     "openfox-command-that-does-not-exist-for-mcp-tests",
+					CapabilityAuthorizationFile: filepath.Join(t.TempDir(), "authorization.json"),
 				},
 			},
 		},
+	}
+	cfg.Earning.OwnerID = "owner:test"
+	cfg.Earning.AgentID = "agent:test"
+	tokenFile := filepath.Join(t.TempDir(), "authority.token")
+	if err := os.WriteFile(tokenFile, []byte("0123456789abcdef0123456789abcdef\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Earning.TrustedCapability = config.TrustedCapabilitySettings{
+		ProjectionDirectory:           t.TempDir(),
+		PublisherObservationDirectory: t.TempDir(),
+		ControlAuthorityEndpoint:      "https://127.0.0.1:1/v1/openfox-control-authority",
+		ControlAuthorityTokenFile:     tokenFile,
+		ControlAuthorityPublicKey:     "ed25519:" + strings.Repeat("11", 32),
 	}
 
 	err := al.ensureMCPInitialized(context.Background())
 	if err == nil {
 		t.Fatal("ensureMCPInitialized() error = nil, want load failure")
 	}
-	if !strings.Contains(err.Error(), "failed to load MCP servers") {
-		t.Fatalf("ensureMCPInitialized() error = %q, want wrapped load failure", err.Error())
+	if !strings.Contains(err.Error(), "trusted capability") {
+		t.Fatalf("ensureMCPInitialized() error = %q, want fail-closed authority failure", err.Error())
 	}
 
 	initErr := al.mcp.getInitErr()
 	if initErr == nil {
 		t.Fatal("getInitErr() = nil, want cached load failure")
 	}
-	if !strings.Contains(initErr.Error(), "failed to load MCP servers") {
-		t.Fatalf("getInitErr() = %q, want wrapped load failure", initErr.Error())
+	if !strings.Contains(initErr.Error(), "trusted capability") {
+		t.Fatalf("getInitErr() = %q, want fail-closed authority failure", initErr.Error())
 	}
 	if al.mcp.getManager() != nil {
 		t.Fatal("expected MCP manager to remain nil after load failure")
@@ -309,7 +325,7 @@ func TestEnsureMCPInitialized_LoadFailureSetsInitErr(t *testing.T) {
 	if err == nil {
 		t.Fatal("second ensureMCPInitialized() error = nil, want cached load failure")
 	}
-	if !strings.Contains(err.Error(), "failed to load MCP servers") {
-		t.Fatalf("second ensureMCPInitialized() error = %q, want wrapped load failure", err.Error())
+	if !strings.Contains(err.Error(), "trusted capability") {
+		t.Fatalf("second ensureMCPInitialized() error = %q, want cached authority failure", err.Error())
 	}
 }

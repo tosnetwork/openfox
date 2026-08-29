@@ -3,6 +3,7 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,8 +18,25 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 )
+
+type allowSkillsAcquisitionFence struct{}
+
+func (allowSkillsAcquisitionFence) AdmitCapabilityAcquisition(context.Context, capabilitycontrol.CapabilityAcquisitionRequest) error {
+	return nil
+}
+
+func newSkillsTestHandler(configPath string) *Handler {
+	if cfg, err := config.LoadConfig(configPath); err == nil {
+		cfg.Earning.OwnerID, cfg.Earning.AgentID = "test-owner", "test-agent"
+		_ = config.SaveConfig(configPath, cfg)
+	}
+	handler := NewHandler(configPath)
+	handler.capabilityAcquisitionFence = allowSkillsAcquisitionFence{}
+	return handler
+}
 
 func setClawHubBaseURL(cfg *config.Config, baseURL string) {
 	registryCfg, _ := cfg.Tools.Skills.Registries.Get("clawhub")
@@ -99,7 +117,7 @@ func TestHandleListSkills(t *testing.T) {
 		t.Fatalf("WriteFile(builtin skill) error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -175,7 +193,7 @@ func TestHandleGetSkill(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -230,7 +248,7 @@ func TestHandleGetSkillUsesResolvedPath(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -284,7 +302,7 @@ func TestHandleImportSkill(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -297,7 +315,17 @@ func TestHandleImportSkill(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	skillFile := filepath.Join(workspace, "skills", "plain-skill", "SKILL.md")
+	var imported skillSupportItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &imported); err != nil {
+		t.Fatal(err)
+	}
+	if imported.Source != "quarantine" {
+		t.Fatalf("source=%q", imported.Source)
+	}
+	if imported.QuarantineReceipt == nil || imported.QuarantineReceipt.Transition.Phase != "commit" {
+		t.Fatalf("manual import omitted its Inventory registration receipt: %#v", imported.QuarantineReceipt)
+	}
+	skillFile := imported.Path
 	content, err := os.ReadFile(skillFile)
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
@@ -306,16 +334,12 @@ func TestHandleImportSkill(t *testing.T) {
 	if string(content) != expected {
 		t.Fatalf("saved skill content mismatch:\n%s", string(content))
 	}
-	metaContent, err := os.ReadFile(filepath.Join(workspace, "skills", "plain-skill", ".skill-origin.json"))
-	if err != nil {
-		t.Fatalf("ReadFile(origin metadata) error = %v", err)
+	if _, err := os.Stat(filepath.Join(filepath.Dir(skillFile), ".skill-origin.json")); !os.IsNotExist(err) {
+		t.Fatalf("mutable origin metadata entered the retained executable closure: %v", err)
 	}
-	var originMeta installedSkillOriginMeta
-	if err := json.Unmarshal(metaContent, &originMeta); err != nil {
-		t.Fatalf("Unmarshal(origin metadata) error = %v", err)
-	}
-	if originMeta.OriginKind != "manual" {
-		t.Fatalf("originMeta.OriginKind = %q, want manual", originMeta.OriginKind)
+	ledger, err := os.ReadFile(filepath.Join(workspace, "state", "trusted-capabilities", "quarantine", "quarantine-ledger.json"))
+	if err != nil || !bytes.Contains(ledger, []byte(`"source_id":"manual-upload"`)) {
+		t.Fatalf("authoritative quarantine provenance missing from ledger: %v", err)
 	}
 
 	rec2 := httptest.NewRecorder()
@@ -328,14 +352,8 @@ func TestHandleImportSkill(t *testing.T) {
 	if err := json.Unmarshal(rec2.Body.Bytes(), &listResp); err != nil {
 		t.Fatalf("Unmarshal list response error = %v", err)
 	}
-	found := false
-	for _, skill := range listResp.Skills {
-		if skill.Name == "plain-skill" && skill.Source == "workspace" && skill.Description == "Plain Skill" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("plain-skill should be listed after import, got %#v", listResp.Skills)
+	if len(listResp.Skills) != 0 {
+		t.Fatalf("quarantined import became loader-visible: %#v", listResp.Skills)
 	}
 }
 
@@ -371,7 +389,7 @@ func TestHandleImportSkillZip(t *testing.T) {
 		t.Fatalf("Close() error = %v", closeErr)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -384,7 +402,11 @@ func TestHandleImportSkillZip(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	skillDir := filepath.Join(workspace, "skills", "wrapped-skill")
+	var imported skillSupportItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &imported); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Dir(imported.Path)
 	skillFile := filepath.Join(skillDir, "SKILL.md")
 	content, err := os.ReadFile(skillFile)
 	if err != nil {
@@ -436,7 +458,7 @@ func TestHandleImportSkillZipRejectsArchiveWithoutSkill(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -488,7 +510,7 @@ func TestHandleImportSkillRollsBackOnOriginMetadataWriteFailure(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -533,7 +555,7 @@ func TestHandleDeleteSkill(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -541,11 +563,11 @@ func TestHandleDeleteSkill(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/api/skills/delete-me", nil)
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
-	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
-		t.Fatalf("skill directory should be removed, stat err=%v", err)
+	if _, err := os.Stat(skillDir); err != nil {
+		t.Fatalf("unauthorized deletion changed skill directory, stat err=%v", err)
 	}
 }
 
@@ -589,7 +611,7 @@ func TestHandleDeleteSkillPrefersWorkspaceMatch(t *testing.T) {
 		t.Fatalf("WriteFile(global) error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -597,11 +619,11 @@ func TestHandleDeleteSkillPrefersWorkspaceMatch(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/api/skills/delete-me", nil)
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
-	if _, err := os.Stat(workspaceSkillDir); !os.IsNotExist(err) {
-		t.Fatalf("workspace skill directory should be removed, stat err=%v", err)
+	if _, err := os.Stat(workspaceSkillDir); err != nil {
+		t.Fatalf("unauthorized deletion changed workspace skill, stat err=%v", err)
 	}
 	if _, err := os.Stat(globalSkillDir); err != nil {
 		t.Fatalf("global skill directory should remain, stat err=%v", err)
@@ -665,7 +687,7 @@ func TestHandleSearchSkills(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -746,7 +768,7 @@ func TestHandleSearchSkillsUsesGitHubResultVersionInURL(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -799,7 +821,7 @@ func TestHandleSearchSkillsGitHubRateLimitDegradesGracefully(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -880,7 +902,7 @@ func TestHandleSearchSkillsPagination(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -955,7 +977,7 @@ func TestHandleSearchSkillsClampsRegistryFanout(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -1038,7 +1060,7 @@ func TestHandleInstallSkill(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", saveErr)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -1063,42 +1085,32 @@ func TestHandleInstallSkill(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if resp.Status != "ok" || resp.Version != "1.2.3" || resp.InstalledSkill == nil {
+	if resp.Status != "quarantined-pending-admission" || resp.Version != "1.2.3" || resp.InstalledSkill != nil {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
-	if resp.InstalledSkill.OriginKind != "third_party" {
-		t.Fatalf("resp.InstalledSkill.OriginKind = %q, want third_party", resp.InstalledSkill.OriginKind)
-	}
-	if resp.InstalledSkill.RegistryURL != server.URL+"/skills/github" {
-		t.Fatalf(
-			"resp.InstalledSkill.RegistryURL = %q, want %q",
-			resp.InstalledSkill.RegistryURL,
-			server.URL+"/skills/github",
-		)
+	if resp.Receipt == nil || resp.Receipt.Transition.Phase != "commit" {
+		t.Fatalf("registry acquisition omitted its Inventory registration receipt: %#v", resp.Receipt)
 	}
 
 	skillFile := filepath.Join(workspace, "skills", "github", "SKILL.md")
-	if _, err := os.Stat(skillFile); err != nil {
-		t.Fatalf("installed skill file missing: %v", err)
+	if _, err := os.Stat(skillFile); !os.IsNotExist(err) {
+		t.Fatalf("quarantined skill became active: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(workspace, "skills", "github", ".skill-origin.json")); err != nil {
-		t.Fatalf("origin metadata missing: %v", err)
+	quarantineLedger, err := os.ReadFile(filepath.Join(workspace, "state", "trusted-capabilities", "quarantine", "quarantine-ledger.json"))
+	if err != nil || !bytes.Contains(quarantineLedger, []byte(`"source_id":"registry:clawhub"`)) {
+		t.Fatalf("registry provenance missing from authoritative quarantine ledger: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(workspace, "state", "trusted-capabilities", "quarantine", "*", ".skill-origin.json"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("mutable provenance entered the executable closure: %v %v", matches, err)
 	}
 
 	detailRec := httptest.NewRecorder()
 	detailReq := httptest.NewRequest(http.MethodGet, "/api/skills/github", nil)
 	mux.ServeHTTP(detailRec, detailReq)
 
-	if detailRec.Code != http.StatusOK {
-		t.Fatalf("detail status = %d, want %d, body=%s", detailRec.Code, http.StatusOK, detailRec.Body.String())
-	}
-
-	var detailResp skillDetailResponse
-	if err := json.Unmarshal(detailRec.Body.Bytes(), &detailResp); err != nil {
-		t.Fatalf("Unmarshal(detail response) error = %v", err)
-	}
-	if detailResp.RegistryURL != server.URL+"/skills/github" {
-		t.Fatalf("detailResp.RegistryURL = %q, want %q", detailResp.RegistryURL, server.URL+"/skills/github")
+	if detailRec.Code != http.StatusNotFound {
+		t.Fatalf("detail status = %d, want %d, body=%s", detailRec.Code, http.StatusNotFound, detailRec.Body.String())
 	}
 
 	searchRec := httptest.NewRecorder()
@@ -1116,8 +1128,8 @@ func TestHandleInstallSkill(t *testing.T) {
 	if len(searchResp.Results) != 1 {
 		t.Fatalf("search results count = %d, want 1", len(searchResp.Results))
 	}
-	if !searchResp.Results[0].Installed || searchResp.Results[0].InstalledName != "github" {
-		t.Fatalf("search result should be treated as installed after registry install, got %#v", searchResp.Results[0])
+	if searchResp.Results[0].Installed || searchResp.Results[0].InstalledName != "" {
+		t.Fatalf("quarantined result must not be treated as installed, got %#v", searchResp.Results[0])
 	}
 }
 
@@ -1172,7 +1184,7 @@ func TestHandleInstallSkillForcePreservesExistingSkillOnFailure(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", saveErr)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -1249,7 +1261,7 @@ func TestHandleInstallSkillDefaultsRegistryToGitHub(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", saveErr)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -1330,7 +1342,7 @@ func TestHandleInstallSkillTracksGitHubURLInstallsAsInstalled(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", saveErr)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -1365,8 +1377,8 @@ func TestHandleInstallSkillTracksGitHubURLInstallsAsInstalled(t *testing.T) {
 	if len(searchResp.Results) != 1 {
 		t.Fatalf("search results count = %d, want 1", len(searchResp.Results))
 	}
-	if !searchResp.Results[0].Installed || searchResp.Results[0].InstalledName != "pr-review" {
-		t.Fatalf("search result should be treated as installed after URL install, got %#v", searchResp.Results[0])
+	if searchResp.Results[0].Installed || searchResp.Results[0].InstalledName != "" {
+		t.Fatalf("quarantined result must not be treated as installed, got %#v", searchResp.Results[0])
 	}
 }
 
@@ -1429,7 +1441,7 @@ func TestHandleSearchSkillsMarksDirectoryCollisionAsInstalled(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", saveErr)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -1505,7 +1517,7 @@ func TestHandleInstallSkillRollsBackOnOriginMetadataWriteFailure(t *testing.T) {
 		persistSkillOriginMeta = previousPersist
 	}()
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -1585,7 +1597,7 @@ func TestHandleInstallSkillSerializesConcurrentRequests(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", saveErr)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -1634,11 +1646,7 @@ func TestHandleInstallSkillSerializesConcurrentRequests(t *testing.T) {
 	firstResult := <-results
 	secondResult := <-results
 
-	codes := map[int]int{
-		firstResult.code:  1,
-		secondResult.code: 1,
-	}
-	if codes[http.StatusOK] != 1 || codes[http.StatusConflict] != 1 {
+	if firstResult.code != http.StatusOK || secondResult.code != http.StatusOK {
 		t.Fatalf(
 			"unexpected install results: first=(%d, %q) second=(%d, %q)",
 			firstResult.code,
@@ -1698,7 +1706,7 @@ func TestHandleImportSkillWaitsForConcurrentInstall(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", saveErr)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -1766,8 +1774,8 @@ func TestHandleImportSkillWaitsForConcurrentInstall(t *testing.T) {
 	if installResult.code != http.StatusOK {
 		t.Fatalf("install status = %d, want %d, body=%s", installResult.code, http.StatusOK, installResult.body)
 	}
-	if importResult.code != http.StatusConflict {
-		t.Fatalf("import status = %d, want %d, body=%s", importResult.code, http.StatusConflict, importResult.body)
+	if importResult.code != http.StatusOK {
+		t.Fatalf("import status = %d, want %d, body=%s", importResult.code, http.StatusOK, importResult.body)
 	}
 }
 
@@ -1815,7 +1823,7 @@ func TestHandleInstallSkillRejectsInvalidArchive(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", saveErr)
 	}
 
-	h := NewHandler(configPath)
+	h := newSkillsTestHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

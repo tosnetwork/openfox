@@ -13,7 +13,7 @@ import (
 
 func TestApplier_CreateDraftWritesSkillFile(t *testing.T) {
 	workspace := t.TempDir()
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -45,7 +45,7 @@ func TestApplier_CreateDraftWritesSkillFile(t *testing.T) {
 
 func TestApplier_CreateDraftRendersDeployableSkillWithoutLearningTrace(t *testing.T) {
 	workspace := t.TempDir()
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -120,7 +120,7 @@ func TestApplierAcceptsGeneratedDescriptionContainingColon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1_700_000_000, 0).UTC()
 	})
 	if err := applier.ApplyDraft(context.Background(), workspace, draft); err != nil {
@@ -130,7 +130,7 @@ func TestApplierAcceptsGeneratedDescriptionContainingColon(t *testing.T) {
 
 func TestApplier_CreateDraftDoesNotRewriteEvolutionDomainTextOrFrontmatter(t *testing.T) {
 	workspace := t.TempDir()
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -178,7 +178,7 @@ func TestApplier_CreateDraftFailsWhenSkillAlreadyExists(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -212,7 +212,7 @@ func TestApplier_CreateDraftFailsWhenSkillAlreadyExists(t *testing.T) {
 
 func TestApplier_CreateDraftRejectsMismatchedFrontmatterName(t *testing.T) {
 	workspace := t.TempDir()
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -251,7 +251,7 @@ func TestApplier_RollsBackOnInvalidSkillBody(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -283,7 +283,7 @@ func TestApplier_RollsBackOnInvalidSkillBody(t *testing.T) {
 
 func TestApplier_FailedNewSkillDoesNotLeaveEmptyDirectory(t *testing.T) {
 	workspace := t.TempDir()
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -316,7 +316,7 @@ func TestApplier_FailedNewSkillDoesNotLeaveEmptyDirectory(t *testing.T) {
 
 func TestApplier_ReplaceDraftFailsWhenSkillDoesNotExist(t *testing.T) {
 	workspace := t.TempDir()
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -357,7 +357,7 @@ func TestApplier_AppendDraftPreservesOriginalBody(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -416,7 +416,7 @@ func TestApplier_AppendDraftAllowsExistingExtraFrontmatterFields(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -456,7 +456,7 @@ func TestApplier_AppendDraftAllowsExistingExtraFrontmatterFields(t *testing.T) {
 
 func TestApplier_CreateDraftRejectsExtraFrontmatterFields(t *testing.T) {
 	workspace := t.TempDir()
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -492,7 +492,7 @@ func TestApplier_AppendDraftDoesNotRewriteExistingLearningTerms(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -542,7 +542,7 @@ func TestApplier_AppendDraftStripsPlainMarkdownTopLevelHeading(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -588,7 +588,7 @@ func TestApplier_AppendAndMergeRejectFullDocumentPatchWithMismatchedName(t *test
 				t.Fatalf("WriteFile: %v", err)
 			}
 
-			applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+			applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 				return time.Unix(1700000000, 0).UTC()
 			})
 
@@ -631,7 +631,7 @@ func TestApplier_AppendDraftStripsFullSkillDocumentPatch(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -686,7 +686,7 @@ func TestApplier_BackupsAreScopedByWorkspace(t *testing.T) {
 	}
 
 	for _, workspace := range []string{workspaceA, workspaceB} {
-		applier := evolution.NewApplier(evolution.NewPaths(workspace, sharedState), func() time.Time {
+		applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, sharedState), func() time.Time {
 			return now
 		})
 		if err := applier.ApplyDraft(context.Background(), workspace, evolution.SkillDraft{
@@ -745,7 +745,7 @@ func TestApplier_MergeDraftAddsMergedKnowledgeSection(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 
@@ -782,7 +782,7 @@ func TestApplier_MergeDraftAddsMergedKnowledgeSection(t *testing.T) {
 
 func TestApplier_RejectsInvalidSkillName(t *testing.T) {
 	workspace := t.TempDir()
-	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
+	applier := evolution.NewUnsafeApplierForTest(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})
 

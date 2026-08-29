@@ -22,12 +22,14 @@ import (
 
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
 	openfoxagent "github.com/tosnetwork/openfox/pkg/agent"
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
 	"github.com/tosnetwork/openfox/pkg/providers"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 	"github.com/tosnetwork/tos-service-protocol/pkg/paiddemand"
+	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 func NewCommand() *cobra.Command {
@@ -719,6 +721,26 @@ func runCommand() *cobra.Command {
 						Prerequisite: prerequisite, Gate: gate, Fence: fenceSource,
 						Scheduler: &openfoxearning.SchedulerService{Authority: authority, OwnerID: cfg.Earning.OwnerID,
 							AgentID: cfg.Earning.AgentID, MandateDigest: cfg.Earning.MandateDigest}}
+					if cfg.Earning.Gates.Execution {
+						capabilitySettings := cfg.Earning.TrustedCapability
+						controlAuthority, authorityErr := capabilitycontrol.OpenHTTPSControlAuthorityFromFile(capabilitySettings.ControlAuthorityEndpoint, capabilitySettings.ControlAuthorityTokenFile, capabilitySettings.ControlAuthorityPublicKey)
+						if authorityErr != nil {
+							return fmt.Errorf("external trusted capability authority startup failed: %w", authorityErr)
+						}
+						capabilityStore, capabilityAuthority, capabilityErr := capabilitycontrol.OpenProduction(capabilitycontrol.ProductionStoreOptions{
+							ProjectionRoot:                capabilitySettings.ProjectionDirectory,
+							PublisherObservationDirectory: capabilitySettings.PublisherObservationDirectory,
+							DomainKind:                    trusted.DomainOwnerLocal,
+							DomainID:                      []byte(cfg.Earning.OwnerID), OwnerID: []byte(cfg.Earning.OwnerID), AgentID: []byte(cfg.Earning.AgentID), Authority: controlAuthority})
+						if capabilityErr != nil {
+							_ = controlAuthority.Close()
+							return fmt.Errorf("trusted capability runtime startup failed: %w", capabilityErr)
+						}
+						defer capabilityStore.Close()
+						defer capabilityAuthority.Close()
+						engagementAutonomy.Capability = openfoxearning.ProductionTrustedCapabilityAdmission{Store: capabilityStore,
+							BundleDirectory: capabilitySettings.ExecutionBundleDirectory}
+					}
 					if paidDemand != nil {
 						engagementAutonomy.Native = openfoxearning.PaidDemandNativeGate{
 							Directory: filepath.Join(cfg.Earning.StateDir, "paid-demand-native-gate"), Store: paidDemand.Negotiations,

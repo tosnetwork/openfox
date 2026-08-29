@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	"github.com/tosnetwork/openfox/pkg/skills"
@@ -29,15 +31,16 @@ type skillSupportResponse struct {
 }
 
 type skillSupportItem struct {
-	Name             string `json:"name"`
-	Path             string `json:"path"`
-	Source           string `json:"source"`
-	Description      string `json:"description"`
-	OriginKind       string `json:"origin_kind"`
-	RegistryName     string `json:"registry_name,omitempty"`
-	RegistryURL      string `json:"registry_url,omitempty"`
-	InstalledVersion string `json:"installed_version,omitempty"`
-	InstalledAt      int64  `json:"installed_at,omitempty"`
+	Name              string                                     `json:"name"`
+	Path              string                                     `json:"path"`
+	Source            string                                     `json:"source"`
+	Description       string                                     `json:"description"`
+	OriginKind        string                                     `json:"origin_kind"`
+	RegistryName      string                                     `json:"registry_name,omitempty"`
+	RegistryURL       string                                     `json:"registry_url,omitempty"`
+	InstalledVersion  string                                     `json:"installed_version,omitempty"`
+	InstalledAt       int64                                      `json:"installed_at,omitempty"`
+	QuarantineReceipt *capabilitycontrol.QuarantineCommitReceipt `json:"quarantine_receipt,omitempty"`
 }
 
 type skillDetailResponse struct {
@@ -73,13 +76,14 @@ type installSkillRequest struct {
 }
 
 type installSkillResponse struct {
-	Status         string            `json:"status"`
-	Slug           string            `json:"slug"`
-	Registry       string            `json:"registry"`
-	Version        string            `json:"version"`
-	Summary        string            `json:"summary,omitempty"`
-	IsSuspicious   bool              `json:"is_suspicious,omitempty"`
-	InstalledSkill *skillSupportItem `json:"skill,omitempty"`
+	Status         string                                     `json:"status"`
+	Slug           string                                     `json:"slug"`
+	Registry       string                                     `json:"registry"`
+	Version        string                                     `json:"version"`
+	Summary        string                                     `json:"summary,omitempty"`
+	IsSuspicious   bool                                       `json:"is_suspicious,omitempty"`
+	InstalledSkill *skillSupportItem                          `json:"skill,omitempty"`
+	Receipt        *capabilitycontrol.QuarantineCommitReceipt `json:"quarantine_receipt,omitempty"`
 }
 
 type installedSkillOriginMeta struct {
@@ -326,7 +330,6 @@ func (h *Handler) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid slug %q: error: %s", req.Slug, err.Error()), http.StatusBadRequest)
 		return
 	}
-
 	workspace := cfg.WorkspacePath()
 	skillsRoot := filepath.Join(workspace, "skills")
 	targetDir := filepath.Join(workspace, "skills", dirName)
@@ -350,12 +353,36 @@ func (h *Handler) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stagedWorkspaceRoot, stagedTargetDir, err := createStagedSkillInstall(skillsRoot, dirName)
+	quarantineRoot := filepath.Join(workspace, "state", "trusted-capabilities", "quarantine")
+	fence, err := h.capabilityAcquisitionAuthority(cfg)
+	if err != nil {
+		http.Error(w, "Owner control currently forbids Skill acquisition", http.StatusConflict)
+		return
+	}
+	ledger, err := capabilitycontrol.OpenQuarantineLedger(quarantineRoot, time.Now, fence, []byte(cfg.Earning.OwnerID), []byte(cfg.Earning.AgentID))
+	if err != nil {
+		http.Error(w, "Capability quarantine accounting is unavailable", http.StatusConflict)
+		return
+	}
+	defer ledger.Close()
+	principalDigest := sha256.Sum256([]byte(filepath.Clean(workspace)))
+	reservation, err := ledger.Reserve(r.Context(), fmt.Sprintf("web:%x", principalDigest[:]), "registry:"+registry.Name(), 1)
+	if err != nil {
+		http.Error(w, "Owner control currently forbids Skill acquisition", http.StatusConflict)
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = ledger.Abort(reservation.ID)
+		}
+	}()
+	stagedTargetDir, err := os.MkdirTemp(quarantineRoot, ".web-download-"+dirName+"-")
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to prepare staged install: %v", err), http.StatusInternalServerError)
 		return
 	}
-	defer os.RemoveAll(stagedWorkspaceRoot)
+	defer os.RemoveAll(stagedTargetDir)
 
 	result, err := registry.DownloadAndInstall(r.Context(), req.Slug, req.Version, stagedTargetDir)
 	if err != nil {
@@ -371,7 +398,7 @@ func (h *Handler) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if findWorkspaceSkillInfoByDirectory(stagedWorkspaceRoot, dirName) == nil {
+	if _, validateErr := skills.ValidateSkillDirectory(stagedTargetDir); validateErr != nil {
 		http.Error(
 			w,
 			fmt.Sprintf("Failed to install skill: registry archive for %q is not a valid skill", req.Slug),
@@ -395,47 +422,28 @@ func (h *Handler) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := commitStagedSkillInstall(
-		stagedWorkspaceRoot,
-		stagedTargetDir,
-		targetDir,
-		req.Force && targetExists,
-	); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to activate installed skill: %v", err), http.StatusInternalServerError)
+	artifactDigest, err := capabilitycontrol.HashTree(stagedTargetDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to hash quarantined skill: %v", err), http.StatusBadGateway)
 		return
 	}
-
-	validatedSkill := findWorkspaceSkillByDirectory(cfg, dirName)
-	if validatedSkill == nil {
-		http.Error(
-			w,
-			fmt.Sprintf("Failed to install skill: activated archive for %q is not a valid skill", req.Slug),
-			http.StatusBadGateway,
-		)
+	_, receipt, err := ledger.Commit(r.Context(), reservation.ID, stagedTargetDir, artifactDigest)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to retain capability quarantine: %v", err), http.StatusInternalServerError)
 		return
 	}
-
-	installedSkill := &skillSupportItem{
-		Name:             validatedSkill.Name,
-		Path:             validatedSkill.Path,
-		Source:           validatedSkill.Source,
-		Description:      validatedSkill.Description,
-		OriginKind:       "third_party",
-		RegistryName:     registry.Name(),
-		RegistryURL:      registryURL,
-		InstalledVersion: result.Version,
-		InstalledAt:      installedAt,
-	}
+	committed = true
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(installSkillResponse{
-		Status:         "ok",
+		Status:         "quarantined-pending-admission",
 		Slug:           req.Slug,
 		Registry:       registry.Name(),
 		Version:        result.Version,
-		Summary:        result.Summary,
+		Summary:        result.Summary + " (downloaded to quarantine; not active)",
 		IsSuspicious:   result.IsSuspicious,
-		InstalledSkill: installedSkill,
+		InstalledSkill: nil,
+		Receipt:        &receipt,
 	})
 }
 
@@ -445,13 +453,38 @@ func (h *Handler) handleImportSkill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to load config: %v", err), http.StatusInternalServerError)
 		return
 	}
+	workspaceSkillWriteMu.Lock()
+	defer workspaceSkillWriteMu.Unlock()
+	fence, err := h.capabilityAcquisitionAuthority(cfg)
+	if err != nil {
+		http.Error(w, "Owner control currently forbids Skill import", http.StatusConflict)
+		return
+	}
+	quarantineRoot := filepath.Join(cfg.WorkspacePath(), "state", "trusted-capabilities", "quarantine")
+	ledger, err := capabilitycontrol.OpenQuarantineLedger(quarantineRoot, time.Now, fence, []byte(cfg.Earning.OwnerID), []byte(cfg.Earning.AgentID))
+	if err != nil {
+		http.Error(w, "Capability quarantine accounting is unavailable", http.StatusConflict)
+		return
+	}
+	defer ledger.Close()
+	principalDigest := sha256.Sum256([]byte(filepath.Clean(cfg.WorkspacePath())))
+	reservation, err := ledger.Reserve(r.Context(), fmt.Sprintf("web:%x", principalDigest[:]), "manual-upload", 1)
+	if err != nil {
+		http.Error(w, "Owner control currently forbids Skill import", http.StatusConflict)
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = ledger.Abort(reservation.ID)
+		}
+	}()
 
 	err = r.ParseMultipartForm(2 << 20)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Invalid multipart form: %v", err), http.StatusBadRequest)
 		return
 	}
-
 	uploadedFile, fileHeader, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, "file is required", http.StatusBadRequest)
@@ -468,54 +501,26 @@ func (h *Handler) handleImportSkill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "file exceeds 1MB limit", http.StatusBadRequest)
 		return
 	}
-	workspaceSkillWriteMu.Lock()
-	defer workspaceSkillWriteMu.Unlock()
-
-	importedSkill, statusCode, err := importUploadedSkill(cfg, fileHeader.Filename, content)
+	importedSkill, stagedPath, artifactDigest, statusCode, err := importUploadedSkill(cfg, quarantineRoot, fileHeader.Filename, content)
 	if err != nil {
 		http.Error(w, err.Error(), statusCode)
 		return
 	}
+	finalDir, receipt, err := ledger.Commit(r.Context(), reservation.ID, stagedPath, artifactDigest)
+	if err != nil {
+		http.Error(w, "Owner control fenced the Skill import commit", http.StatusConflict)
+		return
+	}
+	committed = true
+	importedSkill.Path = filepath.Join(finalDir, "SKILL.md")
+	importedSkill.QuarantineReceipt = &receipt
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(importedSkill)
 }
 
 func (h *Handler) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.LoadConfig(h.configPath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to load config: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	loader := newSkillsLoader(cfg.WorkspacePath())
-	name := r.PathValue("name")
-	workspaceSkillWriteMu.Lock()
-	defer workspaceSkillWriteMu.Unlock()
-
-	var matchedNonWorkspace bool
-	for _, skill := range loader.ListSkills() {
-		if skill.Name != name {
-			continue
-		}
-		if skill.Source != "workspace" {
-			matchedNonWorkspace = true
-			continue
-		}
-		if err := os.RemoveAll(filepath.Dir(skill.Path)); err != nil {
-			http.Error(w, fmt.Sprintf("Failed to delete skill: %v", err), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-		return
-	}
-	if matchedNonWorkspace {
-		http.Error(w, "only workspace skills can be deleted", http.StatusBadRequest)
-		return
-	}
-
-	http.Error(w, "Skill not found", http.StatusNotFound)
+	http.Error(w, "direct Skill deletion is disabled; submit an authorized capability.remove action", http.StatusForbidden)
 }
 
 func newSkillsLoader(workspace string) *skills.SkillsLoader {
@@ -528,6 +533,22 @@ func newSkillsLoader(workspace string) *skills.SkillsLoader {
 
 func newSkillsRegistryManager(cfg *config.Config) *skills.RegistryManager {
 	return skills.NewRegistryManagerFromToolsConfig(cfg.Tools.Skills)
+}
+
+func (h *Handler) capabilityAcquisitionAuthority(cfg *config.Config) (capabilitycontrol.CapabilityAcquisitionFence, error) {
+	if h.capabilityAcquisitionFence != nil {
+		return h.capabilityAcquisitionFence, nil
+	}
+	if _, err := h.capabilityStore(); err != nil {
+		return nil, err
+	}
+	h.capabilityMu.Lock()
+	authority := h.capabilityAuthority
+	h.capabilityMu.Unlock()
+	if authority == nil {
+		return nil, errors.New("external capability acquisition fence is unavailable")
+	}
+	return authority, nil
 }
 
 func ensureSkillRegistryToolEnabled(cfg *config.Config, toolName string) error {
@@ -839,64 +860,67 @@ func normalizeImportedSkillContent(content []byte, skillName string) []byte {
 	return []byte(builder.String())
 }
 
-func importUploadedSkill(cfg *config.Config, filename string, content []byte) (*skillSupportItem, int, error) {
+func importUploadedSkill(cfg *config.Config, quarantineRoot, filename string, content []byte) (*skillSupportItem, string, []byte, int, error) {
 	if isImportedSkillArchive(filename, content) {
-		return importUploadedSkillArchive(cfg, filename, content)
+		return importUploadedSkillArchive(cfg, quarantineRoot, filename, content)
 	}
-	return importUploadedMarkdownSkill(cfg, filename, content)
+	return importUploadedMarkdownSkill(cfg, quarantineRoot, filename, content)
 }
 
-func importUploadedMarkdownSkill(cfg *config.Config, filename string, content []byte) (*skillSupportItem, int, error) {
+func importUploadedMarkdownSkill(cfg *config.Config, quarantineRoot, filename string, content []byte) (*skillSupportItem, string, []byte, int, error) {
 	skillName, err := normalizeImportedSkillName(filename, content)
 	if err != nil {
-		return nil, http.StatusBadRequest, err
+		return nil, "", nil, http.StatusBadRequest, err
 	}
 
 	normalizedContent := normalizeImportedSkillContent(content, skillName)
 	workspace := cfg.WorkspacePath()
-	skillDir := filepath.Join(workspace, "skills", skillName)
+	activeSkillDir := filepath.Join(workspace, "skills", skillName)
+	if err := ensureWorkspaceSkillDoesNotExist(activeSkillDir); err != nil {
+		return nil, "", nil, statusCodeForImportedSkillWriteError(err), err
+	}
+	if err := os.MkdirAll(quarantineRoot, 0o700); err != nil {
+		return nil, "", nil, http.StatusInternalServerError, err
+	}
+	skillDir, err := os.MkdirTemp(quarantineRoot, ".import-")
+	if err != nil {
+		return nil, "", nil, http.StatusInternalServerError, err
+	}
 	skillFile := filepath.Join(skillDir, "SKILL.md")
-
-	if err := ensureWorkspaceSkillDoesNotExist(skillDir); err != nil {
-		return nil, statusCodeForImportedSkillWriteError(err), err
-	}
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to create skill directory: %v", err)
-	}
 	if err := fileutil.WriteFileAtomic(skillFile, normalizedContent, 0o644); err != nil {
 		_ = os.RemoveAll(skillDir)
-		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to save skill: %v", err)
+		return nil, "", nil, http.StatusInternalServerError, fmt.Errorf("Failed to save skill: %v", err)
 	}
 
 	return finalizeImportedSkill(cfg, skillDir, skillName, false)
 }
 
-func importUploadedSkillArchive(cfg *config.Config, filename string, content []byte) (*skillSupportItem, int, error) {
+func importUploadedSkillArchive(cfg *config.Config, quarantineRoot, filename string, content []byte) (*skillSupportItem, string, []byte, int, error) {
 	tmpDir, tempDirErr := os.MkdirTemp("", "openfox-skill-import-*")
 	if tempDirErr != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to create temp directory: %v", tempDirErr)
+		return nil, "", nil, http.StatusInternalServerError, fmt.Errorf("Failed to create temp directory: %v", tempDirErr)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	archivePath := filepath.Join(tmpDir, "import.zip")
 	if writeErr := fileutil.WriteFileAtomic(archivePath, content, 0o600); writeErr != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to stage uploaded archive: %v", writeErr)
+		return nil, "", nil, http.StatusInternalServerError, fmt.Errorf("Failed to stage uploaded archive: %v", writeErr)
 	}
 
 	extractDir := filepath.Join(tmpDir, "extract")
 	if extractErr := utils.ExtractZipFile(archivePath, extractDir); extractErr != nil {
-		return nil, http.StatusBadRequest, fmt.Errorf("invalid ZIP archive: %w", extractErr)
+		return nil, "", nil, http.StatusBadRequest, fmt.Errorf("invalid ZIP archive: %w", extractErr)
 	}
 
 	skillRoot, err := findImportedSkillRoot(extractDir)
 	if err != nil {
-		return nil, http.StatusBadRequest, err
+		return nil, "", nil, http.StatusBadRequest, err
 	}
 
 	skillFile := filepath.Join(skillRoot, "SKILL.md")
 	skillContent, err := os.ReadFile(skillFile)
 	if err != nil {
-		return nil, http.StatusBadRequest, fmt.Errorf("failed to read SKILL.md from archive: %w", err)
+		return nil, "", nil, http.StatusBadRequest, fmt.Errorf("failed to read SKILL.md from archive: %w", err)
 	}
 
 	directoryHint := ""
@@ -905,23 +929,30 @@ func importUploadedSkillArchive(cfg *config.Config, filename string, content []b
 	}
 	skillName, err := normalizeImportedSkillNameWithHint(filename, directoryHint, skillContent)
 	if err != nil {
-		return nil, http.StatusBadRequest, err
+		return nil, "", nil, http.StatusBadRequest, err
 	}
 
 	workspace := cfg.WorkspacePath()
-	skillDir := filepath.Join(workspace, "skills", skillName)
-	if err := ensureWorkspaceSkillDoesNotExist(skillDir); err != nil {
-		return nil, statusCodeForImportedSkillWriteError(err), err
+	activeSkillDir := filepath.Join(workspace, "skills", skillName)
+	if err := ensureWorkspaceSkillDoesNotExist(activeSkillDir); err != nil {
+		return nil, "", nil, statusCodeForImportedSkillWriteError(err), err
+	}
+	if err := os.MkdirAll(quarantineRoot, 0o700); err != nil {
+		return nil, "", nil, http.StatusInternalServerError, err
+	}
+	skillDir, err := os.MkdirTemp(quarantineRoot, ".import-")
+	if err != nil {
+		return nil, "", nil, http.StatusInternalServerError, err
 	}
 	if err := copyImportedSkillTree(skillRoot, skillDir); err != nil {
 		_ = os.RemoveAll(skillDir)
-		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to save skill: %v", err)
+		return nil, "", nil, http.StatusInternalServerError, fmt.Errorf("Failed to save skill: %v", err)
 	}
 
 	normalizedContent := normalizeImportedSkillContent(skillContent, skillName)
 	if err := fileutil.WriteFileAtomic(filepath.Join(skillDir, "SKILL.md"), normalizedContent, 0o644); err != nil {
 		_ = os.RemoveAll(skillDir)
-		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to normalize skill: %v", err)
+		return nil, "", nil, http.StatusInternalServerError, fmt.Errorf("Failed to normalize skill: %v", err)
 	}
 
 	return finalizeImportedSkill(cfg, skillDir, skillName, true)
@@ -958,32 +989,33 @@ func finalizeImportedSkill(
 	skillDir string,
 	skillName string,
 	requireValidatedSkill bool,
-) (*skillSupportItem, int, error) {
+) (*skillSupportItem, string, []byte, int, error) {
 	if err := persistSkillOriginMeta(skillDir, installedSkillOriginMeta{
 		Version:     1,
 		OriginKind:  "manual",
 		InstalledAt: time.Now().UnixMilli(),
 	}); err != nil {
 		_ = os.RemoveAll(skillDir)
-		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to persist skill metadata: %v", err)
+		return nil, "", nil, http.StatusInternalServerError, fmt.Errorf("Failed to persist skill metadata: %v", err)
 	}
 
-	if importedSkill := findWorkspaceSkillByDirectory(cfg, skillName); importedSkill != nil {
-		return importedSkill, http.StatusOK, nil
-	}
-
-	if requireValidatedSkill {
+	if _, err := skills.ValidateSkillDirectory(skillDir); err != nil && requireValidatedSkill {
 		_ = os.RemoveAll(skillDir)
-		return nil, http.StatusBadRequest, fmt.Errorf("imported archive is not a valid skill")
+		return nil, "", nil, http.StatusBadRequest, fmt.Errorf("imported archive is not a valid skill")
+	}
+	artifactDigest, err := capabilitycontrol.HashTree(skillDir)
+	if err != nil {
+		_ = os.RemoveAll(skillDir)
+		return nil, "", nil, http.StatusBadRequest, err
 	}
 
 	return &skillSupportItem{
 		Name:        skillName,
 		Path:        filepath.Join(skillDir, "SKILL.md"),
-		Source:      "workspace",
-		Description: "Imported skill",
+		Source:      "quarantine",
+		Description: "Imported skill pending trusted capability Admission",
 		OriginKind:  "manual",
-	}, http.StatusOK, nil
+	}, skillDir, artifactDigest, http.StatusOK, nil
 }
 
 func findImportedSkillRoot(extractDir string) (string, error) {

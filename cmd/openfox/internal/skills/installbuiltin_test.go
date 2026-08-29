@@ -13,7 +13,7 @@ func TestNewInstallbuiltinSubcommand(t *testing.T) {
 	require.NotNil(t, cmd)
 
 	assert.Equal(t, "install-builtin", cmd.Use)
-	assert.Equal(t, "Install all builtin skills to workspace", cmd.Short)
+	assert.Equal(t, "Explain why build-pinned builtin skills are not copied to workspace", cmd.Short)
 
 	assert.Nil(t, cmd.Run)
 	assert.NotNil(t, cmd.RunE)

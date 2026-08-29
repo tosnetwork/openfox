@@ -18,6 +18,7 @@ import (
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
 	"github.com/tosnetwork/openfox/cmd/openfox/internal/agent"
 	"github.com/tosnetwork/openfox/cmd/openfox/internal/auth"
+	capabilitycmd "github.com/tosnetwork/openfox/cmd/openfox/internal/capability"
 	"github.com/tosnetwork/openfox/cmd/openfox/internal/cliui"
 	configcmd "github.com/tosnetwork/openfox/cmd/openfox/internal/config"
 	"github.com/tosnetwork/openfox/cmd/openfox/internal/cron"
@@ -133,6 +134,7 @@ openfox --no-color status`,
 		onboard.NewOnboardCommand(),
 		agent.NewAgentCommand(),
 		auth.NewAuthCommand(),
+		capabilitycmd.NewCommand(),
 		gateway.NewGatewayCommand(),
 		status.NewStatusCommand(),
 		cron.NewCronCommand(),

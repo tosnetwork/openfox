@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/tosnetwork/openfox/pkg/logger"
 )
@@ -16,6 +19,11 @@ import (
 //
 // Security: rejects path traversal attempts and symlinks.
 func ExtractZipFile(zipPath string, targetDir string) error {
+	const (
+		maxEntries       = 4096
+		maxExpandedBytes = 64 << 20
+		maxDepth         = 16
+	)
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("invalid ZIP: %w", err)
@@ -32,12 +40,30 @@ func ExtractZipFile(zipPath string, targetDir string) error {
 		return fmt.Errorf("failed to create target dir: %w", err)
 	}
 
+	if len(reader.File) > maxEntries {
+		return fmt.Errorf("zip has too many entries: %d", len(reader.File))
+	}
+	seen := make(map[string]string, len(reader.File))
+	var expanded uint64
 	for _, f := range reader.File {
+		if !utf8.ValidString(f.Name) || !norm.NFC.IsNormalString(f.Name) {
+			return fmt.Errorf("zip entry name is not canonical UTF-8/NFC: %q", f.Name)
+		}
 		// Path traversal protection.
 		cleanName := filepath.Clean(f.Name)
-		if strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) {
+		if cleanName == "." || strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) ||
+			strings.Contains(f.Name, "\\") || len(strings.Split(filepath.ToSlash(cleanName), "/")) > maxDepth {
 			return fmt.Errorf("zip entry has unsafe path: %q", f.Name)
 		}
+		collisionKey := strings.ToLower(filepath.ToSlash(cleanName))
+		if prior, exists := seen[collisionKey]; exists {
+			return fmt.Errorf("zip entries collide: %q and %q", prior, f.Name)
+		}
+		seen[collisionKey] = f.Name
+		if f.UncompressedSize64 > maxExpandedBytes-expanded {
+			return fmt.Errorf("zip expanded data exceeds %d bytes", maxExpandedBytes)
+		}
+		expanded += f.UncompressedSize64
 
 		destPath := filepath.Join(targetDir, cleanName)
 
@@ -51,8 +77,8 @@ func ExtractZipFile(zipPath string, targetDir string) error {
 		mode := f.FileInfo().Mode()
 
 		// Reject any symlink.
-		if mode&os.ModeSymlink != 0 {
-			return fmt.Errorf("zip contains symlink %q; symlinks are not allowed", f.Name)
+		if mode&os.ModeType != 0 && !mode.IsDir() || mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+			return fmt.Errorf("zip contains unsupported file mode for %q", f.Name)
 		}
 
 		if f.FileInfo().IsDir() {
@@ -90,7 +116,7 @@ func extractSingleFile(f *zip.File, destPath string) error {
 	}
 	defer rc.Close()
 
-	outFile, err := os.Create(destPath)
+	outFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to create file %q: %w", destPath, err)
 	}

@@ -1,6 +1,7 @@
 package earning
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -38,7 +39,19 @@ func (funded) VerifyExecutionPrerequisites(context.Context, EngagementRecord) (b
 
 type successRunner struct{ digest string }
 
-func (r successRunner) RunAgreement(context.Context, commercegate.Launch, *ExecutionEffects) (ExecutionOutcome, error) {
+type trustedCapabilityForTest struct{}
+
+func (trustedCapabilityForTest) StartTrustedCapabilityExecution(_ context.Context, _ EngagementRecord, plan commercegate.Plan) (TrustedCapabilityExecutionPermit, error) {
+	return TrustedCapabilityExecutionPermit{ExecutionID: plan.ExecutionID, ArtifactDigest: bytes.Repeat([]byte{1}, 32), Instructions: []byte("bounded test capability"), Evidence: []string{"sha256:" + strings.Repeat("c", 64)}, RevocationPolicy: "kill-and-reconcile"}, nil
+}
+func (trustedCapabilityForTest) RevalidateTrustedCapabilityExecution(context.Context, TrustedCapabilityExecutionPermit) error {
+	return nil
+}
+func (trustedCapabilityForTest) ResolveTrustedCapabilityExecution(context.Context, TrustedCapabilityExecutionPermit, string) error {
+	return nil
+}
+
+func (r successRunner) RunAgreement(context.Context, commercegate.Launch, TrustedCapabilityExecutionPermit, *ExecutionEffects) (ExecutionOutcome, error) {
 	return ExecutionOutcome{OutcomeDigest: r.digest}, nil
 }
 
@@ -154,7 +167,7 @@ func TestAuthorizedAgreementReservesAndExecutesAtMostOnce(t *testing.T) {
 	}
 	defer gate.Close()
 	outcomeDigest := "sha256:" + strings.Repeat("5", 64)
-	service := ExecutionService{Engine: engine, Gate: gate, Prerequisite: funded{}, Runner: successRunner{digest: outcomeDigest}}
+	service := ExecutionService{Engine: engine, Gate: gate, Prerequisite: funded{}, Capability: trustedCapabilityForTest{}, Runner: successRunner{digest: outcomeDigest}}
 	acceptedInputDigest, _, _, err := AcceptedExecutionInputSetDigest(record, "work")
 	if err != nil {
 		t.Fatal(err)

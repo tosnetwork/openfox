@@ -12,10 +12,12 @@ import (
 	"sync"
 
 	"github.com/tosnetwork/openfox/pkg/actionauth"
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/mcp"
 	"github.com/tosnetwork/openfox/pkg/tools"
+	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 type mcpRuntime struct {
@@ -108,7 +110,26 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 	}
 
 	al.mcp.initOnce.Do(func() {
-		mcpManager := mcp.NewManager(mcp.WithRuntimeEvents(al.runtimeEvents))
+		settings := al.cfg.Earning.TrustedCapability
+		controlAuthority, capabilityErr := capabilitycontrol.OpenHTTPSControlAuthorityFromFile(settings.ControlAuthorityEndpoint, settings.ControlAuthorityTokenFile, settings.ControlAuthorityPublicKey)
+		if capabilityErr != nil {
+			al.mcp.setInitErr(fmt.Errorf("MCP external capability authority startup failed: %w", capabilityErr))
+			return
+		}
+		capabilityStore, capabilityAuthority, capabilityErr := capabilitycontrol.OpenProduction(capabilitycontrol.ProductionStoreOptions{
+			ProjectionRoot:                settings.ProjectionDirectory,
+			PublisherObservationDirectory: settings.PublisherObservationDirectory,
+			DomainKind:                    trusted.DomainOwnerLocal, DomainID: []byte(al.cfg.Earning.OwnerID), OwnerID: []byte(al.cfg.Earning.OwnerID), AgentID: []byte(al.cfg.Earning.AgentID), Authority: controlAuthority})
+		if capabilityErr != nil {
+			_ = controlAuthority.Close()
+			al.mcp.setInitErr(fmt.Errorf("MCP trusted capability startup failed: %w", capabilityErr))
+			return
+		}
+		capabilityAuthorizer := mcp.CapabilityAuthorizer{Store: capabilityStore}
+		mcpManager := mcp.NewManager(mcp.WithRuntimeEvents(al.runtimeEvents),
+			mcp.WithConnectionAuthorizer(capabilityAuthorizer.Connection), mcp.WithSessionVerifier(capabilityAuthorizer.Session),
+			mcp.WithEffectAuthorizer(capabilityAuthorizer.Effect), mcp.WithEffectJournal(capabilityStore),
+			mcp.WithCloseHook(capabilityStore.Close), mcp.WithCloseHook(capabilityAuthority.Close))
 
 		defaultAgent := al.registry.GetDefaultAgent()
 		workspacePath := al.cfg.WorkspacePath()

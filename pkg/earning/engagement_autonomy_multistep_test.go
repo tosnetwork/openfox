@@ -134,7 +134,7 @@ func TestEngagementAutonomyExecutesAndBillsMultipleDependentObligations(t *testi
 	})
 	scheduler := &SchedulerService{Authority: authority, OwnerID: "owner-provider", AgentID: "agent-provider",
 		MandateDigest: engine.MandateDigest, PolicyRevision: 1}
-	autonomy := EngagementAutonomy{Engine: engine, Inventory: inventory,
+	autonomy := EngagementAutonomy{Engine: engine, Inventory: inventory, Capability: trustedCapabilityForTest{},
 		Planner:      BoundedEngagementPlanner{OwnerID: "owner-provider", AgentID: "agent-provider", ComputeUnitsPerExecution: 5},
 		Prerequisite: AdapterPrerequisitePolicy{LocalAgentID: "agent-provider", PostpaidAdapters: []string{"tos.direct-payment.v1"}},
 		Gate:         gate, Scheduler: scheduler, Runners: milestoneRunnerFactory{}, Delivery: acceptedDelivery{},

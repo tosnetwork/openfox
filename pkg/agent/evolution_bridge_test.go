@@ -756,27 +756,16 @@ func TestEvolutionBridge_ApplyModeAutomaticallyRunsColdPathAndAppliesMergeDraft(
 
 	waitForEvolutionRecord(t, filepath.Join(tmpDir, "state", "evolution", "task-records.jsonl"))
 	drafts := waitForDrafts(t, filepath.Join(tmpDir, "state", "evolution", "skill-drafts.json"), 1)
-	if drafts[0].Status != evolution.DraftStatusAccepted {
-		t.Fatalf("draft status = %q, want %q", drafts[0].Status, evolution.DraftStatusAccepted)
+	if drafts[0].Status != evolution.DraftStatusQuarantined {
+		t.Fatalf("draft status = %q, want %q", drafts[0].Status, evolution.DraftStatusQuarantined)
 	}
 
-	merged := waitForSkillBody(t, skillPath)
-	if !strings.Contains(merged, "Use city names.") {
-		t.Fatalf("merged skill lost original content:\n%s", merged)
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(merged, "## Merged Knowledge") {
-		t.Fatalf("merged skill missing merged section:\n%s", merged)
-	}
-	if !strings.Contains(merged, "Prefer native-name query first.") {
-		t.Fatalf("merged skill missing learned knowledge:\n%s", merged)
-	}
-
-	profile := waitForProfile(t, tmpDir, "weather")
-	if profile.Status != evolution.SkillStatusActive {
-		t.Fatalf("profile status = %q, want %q", profile.Status, evolution.SkillStatusActive)
-	}
-	if profile.CurrentVersion == "" {
-		t.Fatal("expected applied profile current version")
+	if string(got) != original {
+		t.Fatalf("production adaptive draft changed the active Skill before Admission/Promotion")
 	}
 }
 

@@ -152,7 +152,7 @@ func (r *GitHubRegistry) Search(ctx context.Context, query string, limit int) ([
 		req.Header.Set("Authorization", "Bearer "+r.installer.githubToken)
 	}
 
-	resp, err := r.installer.client.Do(req)
+	resp, err := restrictedHTTPClient(r.installer.client, urlOrigin(req.URL), r.installer.githubToken != "").Do(req)
 	if err != nil {
 		return nil, err
 	}

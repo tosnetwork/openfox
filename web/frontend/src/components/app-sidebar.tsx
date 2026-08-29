@@ -145,6 +145,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             translateTitle: true,
           },
           {
+            title: "Trusted capabilities",
+            url: "/agent/capabilities",
+            icon: IconSparkles,
+            translateTitle: false,
+          },
+          {
             title: "navigation.tools",
             url: "/agent/tools",
             icon: IconTools,

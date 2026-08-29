@@ -476,6 +476,23 @@ func (s *Service) Refresh(ctx context.Context, intent string) (Record, error) {
 	default:
 		return record, nil
 	}
+	if result.State == StateFinalizedPaid && record.Role == RoleSender {
+		if err := s.custody.ResolveNativeGift(ctx, ResolveRequest{
+			IntentID: record.IntentID, SenderAgentAccount: record.SenderAgentAccount,
+			DestinationAddress: record.DestinationAddress, AmountAtomic: record.AmountAtomic,
+			ExactBOCDigest: record.ExactBOCDigest,
+		}); err != nil {
+			unknown, updateErr := s.journal.Update(intent, func(v *Record) error {
+				v.State = StateFinalityUnknown
+				v.UpdatedAtUnix = s.now().UTC().Unix()
+				return nil
+			})
+			if updateErr != nil {
+				return record, errors.Join(err, updateErr)
+			}
+			return unknown, err
+		}
+	}
 	return s.journal.Update(intent, func(v *Record) error {
 		v.State = result.State
 		if result.State == StateFinalizedPaid || result.State == StateExpiredUnpaid || result.State == StateInvalidatedUnpaid {

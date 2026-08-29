@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -269,11 +270,19 @@ func (r *AgentGiftResolver) ResolveFinality(ctx context.Context, record openfoxg
 }
 
 type TOSCTLGiftCustodyConfig struct {
-	BinaryPath             string        `json:"binary_path"`
-	ConfigPath             string        `json:"config_path"`
-	WalletName             string        `json:"wallet_name"`
-	OwnerWallet            string        `json:"owner_wallet"`
-	ControllerKeyID        string        `json:"controller_key_id"`
+	BinaryPath      string `json:"binary_path"`
+	ConfigPath      string `json:"config_path"`
+	VaultURL        string `json:"vault_url"`
+	WalletName      string `json:"wallet_name"`
+	OwnerWallet     string `json:"owner_wallet"`
+	ControllerKeyID string `json:"controller_key_id"`
+	// AgentAccountWorkchain selects the workchain used when resolving the
+	// configured Agent Wallet profile. Nil preserves the historical masterchain
+	// default; a pointer is required so workchain zero is not confused with an
+	// omitted JSON field.
+	AgentAccountWorkchain  *int32        `json:"agent_account_workchain,omitempty"`
+	QuorumConfigPaths      []string      `json:"quorum_config_paths"`
+	MaxTransactions        uint32        `json:"max_transactions,omitempty"`
 	FeeReserveAtomic       uint64        `json:"fee_reserve_atomic,omitempty"`
 	MinimumInclusionMargin uint32        `json:"minimum_inclusion_margin_seconds,omitempty"`
 	Timeout                time.Duration `json:"timeout_nanoseconds,omitempty"`
@@ -286,8 +295,21 @@ type TOSCTLGiftCustody struct {
 }
 
 func NewTOSCTLGiftCustody(config TOSCTLGiftCustodyConfig, chain AgentGiftFinalizedChain) (*TOSCTLGiftCustody, error) {
-	if chain == nil || !secureExecutable(config.BinaryPath) || !secureConfigFile(config.ConfigPath) || config.WalletName == "" || config.OwnerWallet == "" || config.ControllerKeyID == "" || config.FeeReserveAtomic == 0 || config.MinimumInclusionMargin == 0 {
+	if chain == nil || !secureExecutable(config.BinaryPath) || !secureConfigFile(config.ConfigPath) || config.VaultURL == "" || config.WalletName == "" || config.OwnerWallet == "" || config.ControllerKeyID == "" || len(config.QuorumConfigPaths) < 2 || config.FeeReserveAtomic == 0 || config.MinimumInclusionMargin == 0 {
 		return nil, errors.New("nativeimpl: invalid tosctl Gift custody configuration")
+	}
+	seenConfigs := map[string]bool{config.ConfigPath: true}
+	for _, path := range config.QuorumConfigPaths {
+		if !secureConfigFile(path) || seenConfigs[path] {
+			return nil, errors.New("nativeimpl: invalid tosctl Gift custody quorum configuration")
+		}
+		seenConfigs[path] = true
+	}
+	if config.MaxTransactions == 0 {
+		config.MaxTransactions = 1000
+	}
+	if config.MaxTransactions > 10_000 {
+		return nil, errors.New("nativeimpl: invalid tosctl Gift custody transaction bound")
 	}
 	if config.Timeout == 0 {
 		config.Timeout = 30 * time.Second
@@ -295,7 +317,7 @@ func NewTOSCTLGiftCustody(config TOSCTLGiftCustodyConfig, chain AgentGiftFinaliz
 	if config.Timeout < time.Second || config.Timeout > 2*time.Minute {
 		return nil, errors.New("nativeimpl: invalid tosctl Gift custody timeout")
 	}
-	runner, err := newPinnedReleaseRunner(config.BinaryPath, config.ConfigPath)
+	runner, err := newPinnedReleaseRunnerWithVault(config.BinaryPath, config.ConfigPath, config.VaultURL)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +327,14 @@ func NewTOSCTLGiftCustody(config TOSCTLGiftCustodyConfig, chain AgentGiftFinaliz
 func (c *TOSCTLGiftCustody) SenderAccount(ctx context.Context) (string, error) {
 	call, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
-	raw, err := c.runner.run(call, c.config.BinaryPath, "agent", "--config", c.config.ConfigPath, "account", "status", "--wallet", c.config.WalletName, "--format", "json")
+	workchain := int32(-1)
+	if c.config.AgentAccountWorkchain != nil {
+		workchain = *c.config.AgentAccountWorkchain
+	}
+	if workchain != -1 && workchain != 0 {
+		return "", errors.New("nativeimpl: unsupported Agent Account workchain")
+	}
+	raw, err := c.runner.run(call, c.config.BinaryPath, "agent", "--config", c.config.ConfigPath, "account", "status", "--wallet", c.config.WalletName, "--workchain", strconv.FormatInt(int64(workchain), 10), "--format", "json")
 	if err != nil {
 		return "", errors.New("nativeimpl: tosctl could not resolve the Agent Account")
 	}
@@ -385,6 +414,42 @@ func (c *TOSCTLGiftCustody) SignNativeGift(ctx context.Context, request openfoxg
 		return nil, err
 	}
 	return decodePreparedAction(raw, request.IntentID, "agent-native-send", review.SenderAgentAccount, review.DeploymentID, review.ControllerEpoch, review.Seqno, review.GlobalID, review.ValidUntil)
+}
+
+func (c *TOSCTLGiftCustody) ResolveNativeGift(ctx context.Context, request openfoxgift.ResolveRequest) error {
+	amount, err := strconv.ParseUint(request.AmountAtomic, 10, 64)
+	if err != nil || request.IntentID == "" || request.SenderAgentAccount == "" ||
+		request.DestinationAddress == "" || amount == 0 || request.ExactBOCDigest == "" {
+		return errors.New("nativeimpl: incomplete finalized Gift custody resolution")
+	}
+	arguments := []string{"--wallet", c.config.WalletName, "--action-id", request.IntentID, "--quorum-config"}
+	arguments = append(arguments, c.config.QuorumConfigPaths...)
+	arguments = append(arguments, "--max-transactions", strconv.FormatUint(uint64(c.config.MaxTransactions), 10))
+	raw, err := c.run(ctx, "native-resolve", arguments...)
+	if err != nil {
+		return err
+	}
+	var result struct {
+		Schema               string          `json:"schema"`
+		Wallet               string          `json:"wallet"`
+		ActionID             string          `json:"action_id"`
+		SourceAccount        string          `json:"source_account"`
+		Destination          string          `json:"destination"`
+		AmountNanoTOS        uint64          `json:"amount_nanotos"`
+		ExactSignedBOCDigest string          `json:"exact_signed_boc_digest"`
+		NetworkDomain        json.RawMessage `json:"network_domain"`
+		Quorum               json.RawMessage `json:"quorum"`
+		Transaction          json.RawMessage `json:"transaction"`
+		State                string          `json:"state"`
+	}
+	if decodeStrictJSON(raw, &result) != nil || result.Schema != "tos.agent-account.native-action-finalized.v1" ||
+		result.Wallet != c.config.WalletName || result.ActionID != request.IntentID ||
+		result.SourceAccount != request.SenderAgentAccount || result.Destination != request.DestinationAddress ||
+		result.AmountNanoTOS != amount || result.ExactSignedBOCDigest != request.ExactBOCDigest ||
+		len(result.NetworkDomain) == 0 || len(result.Quorum) == 0 || len(result.Transaction) == 0 || result.State != "finalized" {
+		return errors.New("nativeimpl: tosctl returned a conflicting Gift custody resolution")
+	}
+	return nil
 }
 
 func (c *TOSCTLGiftCustody) CancelSeqno(ctx context.Context, request openfoxgift.CancelRequest) ([]byte, error) {

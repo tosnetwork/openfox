@@ -7,6 +7,9 @@ general deployment guarantee. For current product usage, start with the
 
 ## Agent commerce campaigns
 
+- [Six Named OpenFox Agentic Internet Campaign](six-agent-named-agentic-internet-campaign-report.md):
+  one-hour named-Agent market with natural-language owner policy, group chat,
+  Gifts, voluntary trades and declines, and a native AIPoW reward claim.
 - [Eight-Agent Market Campaign](eight-agent-market-campaign.md): wall-clock
   decentralized discovery, execution, learning, settlement, and reporting
   campaign.

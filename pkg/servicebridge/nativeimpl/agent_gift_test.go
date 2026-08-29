@@ -108,6 +108,16 @@ func (r agentStatusRunner) run(context.Context, string, ...string) ([]byte, erro
 	return append([]byte(nil), r.raw...), nil
 }
 
+type agentWorkchainStatusRunner struct {
+	raw       []byte
+	arguments []string
+}
+
+func (r *agentWorkchainStatusRunner) run(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+	r.arguments = append([]string(nil), arguments...)
+	return append([]byte(nil), r.raw...), nil
+}
+
 func TestDecodePreparedActionBindsTOSCTLDeploymentGeneration(t *testing.T) {
 	boc := []byte("canonical-fixture-boc")
 	digest := sha256.Sum256(boc)
@@ -200,6 +210,21 @@ func TestTOSCTLCustodyConsumesCompleteStrictAgentAccountStatus(t *testing.T) {
 	custody.runner = agentStatusRunner{raw: changedRaw}
 	if _, err := custody.SenderAccount(context.Background()); err == nil {
 		t.Fatal("unknown tosctl status field was accepted")
+	}
+}
+
+func TestTOSCTLCustodySelectsWorkchainZeroExplicitly(t *testing.T) {
+	matched := true
+	seqno := uint32(7)
+	epoch := uint64(3)
+	workchain := int32(0)
+	value := agentAccountStatus{Wallet: "agent", Address: "0:" + strings.Repeat("a", 64), State: "active", Balance: "2.000000000", CodeHash: strings.TrimPrefix(protocolgift.AgentAccountCodeHash, "tvm-cell-sha256:"), TemplateMatches: &matched, Owner: "0:" + strings.Repeat("b", 64), ControllerPublicKey: strings.Repeat("c", 64), DeploymentID: strings.Repeat("d", 64), ControllerEpoch: &epoch, Seqno: &seqno, MatchesProfile: &matched}
+	raw, _ := json.Marshal(value)
+	runner := &agentWorkchainStatusRunner{raw: raw}
+	custody := &TOSCTLGiftCustody{config: TOSCTLGiftCustodyConfig{BinaryPath: "/tosctl", ConfigPath: "/config", WalletName: value.Wallet, OwnerWallet: value.Owner, AgentAccountWorkchain: &workchain, Timeout: time.Second}, runner: runner}
+	address, err := custody.SenderAccount(context.Background())
+	if err != nil || address != value.Address || !strings.Contains(strings.Join(runner.arguments, " "), "--workchain 0") {
+		t.Fatalf("workchain-zero status failed: %q %v %v", address, err, runner.arguments)
 	}
 }
 
@@ -547,6 +572,9 @@ func (c *fixtureGiftCustody) SignNativeGift(_ context.Context, request openfoxgi
 		return nil, errors.New("missing fixture authorization")
 	}
 	return append([]byte(nil), c.boc...), nil
+}
+func (c *fixtureGiftCustody) ResolveNativeGift(context.Context, openfoxgift.ResolveRequest) error {
+	return nil
 }
 func (c *fixtureGiftCustody) CancelSeqno(context.Context, openfoxgift.CancelRequest) ([]byte, error) {
 	c.cancelCalls++

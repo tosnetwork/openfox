@@ -135,6 +135,7 @@ func (f *fakeCustody) SignNativeGift(context.Context, SignRequest) ([]byte, erro
 	}
 	return append([]byte(nil), f.boc...), nil
 }
+func (f *fakeCustody) ResolveNativeGift(context.Context, ResolveRequest) error { return nil }
 func (f *fakeCustody) CancelSeqno(context.Context, CancelRequest) ([]byte, error) {
 	f.cancelCalls++
 	if f.failCancel {

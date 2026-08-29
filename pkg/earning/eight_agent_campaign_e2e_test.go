@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,7 +40,7 @@ const (
 
 type eightAgentDefinition struct {
 	Name, OwnerID, AgentID, AuthorityID, Wallet, Capability, Taxonomy, ModelKind, Template string
-	Price, MaximumCost                                                                     uint64
+	Price, MaximumCost, MaximumLoss                                                        uint64
 	Tasks                                                                                  []string
 }
 
@@ -57,6 +59,7 @@ type eightAgentManifestEntry struct {
 	IdentityPin     string   `json:"identity_pin"`
 	Price           uint64   `json:"price_nanotos"`
 	MaximumCost     uint64   `json:"maximum_internal_cost_nanotos"`
+	MaximumLoss     uint64   `json:"maximum_loss_nanotos"`
 	Tasks           []string `json:"tasks"`
 }
 
@@ -390,14 +393,28 @@ func TestPrepareEightOpenFoxCampaign(t *testing.T) {
 		}
 		authority := ensureCampaignKey(t, filepath.Join(state, "campaign-authority-v2", "authority-ed25519.key"))
 		identity := ensureCampaignKey(t, filepath.Join(state, "identity", "agent-ed25519.key"))
-		identityPins[campaignAgentID] = "ed25519:" + hex.EncodeToString(identity.Public().(ed25519.PublicKey))
 		target, ok := targets[definition.Wallet]
 		if !ok {
 			t.Fatalf("Agent Account target for %s is unavailable", definition.Wallet)
 		}
+		if os.Getenv("OPENFOX_CAMPAIGN_CHAIN_AGENT_IDS") == "1" {
+			workchain, accountID, found := strings.Cut(strings.ToLower(strings.TrimSpace(target)), ":")
+			if !found || workchain != "0" || len(accountID) != 64 {
+				t.Fatalf("Agent Account target for %s is not a canonical workchain-0 address", definition.Wallet)
+			}
+			if _, decodeErr := hex.DecodeString(accountID); decodeErr != nil {
+				t.Fatalf("Agent Account target for %s has an invalid account id", definition.Wallet)
+			}
+			campaignAgentID = "agent_" + accountID
+		}
+		identityPins[campaignAgentID] = "ed25519:" + hex.EncodeToString(identity.Public().(ed25519.PublicKey))
 		modelKind := definition.ModelKind
 		if os.Getenv("OPENFOX_CAMPAIGN_FORCE_CODEX") == "1" {
 			modelKind = "codex"
+		}
+		maximumLoss := definition.MaximumLoss
+		if maximumLoss == 0 {
+			maximumLoss = definition.MaximumCost
 		}
 		entries = append(entries, eightAgentManifestEntry{
 			Name:            definition.Name,
@@ -416,6 +433,7 @@ func TestPrepareEightOpenFoxCampaign(t *testing.T) {
 			IdentityPin: identityPins[campaignAgentID],
 			Price:       definition.Price,
 			MaximumCost: definition.MaximumCost,
+			MaximumLoss: maximumLoss,
 			Tasks:       append([]string(nil), definition.Tasks...),
 		})
 	}
@@ -515,6 +533,12 @@ func configureCampaignDocument(t *testing.T, document map[string]any, entry eigh
 	if os.Getenv("OPENFOX_CAMPAIGN_NATIVE_STRATEGY") == "1" {
 		gatewayEndpoint, messengerEndpoint = "http://127.0.0.1:18291/v1/intents", "http://127.0.0.1:18292/v1/intents"
 	}
+	if value := strings.TrimSpace(os.Getenv("OPENFOX_CAMPAIGN_GATEWAY_CARRIER_ENDPOINT")); value != "" {
+		gatewayEndpoint = value
+	}
+	if value := strings.TrimSpace(os.Getenv("OPENFOX_CAMPAIGN_MESSENGER_CARRIER_ENDPOINT")); value != "" {
+		messengerEndpoint = value
+	}
 	earning["carriers"] = []any{
 		map[string]any{
 			"kind": "http", "id": "carrier:gateway-local-pilot", "endpoint": gatewayEndpoint,
@@ -560,17 +584,19 @@ func configureCampaignDocument(t *testing.T, document map[string]any, entry eigh
 
 func nativeStrategyCampaignDefinitions(definitions []eightAgentDefinition) []eightAgentDefinition {
 	updated := append([]eightAgentDefinition(nil), definitions...)
-	prices := map[string]struct{ price, cost uint64 }{
-		"security-auditor":     {4_000_000_000, 600_000_000},
-		"software-builder":     {5_000_000_000, 900_000_000},
-		"evidence-verifier":    {2_200_000_000, 300_000_000},
-		"storage-provider":     {2_500_000_000, 400_000_000},
-		"transaction-operator": {3_000_000_000, 450_000_000},
-		"guarantor-analyst":    {4_500_000_000, 700_000_000},
+	prices := map[string]struct{ price, cost, loss uint64 }{
+		"security-auditor":     {4_000_000_000, 600_000_000, 2_000_000_000},
+		"software-builder":     {5_000_000_000, 900_000_000, 2_500_000_000},
+		"evidence-verifier":    {2_200_000_000, 300_000_000, 1_100_000_000},
+		"storage-provider":     {2_500_000_000, 400_000_000, 1_250_000_000},
+		"transaction-operator": {3_000_000_000, 450_000_000, 1_500_000_000},
+		"guarantor-analyst":    {4_500_000_000, 700_000_000, 2_250_000_000},
 	}
 	for index := range updated {
 		if economics, ok := prices[updated[index].Name]; ok {
-			updated[index].Price, updated[index].MaximumCost = economics.price, economics.cost
+			updated[index].Price = economics.price
+			updated[index].MaximumCost = economics.cost
+			updated[index].MaximumLoss = economics.loss
 			updated[index].Wallet = "native-strategy-" + updated[index].Name
 		}
 	}
@@ -584,6 +610,7 @@ func writeNativeCampaignWorkspace(t *testing.T, workspace string, entry eightAge
 		"storage-provider": "2 TOS", "transaction-operator": "2.5 TOS", "guarantor-analyst": "4 TOS",
 	}[entry.Name]
 	target := fmt.Sprintf("%.1f TOS", float64(entry.Price)/1_000_000_000)
+	maximumLoss := fmt.Sprintf("%.2f TOS", float64(entry.MaximumLoss)/1_000_000_000)
 	agentMD := fmt.Sprintf(`---
 name: %s
 description: Independent OpenFox business operator for %s.
@@ -601,12 +628,13 @@ When examining opportunities, reason about price, expected cost, Gas, delivery r
 
 - Do not sell any job below %s.
 - Your current target quote for the bounded service advertised in this campaign is %s.
+- Do not accept an Agreement whose reasonably possible loss exceeds %s; this is distinct from expected internal cost.
 - As a buyer, spend at most 6 TOS on one job and buy only work that has a concrete benefit for your own business.
 - Account for model usage, tools, expected Gas, rework, disputes, and opportunity cost before accepting.
 - You may use direct TOS payment with the five named local campaign Agents for this owner-authorized test round. For any other counterparty, prefer escrow or ask the owner.
 - Decline vague, harmful, unauthorized, or capability-mismatched work.
 - You may propose changes to these preferences, but must not silently weaken or rewrite them.
-`, minimum, target)
+`, minimum, target, maximumLoss)
 	soulMD := `# Character
 
 Be commercially serious, candid, and selective. Do not manufacture activity to make the market look busy. Quote your real terms, respect another Agent's refusal, and prefer a smaller number of worthwhile jobs over many uneconomic ones.
@@ -717,11 +745,19 @@ func campaignDigest(value string) string {
 }
 
 func TestPublishEightOpenFoxSupply(t *testing.T) {
-	if os.Getenv("OPENFOX_PUBLISH_EIGHT_AGENT_SUPPLY") != "1" {
-		t.Skip("set OPENFOX_PUBLISH_EIGHT_AGENT_SUPPLY=1")
+	publishSix := os.Getenv("OPENFOX_PUBLISH_SIX_AGENT_SUPPLY") == "1"
+	if os.Getenv("OPENFOX_PUBLISH_EIGHT_AGENT_SUPPLY") != "1" && !publishSix {
+		t.Skip("set OPENFOX_PUBLISH_EIGHT_AGENT_SUPPLY=1 or OPENFOX_PUBLISH_SIX_AGENT_SUPPLY=1")
 	}
 	root := mustEnv(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_ROOT")
-	manifest := loadEightAgentManifest(t, filepath.Join(root, "eight-agent-manifest.json"))
+	var manifest eightAgentManifest
+	if publishSix {
+		manifest = loadCampaignManifest(
+			t, filepath.Join(root, "six-agent-manifest.json"), sixAgentCampaignSchema, 6,
+		)
+	} else {
+		manifest = loadEightAgentManifest(t, filepath.Join(root, "eight-agent-manifest.json"))
+	}
 	runtimes := openCampaignRuntimes(t, root, manifest)
 	defer closeCampaignRuntimes(runtimes)
 	for _, runtime := range runtimes {
@@ -933,8 +969,16 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 	manifest := loadCampaignManifest(t, filepath.Join(root, "six-agent-manifest.json"), sixAgentCampaignSchema, 6)
 	duration := parseCampaignDuration(t, "OPENFOX_SIX_AGENT_CAMPAIGN_DURATION", time.Hour)
 	campaignRounds := 5
+	if value := strings.TrimSpace(os.Getenv("OPENFOX_CAMPAIGN_ROUNDS")); value != "" {
+		parsed, parseErr := strconv.Atoi(value)
+		if parseErr != nil || parsed < 1 || parsed > 5 {
+			t.Fatal("OPENFOX_CAMPAIGN_ROUNDS must be an integer from 1 through 5")
+		}
+		campaignRounds = parsed
+	}
 	minimumDuration, minimumInterval := time.Hour, 30*time.Second
-	if os.Getenv("OPENFOX_CAMPAIGN_NATIVE_STRATEGY") == "1" {
+	if os.Getenv("OPENFOX_CAMPAIGN_NATIVE_STRATEGY") == "1" &&
+		os.Getenv("OPENFOX_CAMPAIGN_NATIVE_STRATEGY_FULL_HOUR") != "1" {
 		campaignRounds = 1
 		minimumDuration, minimumInterval = 0, 0
 	}
@@ -952,6 +996,11 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 	report := loadOrCreateNamedCampaignReport(t, reportPath, duration, sixAgentCampaignSchema)
 	runtimes := openCampaignRuntimes(t, root, manifest)
 	defer closeCampaignRuntimes(runtimes)
+	for _, runtime := range runtimes {
+		campaignGroupSend(t, runtime.definition.Name, "campaign-opening-"+runtime.definition.Name,
+			fmt.Sprintf("online; I offer %s at %.9f TOS and will decline work that conflicts with my owner policy",
+				runtime.definition.Capability, float64(runtime.definition.Price)/1_000_000_000))
+	}
 
 	completed := map[int]bool{}
 	for _, result := range report.Results {
@@ -983,6 +1032,8 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 			t.Fatalf("buyer %s demand planning: %v", runtimes[buyerIndex].definition.Name, planErr)
 		}
 		if plan.Decision == "skip" {
+			campaignGroupSend(t, runtimes[buyerIndex].definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
+				fmt.Sprintf("round %d: no voluntary purchase — %s", sequence/len(runtimes)+1, plan.Rationale))
 			result := eightAgentJobResult{
 				Sequence: sequence, Round: sequence/len(runtimes) + 1,
 				Disposition: "skipped:buyer-strategy", Buyer: runtimes[buyerIndex].definition.Name,
@@ -1005,6 +1056,9 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 		if sellerIndex < 0 || sellerIndex == buyerIndex {
 			t.Fatalf("buyer %s selected invalid seller %q", runtimes[buyerIndex].definition.Name, plan.SellerAgent)
 		}
+		campaignGroupSend(t, runtimes[buyerIndex].definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
+			fmt.Sprintf("round %d: requesting %s from %s — %s", sequence/len(runtimes)+1,
+				plan.Capability, plan.SellerAgent, plan.Rationale))
 		var result eightAgentJobResult
 		var jobErr error
 		for attempt := 0; attempt < 3; attempt++ {
@@ -1035,6 +1089,9 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 		result.DemandPlanningMode = "buyer-ai"
 		result.DemandRationale = plan.Rationale
 		report.Results = append(report.Results, result)
+		campaignGroupSend(t, result.Seller, fmt.Sprintf("campaign-outcome-%03d", sequence),
+			fmt.Sprintf("round %d outcome for %s: %s; payment=%s", result.Round, result.Buyer,
+				result.Disposition, result.PaymentTransaction))
 		report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		writeCampaignJSON(t, reportPath, report)
 		t.Logf("turn=%d buyer=%s seller=%s disposition=%s task=%q", sequence+1,
@@ -1205,6 +1262,15 @@ func loadCampaignManifest(t *testing.T, path, schema string, agentCount int) eig
 	if json.Unmarshal(raw, &manifest) != nil || manifest.Schema != schema || len(manifest.Agents) != agentCount {
 		t.Fatalf("campaign manifest is invalid: schema=%q agents=%d", manifest.Schema, len(manifest.Agents))
 	}
+	for _, entry := range manifest.Agents {
+		if strings.TrimSpace(entry.Name) == "" || entry.Price == 0 || entry.MaximumCost == 0 ||
+			entry.MaximumLoss == 0 || entry.MaximumCost > entry.Price || entry.MaximumLoss > entry.Price {
+			t.Fatalf(
+				"campaign manifest has invalid economics for %q: price=%d cost=%d maximum_loss=%d",
+				entry.Name, entry.Price, entry.MaximumCost, entry.MaximumLoss,
+			)
+		}
+	}
 	return manifest
 }
 
@@ -1219,6 +1285,49 @@ func parseCampaignDuration(t *testing.T, name string, fallback time.Duration) ti
 		t.Fatalf("%s: %v", name, err)
 	}
 	return duration
+}
+
+func campaignGroupSend(t *testing.T, role, requestID, content string) {
+	t.Helper()
+	directory := strings.TrimSpace(os.Getenv("OPENFOX_CAMPAIGN_GROUP_CONTROL_DIR"))
+	if directory == "" {
+		return
+	}
+	aliases := map[string]string{
+		"security-auditor": "alice.tos", "software-builder": "bobby.tos",
+		"evidence-verifier": "carol.tos", "storage-provider": "dave.tos",
+		"transaction-operator": "erin.tos", "guarantor-analyst": "frank.tos",
+	}
+	alias := aliases[role]
+	if alias == "" || requestID == "" || len(content) == 0 || len(content) > 4096 {
+		t.Fatal("campaign group message is invalid")
+	}
+	socket := filepath.Join(directory, role+"-v2.sock")
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socket)
+	}}
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	body, err := json.Marshal(map[string]string{
+		"request_id": requestID,
+		"content":    "[" + alias + "] " + content,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://localhost/v1/send", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("content-type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("%s group send: %v", alias, err)
+	}
+	defer response.Body.Close()
+	_, _ = io.CopyN(io.Discard, response.Body, 64<<10)
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		t.Fatalf("%s group send returned %s", alias, response.Status)
+	}
 }
 
 func loadOrCreateCampaignReport(t *testing.T, path string, duration time.Duration) eightAgentCampaignReport {
@@ -1353,7 +1462,10 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 				ConsistencyToken: campaignDigest(
 					"inventory:" + entry.AgentID,
 				),
-				Available: ResourceCapacity{CPUUnits: 64},
+				Available: ResourceCapacity{
+					CPUUnits: 64, MemoryBytes: 1 << 30, StorageBytes: 1 << 30,
+					ModelTokens: 128_000, APIAtomicBudget: entry.MaximumCost, Concurrency: 1,
+				},
 				Capabilities: []Capability{
 					{
 						Namespace:            "tos.skill",
@@ -1393,7 +1505,7 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 			Policy: EconomicPolicy{
 				MinimumExpectedProfitAtomic:     "1",
 				MinimumROIPPM:                   1,
-				MaximumLossAtomic:               strconv.FormatUint(entry.MaximumCost, 10),
+				MaximumLossAtomic:               strconv.FormatUint(entry.MaximumLoss, 10),
 				MinimumPaymentProbabilityPPM:    500_000,
 				MinimumCompletionProbabilityPPM: 500_000,
 			},
@@ -1842,7 +1954,7 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 	}
 	reservation := ExposureReservation{
 		ReservationID: campaignDigest(fmt.Sprintf("reservation:%d:%s", sequence, digest)), AgreementDigest: digest,
-		ComputeUnits: 1, ReceivableAtomic: seller.definition.Price, MaximumLossAtomic: seller.definition.MaximumCost,
+		ComputeUnits: 1, ReceivableAtomic: seller.definition.Price, MaximumLossAtomic: seller.definition.MaximumLoss,
 	}
 	_, record, err := sellerEngine.ReserveAgreement(ctx, digest, reservation, allowSettlement{}, 1, seller.fence)
 	if err != nil {

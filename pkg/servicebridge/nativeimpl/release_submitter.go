@@ -170,6 +170,7 @@ type releaseExecutableIdentity struct {
 type execReleaseRunner struct {
 	identity releaseExecutableIdentity
 	config   []byte
+	env      []string
 }
 
 func newPinnedReleaseRunner(binaryPath, configPath string) (*execReleaseRunner, error) {
@@ -186,6 +187,19 @@ func newPinnedReleaseRunner(binaryPath, configPath string) (*execReleaseRunner, 
 		return nil, errors.New("nativeimpl: read bounded tosctl custody configuration")
 	}
 	return &execReleaseRunner{identity: identity, config: append([]byte(nil), config...)}, nil
+}
+
+func newPinnedReleaseRunnerWithVault(binaryPath, configPath, vaultURL string) (*execReleaseRunner, error) {
+	if vaultURL == "" || strings.TrimSpace(vaultURL) != vaultURL || len(vaultURL) > 4096 ||
+		strings.ContainsAny(vaultURL, "\x00\r\n") {
+		return nil, errors.New("nativeimpl: invalid explicit tosctl vault URL")
+	}
+	runner, err := newPinnedReleaseRunner(binaryPath, configPath)
+	if err != nil {
+		return nil, err
+	}
+	runner.env = []string{"VAULT_URL=" + vaultURL}
+	return runner, nil
 }
 
 func (r *execReleaseRunner) run(ctx context.Context, binary string, args ...string) ([]byte, error) {
@@ -208,7 +222,7 @@ func (r *execReleaseRunner) run(ctx context.Context, binary string, args ...stri
 	args = append(args, "--config-fd", "3", "--config-format", "json")
 	command := exec.CommandContext(ctx, "/proc/self/fd/4", args...)
 	command.ExtraFiles = []*os.File{config, executable}
-	command.Env = []string{}
+	command.Env = append([]string(nil), r.env...)
 	output := releaseCappedBuffer{limit: 1 << 20}
 	command.Stdout, command.Stderr = &output, &output
 	err = command.Run()

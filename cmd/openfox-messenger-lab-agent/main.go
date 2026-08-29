@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -365,6 +366,8 @@ func (s *agentService) routes() http.Handler {
 		ids, err := s.channel.SendWithClientID(r.Context(),
 			bus.OutboundMessage{ChatID: s.roomID, Content: request.Content}, request.RequestID)
 		if err != nil || len(ids) != 1 {
+			log.Printf("Messenger lab send failed: agent_id=%s room_id=%s request_id=%s ids=%d error=%v",
+				s.agentID, s.roomID, request.RequestID, len(ids), err)
 			http.Error(w, "send failed", http.StatusBadGateway)
 			return
 		}

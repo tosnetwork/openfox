@@ -17,7 +17,7 @@ import (
 func validConfig() config {
 	return config{Schema: configSchema, LocalAgentID: "agent_" + strings.Repeat("a", 64), Network: &nativev1.NetworkDomain{NetworkId: "tos-test", GenesisRootHash: strings.Repeat("1", 64), GenesisFileHash: strings.Repeat("2", 64)}, GlobalID: 42, ChainEndpoints: []string{"https://a.test", "https://b.test", "https://c.test"}, ChainQuorum: 2,
 		NativeGateway:   nativeGatewayConfig{BaseURL: "https://native.test", BearerToken: "secret"},
-		TOSCTLCustody:   nativeimpl.TOSCTLGiftCustodyConfig{BinaryPath: "/usr/bin/tosctl", ConfigPath: "/private/tosctl.json", WalletName: "agent", OwnerWallet: "-1:" + strings.Repeat("1", 64), ControllerKeyID: "controller:main"},
+		TOSCTLCustody:   nativeimpl.TOSCTLGiftCustodyConfig{BinaryPath: "/usr/bin/tosctl", ConfigPath: "/private/tosctl.json", VaultURL: "unix:///private/vault.sock", WalletName: "agent", OwnerWallet: "-1:" + strings.Repeat("1", 64), ControllerKeyID: "controller:main", QuorumConfigPaths: []string{"/private/tosctl-2.json", "/private/tosctl-3.json"}},
 		Publisher:       chainactionpublisher.TosctlBackendConfig{Network: "tos-test", Binary: "/usr/bin/tosctl", ConfigPath: "/private/tosctl.json", VaultURL: "unix:///private/vault.sock", RPCURL: "https://a.test", GenesisRootHash: strings.Repeat("1", 64), GenesisFileHash: strings.Repeat("2", 64), WalletName: "owner", Payer: "-1:" + strings.Repeat("1", 64)},
 		MessengerSocket: "/private/messenger.sock", JournalDirectory: "/private/gifts", ModelSocket: "/private/model.sock", RuntimeSocket: "/private/runtime.sock", RecipientAddress: "0:" + strings.Repeat("2", 64), FeeReserveAtomic: 1_000_000, MinimumInclusionMargin: 60, ResponseLifetimeSecs: 3600}
 }

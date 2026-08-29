@@ -120,6 +120,7 @@ type Custody interface {
 	SenderAccount(context.Context) (string, error)
 	PrepareNativeGift(context.Context, SignRequest) (CustodyReview, error)
 	SignNativeGift(context.Context, SignRequest) ([]byte, error)
+	ResolveNativeGift(context.Context, ResolveRequest) error
 	CancelSeqno(context.Context, CancelRequest) ([]byte, error)
 }
 type Broadcaster interface {
@@ -142,6 +143,9 @@ type CancelRequest struct {
 	IntentID, SignedGiftID, OwnerAuthorizationDigest, SenderAgentAccount string
 	GlobalID                                                             int32
 	Seqno, ValidUntil                                                    uint32
+}
+type ResolveRequest struct {
+	IntentID, SenderAgentAccount, DestinationAddress, AmountAtomic, ExactBOCDigest string
 }
 type CustodyReview struct {
 	Network, RecipientAgentID, SenderAgentAccount, OwnerWallet, ControllerKeyID, DeploymentID string

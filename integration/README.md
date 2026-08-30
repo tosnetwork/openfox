@@ -52,15 +52,16 @@ In practice, each suite gives us:
 
 ## Current Reference Suite
 
-[`integration/suites/mcp-streamable/`](suites/mcp-streamable/) is the reference example today.
+No Docker-backed suite ships today. The previous `mcp-streamable` example was
+removed because OpenFox's remote MCP transport now requires an absolute,
+credential-free HTTPS endpoint and rejects loopback/private/link-local hosts
+(SSRF hardening, `pkg/mcp/remote_transport.go`) — which a hermetic Docker
+fixture, being a private/loopback plaintext endpoint, cannot satisfy.
 
-It does three things:
-
-- builds and starts a fixture MCP server from [`integration/fixtures/mcp-streamable-server/`](fixtures/mcp-streamable-server/)
-- injects connection details into the runner container through environment variables
-- runs [`TestIntegration_RealConfiguredServer`](../pkg/mcp/manager_real_server_integration_test.go) to verify that OpenFox can connect to a real server, discover tools, invoke one, and validate the response payload
-
-That suite complements [`TestIntegration_StreamableHTTPCompatibility`](../pkg/mcp/manager_integration_test.go), which exercises the same area in-process. Together they cover both protocol behavior and real service wiring.
+Streamable-HTTP behavior is still covered in-process by
+[`TestIntegration_StreamableHTTPCompatibility`](../pkg/mcp/manager_integration_test.go).
+A new Docker-backed suite can be added under `integration/suites/` following the
+layout below.
 
 ## Suite Layout
 
@@ -90,7 +91,7 @@ Optional fields:
 Example:
 
 ```bash
-TEST_COMMAND='go test -tags=goolm,stdjson,integration ./pkg/mcp -run TestIntegration_RealConfiguredServer -v'
+TEST_COMMAND='go test -tags=goolm,stdjson,integration ./pkg/... -run TestIntegration_YourSuite -v'
 ```
 
 ## Running Integration Tests Locally
@@ -115,7 +116,7 @@ bash ./scripts/run-integration-tests.sh
 ### Run a Single Suite
 
 ```bash
-bash ./scripts/run-integration-tests.sh mcp-streamable
+bash ./scripts/run-integration-tests.sh <suite-name>
 ```
 
 This is the fastest way to reproduce exactly what the CI integration job does for one suite.
@@ -128,15 +129,6 @@ For faster iteration while writing the test, you can run the Go test itself with
 go test -tags=goolm,stdjson,integration ./pkg/mcp -run TestIntegration_StreamableHTTPCompatibility -v
 ```
 
-You can also run the real-server smoke test directly if you provide the same environment variables that the Docker suite would inject:
-
-```bash
-OPENFOX_MCP_REAL_SERVER_JSON='{"enabled":true,"type":"http","url":"http://127.0.0.1:8080/mcp"}' \
-OPENFOX_MCP_REAL_TOOL_NAME=echo \
-OPENFOX_MCP_REAL_TOOL_ARGS_JSON='{"message":"hello"}' \
-OPENFOX_MCP_REAL_EXPECT_SUBSTRING=hello \
-go test -tags=goolm,stdjson,integration ./pkg/mcp -run TestIntegration_RealConfiguredServer -v
-```
 
 Notes:
 
@@ -207,7 +199,7 @@ In `suite.env`, point `TEST_COMMAND` at the Go test you want CI to run.
 Examples:
 
 ```bash
-TEST_COMMAND='go test -tags=goolm,stdjson,integration ./pkg/mcp -run TestIntegration_RealConfiguredServer -v'
+TEST_COMMAND='go test -tags=goolm,stdjson,integration ./pkg/... -run TestIntegration_YourSuite -v'
 ```
 
 ```bash

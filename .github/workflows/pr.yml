@@ -66,6 +66,12 @@ jobs:
       - name: Run go generate
         run: go generate -tags goolm,stdjson ./...
 
+      # The isolation package's hermetic-sandbox tests require the bubblewrap
+      # launcher to exist at its pinned path (/usr/bin/bwrap); without it they
+      # fail closed rather than skip, since they guard a security invariant.
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
       - name: Run go test
         run: go test -tags goolm,stdjson ./...
 

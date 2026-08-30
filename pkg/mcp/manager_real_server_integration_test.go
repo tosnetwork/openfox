@@ -54,7 +54,12 @@ func TestIntegration_RealConfiguredServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	mgr := NewManager()
+	// Connecting now requires trusted-capability authorization (the gate added
+	// to ConnectServer/CallTool). This test exercises real-server connectivity,
+	// discovery and invocation — not the gate itself, which has dedicated unit
+	// coverage — so it wires the same permissive test authorizer/verifier/effect
+	// hooks the other tests use, over the real connectServerFunc.
+	mgr := newTestManager()
 	if err := mgr.ConnectServer(ctx, "real", serverCfg); err != nil {
 		t.Fatalf("ConnectServer() error = %v", err)
 	}

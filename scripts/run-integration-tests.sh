@@ -105,8 +105,10 @@ main() {
   done < <(collect_suite_dirs "$@")
 
   if [[ "${#suite_dirs[@]}" -eq 0 ]]; then
-    echo "no integration suites found" >&2
-    exit 1
+    # A full run with no suites present is a no-op, not a failure. (An explicitly
+    # requested but missing suite is still caught by the per-suite check below.)
+    echo "no integration suites to run" >&2
+    exit 0
   fi
 
   local suite_dir

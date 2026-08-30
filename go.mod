@@ -48,6 +48,7 @@ require (
 	go.mau.fi/whatsmeow v0.0.0-20260219150138-7ae702b1eed4
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/term v0.44.0
+	golang.org/x/text v0.39.0
 	golang.org/x/time v0.15.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
@@ -125,7 +126,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
-	golang.org/x/text v0.39.0 // indirect
 	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
@@ -148,9 +148,9 @@ require (
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/tosnetwork/tos-ai v0.0.0-20260828001018-90cf46f18c8e
-	github.com/tosnetwork/tos-messenger v0.0.0-20260828001018-f7abfb1e701a
-	github.com/tosnetwork/tos-service-protocol v0.0.0-20260828000705-8d8b80ad5934
+	github.com/tosnetwork/tos-ai v0.0.0-20260829012240-2543edc85b9f
+	github.com/tosnetwork/tos-messenger v0.0.0-20260829063132-685ab50dd79e
+	github.com/tosnetwork/tos-service-protocol v0.0.0-20260830105001-39dd9f362aa6
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.71.0 // indirect

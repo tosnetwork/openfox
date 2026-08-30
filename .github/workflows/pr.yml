@@ -66,6 +66,17 @@ jobs:
       - name: Run go generate
         run: go generate -tags goolm,stdjson ./...
 
+      # The isolation tests exercise a real bubblewrap sandbox: some only open
+      # the launcher pinned at /usr/bin/bwrap, others actually execute a hook
+      # inside the sandbox. They fail closed rather than skip, since they guard
+      # a security invariant. Install bubblewrap, and lift the AppArmor
+      # restriction on unprivileged user namespaces that ubuntu-24.04 runners
+      # enable by default, without which bwrap cannot create the sandbox.
+      - name: Install bubblewrap and enable unprivileged user namespaces
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: Run go test
         run: go test -tags goolm,stdjson ./...
 

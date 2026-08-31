@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,9 +133,35 @@ func liveTOSCustodyNetworkDomain(t *testing.T, networkID string, globalID int32)
 	if err != nil {
 		t.Fatal("OPENFOX_TOS_TARGET_WORKCHAIN_ID must be an int32")
 	}
+	rootHash, err := canonicalTOSZeroStateHash(mustEnv(t, "OPENFOX_TOS_ZERO_STATE_ROOT_HASH"))
+	if err != nil {
+		t.Fatalf("OPENFOX_TOS_ZERO_STATE_ROOT_HASH is invalid: %v", err)
+	}
+	fileHash, err := canonicalTOSZeroStateHash(mustEnv(t, "OPENFOX_TOS_ZERO_STATE_FILE_HASH"))
+	if err != nil {
+		t.Fatalf("OPENFOX_TOS_ZERO_STATE_FILE_HASH is invalid: %v", err)
+	}
 	return &agentrelay.NetworkDomain{NetworkID: networkID, GlobalID: globalID,
-		ZeroStateRootHash: mustEnv(t, "OPENFOX_TOS_ZERO_STATE_ROOT_HASH"),
-		ZeroStateFileHash: mustEnv(t, "OPENFOX_TOS_ZERO_STATE_FILE_HASH"), WorkchainID: int32(workchain)}
+		ZeroStateRootHash: rootHash, ZeroStateFileHash: fileHash, WorkchainID: int32(workchain)}
+}
+
+// canonicalTOSZeroStateHash accepts the Base64 representation emitted by the
+// chain tooling as well as the canonical protocol representation used at the
+// Agent relay boundary. NetworkDomainDigest deliberately accepts only the
+// latter so two textual encodings cannot produce different authority domains.
+func canonicalTOSZeroStateHash(value string) (string, error) {
+	if len(value) == len("sha256:")+sha256.Size*2 && value[:len("sha256:")] == "sha256:" {
+		raw, err := hex.DecodeString(value[len("sha256:"):])
+		if err == nil && len(raw) == sha256.Size && value == "sha256:"+hex.EncodeToString(raw) {
+			return value, nil
+		}
+		return "", errors.New("canonical digest must contain 64 lowercase hexadecimal characters")
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil || len(raw) != sha256.Size {
+		return "", errors.New("must be a 32-byte Base64 hash or canonical sha256 digest")
+	}
+	return "sha256:" + hex.EncodeToString(raw), nil
 }
 
 func mustEnv(t *testing.T, name string) string {

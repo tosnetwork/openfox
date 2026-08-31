@@ -96,6 +96,8 @@ type eightAgentJobResult struct {
 	ExpectedNetNanoTOS          string   `json:"expected_net_nanotos"`
 	DemandPlanningMode          string   `json:"demand_planning_mode,omitempty"`
 	DemandRationale             string   `json:"demand_rationale,omitempty"`
+	SupplyIntentDigest          string   `json:"supply_intent_digest,omitempty"`
+	SupplyCarrierIDs            []string `json:"supply_carrier_ids,omitempty"`
 	ConversationDigest          string   `json:"conversation_digest,omitempty"`
 	ConversationMessageCount    int      `json:"conversation_message_count,omitempty"`
 	CompletedAt                 string   `json:"completed_at"`
@@ -103,11 +105,27 @@ type eightAgentJobResult struct {
 }
 
 type autonomousCampaignDemand struct {
-	Decision    string `json:"decision"`
-	SellerAgent string `json:"seller_agent"`
-	Capability  string `json:"capability"`
-	Task        string `json:"task"`
-	Rationale   string `json:"rationale"`
+	Decision     string   `json:"decision"`
+	SellerAgent  string   `json:"seller_agent"`
+	Capability   string   `json:"capability"`
+	Task         string   `json:"task"`
+	Rationale    string   `json:"rationale"`
+	IntentDigest string   `json:"-"`
+	CarrierIDs   []string `json:"-"`
+}
+
+type autonomousCampaignCatalogEntry struct {
+	Agent, Capability, Taxonomy, Price string
+	ExampleScopes                      []string
+	IntentDigest                       string
+	CarrierIDs                         []string
+}
+
+type campaignClosingAssessment struct {
+	Agent       string `json:"agent"`
+	CompletedAt string `json:"completed_at"`
+	Assessment  string `json:"assessment,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 type campaignConversationMessage struct {
@@ -137,18 +155,19 @@ type eightAgentCampaignReport struct {
 }
 
 type campaignRuntime struct {
-	definition   eightAgentManifestEntry
-	cfg          *config.Config
-	provider     providers.LLMProvider
-	model        string
-	identity     ed25519.PrivateKey
-	authority    *PersonalAuthority
-	fence        commerce.WriterFence
-	publisher    *PublicationManager
-	payment      *TOSCTLPaymentSink
-	learning     ExecutionLearningRecorder
-	collector    Collector
-	agentContext AgentContextSource
+	definition      eightAgentManifestEntry
+	cfg             *config.Config
+	provider        providers.LLMProvider
+	model           string
+	identity        ed25519.PrivateKey
+	authority       *PersonalAuthority
+	fence           commerce.WriterFence
+	publisher       *PublicationManager
+	payment         *TOSCTLPaymentSink
+	learning        ExecutionLearningRecorder
+	collector       Collector
+	agentContext    AgentContextSource
+	catalogOverride []autonomousCampaignCatalogEntry
 }
 
 type campaignIntentAuthority map[string]ed25519.PublicKey
@@ -589,6 +608,8 @@ func nativeStrategyCampaignDefinitions(definitions []eightAgentDefinition) []eig
 		"software-builder":     {5_000_000_000, 900_000_000, 2_500_000_000},
 		"evidence-verifier":    {2_200_000_000, 300_000_000, 1_100_000_000},
 		"storage-provider":     {2_500_000_000, 400_000_000, 1_250_000_000},
+		"data-curator":         {2_000_000_000, 300_000_000, 1_000_000_000},
+		"localization-writer":  {1_800_000_000, 250_000_000, 900_000_000},
 		"transaction-operator": {3_000_000_000, 450_000_000, 1_500_000_000},
 		"guarantor-analyst":    {4_500_000_000, 700_000_000, 2_250_000_000},
 	}
@@ -607,7 +628,8 @@ func writeNativeCampaignWorkspace(t *testing.T, workspace string, entry eightAge
 	t.Helper()
 	minimum := map[string]string{
 		"security-auditor": "3 TOS", "software-builder": "4 TOS", "evidence-verifier": "2 TOS",
-		"storage-provider": "2 TOS", "transaction-operator": "2.5 TOS", "guarantor-analyst": "4 TOS",
+		"storage-provider": "2 TOS", "data-curator": "1.5 TOS", "localization-writer": "1.4 TOS",
+		"transaction-operator": "2.5 TOS", "guarantor-analyst": "4 TOS",
 	}[entry.Name]
 	target := fmt.Sprintf("%.1f TOS", float64(entry.Price)/1_000_000_000)
 	maximumLoss := fmt.Sprintf("%.2f TOS", float64(entry.MaximumLoss)/1_000_000_000)
@@ -631,7 +653,7 @@ When examining opportunities, reason about price, expected cost, Gas, delivery r
 - Do not accept an Agreement whose reasonably possible loss exceeds %s; this is distinct from expected internal cost.
 - As a buyer, spend at most 6 TOS on one job and buy only work that has a concrete benefit for your own business.
 - Account for model usage, tools, expected Gas, rework, disputes, and opportunity cost before accepting.
-- You may use direct TOS payment with the five named local campaign Agents for this owner-authorized test round. For any other counterparty, prefer escrow or ask the owner.
+- You may use direct TOS payment with the seven other named local campaign Agents for this owner-authorized test round. For any other counterparty, prefer escrow or ask the owner.
 - Decline vague, harmful, unauthorized, or capability-mismatched work.
 - You may propose changes to these preferences, but must not silently weaken or rewrite them.
 `, minimum, target, maximumLoss)
@@ -641,7 +663,7 @@ Be commercially serious, candid, and selective. Do not manufacture activity to m
 `
 	memoryMD := `# Business memory
 
-This is the first native-strategy market round. The five listed local counterparties are owner-authorized test peers, but no prior success should be invented. Record actual outcomes, costs, useful counterparties, failed assumptions, and reusable work patterns after the round.
+This is the first native-strategy market round. The seven listed local counterparties are owner-authorized test peers, but no prior success should be invented. Record actual outcomes, costs, useful counterparties, failed assumptions, and reusable work patterns after the round.
 `
 	heartbeatMD := `# Autonomous earning heartbeat
 
@@ -957,6 +979,153 @@ func TestEightOpenFoxAgenticInternetCampaign(t *testing.T) {
 	t.Logf("eight-agent campaign completed report=%s", reportPath)
 }
 
+// TestEightOpenFoxAutonomousMarketCampaign runs eight distinct OpenFox
+// identities for at least three wall-clock hours against the signed supply
+// Intents that they discover through the configured Carriers. The harness fixes
+// only the owner policy, available capabilities, safety bounds, and pacing;
+// each buyer AI chooses whether to buy, which discovered counterparty to
+// contact, and the exact bounded task.
+func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
+	if os.Getenv("OPENFOX_EIGHT_AGENT_AUTONOMOUS_CAMPAIGN") != "1" {
+		t.Skip("set OPENFOX_EIGHT_AGENT_AUTONOMOUS_CAMPAIGN=1")
+	}
+	root := mustEnv(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_ROOT")
+	manifest := loadEightAgentManifest(t, filepath.Join(root, "eight-agent-manifest.json"))
+	duration := parseCampaignDuration(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_DURATION", 10*time.Hour)
+	rounds := 5
+	if value := strings.TrimSpace(os.Getenv("OPENFOX_CAMPAIGN_ROUNDS")); value != "" {
+		parsed, parseErr := strconv.Atoi(value)
+		if parseErr != nil || parsed < 1 || parsed > 12 {
+			t.Fatal("OPENFOX_CAMPAIGN_ROUNDS must be an integer from 1 through 12")
+		}
+		rounds = parsed
+	}
+	interval := parseCampaignDuration(
+		t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_INTERVAL",
+		duration/time.Duration(len(manifest.Agents)*rounds),
+	)
+	if duration < 3*time.Hour || interval < 30*time.Second {
+		t.Fatal("autonomous eight-agent campaign must preserve at least three real hours and bounded pacing")
+	}
+	reportPath := filepath.Join(root, "reports", "eight-agent-autonomous-campaign-checkpoint.json")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	report := loadOrCreateNamedCampaignReport(t, reportPath, duration, eightAgentCampaignSchema)
+	runtimes := openCampaignRuntimes(t, root, manifest)
+	defer closeCampaignRuntimes(runtimes)
+	for _, runtime := range runtimes {
+		campaignGroupSend(t, runtime.definition.Name, "campaign-opening-"+runtime.definition.Name,
+			fmt.Sprintf("online; I offer %s at %.9f TOS and independently inspect signed bulletin Intents before buying",
+				runtime.definition.Capability, float64(runtime.definition.Price)/1_000_000_000))
+	}
+
+	completed := map[int]bool{}
+	for _, result := range report.Results {
+		completed[result.Sequence] = true
+	}
+	start, err := time.Parse(time.RFC3339Nano, report.StartedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns := len(manifest.Agents) * rounds
+	for sequence := 0; sequence < turns; sequence++ {
+		if completed[sequence] {
+			continue
+		}
+		due := start.Add(time.Duration(sequence) * interval)
+		if delay := time.Until(due); delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-t.Context().Done():
+				timer.Stop()
+				t.Fatal(t.Context().Err())
+			case <-timer.C:
+			}
+		}
+		buyerIndex := sequence % len(runtimes)
+		buyer := runtimes[buyerIndex]
+		plan, planErr := planAutonomousCampaignDemand(t.Context(), sequence/len(runtimes)+1, buyer, runtimes)
+		if planErr != nil {
+			t.Fatalf("buyer %s bulletin planning: %v", buyer.definition.Name, planErr)
+		}
+		if plan.Decision == "skip" {
+			result := eightAgentJobResult{
+				Sequence: sequence, Round: sequence/len(runtimes) + 1,
+				Disposition: "skipped:buyer-strategy", Buyer: buyer.definition.Name,
+				EconomicAnalysisMode: "not-run", DemandPlanningMode: "buyer-ai-carrier-discovery",
+				DemandRationale: plan.Rationale, CompletedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			}
+			report.Results = append(report.Results, result)
+			report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			writeCampaignJSON(t, reportPath, report)
+			campaignGroupSend(t, buyer.definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
+				fmt.Sprintf("round %d: no voluntary purchase after bulletin review — %s", result.Round, plan.Rationale))
+			t.Logf("turn=%d buyer=%s disposition=%s rationale=%q", sequence+1, result.Buyer,
+				result.Disposition, result.DemandRationale)
+			continue
+		}
+		sellerIndex := campaignRuntimeIndex(runtimes, plan.SellerAgent)
+		if sellerIndex < 0 || sellerIndex == buyerIndex {
+			t.Fatalf("buyer %s selected invalid seller %q", buyer.definition.Name, plan.SellerAgent)
+		}
+		campaignGroupSend(t, buyer.definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
+			fmt.Sprintf("round %d: requesting %s from %s after signed bulletin discovery — %s",
+				sequence/len(runtimes)+1, plan.Capability, plan.SellerAgent, plan.Rationale))
+		var result eightAgentJobResult
+		var jobErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			result, jobErr = runEightAgentJob(t.Context(), root, sequence, sequence/len(runtimes)+1, attempt,
+				buyer, runtimes[sellerIndex], plan.Task, due)
+			if jobErr == nil {
+				break
+			}
+			var retryable retryableCampaignJobError
+			if !errors.As(jobErr, &retryable) || attempt == 2 {
+				break
+			}
+			for _, runtime := range []*campaignRuntime{runtimes[sellerIndex], buyer} {
+				engine := &Engine{OwnerID: runtime.definition.OwnerID, AgentID: runtime.definition.AgentID,
+					MandateDigest: runtime.cfg.Earning.MandateDigest, Authority: runtime.authority}
+				if _, reconcileErr := engine.ReconcileApply(t.Context(), 1, runtime.fence); reconcileErr != nil {
+					t.Fatalf("campaign job %d retry reconciliation: %v", sequence, reconcileErr)
+				}
+			}
+			t.Logf("safe retry sequence=%d attempt=%d error=%v", sequence, attempt+1, jobErr)
+		}
+		if jobErr != nil {
+			t.Fatalf("campaign job %d buyer=%s seller=%s: %v", sequence,
+				buyer.definition.Name, runtimes[sellerIndex].definition.Name, jobErr)
+		}
+		result.DemandPlanningMode = "buyer-ai-carrier-discovery"
+		result.DemandRationale = plan.Rationale
+		result.SupplyIntentDigest = plan.IntentDigest
+		result.SupplyCarrierIDs = append([]string(nil), plan.CarrierIDs...)
+		report.Results = append(report.Results, result)
+		report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		writeCampaignJSON(t, reportPath, report)
+		campaignGroupSend(t, result.Seller, fmt.Sprintf("campaign-outcome-%03d", sequence),
+			fmt.Sprintf("round %d outcome for %s: %s; payment=%s", result.Round, result.Buyer,
+				result.Disposition, result.PaymentTransaction))
+		t.Logf("turn=%d buyer=%s seller=%s disposition=%s task=%q", sequence+1,
+			result.Buyer, result.Seller, result.Disposition, plan.Task)
+	}
+	if remaining := start.Add(duration).Sub(time.Now()); remaining > 0 {
+		timer := time.NewTimer(remaining)
+		select {
+		case <-t.Context().Done():
+			timer.Stop()
+			t.Fatal(t.Context().Err())
+		case <-timer.C:
+		}
+	}
+	report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	writeCampaignJSON(t, reportPath, report)
+	writeCampaignSummaries(t, root, report, manifest)
+	writeCampaignClosingAssessments(t, root, runtimes, report)
+	t.Logf("eight-agent autonomous campaign completed report=%s", reportPath)
+}
+
 // TestSixOpenFoxAutonomousMarketCampaign runs six isolated OpenFox identities
 // for at least one wall-clock hour. For every turn the buyer's configured AI
 // selects a useful counterparty and authors the demand; the harness supplies
@@ -1118,21 +1287,19 @@ func planAutonomousCampaignDemand(ctx context.Context, round int, buyer *campaig
 	if buyer == nil || buyer.provider == nil || len(runtimes) < 2 {
 		return autonomousCampaignDemand{}, errors.New("autonomous demand planner is incomplete")
 	}
-	type catalogEntry struct {
-		Agent, Capability, Taxonomy, Price string
-		ExampleScopes                      []string
+	catalog := append([]autonomousCampaignCatalogEntry(nil), buyer.catalogOverride...)
+	if len(catalog) == 0 {
+		var err error
+		catalog, err = discoverAutonomousCampaignCatalog(ctx, buyer, runtimes)
+		if err != nil {
+			return autonomousCampaignDemand{}, err
+		}
 	}
-	catalog := make([]catalogEntry, 0, len(runtimes)-1)
 	allowed := map[string]*campaignRuntime{}
 	for _, candidate := range runtimes {
 		if candidate == nil || candidate == buyer {
 			continue
 		}
-		catalog = append(catalog, catalogEntry{
-			Agent:      candidate.definition.Name,
-			Capability: candidate.definition.Capability, Taxonomy: candidate.definition.Taxonomy,
-			Price: strconv.FormatUint(candidate.definition.Price, 10), ExampleScopes: candidate.definition.Tasks,
-		})
 		allowed[candidate.definition.Name] = candidate
 	}
 	input, err := json.Marshal(map[string]any{
@@ -1194,7 +1361,14 @@ func planAutonomousCampaignDemand(ctx context.Context, round int, buyer *campaig
 				lastErr = errors.New("buy decision exceeded the signed campaign catalog or text bounds")
 				continue
 			}
-			return plan, nil
+			for _, listing := range catalog {
+				if listing.Agent == plan.SellerAgent && listing.Capability == plan.Capability {
+					plan.IntentDigest = listing.IntentDigest
+					plan.CarrierIDs = append([]string(nil), listing.CarrierIDs...)
+					return plan, nil
+				}
+			}
+			lastErr = errors.New("buy decision did not identify a currently discovered signed supply Intent")
 		default:
 			lastErr = errors.New("model demand decision is neither buy nor skip")
 		}
@@ -1203,6 +1377,117 @@ func planAutonomousCampaignDemand(ctx context.Context, round int, buyer *campaig
 		"buyer AI did not produce a valid bounded demand after retry: %w",
 		lastErr,
 	)
+}
+
+func discoverAutonomousCampaignCatalog(ctx context.Context, buyer *campaignRuntime,
+	runtimes []*campaignRuntime,
+) ([]autonomousCampaignCatalogEntry, error) {
+	if buyer == nil || len(buyer.collector.Carriers) < 2 || buyer.collector.Authority == nil {
+		return nil, errors.New("signed bulletin discovery is unavailable")
+	}
+	byAgent := map[string]*campaignRuntime{}
+	for _, runtime := range runtimes {
+		if runtime != nil && runtime != buyer {
+			byAgent[runtime.definition.AgentID] = runtime
+		}
+	}
+	type observed struct {
+		runtime  *campaignRuntime
+		digest   string
+		carriers map[string]bool
+	}
+	observedByDigest := map[string]*observed{}
+	query := IntentQuery{Modes: []commerce.IntentMode{commerce.IntentOffer},
+		SubjectClasses: []commerce.SubjectClass{commerce.SubjectService}, MaximumResults: 100}
+	for _, carrier := range buyer.collector.Carriers {
+		results, err := carrier.Search(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("Carrier %s supply search: %w", carrier.ID(), err)
+		}
+		for _, result := range results {
+			if result.Withdrawal != nil || result.CarrierID != carrier.ID() ||
+				commerce.VerifyIntent(result.Intent, buyer.collector.Authority, time.Now().UTC()) != nil {
+				continue
+			}
+			runtime := byAgent[result.Intent.Body.IssuerAgentID]
+			if runtime == nil || !matchesQuery(result.Intent.Body.Payload.DiscoveryCard, query) {
+				continue
+			}
+			digest, digestErr := commerce.IntentBodyDigest(result.Intent.Body)
+			if digestErr != nil {
+				continue
+			}
+			current := observedByDigest[digest]
+			if current == nil {
+				current = &observed{runtime: runtime, digest: digest, carriers: map[string]bool{}}
+				observedByDigest[digest] = current
+			}
+			current.carriers[carrier.ID()] = true
+		}
+	}
+	catalog := make([]autonomousCampaignCatalogEntry, 0, len(observedByDigest))
+	for _, current := range observedByDigest {
+		if len(current.carriers) != len(buyer.collector.Carriers) {
+			continue
+		}
+		carrierIDs := make([]string, 0, len(current.carriers))
+		for carrierID := range current.carriers {
+			carrierIDs = append(carrierIDs, carrierID)
+		}
+		sort.Strings(carrierIDs)
+		catalog = append(catalog, autonomousCampaignCatalogEntry{
+			Agent: current.runtime.definition.Name, Capability: current.runtime.definition.Capability,
+			Taxonomy:      current.runtime.definition.Taxonomy,
+			Price:         strconv.FormatUint(current.runtime.definition.Price, 10),
+			ExampleScopes: append([]string(nil), current.runtime.definition.Tasks...),
+			IntentDigest:  current.digest, CarrierIDs: carrierIDs,
+		})
+	}
+	sort.Slice(catalog, func(i, j int) bool { return catalog[i].Agent < catalog[j].Agent })
+	if len(catalog) == 0 {
+		return nil, errors.New("no supply Intent was independently present on every configured Carrier")
+	}
+	return catalog, nil
+}
+
+func writeCampaignClosingAssessments(t *testing.T, root string, runtimes []*campaignRuntime,
+	report eightAgentCampaignReport,
+) {
+	t.Helper()
+	results := make([]campaignClosingAssessment, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		assessment := campaignClosingAssessment{Agent: runtime.definition.Name,
+			CompletedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+		prompt, err := contextualAgentSystemPrompt(runtime.agentContext,
+			"You are closing a bounded OpenFox social earning experiment. Based only on your role, owner policy, and the supplied aggregate campaign record, explain: (1) what earning profitably means to you, (2) what you learned about selecting or declining work, (3) your evidence-based assessment of TOS Network, and (4) your five highest-priority ecosystem improvements. Be candid about same-host, closed-economy, direct-payment, and missing escrow limitations. Return concise Markdown. Do not call tools.")
+		if err == nil {
+			var raw []byte
+			raw, err = json.Marshal(report)
+			if len(raw) > 128<<10 {
+				err = errors.New("campaign record is too large for closing assessment")
+			}
+			if err == nil {
+				response, callErr := runtime.provider.Chat(providers.WithInternalAgentBackendPrincipal(t.Context()),
+					[]providers.Message{{Role: "system", Content: prompt}, {Role: "user", Content: string(raw)}}, nil,
+					runtime.model, map[string]any{"temperature": 0.25, "max_tokens": 1800})
+				if callErr != nil {
+					err = callErr
+				} else if response == nil || len(response.ToolCalls) != 0 || len(response.Content) == 0 ||
+					len(response.Content) > 32<<10 || !utf8.ValidString(response.Content) {
+					err = errors.New("closing assessment response is invalid")
+				} else {
+					assessment.Assessment = strings.TrimSpace(response.Content)
+				}
+			}
+		}
+		if err != nil {
+			assessment.Error = err.Error()
+		}
+		results = append(results, assessment)
+		writeCampaignJSON(t, filepath.Join(root, "reports", "eight-agent-closing-assessments.json"), map[string]any{
+			"schema": "tos.openfox.eight-agent-closing-assessments.v1", "assessments": results,
+		})
+	}
 }
 
 func requireCampaignJSONEOF(decoder *json.Decoder) error {
@@ -1361,6 +1646,10 @@ func loadOrCreateNamedCampaignReport(
 
 func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest) []*campaignRuntime {
 	t.Helper()
+	writerLease := parseCampaignDuration(t, "OPENFOX_CAMPAIGN_WRITER_LEASE", 4*time.Hour)
+	if writerLease < 4*time.Hour || writerLease > 24*time.Hour {
+		t.Fatal("OPENFOX_CAMPAIGN_WRITER_LEASE must be between 4h and 24h")
+	}
 	trustedIntents := campaignIntentAuthority{}
 	for _, entry := range manifest.Agents {
 		encoded := strings.TrimPrefix(entry.IdentityPin, "ed25519:")
@@ -1415,7 +1704,7 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 				"portfolio.reserve",
 				"publication.publish",
 			},
-			4*time.Hour,
+			writerLease,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2577,6 +2866,11 @@ func TestAutonomousCampaignDemandPlannerPersistsExplicitSkip(t *testing.T) {
 		Name: "seller", Capability: "review", Taxonomy: "security",
 		Price: 100, Tasks: []string{"Review a bounded component."},
 	}}
+	buyer.catalogOverride = []autonomousCampaignCatalogEntry{{
+		Agent: seller.definition.Name, Capability: seller.definition.Capability,
+		Taxonomy: seller.definition.Taxonomy, Price: "100", ExampleScopes: seller.definition.Tasks,
+		IntentDigest: campaignDigest("test-supply"), CarrierIDs: []string{"carrier:a", "carrier:b"},
+	}}
 	plan, err := planAutonomousCampaignDemand(context.Background(), 1, buyer, []*campaignRuntime{buyer, seller})
 	if err != nil || plan.Decision != "skip" || plan.SellerAgent != "" || plan.Task != "" {
 		t.Fatalf("skip plan=%+v err=%v", plan, err)
@@ -2594,6 +2888,11 @@ func TestAutonomousCampaignDemandPlannerRejectsHiddenActionOnSkip(t *testing.T) 
 	seller := &campaignRuntime{definition: eightAgentManifestEntry{
 		Name: "seller", Capability: "review", Taxonomy: "security",
 		Price: 100, Tasks: []string{"Review a bounded component."},
+	}}
+	buyer.catalogOverride = []autonomousCampaignCatalogEntry{{
+		Agent: seller.definition.Name, Capability: seller.definition.Capability,
+		Taxonomy: seller.definition.Taxonomy, Price: "100", ExampleScopes: seller.definition.Tasks,
+		IntentDigest: campaignDigest("test-supply"), CarrierIDs: []string{"carrier:a", "carrier:b"},
 	}}
 	if _, err := planAutonomousCampaignDemand(
 		context.Background(),
@@ -2648,6 +2947,12 @@ func TestRealNativeStrategyCanSkipAndDecline(t *testing.T) {
 		},
 	}
 	seller := &campaignRuntime{definition: byName["security-auditor"]}
+	buyer.catalogOverride = []autonomousCampaignCatalogEntry{{
+		Agent: seller.definition.Name, Capability: seller.definition.Capability,
+		Taxonomy: seller.definition.Taxonomy, Price: strconv.FormatUint(seller.definition.Price, 10),
+		ExampleScopes: seller.definition.Tasks, IntentDigest: campaignDigest("preflight-supply"),
+		CarrierIDs: []string{"carrier:a", "carrier:b"},
+	}}
 	plan, err := planAutonomousCampaignDemand(t.Context(), 1, buyer, []*campaignRuntime{buyer, seller})
 	if err != nil || plan.Decision != "skip" {
 		t.Fatalf("real Codex no-action plan=%+v err=%v", plan, err)

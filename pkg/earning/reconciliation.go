@@ -132,6 +132,12 @@ func (engine *Engine) ReconcileApply(ctx context.Context, policyRevision uint64,
 			return report, buildErr
 		}
 		resolution, releaseErr := engine.Authority.ReleaseReservation(action, fields, canonical, fence)
+		if errors.Is(releaseErr, ErrCustodyAuthorizationLive) {
+			// Settlement may be recorded, but caller-provided terminal evidence
+			// cannot release an offline bearer. Authority time-based cleanup will
+			// free the exact hold only after the signed payment validity ends.
+			continue
+		}
 		if releaseErr != nil {
 			return report, releaseErr
 		}

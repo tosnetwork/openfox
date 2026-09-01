@@ -153,6 +153,7 @@ func (authority *PersonalAuthority) transitionObligation(agreementDigest, obliga
 	if !found {
 		return EngagementRecord{}, errors.New("obligation runtime has no Agreement")
 	}
+	record = detachedEngagementRecord(record)
 	initializeObligationRuntime(&record)
 	runtime, found := record.ObligationRuntime[obligationID]
 	if !found || runtime.State != expected || executionID != "" && runtime.ExecutionID != "" && runtime.ExecutionID != executionID {
@@ -195,12 +196,12 @@ func (authority *PersonalAuthority) transitionObligation(agreementDigest, obliga
 	record.LastTransitionAtUnix = runtime.LastTransitionAtUnix
 	refreshEngagementProjection(&record)
 	next := cloneAuthorityDocument(authority.doc)
-	next.Engagements[agreementDigest] = record
+	next.Engagements[agreementDigest] = detachedEngagementRecord(record)
 	if err := authority.persist(next); err != nil {
 		return EngagementRecord{}, err
 	}
 	authority.doc = next
-	return record, nil
+	return detachedEngagementRecord(record), nil
 }
 
 func appendUniqueSorted(values []string, additions ...string) []string {
@@ -322,15 +323,16 @@ func (authority *PersonalAuthority) completeNoPaymentEngagement(agreementDigest,
 	if !found || hasValueObligation(record) || !allNonValueObligationsDelivered(record) {
 		return EngagementRecord{}, errors.New("engagement is not complete")
 	}
+	record = detachedEngagementRecord(record)
 	record.State = EngagementSettled
 	record.StateRevision++
 	record.SettlementEvidence = appendUniqueSorted(record.SettlementEvidence, evidence)
 	record.LastTransitionAtUnix = uint64(authority.now().UTC().Unix())
 	next := cloneAuthorityDocument(authority.doc)
-	next.Engagements[agreementDigest] = record
+	next.Engagements[agreementDigest] = detachedEngagementRecord(record)
 	if err := authority.persist(next); err != nil {
 		return EngagementRecord{}, err
 	}
 	authority.doc = next
-	return record, nil
+	return detachedEngagementRecord(record), nil
 }

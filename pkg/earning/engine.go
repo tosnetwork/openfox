@@ -61,19 +61,41 @@ func (engine *Engine) AuthorizeAgreement(ctx context.Context, agreementDigest, r
 			roles = append([]string(nil), participant.Roles...)
 		}
 	}
-	acceptance, err := commerce.SignAgreementAcceptance(commerce.AgreementAcceptanceBody{AgreementID: record.Agreement.Body.AgreementID,
-		AgreementVersion: record.Agreement.Body.Version, AgreementBodyDigest: record.AgreementDigest, AcceptingSubject: subject,
-		AcceptedRoles: roles, PredicateIDs: predicateIDs, EvidenceTargetProjectionDigests: targets,
-		ExpiresAtUnix: minUint64(authorizationExpiresAt, fence.Body.ExpiresAtUnix)}, identityKey)
-	if err != nil {
-		return commerce.ActionResolution{}, EngagementRecord{}, err
+	var acceptance commerce.SignedAgreementAcceptance
+	var evidence commerce.AgreementAuthorizationEvidence
+	retainedEvidence := false
+	for _, candidate := range record.Agreement.AuthorizationEvidence {
+		if candidate.EvidenceProfileURI != commerce.EvidenceProfileAgentSignature ||
+			candidate.AuthoritySubject != subject {
+			continue
+		}
+		decoded, decodeErr := commerce.DecodeSignedAgreementAcceptance(candidate.Evidence)
+		if decodeErr != nil || candidate.EvidenceContentType != commerce.AgreementAcceptanceContentType ||
+			candidate.EvidenceProfileDigest != profileDigest || !equalStrings(candidate.PredicateIDs, predicateIDs) ||
+			decoded.Body.AgreementBodyDigest != record.AgreementDigest || decoded.Body.AcceptingSubject != subject {
+			return commerce.ActionResolution{}, EngagementRecord{}, errors.New("retained local Agreement evidence is not the exact acceptance")
+		}
+		acceptance, evidence, retainedEvidence = decoded, candidate, true
+		break
 	}
-	evidence, err := commerce.AgentSignatureEvidence(record.Agreement.Body, acceptance)
-	if err != nil {
-		return commerce.ActionResolution{}, EngagementRecord{}, err
-	}
-	record, err = engine.Authority.RecordAgreementEvidence(record.AgreementDigest, evidence, verifier)
-	if err != nil {
+	if !retainedEvidence {
+		var err error
+		acceptance, err = commerce.SignAgreementAcceptance(commerce.AgreementAcceptanceBody{AgreementID: record.Agreement.Body.AgreementID,
+			AgreementVersion: record.Agreement.Body.Version, AgreementBodyDigest: record.AgreementDigest, AcceptingSubject: subject,
+			AcceptedRoles: roles, PredicateIDs: predicateIDs, EvidenceTargetProjectionDigests: targets,
+			ExpiresAtUnix: minUint64(authorizationExpiresAt, fence.Body.ExpiresAtUnix)}, identityKey)
+		if err != nil {
+			return commerce.ActionResolution{}, EngagementRecord{}, err
+		}
+		evidence, err = commerce.AgentSignatureEvidence(record.Agreement.Body, acceptance)
+		if err != nil {
+			return commerce.ActionResolution{}, EngagementRecord{}, err
+		}
+		record, err = engine.Authority.RecordAgreementEvidence(record.AgreementDigest, evidence, verifier)
+		if err != nil {
+			return commerce.ActionResolution{}, EngagementRecord{}, err
+		}
+	} else if _, err := engine.Authority.RecordAgreementEvidence(record.AgreementDigest, evidence, verifier); err != nil {
 		return commerce.ActionResolution{}, EngagementRecord{}, err
 	}
 	if record.NegotiationAmbiguous {
@@ -323,7 +345,29 @@ func (engine *Engine) ReserveAgreement(ctx context.Context, agreementDigest stri
 		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement reservation is incomplete")
 	}
 	record, found := engine.Authority.Engagement(agreementDigest)
-	if !found || !engagementEligibleForReservation(record, engine.AgentID) {
+	if !found {
+		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement is not eligible for ordinary or Provider pre-authorization reservation")
+	}
+	if record.ReservationID != "" {
+		_, _, reservations := engine.Authority.Snapshot()
+		for _, retained := range reservations {
+			if retained.ReservationID != record.ReservationID {
+				continue
+			}
+			if !sameExposureReservation(retained, reservation) || retained.Released {
+				return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement retry conflicts with its retained reservation")
+			}
+			resolution := engine.Authority.Resolve(record.ReservationActionID,
+				record.ReservationActionExactRequestDigest)
+			if record.ReservationActionID == "" || record.ReservationActionExactRequestDigest == "" ||
+				resolution.State != commerce.ActionTerminal {
+				return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement retained reservation has no exact linearized action")
+			}
+			return resolution, record, nil
+		}
+		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement retained reservation is absent from the Portfolio")
+	}
+	if !engagementEligibleForReservation(record, engine.AgentID) {
 		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement is not eligible for ordinary or Provider pre-authorization reservation")
 	}
 	for _, obligation := range record.Agreement.Body.Obligations {

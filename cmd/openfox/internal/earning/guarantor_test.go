@@ -16,6 +16,15 @@ func TestGuarantorWriterScopesIncludeEveryPayoutVariant(t *testing.T) {
 	}
 }
 
+func TestAgreementOnlyWriterScopesIncludeAtomicPortfolioReserve(t *testing.T) {
+	scopes := configuredWriterScopes(config.EarningSettings{Gates: config.EarningGateSettings{Agreement: true}})
+	for _, required := range []string{"agreement.authorize", "portfolio.reserve"} {
+		if !slices.Contains(scopes, required) {
+			t.Fatalf("Agreement-only writer scope omits %q: %v", required, scopes)
+		}
+	}
+}
+
 func TestGenericEarningCLIFailsClosedForGuarantorRuntime(t *testing.T) {
 	settings := config.EarningSettings{Gates: config.EarningGateSettings{AgentGuarantor: true},
 		AgentGuarantor: config.EarningAgentGuarantorSettings{Enabled: true}}

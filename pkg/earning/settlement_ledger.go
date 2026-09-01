@@ -42,6 +42,7 @@ func (authority *PersonalAuthority) ResolveSettlementState(action commerce.Autho
 		request.ObservedAtUnix > uint64(authority.now().UTC().Unix()) {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("settlement transition has a stale or absent obligation")
 	}
+	ledger = detachedSettlementLedgerRecord(ledger)
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("stale writer cannot resolve settlement state")
@@ -64,18 +65,18 @@ func (authority *PersonalAuthority) ResolveSettlementState(action commerce.Autho
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("settlement transition action is not exact or authorized")
 	}
 	if prior, exists := authority.doc.Actions[action.StableActionID]; exists {
-		engagement := authority.doc.Engagements[ledger.Obligation.AgreementBodyDigest]
+		engagement := detachedEngagementRecord(authority.doc.Engagements[ledger.Obligation.AgreementBodyDigest])
 		if prior.ExactRequestDigest != action.ExactRequestDigest {
 			return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("settlement transition identity conflicts")
 		}
-		return prior, ledger, engagement, nil
+		return detachedActionResolution(prior), detachedSettlementLedgerRecord(ledger), detachedEngagementRecord(engagement), nil
 	}
 	ledger.State = updated
 	next := cloneAuthorityDocument(authority.doc)
-	next.SettlementLedger[request.ObligationInstanceID] = ledger
+	next.SettlementLedger[request.ObligationInstanceID] = detachedSettlementLedgerRecord(ledger)
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, EvidenceRefs: []string{request.EvidenceDigest}, StateRevision: 1}
-	next.Actions[action.StableActionID] = resolution
+	next.Actions[action.StableActionID] = detachedActionResolution(resolution)
 	recordAuthorizedAction(&next, action)
 	classification := AccountingClassification("")
 	switch request.TargetState {
@@ -130,19 +131,19 @@ func (authority *PersonalAuthority) ResolveSettlementState(action commerce.Autho
 			engagement.SettlementEvidence = appendUniqueSorted(engagement.SettlementEvidence, request.EvidenceDigest)
 			engagement.LastTransitionAtUnix = request.ObservedAtUnix
 			refreshEngagementProjection(&engagement)
-			next.Engagements[engagement.AgreementDigest] = engagement
+			next.Engagements[engagement.AgreementDigest] = detachedEngagementRecord(engagement)
 		} else if runtimeChanged {
 			engagement.StateRevision++
 			engagement.LastTransitionAtUnix = request.ObservedAtUnix
 			refreshEngagementProjection(&engagement)
-			next.Engagements[engagement.AgreementDigest] = engagement
+			next.Engagements[engagement.AgreementDigest] = detachedEngagementRecord(engagement)
 		}
 	}
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, err
 	}
 	authority.doc = next
-	return resolution, ledger, engagement, nil
+	return detachedActionResolution(resolution), detachedSettlementLedgerRecord(ledger), detachedEngagementRecord(engagement), nil
 }
 
 func (authority *PersonalAuthority) MaterializeSettlement(action commerce.AuthorizedAction,
@@ -157,10 +158,11 @@ func (authority *PersonalAuthority) MaterializeSettlement(action commerce.Author
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, err
 	}
 	engagement, found := authority.doc.Engagements[obligation.AgreementBodyDigest]
+	engagement = detachedEngagementRecord(engagement)
 	initializeObligationRuntime(&engagement)
 	agreementObligation, obligationFound := obligationByID(engagement, obligation.AgreementObligationID)
 	runtime := engagement.ObligationRuntime[obligation.AgreementObligationID]
-	if !found || !obligationFound || agreementObligation.Amount == nil ||
+	if !found || !exactRetainedAgreementBody(engagement) || !obligationFound || agreementObligation.Amount == nil ||
 		(runtime.State != ObligationPending && runtime.State != ObligationSettling) ||
 		!obligationDependenciesSatisfied(engagement, agreementObligation) {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, errors.New("settlement cannot be materialized before verified delivery")
@@ -177,7 +179,7 @@ func (authority *PersonalAuthority) MaterializeSettlement(action commerce.Author
 		if prior.ExactRequestDigest != action.ExactRequestDigest || !present {
 			return commerce.ActionResolution{}, SettlementLedgerRecord{}, errors.New("billing materialization retry conflicts")
 		}
-		return prior, ledger, nil
+		return detachedActionResolution(prior), detachedSettlementLedgerRecord(ledger), nil
 	}
 	state, err := commerce.NewSettlementState(obligation)
 	if err != nil {
@@ -187,9 +189,9 @@ func (authority *PersonalAuthority) MaterializeSettlement(action commerce.Author
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, StateRevision: 1}
 	next := cloneAuthorityDocument(authority.doc)
-	next.Actions[action.StableActionID] = resolution
+	next.Actions[action.StableActionID] = detachedActionResolution(resolution)
 	recordAuthorizedAction(&next, action)
-	next.SettlementLedger[obligation.ObligationInstanceID] = ledger
+	next.SettlementLedger[obligation.ObligationInstanceID] = detachedSettlementLedgerRecord(ledger)
 	if runtime.State == ObligationPending {
 		runtime.State = ObligationSettling
 		runtime.StateRevision++
@@ -198,13 +200,13 @@ func (authority *PersonalAuthority) MaterializeSettlement(action commerce.Author
 		engagement.StateRevision++
 		engagement.LastTransitionAtUnix = runtime.LastTransitionAtUnix
 		refreshEngagementProjection(&engagement)
-		next.Engagements[engagement.AgreementDigest] = engagement
+		next.Engagements[engagement.AgreementDigest] = detachedEngagementRecord(engagement)
 	}
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, err
 	}
 	authority.doc = next
-	return resolution, ledger, nil
+	return detachedActionResolution(resolution), detachedSettlementLedgerRecord(ledger), nil
 }
 
 func (authority *PersonalAuthority) SettlementSnapshot(agreementDigest string) []SettlementLedgerRecord {
@@ -216,7 +218,7 @@ func (authority *PersonalAuthority) SettlementSnapshot(agreementDigest string) [
 	result := make([]SettlementLedgerRecord, 0)
 	for _, record := range authority.doc.SettlementLedger {
 		if record.Obligation.AgreementBodyDigest == agreementDigest {
-			result = append(result, record)
+			result = append(result, detachedSettlementLedgerRecord(record))
 		}
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -237,6 +239,7 @@ func (authority *PersonalAuthority) ApplySettlementPayment(action commerce.Autho
 	if !found || request.ResolvedAtUnix == 0 || request.ResolvedAtUnix > uint64(authority.now().UTC().Unix()) {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("payment resolution has no materialized obligation")
 	}
+	ledger = detachedSettlementLedgerRecord(ledger)
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("stale writer cannot resolve billing")
 	}
@@ -245,11 +248,11 @@ func (authority *PersonalAuthority) ApplySettlementPayment(action commerce.Autho
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("billing resolution action is not authorized")
 	}
 	if prior, exists := authority.doc.Actions[action.StableActionID]; exists {
-		engagement := authority.doc.Engagements[ledger.Obligation.AgreementBodyDigest]
+		engagement := detachedEngagementRecord(authority.doc.Engagements[ledger.Obligation.AgreementBodyDigest])
 		if prior.ExactRequestDigest != action.ExactRequestDigest {
 			return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("billing resolution identity conflicts")
 		}
-		return prior, ledger, engagement, nil
+		return detachedActionResolution(prior), detachedSettlementLedgerRecord(ledger), detachedEngagementRecord(engagement), nil
 	}
 	updated, err := commerce.ApplyPayment(ledger.State, ledger.Obligation, request.PaymentEvidenceDigest, request.PaidAmount,
 		time.Unix(int64(request.ResolvedAtUnix), 0).UTC())
@@ -260,9 +263,9 @@ func (authority *PersonalAuthority) ApplySettlementPayment(action commerce.Autho
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, EvidenceRefs: []string{request.PaymentEvidenceDigest}, StateRevision: 1}
 	next := cloneAuthorityDocument(authority.doc)
-	next.Actions[action.StableActionID] = resolution
+	next.Actions[action.StableActionID] = detachedActionResolution(resolution)
 	recordAuthorizedAction(&next, action)
-	next.SettlementLedger[request.ObligationInstanceID] = ledger
+	next.SettlementLedger[request.ObligationInstanceID] = detachedSettlementLedgerRecord(ledger)
 	classification := AccountingPartialPayment
 	if updated.State == commerce.SettlementPaid {
 		if ledger.Obligation.PayeeAgentID == next.AgentID {
@@ -313,16 +316,16 @@ func (authority *PersonalAuthority) ApplySettlementPayment(action commerce.Autho
 		engagement.StateRevision++
 		engagement.LastTransitionAtUnix = uint64(authority.now().UTC().Unix())
 		refreshEngagementProjection(&engagement)
-		next.Engagements[engagement.AgreementDigest] = engagement
+		next.Engagements[engagement.AgreementDigest] = detachedEngagementRecord(engagement)
 	} else if allObligationPaid {
 		engagement.StateRevision++
 		engagement.LastTransitionAtUnix = request.ResolvedAtUnix
 		refreshEngagementProjection(&engagement)
-		next.Engagements[engagement.AgreementDigest] = engagement
+		next.Engagements[engagement.AgreementDigest] = detachedEngagementRecord(engagement)
 	}
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, err
 	}
 	authority.doc = next
-	return resolution, ledger, engagement, nil
+	return detachedActionResolution(resolution), detachedSettlementLedgerRecord(ledger), detachedEngagementRecord(engagement), nil
 }

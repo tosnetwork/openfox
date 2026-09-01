@@ -148,8 +148,44 @@ func TestSchedulerDependencyAdmissionIsAtomicAndCycleSafe(t *testing.T) {
 		t.Fatal("evidence-driven dependency was removed without evidence")
 	}
 	evidence := "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	if _, err := service.RemoveDependency(context.Background(), first, []string{evidence}, fence); err != nil {
+	revision, _, _ := authority.Snapshot()
+	evidenceRefs := []string{evidence}
+	request := DependencyTransitionRequest{Dependency: first, TransitionKind: "remove", GraphBaseRevision: revision,
+		EvidenceRefs: evidenceRefs}
+	canonical, err := codec.Marshal(request)
+	if err != nil {
 		t.Fatal(err)
+	}
+	fields := map[string]commerce.SemanticValue{"owner_id": commerce.ID("owner-1"), "agent_id": commerce.ID("agent-1"),
+		"upstream_agreement_digest": commerce.Digest32(first.UpstreamAgreementDigest),
+		"upstream_obligation_id":    commerce.ID(first.UpstreamObligationID), "downstream_agreement_digest": commerce.Digest32(first.DownstreamAgreementDigest),
+		"downstream_obligation_id": commerce.ID(first.DownstreamObligationID), "dependency_type": commerce.Kind(first.DependencyType),
+		"dependency_class": commerce.Kind(first.DependencyClass), "transition_kind": commerce.Kind("remove"),
+		"graph_base_revision": commerce.U64(revision)}
+	action, err := commerce.BuildAuthorizedAction("owner-1", "agent-1", "schedule.dependency.transition", fields,
+		canonical, fence, 1, testDigest, "", "graph-current", fence.Body.ExpiresAtUnix)
+	if err == nil {
+		action, err = authority.SignAction(action, fence)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := authority.AdmitDependencyTransition(action, fields, canonical, fence, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceRefs[0] = "sha256:" + strings.Repeat("f", 64)
+	request.EvidenceRefs[0] = "sha256:" + strings.Repeat("e", 64)
+	resolution.EvidenceRefs[0] = "sha256:" + strings.Repeat("d", 64)
+	retryRequest := request
+	retryRequest.EvidenceRefs = []string{evidence}
+	retry, err := authority.AdmitDependencyTransition(action, fields, canonical, fence, retryRequest)
+	if err != nil || len(retry.EvidenceRefs) != 1 || retry.EvidenceRefs[0] != evidence {
+		t.Fatalf("dependency exact retry exposed evidence aliases: resolution=%+v err=%v", retry, err)
+	}
+	retry.EvidenceRefs[0] = "sha256:" + strings.Repeat("f", 64)
+	if retained := authority.Resolve(action.StableActionID, action.ExactRequestDigest); retained.EvidenceRefs[0] != evidence {
+		t.Fatalf("dependency resolution retained a returned slice alias: %+v", retained)
 	}
 	_, dependencies := authority.ScheduleSnapshot()
 	if len(dependencies) != 0 {

@@ -20,6 +20,10 @@ general deployment guarantee. For current product usage, start with the
   selective AI-led buying and declining through one heterogeneous signed
   Intent, direct TOS settlement, `.tos` identity checks, and evidence-bounded
   trust, negotiation, settlement, and market-infrastructure recommendations.
+- [Eight-Agent Generic Intent Social Earning Round 2 Report](eight-agent-generic-intent-social-earning-round-2-report.md):
+  a second three-hour run with atomic chain and validator evidence, seven
+  direct settlements, one rational skip, and a disclosed six-trade buyer
+  maximum-loss policy failure plus its corrective requirements.
 - [Bounded Adaptive Earning Campaigns](bounded-adaptive-earning-campaigns.md):
   gated Campaign 1--6 plus trusted-capability and mobile-control objectives,
   conditions, experiment prompts, causal acceptance thresholds, and stop rules

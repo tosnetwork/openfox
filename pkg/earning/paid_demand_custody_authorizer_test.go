@@ -14,11 +14,18 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/paiddemand"
 )
 
-type custodyEffectPinnedKey struct{ key ed25519.PublicKey }
+type custodyEffectPinnedKey struct {
+	key     ed25519.PublicKey
+	agentID string
+}
 
 func (resolver custodyEffectPinnedKey) AuthorizeCustodyKey(authorityID, ownerID, agentID string,
 	key ed25519.PublicKey, _ time.Time) error {
-	if authorityID != "authority-1" || ownerID != "owner-1" || agentID != "agent-1" || !resolver.key.Equal(key) {
+	expectedAgentID := resolver.agentID
+	if expectedAgentID == "" {
+		expectedAgentID = "agent-1"
+	}
+	if authorityID != "authority-1" || ownerID != "owner-1" || agentID != expectedAgentID || !resolver.key.Equal(key) {
 		return errors.New("unexpected custody authority")
 	}
 	return nil

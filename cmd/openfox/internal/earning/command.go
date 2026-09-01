@@ -27,6 +27,7 @@ import (
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
 	"github.com/tosnetwork/openfox/pkg/providers"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 	"github.com/tosnetwork/tos-service-protocol/pkg/paiddemand"
 	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
@@ -666,12 +667,30 @@ func runCommand() *cobra.Command {
 									Store: paidDemand.Negotiations}}
 						}
 					}
+					agreementPostpaid := make([]string, 0, len(cfg.Earning.SettlementAdapters))
+					for _, adapter := range cfg.Earning.SettlementAdapters {
+						if adapter == "tos.payment.direct.v1" ||
+							cfg.Earning.ExternalSettlement.Enabled && adapter == cfg.Earning.ExternalSettlement.AdapterURI {
+							agreementPostpaid = append(agreementPostpaid, adapter)
+						}
+					}
+					agreementPrerequisite := openfoxearning.AdapterPrerequisitePolicy{
+						LocalAgentID: cfg.Earning.AgentID, PostpaidAdapters: agreementPostpaid}
+					if paidDemand != nil {
+						agreementPrerequisite.PrepaidAdapters = []string{paiddemand.SettlementAdapterURI}
+						agreementPrerequisite.Funding = openfoxearning.PaidDemandFundingPrerequisite{
+							Resolver: paidDemand.EscrowResolver, Network: paidDemand.Network,
+							ProviderOffers: paidDemand.OfferAuthorities}
+					}
 					agreementPolicy := openfoxearning.BoundedAgreementAdmissionPolicy{
 						LocalAgentID: cfg.Earning.AgentID, MaximumOutgoingPaymentAtomic: effectiveOutgoingPayment(cfg.Earning.Policy.MaximumOutgoingPaymentAtomic),
+						MaximumLossAtomic: cfg.Earning.Policy.MaximumLossAtomic, Portfolio: authority,
 						AllowedEvidenceProfiles: configuredAgreementEvidenceProfiles(cfg.Earning)}
 					agreementAutonomy = &openfoxearning.AgreementAutonomy{Coordinator: openfoxearning.AgreementCoordinator{
 						Inbox: openfoxearning.AgreementInbox{Client: messenger}, Authority: authority, Verifier: verifier},
 						Engine: engine, Inventory: collector.Inventory, Policy: agreementPolicy,
+						Planner: openfoxearning.BoundedEngagementPlanner{OwnerID: cfg.Earning.OwnerID,
+							AgentID: cfg.Earning.AgentID, ComputeUnitsPerExecution: 1}, Prerequisite: agreementPrerequisite,
 						IdentityKey: identityKey, Verifier: verifier, Fence: fenceSource}
 					if paidDemand != nil {
 						funding := openfoxearning.PaidDemandFundingPrerequisite{Resolver: paidDemand.EscrowResolver,
@@ -792,6 +811,11 @@ func runCommand() *cobra.Command {
 					if cfg.Earning.Gates.DirectPayment {
 						payment := cfg.Earning.TOSPayment
 						network := configuredRelayNetwork(payment.Network)
+						networkDigest, digestErr := agentrelay.NetworkDomainDigest(network)
+						if digestErr != nil {
+							return fmt.Errorf("direct payment network domain: %w", digestErr)
+						}
+						paymentBuilder.NativeNetworkDomainDigest = networkDigest
 						interval := time.Duration(payment.ResolveIntervalMS) * time.Millisecond
 						if interval == 0 {
 							interval = time.Second
@@ -989,7 +1013,7 @@ func configuredWriterScopes(settings config.EarningSettings) []string {
 		scopes = append(scopes, "messenger.contact")
 	}
 	if settings.Gates.Agreement {
-		scopes = append(scopes, "agreement.authorize", "agreement.propose")
+		scopes = append(scopes, "agreement.authorize", "agreement.propose", "portfolio.reserve")
 	}
 	if settings.Gates.Publication {
 		scopes = append(scopes, "publication.publish", "publication.withdraw")
@@ -998,7 +1022,7 @@ func configuredWriterScopes(settings config.EarningSettings) []string {
 		scopes = append(scopes, "billing.materialize", "billing.resolve", "content.delete", "content.upload", "delivery.release", "execution.prepare", "execution.start", "executor.effect", "portfolio.release", "portfolio.reserve", "reconcile.apply", "schedule.dependency.transition", "schedule.entry.transition")
 	}
 	if settings.Gates.DirectPayment {
-		scopes = append(scopes, "billing.resolve", "payment.direct")
+		scopes = append(scopes, "billing.resolve", "payment.domain-bound")
 	}
 	if settings.Gates.ExternalSettlement {
 		scopes = append(scopes, "billing.resolve", "settlement.external")

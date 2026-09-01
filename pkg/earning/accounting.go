@@ -50,6 +50,16 @@ type AccountingEntry struct {
 	WriterGeneration uint64              `json:"writer_generation"`
 }
 
+func detachedAccountingEntry(entry AccountingEntry) AccountingEntry {
+	cloned := entry
+	cloned.Body.EvidenceRefs = append([]string(nil), entry.Body.EvidenceRefs...)
+	if entry.Body.Amount != nil {
+		amount := *entry.Body.Amount
+		cloned.Body.Amount = &amount
+	}
+	return cloned
+}
+
 func AccountingEntryID(body AccountingEntryBody) (string, error) {
 	if err := validateAccountingEntryBody(body); err != nil {
 		return "", err
@@ -102,6 +112,7 @@ func validateAccountingEntryBody(body AccountingEntryBody) error {
 func (authority *PersonalAuthority) RecordAccounting(action commerce.AuthorizedAction,
 	fields map[string]commerce.SemanticValue, canonicalRequest []byte, fence commerce.WriterFence,
 	entry AccountingEntry) (commerce.ActionResolution, AccountingEntry, error) {
+	entry = detachedAccountingEntry(entry)
 	if authority == nil || validateAccountingEntryBody(entry.Body) != nil || entry.WriterGeneration != fence.Body.WriterGeneration {
 		return commerce.ActionResolution{}, AccountingEntry{}, errors.New("accounting entry is invalid")
 	}
@@ -138,19 +149,19 @@ func (authority *PersonalAuthority) RecordAccounting(action commerce.AuthorizedA
 		if prior.ExactRequestDigest != action.ExactRequestDigest || !present || !reflect.DeepEqual(existing, entry) {
 			return commerce.ActionResolution{}, AccountingEntry{}, errors.New("accounting retry conflicts")
 		}
-		return prior, existing, nil
+		return detachedActionResolution(prior), detachedAccountingEntry(existing), nil
 	}
 	next := cloneAuthorityDocument(authority.doc)
-	next.Accounting[entry.EntryID] = entry
+	next.Accounting[entry.EntryID] = detachedAccountingEntry(entry)
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, EvidenceRefs: append([]string(nil), entry.Body.EvidenceRefs...), StateRevision: 1}
-	next.Actions[action.StableActionID] = resolution
+	next.Actions[action.StableActionID] = detachedActionResolution(resolution)
 	recordAuthorizedAction(&next, action)
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, AccountingEntry{}, err
 	}
 	authority.doc = next
-	return resolution, entry, nil
+	return detachedActionResolution(resolution), detachedAccountingEntry(entry), nil
 }
 
 func (authority *PersonalAuthority) AccountingSnapshot() []AccountingEntry {
@@ -164,7 +175,7 @@ func (authority *PersonalAuthority) AccountingSnapshot() []AccountingEntry {
 	}
 	result := make([]AccountingEntry, 0, len(authority.doc.Accounting))
 	for _, entry := range authority.doc.Accounting {
-		result = append(result, entry)
+		result = append(result, detachedAccountingEntry(entry))
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].EntryID < result[j].EntryID })
 	return result

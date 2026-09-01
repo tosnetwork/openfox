@@ -1,6 +1,7 @@
 package earning
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -24,10 +25,11 @@ import (
 )
 
 const (
-	authoritySchema        = "tos.openfox.owner-economic-action-authority.v1"
-	authorityFile          = "economic-authority.json"
-	authorityLock          = "economic-authority.lock"
-	maximumRelayAdmissions = 4096
+	authoritySchema                    = "tos.openfox.owner-economic-action-authority.v1"
+	authorityFile                      = "economic-authority.json"
+	authorityLock                      = "economic-authority.lock"
+	maximumRelayAdmissions             = 4096
+	maximumIssuedCustodyAuthorizations = 4096
 )
 
 type ExposureReservation struct {
@@ -45,11 +47,61 @@ type ExposureReservation struct {
 	Released            bool                      `json:"released"`
 }
 
+type relaySponsorshipPaymentAdmission struct {
+	AdmissionID                       string                           `json:"admission_id"`
+	Payment                           commerce.AgreementPaymentRequest `json:"payment"`
+	PaymentRequestDigest              string                           `json:"payment_request_digest"`
+	Purpose                           RelaySponsorshipCustodyPurpose   `json:"purpose"`
+	PurposeDigest                     string                           `json:"purpose_digest"`
+	Reservation                       ExposureReservation              `json:"reservation"`
+	CustodyAuthorizationExpiredAtUnix uint64                           `json:"custody_authorization_expired_at_unix,omitempty"`
+	ExpiredCustodyAuthorization       *expiredCustodyAuthorization     `json:"expired_custody_authorization,omitempty"`
+}
+
+// issuedCustodyPaymentAuthorization keeps Portfolio exposure live for every
+// offline-verifiable native custody capability. A signed authorization can
+// outlive its writer process, so neither lease takeover nor a generic action
+// transition may make the underlying capacity reusable.
+type issuedCustodyPaymentAuthorization struct {
+	PaymentRequestDigest   string                              `json:"payment_request_digest"`
+	Payment                commerce.AgreementPaymentRequest    `json:"payment"`
+	ReservationID          string                              `json:"reservation_id"`
+	SponsorshipAdmissionID string                              `json:"sponsorship_admission_id,omitempty"`
+	Authorization          commerce.CustodyActionAuthorization `json:"authorization"`
+	AuthorizationDigest    string                              `json:"authorization_digest"`
+	// FinalityGraceSeconds and ReleaseAfterUnix are frozen when the bearer is
+	// issued. A later configuration change can therefore never shorten the
+	// owner-approved absence/finality horizon for an already signed payment.
+	FinalityGraceSeconds   uint64 `json:"finality_grace_seconds,omitempty"`
+	ReleaseAfterUnix       uint64 `json:"release_after_unix,omitempty"`
+	TerminalEvidenceDigest string `json:"terminal_evidence_digest,omitempty"`
+	TerminalReference      string `json:"terminal_reference,omitempty"`
+}
+
+// expiredCustodyAuthorization is a durable, non-executable tombstone. It
+// proves that the released reservation used to cover this exact signed bearer
+// and that the owner-pinned horizon elapsed; a naked timestamp is not enough
+// to justify reopening aggregate maximum-loss capacity after restart.
+type expiredCustodyAuthorization struct {
+	Issuance      issuedCustodyPaymentAuthorization `json:"issuance"`
+	ExpiredAtUnix uint64                            `json:"expired_at_unix"`
+}
+
+var ErrCustodyAuthorizationLive = errors.New("issued native custody authorization is still live")
+
 func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.AuthorizedAction,
 	fields map[string]commerce.SemanticValue, canonicalRequest []byte, fence commerce.WriterFence,
 	payment commerce.AgreementPaymentRequest, sourceAccount string,
 	networkDomain commerce.CustodyNetworkDomain,
 	sponsorship *SponsorshipCustodyBinding) (commerce.CustodyActionAuthorization, error) {
+	payment = detachedAgreementPaymentRequest(payment)
+	// This method mints the capability consumed by the native tosctl custody
+	// primitive. External adapters have their own attested settlement boundary
+	// and must never enter the native signing path, even if a caller prepared an
+	// otherwise valid AuthorizedAction for that adapter.
+	if payment.SettlementAdapterURI != agentrelay.DirectPaymentAdapterURI {
+		return commerce.CustodyActionAuthorization{}, errors.New("native custody only authorizes the direct payment adapter")
+	}
 	if authority == nil || sourceAccount == "" || commerce.ValidateCustodyNetworkDomain(networkDomain) != nil ||
 		networkDomain.NetworkID != payment.NetworkID || networkDomain.GlobalID == 0 {
 		return commerce.CustodyActionAuthorization{}, errors.New("custody payment binding is incomplete")
@@ -57,24 +109,60 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 	domainDigest, err := agentrelay.NetworkDomainDigest(agentrelay.NetworkDomain{NetworkID: networkDomain.NetworkID,
 		GlobalID: networkDomain.GlobalID, ZeroStateRootHash: networkDomain.ZeroStateRootHash,
 		ZeroStateFileHash: networkDomain.ZeroStateFileHash, WorkchainID: networkDomain.WorkchainID})
-	if err != nil || payment.SchemaVersion == 3 && payment.NetworkDomainDigest != domainDigest ||
-		payment.SchemaVersion == 1 && payment.NetworkDomainDigest != "" ||
-		payment.SchemaVersion != 1 && payment.SchemaVersion != 3 {
+	if err != nil || payment.SchemaVersion != 3 || payment.NetworkDomainDigest != domainDigest {
 		return commerce.CustodyActionAuthorization{}, errors.New("custody payment does not bind the pinned network domain")
 	}
-	if sponsorship != nil && (payment.SchemaVersion != 3 ||
-		!canonicalSHA256(sponsorship.FinalityProfileCBORDigest) ||
-		!canonicalSHA256(sponsorship.ReleaseProfileDigest) ||
-		!canonicalSHA256(sponsorship.CorroborationSnapshotID)) {
-		return commerce.CustodyActionAuthorization{}, errors.New("custody sponsorship finality binding is incomplete")
+	relaySponsorship := sponsorship != nil
+	if relaySponsorship && (!canonicalSHA256(sponsorship.AdmissionID) ||
+		!canonicalSHA256(sponsorship.PaymentRequestDigest) || !canonicalSHA256(sponsorship.PurposeDigest) ||
+		!canonicalSHA256(sponsorship.ReservationID) || !canonicalSHA256(sponsorship.FinalityProfileCBORDigest) ||
+		!canonicalSHA256(sponsorship.ReleaseProfileDigest) || !canonicalSHA256(sponsorship.CorroborationSnapshotID)) {
+		return commerce.CustodyActionAuthorization{}, errors.New("custody sponsorship lacks an exact owner-authorized relay purpose")
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
 	if err := authority.ensureStorageIdentityLocked(); err != nil {
 		return commerce.CustodyActionAuthorization{}, err
 	}
-	if engagement, found := authority.doc.Engagements[payment.AgreementBodyDigest]; found && engagement.NegotiationAmbiguous {
+	if err := authority.expireIssuedCustodyLocked(); err != nil {
+		return commerce.CustodyActionAuthorization{}, err
+	}
+	if authority.doc.Limits.CustodyNetworkDomainDigest == "" ||
+		authority.doc.Limits.CustodyNetworkDomainDigest != domainDigest {
+		return commerce.CustodyActionAuthorization{}, errors.New("custody payment network domain is not owner-pinned by this authority")
+	}
+	if authority.doc.Limits.CustodySourceAccount == "" ||
+		authority.doc.Limits.CustodySourceAccount != sourceAccount {
+		return commerce.CustodyActionAuthorization{}, errors.New("custody payment source account is not owner-pinned by this authority")
+	}
+	nativeAsset := authority.doc.Limits.CustodyNativeAsset
+	if nativeAsset == nil || payment.Amount.AssetNamespace != nativeAsset.AssetNamespace ||
+		payment.Amount.AssetIdentifier != nativeAsset.AssetIdentifier || payment.Amount.Unit != nativeAsset.Unit {
+		return commerce.CustodyActionAuthorization{}, errors.New("custody payment asset is not the owner-pinned native asset")
+	}
+	engagement, engagementFound := authority.doc.Engagements[payment.AgreementBodyDigest]
+	if engagementFound && engagement.NegotiationAmbiguous {
 		return commerce.CustodyActionAuthorization{}, errors.New("ambiguous Agreement lineage cannot authorize a custody payment")
+	}
+	// A caller cannot select a custody exception. The authority either finds
+	// the exact durable sponsorship admission (which atomically owns its hold),
+	// or requires the ordinary Agreement reservation and settlement ledger.
+	if relaySponsorship {
+		admission, found := authority.doc.RelaySponsorshipPayments[sponsorship.AdmissionID]
+		if !found || !exactLiveRelaySponsorshipAdmission(authority.doc, action, payment, *sponsorship, admission) {
+			return commerce.CustodyActionAuthorization{}, errors.New("direct sponsorship payment has no exact live authority admission")
+		}
+	} else if !engagementFound || !exactLiveDirectPaymentReservation(authority.doc, engagement, payment,
+		action, authority.now().UTC()) {
+		return commerce.CustodyActionAuthorization{}, errors.New("direct payment has no exact live Agreement reservation")
+	}
+	custodyReservationID := engagement.ReservationID
+	if relaySponsorship {
+		custodyReservationID = sponsorship.ReservationID
+	}
+	issuedPaymentDigest, err := commerce.AgreementPaymentRequestDigest(payment)
+	if err != nil {
+		return commerce.CustodyActionAuthorization{}, errors.New("custody payment request digest is invalid")
 	}
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.CustodyActionAuthorization{}, errors.New("stale writer cannot authorize custody")
@@ -88,9 +176,34 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 	if !found || prior.ExactRequestDigest != action.ExactRequestDigest || prior.State != commerce.ActionPrepared {
 		return commerce.CustodyActionAuthorization{}, errors.New("custody payment has no prepared authority record")
 	}
+	if relaySponsorship {
+		retained, retainedFound := authority.doc.AuthorizedActions[action.StableActionID]
+		if !retainedFound || !sameJSON(retained, action) {
+			return commerce.CustodyActionAuthorization{}, errors.New("relay sponsorship purpose is not the exact retained AuthorizedAction")
+		}
+	}
 	amount, err := strconv.ParseUint(payment.Amount.AmountAtomic, 10, 64)
 	if err != nil || amount == 0 {
 		return commerce.CustodyActionAuthorization{}, errors.New("native custody amount exceeds uint64")
+	}
+	if retained, retainedFound := authority.doc.IssuedCustodyPayments[issuedPaymentDigest]; retainedFound {
+		authorizationDigest, digestErr := codec.Digest("tos.openfox.issued-native-custody-authorization.v1",
+			retained.Authorization)
+		if retained.TerminalEvidenceDigest != "" || !sameJSON(retained.Payment, payment) ||
+			retained.ReservationID != custodyReservationID ||
+			(retained.SponsorshipAdmissionID == "") != !relaySponsorship ||
+			relaySponsorship && retained.SponsorshipAdmissionID != sponsorship.AdmissionID ||
+			retained.AuthorizationDigest != authorizationDigest || digestErr != nil ||
+			retained.Authorization.SourceAccount != sourceAccount ||
+			retained.Authorization.NetworkDomain == nil || *retained.Authorization.NetworkDomain != networkDomain ||
+			retained.Authorization.StableActionID != action.StableActionID ||
+			retained.Authorization.ExactRequestDigest != action.ExactRequestDigest ||
+			retained.Authorization.AgreementPaymentRequestDigest != issuedPaymentDigest ||
+			retained.Authorization.Destination != string(payment.Destination) ||
+			retained.Authorization.AmountAtomic != amount {
+			return commerce.CustodyActionAuthorization{}, errors.New("custody payment conflicts with a retained issuance lifecycle")
+		}
+		return detachedCustodyAuthorization(retained.Authorization), nil
 	}
 	fenceDigest, err := commerce.WriterFenceDigest(fence)
 	if err != nil {
@@ -104,10 +217,7 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 	paymentRequestDigest := ""
 	if payment.SchemaVersion == 3 {
 		authorizationSchema = 3
-		paymentRequestDigest, err = commerce.AgreementPaymentRequestDigest(payment)
-		if err != nil {
-			return commerce.CustodyActionAuthorization{}, errors.New("custody payment request cannot be bound to relay evidence")
-		}
+		paymentRequestDigest = issuedPaymentDigest
 	}
 	body := commerce.CustodyActionAuthorization{SchemaVersion: authorizationSchema, AuthorityID: authority.doc.AuthorityID,
 		OwnerID: authority.doc.OwnerID, AgentID: authority.doc.AgentID, SourceAccount: sourceAccount,
@@ -125,7 +235,45 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 		body.SponsorshipReleaseProfileDigest = sponsorship.ReleaseProfileDigest
 		body.SponsorshipCorroborationSnapshotIdentity = sponsorship.CorroborationSnapshotID
 	}
-	return commerce.SignCustodyActionAuthorization(body, authority.key)
+	authorization, err := commerce.SignCustodyActionAuthorization(body, authority.key)
+	if err != nil {
+		return commerce.CustodyActionAuthorization{}, err
+	}
+	authorizationDigest, err := codec.Digest("tos.openfox.issued-native-custody-authorization.v1", authorization)
+	if err != nil {
+		return commerce.CustodyActionAuthorization{}, err
+	}
+	issued := issuedCustodyPaymentAuthorization{PaymentRequestDigest: issuedPaymentDigest, Payment: payment,
+		ReservationID: custodyReservationID, Authorization: authorization, AuthorizationDigest: authorizationDigest}
+	if relaySponsorship {
+		issued.SponsorshipAdmissionID = sponsorship.AdmissionID
+	}
+	issued.FinalityGraceSeconds = authority.doc.Limits.CustodyFinalityGraceSeconds
+	if issued.FinalityGraceSeconds != 0 {
+		releaseAfter, horizonErr := custodyAuthorizationReleaseAfter(authority.doc, issued)
+		if horizonErr != nil {
+			return commerce.CustodyActionAuthorization{}, horizonErr
+		}
+		issued.ReleaseAfterUnix = releaseAfter
+	}
+	for priorDigest, prior := range authority.doc.IssuedCustodyPayments {
+		if prior.ReservationID == custodyReservationID && priorDigest != issuedPaymentDigest {
+			return commerce.CustodyActionAuthorization{}, errors.New("Portfolio reservation already has a different live native custody bearer")
+		}
+	}
+	if len(authority.doc.IssuedCustodyPayments) >= maximumIssuedCustodyAuthorizations {
+		return commerce.CustodyActionAuthorization{}, errors.New("custody payment issuance capacity is exhausted")
+	}
+	// Persist before returning the offline-verifiable capability. If this write
+	// fails no authorization bytes escape and the Portfolio hold remains in its
+	// prior state.
+	next := cloneAuthorityDocument(authority.doc)
+	next.IssuedCustodyPayments[issuedPaymentDigest] = detachedIssuedCustodyPayment(issued)
+	if err := authority.persist(next); err != nil {
+		return commerce.CustodyActionAuthorization{}, err
+	}
+	authority.doc = next
+	return detachedCustodyAuthorization(authorization), nil
 }
 
 // AuthorizeCustodyEffect turns an already admitted semantic action into a
@@ -212,6 +360,187 @@ func exactLivePaidDemandReservation(document authorityDocument, engagement Engag
 	return found && sameExposureReservation(reservation, expected)
 }
 
+// exactLiveDirectPaymentReservation is called under the PersonalAuthority
+// mutex at the last boundary before custody can move funds. An admitted action
+// alone is insufficient: the payment must still match one materialized,
+// outstanding Agreement obligation and its exact live buyer loss reservation.
+func exactLiveDirectPaymentReservation(document authorityDocument, engagement EngagementRecord,
+	payment commerce.AgreementPaymentRequest, action commerce.AuthorizedAction, now time.Time) bool {
+	if payment.SettlementAdapterURI != "tos.payment.direct.v1" || payment.OwnerID != document.OwnerID ||
+		payment.AgentID != document.AgentID || payment.PayerAgentID != document.AgentID ||
+		payment.AgreementBodyDigest != engagement.AgreementDigest || engagement.ReservationID == "" ||
+		!retainedAgreementFullyAuthorized(engagement, document.AgentID) ||
+		engagement.State != EngagementSettling || now.Unix() < 0 || uint64(now.Unix()) >= payment.ExpiresAtUnix ||
+		action.MandateDigest == "" || action.ExpiresAtUnix == 0 || action.ExpiresAtUnix > payment.ExpiresAtUnix ||
+		commerce.ValidateAgreementBody(engagement.Agreement.Body) != nil ||
+		commerce.ValidateAgreementPaymentRequest(payment) != nil {
+		return false
+	}
+	exposure, err := localAgreementPaymentExposure(engagement.Agreement.Body, document.AgentID)
+	if err != nil || exposure.Asset == nil || !exposure.MaximumLoss.IsUint64() || exposure.MaximumLoss.Sign() <= 0 {
+		return false
+	}
+	reservation, found := document.Reservations[engagement.ReservationID]
+	if !found || reservation.ReservationID != engagement.ReservationID || reservation.AgreementDigest != engagement.AgreementDigest ||
+		reservation.Released || !sameExposureAsset(reservation.Asset, exposure.Asset) ||
+		reservation.MaximumLossAtomic != exposure.MaximumLoss.Uint64() || reservation.SpendAtomic < exposure.MaximumLoss.Uint64() {
+		return false
+	}
+	ledger, found := document.SettlementLedger[payment.ObligationInstanceID]
+	if !found || ledger.Obligation.AgreementBodyDigest != payment.AgreementBodyDigest ||
+		ledger.Obligation.AgreementObligationID != payment.AgreementObligationID ||
+		ledger.Obligation.ObligationInstanceID != payment.ObligationInstanceID ||
+		ledger.Obligation.PayerAgentID != payment.PayerAgentID || ledger.Obligation.PayeeAgentID != payment.PayeeAgentID ||
+		ledger.Obligation.SettlementAdapterURI != payment.SettlementAdapterURI ||
+		ledger.Obligation.MandateDigest != action.MandateDigest ||
+		ledger.Obligation.ExpiresAtUnix != payment.ExpiresAtUnix || ledger.State.StateRevision == 0 {
+		return false
+	}
+	switch ledger.State.State {
+	case commerce.SettlementPending, commerce.SettlementPartiallyPaid, commerce.SettlementOverdue:
+	default:
+		return false
+	}
+	var agreementObligation *commerce.AgreementObligation
+	for index := range engagement.Agreement.Body.Obligations {
+		candidate := &engagement.Agreement.Body.Obligations[index]
+		if candidate.ObligationID == payment.AgreementObligationID {
+			agreementObligation = candidate
+			break
+		}
+	}
+	if agreementObligation == nil || agreementObligation.Amount == nil ||
+		agreementObligation.ObligorAgentID != payment.PayerAgentID ||
+		agreementObligation.BeneficiaryAgentID != payment.PayeeAgentID ||
+		agreementObligation.SettlementAdapterURI != payment.SettlementAdapterURI ||
+		engagement.Agreement.Body.NetworkContext != payment.NetworkID ||
+		!bytes.Equal(agreementObligation.SettlementParameters, payment.Destination) {
+		return false
+	}
+	materialized, err := commerce.MaterializeSettlementObligations(document.OwnerID, document.AgentID,
+		engagement.AgreementDigest, agreementObligation.ObligationID, ledger.Obligation.MandateDigest, *agreementObligation)
+	if err != nil {
+		return false
+	}
+	exactLedger := false
+	for _, candidate := range materialized {
+		if candidate.ObligationInstanceID == payment.ObligationInstanceID && sameJSON(candidate, ledger.Obligation) {
+			exactLedger = true
+			break
+		}
+	}
+	obligationDigest, err := codec.Digest("tos.settlement-obligation.v1", ledger.Obligation)
+	if !exactLedger || err != nil || ledger.State.ObligationDigest != obligationDigest ||
+		commerce.ValidateSettlementState(ledger.State) != nil {
+		return false
+	}
+	parametersDigest, err := codec.Digest("tos.settlement-adapter-parameters.v1", agreementObligation.SettlementParameters)
+	if err != nil || parametersDigest != ledger.Obligation.SettlementParametersDigest {
+		return false
+	}
+	if !sameAgreementAmountAsset(payment.Amount, ledger.Obligation.Amount) ||
+		!sameAgreementAmountAsset(payment.Amount, ledger.State.OutstandingAmount) {
+		return false
+	}
+	requested, requestErr := strconv.ParseUint(payment.Amount.AmountAtomic, 10, 64)
+	outstanding, outstandingErr := strconv.ParseUint(ledger.State.OutstandingAmount.AmountAtomic, 10, 64)
+	return requestErr == nil && outstandingErr == nil && requested > 0 && requested <= outstanding
+}
+
+func sameAgreementAmountAsset(left, right commerce.AgreementAmount) bool {
+	return left.AssetNamespace == right.AssetNamespace && left.AssetIdentifier == right.AssetIdentifier && left.Unit == right.Unit
+}
+
+func exactRelaySponsorshipCustodyPurpose(action commerce.AuthorizedAction,
+	payment commerce.AgreementPaymentRequest, purpose RelaySponsorshipCustodyPurpose) bool {
+	if payment.SchemaVersion != 3 || payment.SettlementAdapterURI != agentrelay.DirectPaymentAdapterURI ||
+		action.ActionKind != commerce.PaymentActionKind(payment) || action.StableActionID != payment.StableActionID ||
+		purpose.SchemaVersion != 1 || !canonicalSHA256(purpose.PaymentRequestDigest) ||
+		!canonicalSHA256(purpose.RelayExecutionDigest) || !canonicalSHA256(purpose.AgreementBodyDigest) ||
+		!canonicalSHA256(purpose.ProviderQuoteDigest) || !canonicalSHA256(purpose.SponsorshipTerminalProfileDigest) ||
+		!canonicalSHA256(purpose.FinalityProfileCBORDigest) || !canonicalSHA256(purpose.ReleaseProfileDigest) ||
+		!canonicalSHA256(purpose.CorroborationSnapshotID) ||
+		purpose.AgreementBodyDigest != payment.AgreementBodyDigest ||
+		purpose.AgreementObligationID != payment.AgreementObligationID {
+		return false
+	}
+	paymentDigest, paymentErr := commerce.AgreementPaymentRequestDigest(payment)
+	agreementDigest, agreementErr := commerce.AgreementBodyDigest(purpose.AgreementBody)
+	quoteRequestDigest, quoteRequestErr := agentrelay.RelayQuoteRequestDigest(purpose.QuoteRequest)
+	networkDigest, networkErr := agentrelay.NetworkDomainDigest(purpose.QuoteRequest.Network)
+	purposeDigest, purposeErr := relaySponsorshipCustodyPurposeDigest(purpose)
+	requested := purpose.QuoteRequest.RequestedSponsorship
+	if paymentErr != nil || agreementErr != nil || quoteRequestErr != nil || networkErr != nil || purposeErr != nil ||
+		purpose.PaymentRequestDigest != paymentDigest || purpose.AgreementBodyDigest != agreementDigest ||
+		action.ApprovalDigest != purposeDigest || purpose.AgreementBody.NetworkContext != payment.NetworkID ||
+		requested == nil || !sameRelayAgreementAssetAmount(payment.Amount, *requested) ||
+		purpose.QuoteRequest.ProviderAgentID != payment.PayerAgentID ||
+		purpose.QuoteRequest.RequesterAgentID != payment.PayeeAgentID ||
+		purpose.QuoteRequest.Mode == agentrelay.ModeRelayExact ||
+		purpose.QuoteRequest.Network.NetworkID != payment.NetworkID || networkDigest != payment.NetworkDomainDigest ||
+		purpose.QuoteRequest.SourceAccount != string(payment.Destination) ||
+		purpose.QuoteRequest.SponsorshipReleaseProfileDigest != purpose.ReleaseProfileDigest ||
+		purpose.QuoteRequest.SponsorshipTerminalProfileDigest != purpose.SponsorshipTerminalProfileDigest {
+		return false
+	}
+	var matched *commerce.AgreementObligation
+	for index := range purpose.AgreementBody.Obligations {
+		candidate := &purpose.AgreementBody.Obligations[index]
+		if candidate.ObligationID == purpose.AgreementObligationID {
+			if matched != nil {
+				return false
+			}
+			matched = candidate
+		}
+	}
+	if matched == nil || matched.Amount == nil || matched.Kind != agentrelay.ObligationSponsorDelivery ||
+		matched.ObligorAgentID != payment.PayerAgentID || matched.BeneficiaryAgentID != payment.PayeeAgentID ||
+		matched.SettlementAdapterURI != payment.SettlementAdapterURI ||
+		matched.SubjectContentType != agentrelay.AgreementBindingContentType ||
+		!sameAgreementAmountAsset(*matched.Amount, payment.Amount) ||
+		matched.Amount.AmountAtomic != payment.Amount.AmountAtomic || matched.ExpiresAtUnix == 0 ||
+		payment.ExpiresAtUnix > matched.ExpiresAtUnix || payment.ExpiresAtUnix > purpose.AgreementBody.ExpiresAtUnix {
+		return false
+	}
+	var relayBinding agentrelay.RelayAgreementBinding
+	if codec.Unmarshal(matched.Subject, &relayBinding) != nil {
+		return false
+	}
+	canonicalBinding, bindingErr := agentrelay.RelayAgreementBindingBytes(relayBinding)
+	return bindingErr == nil && bytes.Equal(canonicalBinding, matched.Subject) &&
+		relayBinding.QuoteRequestDigest == quoteRequestDigest &&
+		relayBinding.ProviderQuoteDigest == purpose.ProviderQuoteDigest &&
+		relayBinding.ProviderAgentID == payment.PayerAgentID && relayBinding.RequesterAgentID == payment.PayeeAgentID &&
+		relayBinding.Mode != agentrelay.ModeRelayExact &&
+		relayBinding.SponsorshipReleaseProfileDigest == purpose.ReleaseProfileDigest &&
+		relayBinding.SponsorshipTerminalProfileDigest == purpose.SponsorshipTerminalProfileDigest
+}
+
+func exactLiveRelaySponsorshipAdmission(document authorityDocument, action commerce.AuthorizedAction,
+	payment commerce.AgreementPaymentRequest, binding SponsorshipCustodyBinding,
+	admission relaySponsorshipPaymentAdmission) bool {
+	if admission.AdmissionID != binding.AdmissionID || admission.PaymentRequestDigest != binding.PaymentRequestDigest ||
+		admission.PurposeDigest != binding.PurposeDigest || admission.Reservation.ReservationID != binding.ReservationID ||
+		admission.Purpose.FinalityProfileCBORDigest != binding.FinalityProfileCBORDigest ||
+		admission.Purpose.ReleaseProfileDigest != binding.ReleaseProfileDigest ||
+		admission.Purpose.CorroborationSnapshotID != binding.CorroborationSnapshotID ||
+		!sameJSON(admission.Payment, payment) || !exactRelaySponsorshipCustodyPurpose(action, payment, admission.Purpose) {
+		return false
+	}
+	purposeDigest, purposeErr := relaySponsorshipCustodyPurposeDigest(admission.Purpose)
+	expectedReservation, reservationErr := relaySponsorshipExposureReservation(payment,
+		admission.PaymentRequestDigest, purposeDigest)
+	expectedAdmissionID, admissionErr := relaySponsorshipPaymentAdmissionID(action,
+		admission.PaymentRequestDigest, purposeDigest, expectedReservation.ReservationID)
+	reservation, reservationFound := document.Reservations[expectedReservation.ReservationID]
+	retainedAction, actionFound := document.AuthorizedActions[action.StableActionID]
+	return purposeErr == nil && reservationErr == nil && admissionErr == nil &&
+		purposeDigest == admission.PurposeDigest && expectedAdmissionID == admission.AdmissionID &&
+		sameExposureReservation(admission.Reservation, expectedReservation) && reservationFound &&
+		sameExposureReservation(reservation, expectedReservation) && !reservation.Released &&
+		actionFound && sameJSON(retainedAction, action)
+}
+
 func paidDemandBuyerPaymentObligation(engagement EngagementRecord, buyerAgentID, obligationID string) bool {
 	if buyerAgentID == "" || obligationID == "" {
 		return false
@@ -242,6 +571,14 @@ type PortfolioLimits struct {
 	LockedCapitalAtomic uint64 `json:"locked_capital_atomic"`
 	ReceivableAtomic    uint64 `json:"receivable_atomic"`
 	MaximumLossAtomic   uint64 `json:"maximum_loss_atomic"`
+	// CustodyNetworkDomainDigest pins the complete native network identity at
+	// authority creation. CustodyFinalityGraceSeconds is an explicit owner risk
+	// assumption; zero means an offline bearer can never be expired by wall
+	// clock alone and its hold remains fail-closed.
+	CustodyNetworkDomainDigest  string                    `json:"custody_network_domain_digest,omitempty"`
+	CustodyFinalityGraceSeconds uint64                    `json:"custody_finality_grace_seconds,omitempty"`
+	CustodyNativeAsset          *commerce.AssetIdentityV1 `json:"custody_native_asset,omitempty"`
+	CustodySourceAccount        string                    `json:"custody_source_account,omitempty"`
 }
 
 type PortfolioReleaseRequest struct {
@@ -274,29 +611,40 @@ const (
 )
 
 type EngagementRecord struct {
-	Agreement        commerce.AgentAgreement `json:"agreement"`
-	AgreementDigest  string                  `json:"agreement_digest"`
-	ProposerAgentID  string                  `json:"proposer_agent_id"`
-	ProposalEventID  string                  `json:"proposal_event_id"`
-	ProposalActionID string                  `json:"proposal_action_id"`
+	Agreement       commerce.AgentAgreement `json:"agreement"`
+	AgreementDigest string                  `json:"agreement_digest"`
+	// Written only after the configured verifier has accepted every
+	// authorization predicate under the authority lock. Native custody binds
+	// this marker back to the exact retained body and evidence bytes.
+	FullyAuthorizedEvidenceSetDigest string `json:"fully_authorized_evidence_set_digest,omitempty"`
+	ProposerAgentID                  string `json:"proposer_agent_id"`
+	ProposalEventID                  string `json:"proposal_event_id"`
+	ProposalActionID                 string `json:"proposal_action_id"`
 	// NegotiationAmbiguous is a durable fail-closed observation. It is
 	// independent of lifecycle State so a body fork discovered after an
 	// Agreement was accepted cannot erase already-incurred obligations.
-	NegotiationAmbiguous       bool                                    `json:"negotiation_ambiguous,omitempty"`
-	NegotiationConflictCodes   []string                                `json:"negotiation_conflict_codes,omitempty"`
-	NegotiationConflictDigests []string                                `json:"negotiation_conflict_digests,omitempty"`
-	State                      EngagementState                         `json:"state"`
-	StateRevision              uint64                                  `json:"state_revision"`
-	ReservationID              string                                  `json:"reservation_id,omitempty"`
-	ExecutionID                string                                  `json:"execution_id,omitempty"`
-	FundingEvidence            []string                                `json:"funding_evidence,omitempty"`
-	ExecutionEvidence          []string                                `json:"execution_evidence,omitempty"`
-	DeliveryEvidence           []string                                `json:"delivery_evidence,omitempty"`
-	DeliveryEventID            string                                  `json:"delivery_event_id,omitempty"`
-	SettlementEvidence         []string                                `json:"settlement_evidence,omitempty"`
-	AcceptedPrivateInputs      []commerce.AcceptedPrivateContentRecord `json:"accepted_private_inputs,omitempty"`
-	BoundPrivateInputs         []BoundAcceptedPrivateInput             `json:"bound_private_inputs,omitempty"`
-	PrivateHandoffChallenges   []BoundPrivateHandoffChallenge          `json:"private_handoff_challenges,omitempty"`
+	NegotiationAmbiguous       bool            `json:"negotiation_ambiguous,omitempty"`
+	NegotiationConflictCodes   []string        `json:"negotiation_conflict_codes,omitempty"`
+	NegotiationConflictDigests []string        `json:"negotiation_conflict_digests,omitempty"`
+	State                      EngagementState `json:"state"`
+	StateRevision              uint64          `json:"state_revision"`
+	ReservationID              string          `json:"reservation_id,omitempty"`
+	// ReservationActionID/ExactRequestDigest retain the linearized hold
+	// operation so a crash or successor writer can recognize and return the
+	// exact committed phase instead of trying to reserve a second revision.
+	ReservationActionID                 string                                  `json:"reservation_action_id,omitempty"`
+	ReservationActionExactRequestDigest string                                  `json:"reservation_action_exact_request_digest,omitempty"`
+	CustodyAuthorizationExpiredAtUnix   uint64                                  `json:"custody_authorization_expired_at_unix,omitempty"`
+	ExpiredCustodyAuthorization         *expiredCustodyAuthorization            `json:"expired_custody_authorization,omitempty"`
+	ExecutionID                         string                                  `json:"execution_id,omitempty"`
+	FundingEvidence                     []string                                `json:"funding_evidence,omitempty"`
+	ExecutionEvidence                   []string                                `json:"execution_evidence,omitempty"`
+	DeliveryEvidence                    []string                                `json:"delivery_evidence,omitempty"`
+	DeliveryEventID                     string                                  `json:"delivery_event_id,omitempty"`
+	SettlementEvidence                  []string                                `json:"settlement_evidence,omitempty"`
+	AcceptedPrivateInputs               []commerce.AcceptedPrivateContentRecord `json:"accepted_private_inputs,omitempty"`
+	BoundPrivateInputs                  []BoundAcceptedPrivateInput             `json:"bound_private_inputs,omitempty"`
+	PrivateHandoffChallenges            []BoundPrivateHandoffChallenge          `json:"private_handoff_challenges,omitempty"`
 	// ObligationRuntime is the durable, obligation-scoped execution and
 	// settlement projection. Agreement is still the authority; this map only
 	// records verified progress and must contain exactly one entry for every
@@ -325,6 +673,8 @@ type authorityDocument struct {
 	NextRelayAdmissionSequence      uint64                                                      `json:"next_relay_admission_sequence"`
 	RelayAdmissions                 map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt `json:"relay_admissions"`
 	RelayAdmissionBindings          map[string]string                                           `json:"relay_admission_bindings"`
+	RelaySponsorshipPayments        map[string]relaySponsorshipPaymentAdmission                 `json:"relay_sponsorship_payments,omitempty"`
+	IssuedCustodyPayments           map[string]issuedCustodyPaymentAuthorization                `json:"issued_custody_payments,omitempty"`
 	PortfolioRevision               uint64                                                      `json:"portfolio_revision"`
 	Limits                          PortfolioLimits                                             `json:"limits"`
 	ConsumedMaximumLossAtomic       uint64                                                      `json:"consumed_maximum_loss_atomic"`
@@ -403,15 +753,18 @@ func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, key 
 		_ = root.Close()
 		return nil, errors.New("personal authority directory changed while locking")
 	}
+	limits = clonePortfolioLimits(limits)
 	authority := &PersonalAuthority{directory: directory, root: root, path: authorityFile, lock: lock, domainLock: domainLock,
 		key: append(ed25519.PrivateKey(nil), key...), now: time.Now}
 	authority.doc = authorityDocument{Schema: authoritySchema, OwnerID: ownerID, AgentID: agentID, AuthorityID: authorityID,
 		Actions: map[string]commerce.ActionResolution{}, AuthorizedActions: map[string]commerce.AuthorizedAction{}, OutcomeJournalHeads: map[string]OutcomeJournalAuthorityHeadV1{},
 		AuthorityInstances:   map[string]commerce.AuthorityInstanceRecord{},
 		NextInstanceSequence: 1, NextRelayAdmissionSequence: 1,
-		RelayAdmissions:        map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt{},
-		RelayAdmissionBindings: map[string]string{},
-		PortfolioRevision:      1, Limits: limits, Reservations: map[string]ExposureReservation{},
+		RelayAdmissions:          map[string]agentrelay.SignedRelaySideEffectAdmissionReceipt{},
+		RelayAdmissionBindings:   map[string]string{},
+		RelaySponsorshipPayments: map[string]relaySponsorshipPaymentAdmission{},
+		IssuedCustodyPayments:    map[string]issuedCustodyPaymentAuthorization{},
+		PortfolioRevision:        1, Limits: limits, Reservations: map[string]ExposureReservation{},
 		ConsumedMaximumLossByAsset: map[string]uint64{}, RetainedDefaultLiabilityByAsset: map[string]uint64{},
 		ScheduleEntries: map[string]commerce.EngagementScheduleEntry{}}
 	authority.doc.Engagements = map[string]EngagementRecord{}
@@ -430,6 +783,18 @@ func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, key 
 		_ = root.Close()
 		return nil, err
 	} else if err := authority.load(ownerID, agentID, authorityID); err != nil {
+		_ = releaseAuthorityLock(lock)
+		_ = domainLock.Close()
+		_ = root.Close()
+		return nil, err
+	}
+	if !sameJSON(authority.doc.Limits, limits) {
+		_ = releaseAuthorityLock(lock)
+		_ = domainLock.Close()
+		_ = root.Close()
+		return nil, errors.New("personal authority owner limits or custody pins changed; use a new authority generation")
+	}
+	if err := authority.expireIssuedCustodyLocked(); err != nil {
 		_ = releaseAuthorityLock(lock)
 		_ = domainLock.Close()
 		_ = root.Close()
@@ -521,11 +886,14 @@ func (authority *PersonalAuthority) AcquireWriter(_ context.Context, instanceID 
 	if err != nil {
 		return commerce.WriterFence{}, err
 	}
-	next.CurrentFence = &fence
+	retainedFence := fence
+	retainedFence.Body.Scope = append([]string(nil), fence.Body.Scope...)
+	next.CurrentFence = &retainedFence
 	if err := authority.persist(next); err != nil {
 		return commerce.WriterFence{}, err
 	}
 	authority.doc = next
+	fence.Body.Scope = append([]string(nil), fence.Body.Scope...)
 	return fence, nil
 }
 
@@ -534,6 +902,9 @@ func (authority *PersonalAuthority) Admit(action commerce.AuthorizedAction, fiel
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
 	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, err
+	}
+	if err := authority.expireIssuedCustodyLocked(); err != nil {
 		return commerce.ActionResolution{}, err
 	}
 	now := authority.now().UTC()
@@ -550,17 +921,18 @@ func (authority *PersonalAuthority) Admit(action commerce.AuthorizedAction, fiel
 			return commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 				State: commerce.ActionConflict, StateRevision: existing.StateRevision + 1}, errors.New("semantic action identity conflicts with prior request")
 		}
-		return existing, nil
+		return detachedActionResolution(existing), nil
 	}
 	next := cloneAuthorityDocument(authority.doc)
 	if err := validateAndAdvanceOutcomeJournalAuthorityHead(&next, action, fields, request, fence); err != nil {
 		return commerce.ActionResolution{}, err
 	}
 	if reservation != nil {
-		if err := admitReservation(next, *reservation); err != nil {
+		candidate := cloneExposureReservation(*reservation)
+		if err := admitReservation(next, candidate); err != nil {
 			return commerce.ActionResolution{}, err
 		}
-		next.Reservations[reservation.ReservationID] = *reservation
+		next.Reservations[candidate.ReservationID] = candidate
 		next.PortfolioRevision++
 	}
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
@@ -571,7 +943,149 @@ func (authority *PersonalAuthority) Admit(action commerce.AuthorizedAction, fiel
 		return commerce.ActionResolution{}, err
 	}
 	authority.doc = next
-	return resolution, nil
+	return detachedActionResolution(resolution), nil
+}
+
+// AdmitRelaySponsorshipPayment is the single owner-authority linearization
+// point for a Provider-funded top-up. The exact typed relay purpose, payment
+// action, and maximum-loss reservation either become durable together or not
+// at all. A SponsorshipCustodyBinding is therefore only a lookup capability
+// for this record; it is never authorization by itself.
+func (authority *PersonalAuthority) AdmitRelaySponsorshipPayment(action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue, canonicalRequest []byte, fence commerce.WriterFence,
+	payment commerce.AgreementPaymentRequest, purpose RelaySponsorshipCustodyPurpose) (
+	commerce.ActionResolution, SponsorshipCustodyBinding, error) {
+	if authority == nil {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, errors.New("relay sponsorship authority is unavailable")
+	}
+	payment = detachedAgreementPaymentRequest(payment)
+	detachedPurpose, err := cloneRelaySponsorshipPurpose(purpose)
+	if err != nil {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, err
+	}
+	purpose = detachedPurpose
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, err
+	}
+	if err := authority.expireIssuedCustodyLocked(); err != nil {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, err
+	}
+	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
+		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, errors.New("stale writer cannot admit relay sponsorship exposure")
+	}
+	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	if commerce.VerifyAuthorizedAction(action, fields, canonicalRequest, fence, resolver, authority.now().UTC()) != nil ||
+		!exactRelaySponsorshipCustodyPurpose(action, payment, purpose) {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, errors.New("relay sponsorship payment purpose is not exactly authorized")
+	}
+	expectedRequest, expectedFields, err := commerce.PaymentAuthorizationMaterial(payment)
+	if err != nil || !bytes.Equal(expectedRequest, canonicalRequest) || !sameJSON(expectedFields, fields) {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, errors.New("relay sponsorship payment material is not canonical")
+	}
+	purposeDigest, err := relaySponsorshipCustodyPurposeDigest(purpose)
+	if err != nil {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, err
+	}
+	reservation, err := relaySponsorshipExposureReservation(payment, purpose.PaymentRequestDigest, purposeDigest)
+	if err != nil {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, err
+	}
+	admissionID, err := relaySponsorshipPaymentAdmissionID(action, purpose.PaymentRequestDigest,
+		purposeDigest, reservation.ReservationID)
+	if err != nil {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, err
+	}
+	admission := relaySponsorshipPaymentAdmission{AdmissionID: admissionID, Payment: payment,
+		PaymentRequestDigest: purpose.PaymentRequestDigest, Purpose: purpose, PurposeDigest: purposeDigest,
+		Reservation: reservation}
+	admission = detachedRelaySponsorshipPayment(admission)
+	binding := SponsorshipCustodyBinding{AdmissionID: admissionID, PaymentRequestDigest: purpose.PaymentRequestDigest,
+		PurposeDigest: purposeDigest, ReservationID: reservation.ReservationID,
+		FinalityProfileCBORDigest: purpose.FinalityProfileCBORDigest,
+		ReleaseProfileDigest:      purpose.ReleaseProfileDigest, CorroborationSnapshotID: purpose.CorroborationSnapshotID}
+	if prior, found := authority.doc.Actions[action.StableActionID]; found {
+		retained, retainedFound := authority.doc.RelaySponsorshipPayments[admissionID]
+		reservationRecord, reservationFound := authority.doc.Reservations[reservation.ReservationID]
+		expectedReservation := reservation
+		switch prior.State {
+		case commerce.ActionPrepared, commerce.ActionSubmitted:
+		case commerce.ActionAccepted, commerce.ActionTerminal, commerce.ActionRejected:
+			expectedReservation.Released = true
+		default:
+			return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, errors.New("relay sponsorship admission has an invalid retained lifecycle")
+		}
+		if prior.ExactRequestDigest != action.ExactRequestDigest || !retainedFound ||
+			!sameJSON(retained, admission) || !reservationFound ||
+			!sameExposureReservation(reservationRecord, expectedReservation) {
+			return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, errors.New("relay sponsorship admission conflicts with retained authority state")
+		}
+		// A successor writer may re-envelope only the same stable/exact request.
+		// Persisting the currently verified envelope here lets crash recovery call
+		// custody under the live fence without changing the admitted payment,
+		// purpose, hold, action resolution, or Portfolio revision.
+		retainedAction, actionFound := authority.doc.AuthorizedActions[action.StableActionID]
+		if !actionFound || !sameJSON(retainedAction, action) {
+			next := cloneAuthorityDocument(authority.doc)
+			recordAuthorizedAction(&next, action)
+			if err := authority.persist(next); err != nil {
+				return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, err
+			}
+			authority.doc = next
+		}
+		return detachedActionResolution(prior), binding, nil
+	}
+	if len(authority.doc.RelaySponsorshipPayments) >= maximumRelayAdmissions {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, errors.New("relay sponsorship admission capacity is exhausted")
+	}
+	next := cloneAuthorityDocument(authority.doc)
+	if err := admitReservation(next, reservation); err != nil {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, err
+	}
+	next.Reservations[reservation.ReservationID] = cloneExposureReservation(reservation)
+	next.RelaySponsorshipPayments[admissionID] = detachedRelaySponsorshipPayment(admission)
+	next.PortfolioRevision++
+	resolution := commerce.ActionResolution{StableActionID: action.StableActionID,
+		ExactRequestDigest: action.ExactRequestDigest, State: commerce.ActionPrepared, StateRevision: 1}
+	next.Actions[action.StableActionID] = resolution
+	recordAuthorizedAction(&next, action)
+	if err := authority.persist(next); err != nil {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, err
+	}
+	authority.doc = next
+	return detachedActionResolution(resolution), binding, nil
+}
+
+func relaySponsorshipExposureReservation(payment commerce.AgreementPaymentRequest,
+	paymentDigest, purposeDigest string) (ExposureReservation, error) {
+	amount, err := strconv.ParseUint(payment.Amount.AmountAtomic, 10, 64)
+	if err != nil || amount == 0 || !canonicalSHA256(paymentDigest) || !canonicalSHA256(purposeDigest) {
+		return ExposureReservation{}, errors.New("relay sponsorship exposure is invalid")
+	}
+	reservationID, err := codec.Digest("tos.openfox.relay-sponsorship-exposure-reservation.v1", struct {
+		PaymentRequestDigest string `json:"payment_request_digest"`
+		PurposeDigest        string `json:"purpose_digest"`
+	}{paymentDigest, purposeDigest})
+	if err != nil {
+		return ExposureReservation{}, err
+	}
+	asset := commerce.AssetIdentityV1{AssetNamespace: payment.Amount.AssetNamespace,
+		AssetIdentifier: payment.Amount.AssetIdentifier, Unit: payment.Amount.Unit}
+	return ExposureReservation{ReservationID: reservationID, AgreementDigest: payment.AgreementBodyDigest,
+		Asset: &asset, SpendAtomic: amount, MaximumLossAtomic: amount}, nil
+}
+
+func relaySponsorshipPaymentAdmissionID(action commerce.AuthorizedAction, paymentDigest,
+	purposeDigest, reservationID string) (string, error) {
+	return codec.Digest("tos.openfox.relay-sponsorship-payment-admission.v1", struct {
+		StableActionID     string `json:"stable_action_id"`
+		ExactRequestDigest string `json:"exact_request_digest"`
+		PaymentDigest      string `json:"payment_request_digest"`
+		PurposeDigest      string `json:"purpose_digest"`
+		ReservationID      string `json:"reservation_id"`
+	}{action.StableActionID, action.ExactRequestDigest, paymentDigest, purposeDigest, reservationID})
 }
 
 func (authority *PersonalAuthority) Resolve(stableActionID, requestDigest string) commerce.ActionResolution {
@@ -589,7 +1103,7 @@ func (authority *PersonalAuthority) Resolve(stableActionID, requestDigest string
 		return commerce.ActionResolution{StableActionID: stableActionID, ExactRequestDigest: requestDigest, State: commerce.ActionConflict,
 			StateRevision: resolution.StateRevision + 1}
 	}
-	return resolution
+	return detachedActionResolution(resolution)
 }
 
 // ResolveAuthorizedAction returns the exact signed authorization that was
@@ -628,6 +1142,22 @@ func (authority *PersonalAuthority) Transition(stableActionID, requestDigest str
 	if existing.State == commerce.ActionTerminal || existing.State == commerce.ActionRejected || existing.State == commerce.ActionConflict {
 		return commerce.ActionResolution{}, errors.New("terminal action cannot transition")
 	}
+	for _, admission := range authority.doc.RelaySponsorshipPayments {
+		if admission.Payment.StableActionID != stableActionID {
+			continue
+		}
+		if state == commerce.ActionAccepted || state == commerce.ActionTerminal {
+			return commerce.ActionResolution{}, errors.New("relay sponsorship terminal state requires authority-verified payment evidence")
+		}
+		if state == commerce.ActionRejected {
+			for _, issued := range authority.doc.IssuedCustodyPayments {
+				if issued.SponsorshipAdmissionID == admission.AdmissionID {
+					return commerce.ActionResolution{}, errors.New("issued relay sponsorship custody cannot be rejected or release its hold")
+				}
+			}
+		}
+		break
+	}
 	next := cloneAuthorityDocument(authority.doc)
 	resolution := existing
 	resolution.State, resolution.SinkReference, resolution.EvidenceRefs = state, sinkReference, append([]string(nil), evidence...)
@@ -636,11 +1166,28 @@ func (authority *PersonalAuthority) Transition(stableActionID, requestDigest str
 		return commerce.ActionResolution{}, err
 	}
 	next.Actions[stableActionID] = resolution
+	if state == commerce.ActionRejected {
+		for _, admission := range next.RelaySponsorshipPayments {
+			if admission.Payment.StableActionID != stableActionID {
+				continue
+			}
+			reservation, found := next.Reservations[admission.Reservation.ReservationID]
+			if !found || reservation.AgreementDigest != admission.Payment.AgreementBodyDigest {
+				return commerce.ActionResolution{}, errors.New("relay sponsorship terminal transition lost its exposure hold")
+			}
+			if !reservation.Released {
+				reservation.Released = true
+				next.Reservations[reservation.ReservationID] = reservation
+				next.PortfolioRevision++
+			}
+			break
+		}
+	}
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, err
 	}
 	authority.doc = next
-	return resolution, nil
+	return detachedActionResolution(resolution), nil
 }
 
 func (authority *PersonalAuthority) AllocateInstance(request commerce.AuthorityInstanceAllocationRequest,
@@ -684,12 +1231,15 @@ func (authority *PersonalAuthority) Snapshot() (uint64, PortfolioLimits, []Expos
 	if authority.ensureStorageIdentityLocked() != nil {
 		return 0, PortfolioLimits{}, nil
 	}
+	if authority.expireIssuedCustodyLocked() != nil {
+		return 0, PortfolioLimits{}, nil
+	}
 	reservations := make([]ExposureReservation, 0, len(authority.doc.Reservations))
 	for _, reservation := range authority.doc.Reservations {
-		reservations = append(reservations, reservation)
+		reservations = append(reservations, cloneExposureReservation(reservation))
 	}
 	sort.Slice(reservations, func(i, j int) bool { return reservations[i].ReservationID < reservations[j].ReservationID })
-	return authority.doc.PortfolioRevision, authority.doc.Limits, reservations
+	return authority.doc.PortfolioRevision, clonePortfolioLimits(authority.doc.Limits), reservations
 }
 
 // ReleaseReservation admits portfolio.release and applies it in one journal
@@ -730,7 +1280,7 @@ func (authority *PersonalAuthority) releaseReservation(action commerce.Authorize
 			return commerce.ActionResolution{}, errors.New("portfolio release identity conflicts")
 		}
 		if prior.State == commerce.ActionTerminal {
-			return prior, nil
+			return detachedActionResolution(prior), nil
 		}
 		if prior.State != commerce.ActionPrepared {
 			return commerce.ActionResolution{}, errors.New("portfolio release has an unresolved non-prepared predecessor")
@@ -758,6 +1308,28 @@ func (authority *PersonalAuthority) releaseReservation(action commerce.Authorize
 	existing, found := authority.doc.Reservations[release.ReservationID]
 	if !found || existing.AgreementDigest != release.AgreementDigest || existing.Released {
 		return commerce.ActionResolution{}, errors.New("portfolio reservation does not match or is already released")
+	}
+	for _, issued := range authority.doc.IssuedCustodyPayments {
+		if issued.ReservationID != existing.ReservationID {
+			continue
+		}
+		return commerce.ActionResolution{}, ErrCustodyAuthorizationLive
+	}
+	if engagement, engagementFound := authority.doc.Engagements[existing.AgreementDigest]; engagementFound {
+		switch engagement.State {
+		case EngagementSettled:
+			for _, ledger := range authority.doc.SettlementLedger {
+				if ledger.Obligation.AgreementBodyDigest == engagement.AgreementDigest &&
+					ledger.State.State != commerce.SettlementPaid {
+					return commerce.ActionResolution{}, errors.New("settled Agreement retains a non-paid settlement obligation")
+				}
+			}
+		case EngagementCancelled, EngagementFailed:
+			// No issued custody capability remains above, so a terminal
+			// pre-payment cancellation/failure can safely free capacity.
+		default:
+			return commerce.ActionResolution{}, errors.New("non-terminal Agreement cannot release its Portfolio reservation")
+		}
 	}
 	bucket, bucketErr := exposureAssetBucket(existing.Asset)
 	if bucketErr != nil {
@@ -804,7 +1376,72 @@ func (authority *PersonalAuthority) releaseReservation(action commerce.Authorize
 		return commerce.ActionResolution{}, err
 	}
 	authority.doc = next
-	return resolution, nil
+	return detachedActionResolution(resolution), nil
+}
+
+func validateExpiredCustodyAuthorization(document authorityDocument, tombstone expiredCustodyAuthorization,
+	marker uint64, reservationID, sponsorshipAdmissionID string, key ed25519.PrivateKey, now time.Time) error {
+	// Kept as a separate validator because an expired bearer is no longer in
+	// IssuedCustodyPayments, yet it remains the sole durable proof that a signed
+	// offline capability once owned the released hold.
+	issued := tombstone.Issuance
+	paymentDigest, paymentErr := commerce.AgreementPaymentRequestDigest(issued.Payment)
+	authorizationDigest, authorizationErr := codec.Digest(
+		"tos.openfox.issued-native-custody-authorization.v1", issued.Authorization)
+	resigned, signatureErr := commerce.SignCustodyActionAuthorization(issued.Authorization, key)
+	reservation, reservationFound := document.Reservations[reservationID]
+	resolution, resolutionFound := document.Actions[issued.Payment.StableActionID]
+	if marker == 0 || tombstone.ExpiredAtUnix != marker || issued.ReleaseAfterUnix == 0 ||
+		issued.FinalityGraceSeconds == 0 || issued.ReleaseAfterUnix > marker || now.Unix() < 0 ||
+		issued.FinalityGraceSeconds != document.Limits.CustodyFinalityGraceSeconds ||
+		uint64(now.Unix()) < issued.ReleaseAfterUnix || paymentErr != nil || authorizationErr != nil ||
+		signatureErr != nil || issued.PaymentRequestDigest != paymentDigest ||
+		issued.AuthorizationDigest != authorizationDigest || !sameJSON(resigned, issued.Authorization) ||
+		issued.ReservationID != reservationID || !reservationFound || !reservation.Released ||
+		!resolutionFound || resolution.ExactRequestDigest != issued.Authorization.ExactRequestDigest ||
+		issued.Authorization.SchemaVersion != 3 || issued.Payment.SchemaVersion != 3 ||
+		issued.Payment.SettlementAdapterURI != agentrelay.DirectPaymentAdapterURI ||
+		issued.Authorization.AgreementPaymentRequestDigest != paymentDigest ||
+		issued.Authorization.StableActionID != issued.Payment.StableActionID ||
+		issued.Authorization.AgreementBodyDigest != issued.Payment.AgreementBodyDigest ||
+		issued.Authorization.ObligationInstanceID != issued.Payment.ObligationInstanceID ||
+		issued.Authorization.Destination != string(issued.Payment.Destination) ||
+		issued.Authorization.ExpiresAtUnix > issued.Payment.ExpiresAtUnix ||
+		issued.TerminalEvidenceDigest != "" || issued.TerminalReference != "" {
+		return errors.New("personal authority expired custody tombstone is invalid")
+	}
+	if _, stillLive := document.IssuedCustodyPayments[paymentDigest]; stillLive {
+		return errors.New("personal authority custody bearer is both live and expired")
+	}
+	if sponsorshipAdmissionID == "" {
+		engagement, found := document.Engagements[issued.Payment.AgreementBodyDigest]
+		if !found || engagement.ReservationID != reservationID || issued.SponsorshipAdmissionID != "" {
+			return errors.New("personal authority expired Agreement custody binding is invalid")
+		}
+	} else if issued.SponsorshipAdmissionID != sponsorshipAdmissionID {
+		return errors.New("personal authority expired sponsorship custody binding is invalid")
+	}
+	if issued.Authorization.NetworkDomain == nil {
+		return errors.New("personal authority expired custody network domain is absent")
+	}
+	domain := *issued.Authorization.NetworkDomain
+	domainDigest, domainErr := agentrelay.NetworkDomainDigest(agentrelay.NetworkDomain{NetworkID: domain.NetworkID,
+		GlobalID: domain.GlobalID, ZeroStateRootHash: domain.ZeroStateRootHash,
+		ZeroStateFileHash: domain.ZeroStateFileHash, WorkchainID: domain.WorkchainID})
+	nativeAsset := document.Limits.CustodyNativeAsset
+	if domainErr != nil || domainDigest != document.Limits.CustodyNetworkDomainDigest ||
+		domainDigest != issued.Payment.NetworkDomainDigest || nativeAsset == nil ||
+		issued.Authorization.SourceAccount != document.Limits.CustodySourceAccount ||
+		issued.Payment.Amount.AssetNamespace != nativeAsset.AssetNamespace ||
+		issued.Payment.Amount.AssetIdentifier != nativeAsset.AssetIdentifier ||
+		issued.Payment.Amount.Unit != nativeAsset.Unit {
+		return errors.New("personal authority expired custody owner pins are invalid")
+	}
+	releaseAfter, horizonErr := custodyAuthorizationReleaseAfter(document, issued)
+	if horizonErr != nil || releaseAfter != issued.ReleaseAfterUnix {
+		return errors.New("personal authority expired custody horizon is invalid")
+	}
+	return nil
 }
 
 func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) error {
@@ -897,6 +1534,12 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 	if document.RelayAdmissionBindings == nil {
 		document.RelayAdmissionBindings = map[string]string{}
 	}
+	if document.RelaySponsorshipPayments == nil {
+		document.RelaySponsorshipPayments = map[string]relaySponsorshipPaymentAdmission{}
+	}
+	if document.IssuedCustodyPayments == nil {
+		document.IssuedCustodyPayments = map[string]issuedCustodyPaymentAuthorization{}
+	}
 	if document.NextRelayAdmissionSequence == 0 && len(document.RelayAdmissions) == 0 {
 		document.NextRelayAdmissionSequence = 1
 	}
@@ -970,6 +1613,114 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 	} else if !equalRelayAdmissionBindings(document.RelayAdmissionBindings, expectedRelayAdmissionBindings) {
 		return errors.New("personal authority relay admission binding index is invalid")
 	}
+	if len(document.RelaySponsorshipPayments) > maximumRelayAdmissions {
+		return errors.New("personal authority relay sponsorship admission capacity is exceeded")
+	}
+	seenSponsorshipActions := make(map[string]struct{}, len(document.RelaySponsorshipPayments))
+	for admissionID, admission := range document.RelaySponsorshipPayments {
+		action, actionFound := document.AuthorizedActions[admission.Payment.StableActionID]
+		resolution, resolutionFound := document.Actions[admission.Payment.StableActionID]
+		purposeDigest, purposeErr := relaySponsorshipCustodyPurposeDigest(admission.Purpose)
+		expectedReservation, reservationErr := relaySponsorshipExposureReservation(admission.Payment,
+			admission.PaymentRequestDigest, purposeDigest)
+		expectedAdmissionID, admissionErr := relaySponsorshipPaymentAdmissionID(action,
+			admission.PaymentRequestDigest, purposeDigest, expectedReservation.ReservationID)
+		actualReservation, reservationFound := document.Reservations[expectedReservation.ReservationID]
+		_, duplicateAction := seenSponsorshipActions[admission.Payment.StableActionID]
+		if !actionFound || !resolutionFound || purposeErr != nil || reservationErr != nil || admissionErr != nil ||
+			admissionID != admission.AdmissionID || admissionID != expectedAdmissionID || duplicateAction ||
+			purposeDigest != admission.PurposeDigest || !sameExposureReservation(admission.Reservation, expectedReservation) ||
+			!reservationFound || !exactRelaySponsorshipCustodyPurpose(action, admission.Payment, admission.Purpose) {
+			return errors.New("personal authority relay sponsorship admission ledger is invalid")
+		}
+		hasExpiryMarker := admission.CustodyAuthorizationExpiredAtUnix != 0
+		if hasExpiryMarker != (admission.ExpiredCustodyAuthorization != nil) {
+			return errors.New("personal authority sponsorship custody expiry marker is incomplete")
+		}
+		if admission.ExpiredCustodyAuthorization != nil {
+			if err := validateExpiredCustodyAuthorization(document, *admission.ExpiredCustodyAuthorization,
+				admission.CustodyAuthorizationExpiredAtUnix, admission.Reservation.ReservationID,
+				admissionID, authority.key, authority.now().UTC()); err != nil {
+				return err
+			}
+		}
+		expectReleased := resolution.State == commerce.ActionRejected || hasExpiryMarker
+		expectedReservation.Released = expectReleased
+		if !sameExposureReservation(actualReservation, expectedReservation) {
+			return errors.New("personal authority relay sponsorship exposure lifecycle is invalid")
+		}
+		seenSponsorshipActions[admission.Payment.StableActionID] = struct{}{}
+	}
+	if len(document.IssuedCustodyPayments) > maximumIssuedCustodyAuthorizations {
+		return errors.New("personal authority issued custody capacity is exceeded")
+	}
+	issuedReservations := make(map[string]string, len(document.IssuedCustodyPayments))
+	for paymentDigest, issued := range document.IssuedCustodyPayments {
+		computedPaymentDigest, paymentErr := commerce.AgreementPaymentRequestDigest(issued.Payment)
+		computedAuthorizationDigest, authorizationDigestErr := codec.Digest(
+			"tos.openfox.issued-native-custody-authorization.v1", issued.Authorization)
+		resigned, signatureErr := commerce.SignCustodyActionAuthorization(issued.Authorization, authority.key)
+		reservation, reservationFound := document.Reservations[issued.ReservationID]
+		actionResolution, actionFound := document.Actions[issued.Payment.StableActionID]
+		amount, amountErr := strconv.ParseUint(issued.Payment.Amount.AmountAtomic, 10, 64)
+		if paymentErr != nil || authorizationDigestErr != nil || signatureErr != nil || amountErr != nil || amount == 0 ||
+			paymentDigest != computedPaymentDigest || issued.PaymentRequestDigest != paymentDigest ||
+			issued.Payment.SchemaVersion != 3 || issued.Payment.SettlementAdapterURI != agentrelay.DirectPaymentAdapterURI ||
+			issued.AuthorizationDigest != computedAuthorizationDigest || !sameJSON(resigned, issued.Authorization) ||
+			!reservationFound || reservation.Released || !actionFound ||
+			actionResolution.ExactRequestDigest != issued.Authorization.ExactRequestDigest ||
+			issued.Authorization.SchemaVersion != 3 || issued.Authorization.NetworkDomain == nil ||
+			issued.Authorization.AgreementPaymentRequestDigest != paymentDigest ||
+			issued.Authorization.StableActionID != issued.Payment.StableActionID ||
+			issued.Authorization.AgreementBodyDigest != issued.Payment.AgreementBodyDigest ||
+			issued.Authorization.ObligationInstanceID != issued.Payment.ObligationInstanceID ||
+			issued.Authorization.Destination != string(issued.Payment.Destination) ||
+			issued.Authorization.AmountAtomic != amount ||
+			issued.Authorization.ExpiresAtUnix > issued.Payment.ExpiresAtUnix ||
+			issued.TerminalEvidenceDigest != "" || issued.TerminalReference != "" {
+			return errors.New("personal authority issued native custody ledger is invalid")
+		}
+		if priorDigest, duplicate := issuedReservations[issued.ReservationID]; duplicate && priorDigest != paymentDigest {
+			return errors.New("personal authority reservation has multiple live custody bearers")
+		}
+		issuedReservations[issued.ReservationID] = paymentDigest
+		if issued.FinalityGraceSeconds == 0 {
+			if issued.ReleaseAfterUnix != 0 {
+				return errors.New("personal authority permanent custody hold has a release horizon")
+			}
+		} else if issued.FinalityGraceSeconds != document.Limits.CustodyFinalityGraceSeconds {
+			return errors.New("personal authority issued custody grace differs from the owner pin")
+		} else if releaseAfter, horizonErr := custodyAuthorizationReleaseAfter(document, issued); horizonErr != nil ||
+			releaseAfter != issued.ReleaseAfterUnix {
+			return errors.New("personal authority issued custody horizon is invalid")
+		}
+		domain := *issued.Authorization.NetworkDomain
+		domainDigest, domainErr := agentrelay.NetworkDomainDigest(agentrelay.NetworkDomain{NetworkID: domain.NetworkID,
+			GlobalID: domain.GlobalID, ZeroStateRootHash: domain.ZeroStateRootHash,
+			ZeroStateFileHash: domain.ZeroStateFileHash, WorkchainID: domain.WorkchainID})
+		nativeAsset := document.Limits.CustodyNativeAsset
+		if domainErr != nil || domainDigest != issued.Payment.NetworkDomainDigest ||
+			domainDigest != document.Limits.CustodyNetworkDomainDigest ||
+			domain.NetworkID != issued.Payment.NetworkID || nativeAsset == nil ||
+			issued.Authorization.SourceAccount != document.Limits.CustodySourceAccount ||
+			issued.Payment.Amount.AssetNamespace != nativeAsset.AssetNamespace ||
+			issued.Payment.Amount.AssetIdentifier != nativeAsset.AssetIdentifier ||
+			issued.Payment.Amount.Unit != nativeAsset.Unit {
+			return errors.New("personal authority issued custody network domain is invalid")
+		}
+		if issued.SponsorshipAdmissionID != "" {
+			admission, found := document.RelaySponsorshipPayments[issued.SponsorshipAdmissionID]
+			if !found || admission.PaymentRequestDigest != paymentDigest ||
+				admission.Reservation.ReservationID != issued.ReservationID {
+				return errors.New("personal authority issued sponsorship custody binding is invalid")
+			}
+		} else {
+			engagement, found := document.Engagements[issued.Payment.AgreementBodyDigest]
+			if !found || engagement.ReservationID != issued.ReservationID {
+				return errors.New("personal authority issued Agreement custody binding is invalid")
+			}
+		}
+	}
 	if err := commerce.ValidatePortfolioDependencies(document.Dependencies); err != nil {
 		return errors.New("personal authority dependency graph is invalid")
 	}
@@ -985,6 +1736,69 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 			engagement.LastTransitionAtUnix == 0 || !knownEngagementState(engagement.State) ||
 			!validNegotiationConflictRecord(engagement) {
 			return errors.New("personal authority engagement ledger is invalid")
+		}
+		if engagement.FullyAuthorizedEvidenceSetDigest != "" &&
+			!retainedAgreementFullyAuthorized(engagement, document.AgentID) {
+			return errors.New("personal authority fully authorized Agreement marker is invalid")
+		}
+		hasExpiryMarker := engagement.CustodyAuthorizationExpiredAtUnix != 0
+		if hasExpiryMarker != (engagement.ExpiredCustodyAuthorization != nil) {
+			return errors.New("personal authority Agreement custody expiry marker is incomplete")
+		}
+		if engagement.ExpiredCustodyAuthorization != nil {
+			if err := validateExpiredCustodyAuthorization(document, *engagement.ExpiredCustodyAuthorization,
+				engagement.CustodyAuthorizationExpiredAtUnix, engagement.ReservationID, "",
+				authority.key, authority.now().UTC()); err != nil {
+				return err
+			}
+		}
+		if engagement.ReservationID != "" {
+			reservation, reservationFound := document.Reservations[engagement.ReservationID]
+			reserveAction, actionFound := document.AuthorizedActions[engagement.ReservationActionID]
+			reserveResolution, resolutionFound := document.Actions[engagement.ReservationActionID]
+			if !reservationFound || reservation.AgreementDigest != engagement.AgreementDigest ||
+				engagement.ReservationActionID == "" || engagement.ReservationActionExactRequestDigest == "" ||
+				!actionFound || !resolutionFound || reserveAction.ActionKind != "portfolio.reserve" ||
+				reserveAction.ExactRequestDigest != engagement.ReservationActionExactRequestDigest ||
+				reserveResolution.ExactRequestDigest != engagement.ReservationActionExactRequestDigest ||
+				reserveResolution.State != commerce.ActionTerminal {
+				return errors.New("personal authority Engagement reservation has no exact linearized action; use a new authority generation")
+			}
+		}
+		for _, evidence := range engagement.Agreement.AuthorizationEvidence {
+			if evidence.EvidenceProfileURI != commerce.EvidenceProfileAgentSignature ||
+				evidence.AuthoritySubject.SubjectKind != "agent" ||
+				evidence.AuthoritySubject.SubjectIdentifier != document.AgentID {
+				continue
+			}
+			exposure, exposureErr := localAgreementPaymentExposure(engagement.Agreement.Body, document.AgentID)
+			reservation, reservationFound := document.Reservations[engagement.ReservationID]
+			historicalReservation := reservation
+			historicalReservation.Released = false
+			exactHistoricalHold := reservationFound &&
+				reservationExactlyCoversAgreementPayment(historicalReservation, engagement, exposure)
+			terminalRelease := false
+			if reservationFound && reservation.Released {
+				switch engagement.State {
+				case EngagementSettled:
+					terminalRelease = true
+					for _, ledger := range document.SettlementLedger {
+						if ledger.Obligation.AgreementBodyDigest == engagement.AgreementDigest &&
+							ledger.State.State != commerce.SettlementPaid {
+							terminalRelease = false
+						}
+					}
+				case EngagementCancelled, EngagementFailed:
+					terminalRelease = true
+				case EngagementUnpaid:
+					terminalRelease = engagement.ExpiredCustodyAuthorization != nil
+				}
+			}
+			if exposureErr != nil || exposure.MaximumLoss.Sign() > 0 &&
+				(!exactHistoricalHold || reservation.Released && !terminalRelease ||
+					!reservation.Released && engagement.ExpiredCustodyAuthorization != nil) {
+				return errors.New("personal authority contains a local buyer signature without an exact live hold")
+			}
 		}
 		if err := validateObligationRuntime(engagement); err != nil {
 			return err
@@ -1368,7 +2182,350 @@ func cloneAuthorityDocument(document authorityDocument) authorityDocument {
 	raw, _ := json.Marshal(document)
 	var cloned authorityDocument
 	_ = json.Unmarshal(raw, &cloned)
+	// Relay sponsorship admissions are omitted from an empty journal on disk.
+	// Keep the transactional clone writable without weakening that compact
+	// representation or relying on every caller to initialize the index.
+	if cloned.RelaySponsorshipPayments == nil {
+		cloned.RelaySponsorshipPayments = make(map[string]relaySponsorshipPaymentAdmission)
+	}
+	if cloned.IssuedCustodyPayments == nil {
+		cloned.IssuedCustodyPayments = make(map[string]issuedCustodyPaymentAuthorization)
+	}
 	return cloned
+}
+
+func clonePortfolioLimits(limits PortfolioLimits) PortfolioLimits {
+	cloned := limits
+	if limits.CustodyNativeAsset != nil {
+		asset := *limits.CustodyNativeAsset
+		cloned.CustodyNativeAsset = &asset
+	}
+	return cloned
+}
+
+func cloneExposureReservation(reservation ExposureReservation) ExposureReservation {
+	cloned := reservation
+	if reservation.Asset != nil {
+		asset := *reservation.Asset
+		cloned.Asset = &asset
+	}
+	return cloned
+}
+
+func cloneAgreementBody(body commerce.AgentAgreementBody) (commerce.AgentAgreementBody, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return commerce.AgentAgreementBody{}, err
+	}
+	var cloned commerce.AgentAgreementBody
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return commerce.AgentAgreementBody{}, err
+	}
+	return cloned, nil
+}
+
+func cloneAgreementEvidence(evidence commerce.AgreementAuthorizationEvidence) (commerce.AgreementAuthorizationEvidence, error) {
+	raw, err := json.Marshal(evidence)
+	if err != nil {
+		return commerce.AgreementAuthorizationEvidence{}, err
+	}
+	var cloned commerce.AgreementAuthorizationEvidence
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return commerce.AgreementAuthorizationEvidence{}, err
+	}
+	return cloned, nil
+}
+
+func cloneEngagementRecord(record EngagementRecord) (EngagementRecord, error) {
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return EngagementRecord{}, err
+	}
+	var cloned EngagementRecord
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return EngagementRecord{}, err
+	}
+	return cloned, nil
+}
+
+// detachedEngagementRecord is used only for statically JSON-serializable
+// journal records after their invariants have already been checked. Keep the
+// error-returning clone at ingress; public read/results fail closed to a zero
+// record if the representation ever stops being serializable.
+func detachedEngagementRecord(record EngagementRecord) EngagementRecord {
+	cloned, err := cloneEngagementRecord(record)
+	if err != nil {
+		return EngagementRecord{}
+	}
+	return cloned
+}
+
+func detachedSettlementLedgerRecord(record SettlementLedgerRecord) SettlementLedgerRecord {
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return SettlementLedgerRecord{}
+	}
+	var cloned SettlementLedgerRecord
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return SettlementLedgerRecord{}
+	}
+	return cloned
+}
+
+func detachedCustodyAuthorization(authorization commerce.CustodyActionAuthorization) commerce.CustodyActionAuthorization {
+	cloned := authorization
+	if authorization.NetworkDomain != nil {
+		domain := *authorization.NetworkDomain
+		cloned.NetworkDomain = &domain
+	}
+	return cloned
+}
+
+func detachedAgreementPaymentRequest(payment commerce.AgreementPaymentRequest) commerce.AgreementPaymentRequest {
+	raw, err := json.Marshal(payment)
+	if err != nil {
+		return commerce.AgreementPaymentRequest{}
+	}
+	var cloned commerce.AgreementPaymentRequest
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return commerce.AgreementPaymentRequest{}
+	}
+	return cloned
+}
+
+func detachedIssuedCustodyPayment(issued issuedCustodyPaymentAuthorization) issuedCustodyPaymentAuthorization {
+	raw, err := json.Marshal(issued)
+	if err != nil {
+		return issuedCustodyPaymentAuthorization{}
+	}
+	var cloned issuedCustodyPaymentAuthorization
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return issuedCustodyPaymentAuthorization{}
+	}
+	return cloned
+}
+
+func detachedRelaySponsorshipPayment(admission relaySponsorshipPaymentAdmission) relaySponsorshipPaymentAdmission {
+	raw, err := json.Marshal(admission)
+	if err != nil {
+		return relaySponsorshipPaymentAdmission{}
+	}
+	var cloned relaySponsorshipPaymentAdmission
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return relaySponsorshipPaymentAdmission{}
+	}
+	return cloned
+}
+
+func cloneRelaySponsorshipPurpose(purpose RelaySponsorshipCustodyPurpose) (RelaySponsorshipCustodyPurpose, error) {
+	raw, err := json.Marshal(purpose)
+	if err != nil {
+		return RelaySponsorshipCustodyPurpose{}, err
+	}
+	var cloned RelaySponsorshipCustodyPurpose
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return RelaySponsorshipCustodyPurpose{}, err
+	}
+	return cloned, nil
+}
+
+func detachedActionResolution(resolution commerce.ActionResolution) commerce.ActionResolution {
+	resolution.EvidenceRefs = append([]string(nil), resolution.EvidenceRefs...)
+	return resolution
+}
+
+func exactRetainedAgreementBody(record EngagementRecord) bool {
+	digest, err := commerce.AgreementBodyDigest(record.Agreement.Body)
+	return err == nil && digest == record.AgreementDigest
+}
+
+type retainedAgreementAuthorizationSet struct {
+	AgreementBodyDigest string                                    `json:"agreement_body_digest"`
+	Evidence            []commerce.AgreementAuthorizationEvidence `json:"evidence"`
+}
+
+func retainedAgreementAuthorizationSetDigest(record EngagementRecord) (string, error) {
+	if !exactRetainedAgreementBody(record) {
+		return "", errors.New("Agreement body no longer matches its retained digest")
+	}
+	return codec.Digest("tos.openfox.agreement-authorization-evidence-set.v1", retainedAgreementAuthorizationSet{
+		AgreementBodyDigest: record.AgreementDigest,
+		Evidence:            record.Agreement.AuthorizationEvidence,
+	})
+}
+
+// retainedAgreementFullyAuthorized is deliberately verifier-free: only the
+// locked RecordAgreementEvidence path can create its marker, after running the
+// configured verifier. This check rebinds that decision to the current exact
+// bytes and independently proves complete predicate coverage plus a local
+// Agent signature.
+func retainedAgreementFullyAuthorized(record EngagementRecord, localAgentID string) bool {
+	if localAgentID == "" || !canonicalSHA256(record.FullyAuthorizedEvidenceSetDigest) ||
+		!exactRetainedAgreementBody(record) {
+		return false
+	}
+	digest, err := retainedAgreementAuthorizationSetDigest(record)
+	if err != nil || digest != record.FullyAuthorizedEvidenceSetDigest {
+		return false
+	}
+	covered := make(map[string]bool, len(record.Agreement.Body.AuthorizationPredicates))
+	localAgentSignature := false
+	for _, evidence := range record.Agreement.AuthorizationEvidence {
+		if evidence.AgreementID != record.Agreement.Body.AgreementID ||
+			evidence.AgreementVersion != record.Agreement.Body.Version ||
+			evidence.AgreementBodyDigest != record.AgreementDigest ||
+			len(evidence.PredicateIDs) == 0 || len(evidence.PredicateIDs) != len(evidence.EvidenceTargetProjectionDigests) {
+			return false
+		}
+		for index, predicateID := range evidence.PredicateIDs {
+			matched := false
+			for _, predicate := range record.Agreement.Body.AuthorizationPredicates {
+				if predicate.PredicateID != predicateID || predicate.AuthoritySubject != evidence.AuthoritySubject ||
+					predicate.EvidenceProfileURI != evidence.EvidenceProfileURI ||
+					predicate.EvidenceProfileVersion != evidence.EvidenceProfileVersion ||
+					predicate.EvidenceProfileDigest != evidence.EvidenceProfileDigest ||
+					predicate.EvidenceTargetProjectionDigest != evidence.EvidenceTargetProjectionDigests[index] || covered[predicateID] {
+					continue
+				}
+				covered[predicateID] = true
+				matched = true
+				if evidence.EvidenceProfileURI == commerce.EvidenceProfileAgentSignature &&
+					evidence.AuthoritySubject.SubjectKind == "agent" &&
+					evidence.AuthoritySubject.SubjectIdentifier == localAgentID {
+					localAgentSignature = true
+				}
+				break
+			}
+			if !matched {
+				return false
+			}
+		}
+	}
+	return localAgentSignature && len(covered) == len(record.Agreement.Body.AuthorizationPredicates)
+}
+
+// custodyAuthorizationReleaseAfter derives the exact owner-approved horizon
+// frozen into a new issuance. Ordinary Agreement holds cover every local
+// outgoing obligation, so one earlier installment can never free the shared
+// aggregate reservation while another signed obligation remains payable.
+func custodyAuthorizationReleaseAfter(document authorityDocument,
+	issued issuedCustodyPaymentAuthorization) (uint64, error) {
+	grace := issued.FinalityGraceSeconds
+	if grace == 0 {
+		return 0, nil
+	}
+	horizon := issued.Payment.ExpiresAtUnix
+	if issued.Authorization.ExpiresAtUnix > horizon {
+		horizon = issued.Authorization.ExpiresAtUnix
+	}
+	if issued.SponsorshipAdmissionID == "" {
+		engagement, found := document.Engagements[issued.Payment.AgreementBodyDigest]
+		if !found || !exactRetainedAgreementBody(engagement) || engagement.ReservationID != issued.ReservationID {
+			return 0, errors.New("custody authorization lost its exact Agreement horizon")
+		}
+		foundOutgoing := false
+		for _, obligation := range engagement.Agreement.Body.Obligations {
+			if obligation.Amount == nil || obligation.ObligorAgentID != document.AgentID {
+				continue
+			}
+			foundOutgoing = true
+			expires := obligation.ExpiresAtUnix
+			if obligation.BillingTerms != nil && obligation.BillingTerms.BillingKind == "periodic" &&
+				(expires == 0 || expires > obligation.BillingTerms.RecurrenceEndUnix) {
+				expires = obligation.BillingTerms.RecurrenceEndUnix
+			}
+			if expires == 0 {
+				expires = engagement.Agreement.Body.ExpiresAtUnix
+			}
+			if expires > horizon {
+				horizon = expires
+			}
+		}
+		if !foundOutgoing {
+			return 0, errors.New("custody authorization Agreement has no local outgoing horizon")
+		}
+	}
+	if horizon == 0 || horizon > ^uint64(0)-grace {
+		return 0, errors.New("custody authorization release horizon overflows")
+	}
+	return horizon + grace, nil
+}
+
+// expireIssuedCustodyLocked is the only evidence-free release path for an
+// offline native custody bearer. It relies solely on the frozen owner policy
+// and all signed payable horizons; caller-provided settlement outcomes cannot
+// accelerate it. The caller holds authority.mu (or is opening the authority
+// before publication).
+func (authority *PersonalAuthority) expireIssuedCustodyLocked() error {
+	if len(authority.doc.IssuedCustodyPayments) == 0 {
+		return nil
+	}
+	nowUnix := authority.now().UTC().Unix()
+	if nowUnix < 0 {
+		return errors.New("authority time cannot expire custody authorizations")
+	}
+	next := cloneAuthorityDocument(authority.doc)
+	changed := false
+	for paymentDigest, issued := range authority.doc.IssuedCustodyPayments {
+		// Missing/legacy policy fields are deliberately permanent holds. They
+		// cannot be upgraded in place from an operator's new, shorter opinion.
+		if issued.FinalityGraceSeconds == 0 || issued.ReleaseAfterUnix == 0 {
+			continue
+		}
+		recomputed, err := custodyAuthorizationReleaseAfter(authority.doc, issued)
+		if err != nil || recomputed != issued.ReleaseAfterUnix {
+			return errors.New("custody authorization has an invalid frozen release horizon")
+		}
+		if uint64(nowUnix) < issued.ReleaseAfterUnix {
+			continue
+		}
+		reservation, found := next.Reservations[issued.ReservationID]
+		if !found || reservation.Released {
+			return errors.New("expired custody authorization lost its exact live hold")
+		}
+		reservation.Released = true
+		next.Reservations[reservation.ReservationID] = reservation
+		next.PortfolioRevision++
+		if issued.SponsorshipAdmissionID != "" {
+			admission, found := next.RelaySponsorshipPayments[issued.SponsorshipAdmissionID]
+			if !found || admission.Reservation.ReservationID != issued.ReservationID ||
+				admission.ExpiredCustodyAuthorization != nil {
+				return errors.New("expired sponsorship custody authorization lost its admission")
+			}
+			admission.CustodyAuthorizationExpiredAtUnix = uint64(nowUnix)
+			admission.ExpiredCustodyAuthorization = &expiredCustodyAuthorization{
+				Issuance: issued, ExpiredAtUnix: uint64(nowUnix)}
+			next.RelaySponsorshipPayments[issued.SponsorshipAdmissionID] = admission
+		} else {
+			engagement, found := next.Engagements[issued.Payment.AgreementBodyDigest]
+			if !found || engagement.ReservationID != issued.ReservationID ||
+				engagement.ExpiredCustodyAuthorization != nil {
+				return errors.New("expired Agreement custody authorization lost its Engagement")
+			}
+			engagement.CustodyAuthorizationExpiredAtUnix = uint64(nowUnix)
+			engagement.ExpiredCustodyAuthorization = &expiredCustodyAuthorization{
+				Issuance: issued, ExpiredAtUnix: uint64(nowUnix)}
+			if engagement.State == EngagementSettling {
+				engagement.State = EngagementUnpaid
+			} else if engagement.State != EngagementSettled && engagement.State != EngagementUnpaid &&
+				engagement.State != EngagementCancelled && engagement.State != EngagementFailed {
+				return errors.New("expired Agreement custody authorization has a non-terminal lifecycle")
+			}
+			engagement.StateRevision++
+			engagement.LastTransitionAtUnix = uint64(nowUnix)
+			next.Engagements[engagement.AgreementDigest] = engagement
+		}
+		delete(next.IssuedCustodyPayments, paymentDigest)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	if err := authority.persist(next); err != nil {
+		return err
+	}
+	authority.doc = next
+	return nil
 }
 
 func recordAuthorizedAction(document *authorityDocument, action commerce.AuthorizedAction) {

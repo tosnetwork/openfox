@@ -320,6 +320,7 @@ func (authority *PersonalAuthority) AdmitDependencyTransition(action commerce.Au
 	if authority == nil {
 		return commerce.ActionResolution{}, errors.New("dependency authority is unavailable")
 	}
+	request.EvidenceRefs = append([]string(nil), request.EvidenceRefs...)
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
 	if err := authority.ensureStorageIdentityLocked(); err != nil {
@@ -327,9 +328,9 @@ func (authority *PersonalAuthority) AdmitDependencyTransition(action commerce.Au
 	}
 	now := authority.now().UTC()
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
-		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID || request.GraphBaseRevision != authority.doc.PortfolioRevision ||
+		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID ||
 		!now.Before(time.Unix(int64(fence.Body.ExpiresAtUnix), 0).UTC()) {
-		return commerce.ActionResolution{}, errors.New("stale writer or graph revision cannot mutate dependencies")
+		return commerce.ActionResolution{}, errors.New("stale writer cannot mutate dependencies")
 	}
 	canonical, err := codec.Marshal(request)
 	if err != nil || !reflect.DeepEqual(canonical, canonicalRequest) {
@@ -351,7 +352,10 @@ func (authority *PersonalAuthority) AdmitDependencyTransition(action commerce.Au
 		if prior.ExactRequestDigest != action.ExactRequestDigest {
 			return commerce.ActionResolution{}, errors.New("dependency action identity conflicts")
 		}
-		return prior, nil
+		return detachedActionResolution(prior), nil
+	}
+	if request.GraphBaseRevision != authority.doc.PortfolioRevision {
+		return commerce.ActionResolution{}, errors.New("stale graph revision cannot mutate dependencies")
 	}
 	prospective := append([]commerce.PortfolioDependency(nil), authority.doc.Dependencies...)
 	index := -1
@@ -391,13 +395,13 @@ func (authority *PersonalAuthority) AdmitDependencyTransition(action commerce.Au
 	next.PortfolioRevision++
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, EvidenceRefs: append([]string(nil), request.EvidenceRefs...), StateRevision: 1}
-	next.Actions[action.StableActionID] = resolution
+	next.Actions[action.StableActionID] = detachedActionResolution(resolution)
 	recordAuthorizedAction(&next, action)
 	if err := authority.persist(next); err != nil {
 		return commerce.ActionResolution{}, err
 	}
 	authority.doc = next
-	return resolution, nil
+	return detachedActionResolution(resolution), nil
 }
 
 func (authority *PersonalAuthority) ScheduleSnapshot() ([]commerce.EngagementScheduleEntry, []commerce.PortfolioDependency) {

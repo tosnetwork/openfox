@@ -501,34 +501,38 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", key,
-		PortfolioLimits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer authority.Close()
-	now := time.Unix(1_800_000_000, 0).UTC()
-	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(t.Context(), "runtime:payment", []string{"payment.domain-bound"}, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	relayDomain := agentrelay.NetworkDomain{NetworkID: "tos:testnet", GlobalID: -3,
+	relayDomain := agentrelay.NetworkDomain{NetworkID: "tos:test", GlobalID: -3,
 		ZeroStateRootHash: testDigest, ZeroStateFileHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		WorkchainID: 0}
 	domainDigest, err := agentrelay.NetworkDomainDigest(relayDomain)
 	if err != nil {
 		t.Fatal(err)
 	}
-	amount := commerce.AgreementAmount{AssetNamespace: "tos.asset", AssetIdentifier: "native",
-		AmountAtomic: "25", Unit: "nanotos"}
-	obligation := commerce.SettlementObligation{AgreementBodyDigest: testDigest,
-		AgreementObligationID: "payment", ObligationInstanceID: testDigest, Sequence: 1,
-		PayerAgentID: "agent-1", PayeeAgentID: "agent-2", Amount: amount, MaximumAggregateAmount: amount,
-		ExpiresAtUnix: uint64(now.Add(30 * time.Minute).Unix()), SettlementAdapterURI: "tos.payment.direct.v1",
-		SettlementParametersDigest: testDigest, MandateDigest: testDigest, StableActionID: testDigest}
-	payment, err := commerce.BuildDomainBoundAgreementPaymentRequest("owner-1", "agent-1", relayDomain.NetworkID,
-		domainDigest, []byte("0:destination"), obligation)
+	nativeAsset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos"}
+	limits := PortfolioLimits{SpendAtomic: 25, MaximumLossAtomic: 25, CustodyNetworkDomainDigest: domainDigest,
+		CustodyNativeAsset: &nativeAsset, CustodySourceAccount: "0:source", CustodyFinalityGraceSeconds: 60}
+	directory := privateTempDir(t)
+	authority, err := OpenPersonalAuthority(directory, "owner-1", "agent:buyer", "authority-1", key, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
+	now := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	authority.now = func() time.Time { return now }
+	fence, err := authority.AcquireWriter(t.Context(), "runtime:payment",
+		[]string{"payment.domain-bound", "portfolio.reserve"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ := directBuyerAgreementForAdmission(t, 25, now)
+	instances, err := commerce.MaterializeSettlementObligations("owner-1", "agent:buyer", record.AgreementDigest,
+		"pay", testDigest, record.Agreement.Body.Obligations[0])
+	if err != nil || len(instances) != 1 {
+		t.Fatalf("materialize direct payment: instances=%d err=%v", len(instances), err)
+	}
+	obligation := instances[0]
+	payment, err := commerce.BuildDomainBoundAgreementPaymentRequest("owner-1", "agent:buyer", relayDomain.NetworkID,
+		domainDigest, record.Agreement.Body.Obligations[0].SettlementParameters, obligation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +540,7 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	action, err := commerce.BuildAuthorizedAction("owner-1", "agent-1", commerce.PaymentActionKind(payment), fields, canonical,
+	action, err := commerce.BuildAuthorizedAction("owner-1", "agent:buyer", commerce.PaymentActionKind(payment), fields, canonical,
 		fence, 1, testDigest, "", "pending", payment.ExpiresAtUnix)
 	if err == nil {
 		action, err = authority.SignAction(action, fence)
@@ -550,6 +554,46 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 	custodyDomain := commerce.CustodyNetworkDomain{NetworkID: relayDomain.NetworkID, GlobalID: relayDomain.GlobalID,
 		ZeroStateRootHash: relayDomain.ZeroStateRootHash, ZeroStateFileHash: relayDomain.ZeroStateFileHash,
 		WorkchainID: relayDomain.WorkchainID}
+	if _, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
+		"0:source", custodyDomain, nil); err == nil {
+		t.Fatal("direct custody payment was authorized without an Agreement reservation")
+	}
+	if _, err := authority.RecordAgreementProposal(record.Agreement.Body, "agent:seller", "event:proposal",
+		"sha256:"+strings.Repeat("c", 64)); err != nil {
+		t.Fatal(err)
+	}
+	settlementState, err := commerce.NewSettlementState(obligation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservationID := "sha256:" + strings.Repeat("4", 64)
+	asset := commerce.AssetIdentityV1{AssetNamespace: payment.Amount.AssetNamespace,
+		AssetIdentifier: payment.Amount.AssetIdentifier, Unit: payment.Amount.Unit}
+	reservation := ExposureReservation{ReservationID: reservationID,
+		AgreementDigest: record.AgreementDigest, Asset: &asset, SpendAtomic: 25, MaximumLossAtomic: 25}
+	engine := &Engine{OwnerID: "owner-1", AgentID: "agent:buyer", MandateDigest: testDigest, Authority: authority}
+	if _, record, err = engine.ReserveAgreement(t.Context(), record.AgreementDigest, reservation,
+		allowSettlement{}, 1, fence); err != nil {
+		t.Fatal(err)
+	}
+	buyerPublic, buyerKey, _ := ed25519.GenerateKey(rand.Reader)
+	sellerPublic, sellerKey, _ := ed25519.GenerateKey(rand.Reader)
+	verifier := AgreementEvidenceRouter{AgentAuthority: agreementKeyResolver{
+		"agent:buyer": buyerPublic, "agent:seller": sellerPublic,
+	}}
+	for _, signer := range []struct {
+		agentID string
+		key     ed25519.PrivateKey
+	}{{"agent:buyer", buyerKey}, {"agent:seller", sellerKey}} {
+		evidence := buyerLossCapAcceptance(t, record.Agreement.Body, record.AgreementDigest, signer.agentID, signer.key)
+		if record, err = authority.RecordAgreementEvidence(record.AgreementDigest, evidence, verifier); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record.State = EngagementSettling
+	authority.doc.Engagements[record.AgreementDigest] = record
+	authority.doc.SettlementLedger[obligation.ObligationInstanceID] = SettlementLedgerRecord{
+		Obligation: obligation, State: settlementState}
 	authorization, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
 		"0:source", custodyDomain, nil)
 	if err != nil {
@@ -564,37 +608,192 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 		t.Fatalf("custody authorization omitted the full network domain: %+v", authorization)
 	}
 	if err := commerce.VerifyRelayCustodyActionAuthorization(authorization,
-		custodyEffectPinnedKey{key: key.Public().(ed25519.PublicKey)}, now); err != nil {
+		custodyEffectPinnedKey{key: key.Public().(ed25519.PublicKey), agentID: "agent:buyer"}, now); err != nil {
 		t.Fatal(err)
 	}
+	replayed, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
+		"0:source", custodyDomain, nil)
+	if err != nil || !reflect.DeepEqual(replayed, authorization) {
+		t.Fatalf("exact custody retry did not return the retained bearer: err=%v", err)
+	}
+	if _, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
+		"0:attacker-source", custodyDomain, nil); err == nil {
+		t.Fatal("custody payment used a caller-selected source account")
+	}
+	undersized := authority.doc.Reservations[reservationID]
+	undersized.MaximumLossAtomic--
+	authority.doc.Reservations[reservationID] = undersized
+	if _, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
+		"0:source", custodyDomain, nil); err == nil {
+		t.Fatal("direct custody payment was authorized with an undersized maximum-loss reservation")
+	}
+	undersized.MaximumLossAtomic++
+	undersized.Released = true
+	authority.doc.Reservations[reservationID] = undersized
+	if _, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
+		"0:source", custodyDomain, nil); err == nil {
+		t.Fatal("direct custody payment was authorized with a released reservation")
+	}
+	undersized.Released = false
+	authority.doc.Reservations[reservationID] = undersized
+	delete(authority.doc.SettlementLedger, obligation.ObligationInstanceID)
+	if _, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
+		"0:source", custodyDomain, nil); err == nil {
+		t.Fatal("direct custody payment was authorized without a materialized settlement obligation")
+	}
+	authority.doc.SettlementLedger[obligation.ObligationInstanceID] = SettlementLedgerRecord{
+		Obligation: obligation, State: settlementState}
 	wrongDomain := custodyDomain
 	wrongDomain.WorkchainID = -1
 	if _, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
 		"0:source", wrongDomain, nil); err == nil {
 		t.Fatal("relay payment was authorized for another target workchain")
 	}
-	sponsorship := &SponsorshipCustodyBinding{FinalityProfileCBORDigest: "sha256:" + strings.Repeat("8", 64),
-		ReleaseProfileDigest:    "sha256:" + strings.Repeat("9", 64),
-		CorroborationSnapshotID: "sha256:" + strings.Repeat("a", 64)}
-	sponsorshipAuthorization, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
-		"0:source", custodyDomain, sponsorship)
+	// A syntactically complete caller pointer is not an exception. Only an
+	// authority-persisted, atomically reserved relay sponsorship admission can
+	// select that path, so this ordinary Agreement payment remains rejected.
+	sponsorship := &SponsorshipCustodyBinding{AdmissionID: "sha256:" + strings.Repeat("5", 64),
+		PaymentRequestDigest: paymentDigest, PurposeDigest: "sha256:" + strings.Repeat("6", 64),
+		ReservationID:             "sha256:" + strings.Repeat("7", 64),
+		FinalityProfileCBORDigest: "sha256:" + strings.Repeat("8", 64),
+		ReleaseProfileDigest:      "sha256:" + strings.Repeat("9", 64),
+		CorroborationSnapshotID:   "sha256:" + strings.Repeat("a", 64)}
+	if _, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
+		"0:source", custodyDomain, sponsorship); err == nil {
+		t.Fatal("ordinary direct payment used a dummy sponsorship binding to bypass its reservation")
+	}
+	external := payment
+	external.SettlementAdapterURI = "external.payment.v1"
+	if _, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, external,
+		"0:source", custodyDomain, nil); err == nil || !strings.Contains(err.Error(), "direct payment adapter") {
+		t.Fatalf("external adapter entered the native custody primitive: %v", err)
+	}
+	// Caller-asserted terminal state cannot release this offline bearer. Only
+	// the frozen all-outgoing-obligation horizon plus the owner grace can create
+	// the typed tombstone and make the exact hold reusable.
+	authority.now = func() time.Time {
+		return time.Unix(int64(payment.ExpiresAtUnix+limits.CustodyFinalityGraceSeconds), 0).UTC()
+	}
+	_, _, reservations := authority.Snapshot()
+	if len(reservations) != 1 || !reservations[0].Released ||
+		len(authority.doc.IssuedCustodyPayments) != 0 {
+		t.Fatalf("expired custody bearer did not atomically tombstone and release: %+v", reservations)
+	}
+	expired := authority.doc.Engagements[record.AgreementDigest]
+	if expired.State != EngagementUnpaid || expired.ExpiredCustodyAuthorization == nil {
+		t.Fatalf("expired custody lifecycle lacks its durable tombstone: %+v", expired)
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenPersonalAuthority(directory, "owner-1", "agent:buyer", "authority-1", key, limits)
+	if err != nil {
+		t.Fatalf("reopen exact expired custody lifecycle: %v", err)
+	}
+	_ = reopened.Close()
+	raw, err := os.ReadFile(filepath.Join(directory, authorityFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sponsorshipAuthorization.SponsorshipFinalityProfileCBORDigest != sponsorship.FinalityProfileCBORDigest ||
-		sponsorshipAuthorization.SponsorshipReleaseProfileDigest != sponsorship.ReleaseProfileDigest ||
-		sponsorshipAuthorization.SponsorshipCorroborationSnapshotIdentity != sponsorship.CorroborationSnapshotID {
-		t.Fatalf("custody authorization omitted the exact sponsorship evidence bindings: %+v", sponsorshipAuthorization)
+	var tampered authorityDocument
+	if json.Unmarshal(raw, &tampered) != nil {
+		t.Fatal("decode authority tombstone for tamper test")
 	}
-	if err := commerce.VerifyRelayCustodyActionAuthorization(sponsorshipAuthorization,
-		custodyEffectPinnedKey{key: key.Public().(ed25519.PublicKey)}, now); err != nil {
+	tamperedEngagement := tampered.Engagements[record.AgreementDigest]
+	tamperedEngagement.ExpiredCustodyAuthorization.Issuance.FinalityGraceSeconds--
+	tamperedEngagement.ExpiredCustodyAuthorization.Issuance.ReleaseAfterUnix--
+	tampered.Engagements[record.AgreementDigest] = tamperedEngagement
+	raw, err = json.Marshal(tampered)
+	if err != nil || os.WriteFile(filepath.Join(directory, authorityFile), raw, 0o600) != nil {
+		t.Fatal("write tampered custody tombstone")
+	}
+	if reopened, err := OpenPersonalAuthority(directory, "owner-1", "agent:buyer", "authority-1", key, limits); err == nil {
+		_ = reopened.Close()
+		t.Fatal("shortened custody finality grace survived restart")
+	}
+}
+
+func TestPersonalAuthorityEconomicInputsAndSnapshotsAreDetached(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
+	nativeAsset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos"}
+	limits := PortfolioLimits{SpendAtomic: 25, MaximumLossAtomic: 25, CustodyNativeAsset: &nativeAsset}
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:aliases", "agent:buyer",
+		"authority:aliases", authorityKey, limits)
+	if err != nil {
 		t.Fatal(err)
 	}
-	mutatedSponsorship := sponsorshipAuthorization
-	mutatedSponsorship.SponsorshipReleaseProfileDigest = testDigest
-	if err := commerce.VerifyRelayCustodyActionAuthorization(mutatedSponsorship,
-		custodyEffectPinnedKey{key: key.Public().(ed25519.PublicKey)}, now); err == nil {
-		t.Fatal("a release-profile substitution preserved the custody authorization signature")
+	defer authority.Close()
+	authority.now = func() time.Time { return now }
+
+	// The caller retains both pointers, but neither may remain attached to the
+	// owner authority after creation.
+	nativeAsset.AssetIdentifier = "attacker"
+	limits.CustodyNativeAsset.Unit = "attacker-unit"
+	_, retainedLimits, _ := authority.Snapshot()
+	if retainedLimits.CustodyNativeAsset == nil || retainedLimits.CustodyNativeAsset.AssetIdentifier != "native" ||
+		retainedLimits.CustodyNativeAsset.Unit != "nanotos" {
+		t.Fatalf("owner custody asset pin retained a caller alias: %+v", retainedLimits.CustodyNativeAsset)
+	}
+
+	template, _ := directBuyerAgreementForAdmission(t, 25, now)
+	body := template.Agreement.Body
+	record, err := authority.RecordAgreementProposal(body, "agent:seller", "event:aliases",
+		"sha256:"+strings.Repeat("d", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body.Obligations[0].Amount.AmountAtomic = "999"
+	body.Obligations[0].SettlementParameters[0] ^= 0xff
+	body.Terms[0] ^= 0xff
+	retained, found := authority.Engagement(record.AgreementDigest)
+	if !found || retained.Agreement.Body.Obligations[0].Amount.AmountAtomic != "25" ||
+		string(retained.Agreement.Body.Obligations[0].SettlementParameters) != "tos1seller" ||
+		!exactRetainedAgreementBody(retained) {
+		t.Fatalf("Agreement proposal retained a caller body alias: %+v", retained.Agreement.Body.Obligations[0])
+	}
+
+	fence, err := authority.AcquireWriter(t.Context(), "runtime:aliases", []string{"portfolio.reserve"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stableFence := fence
+	stableFence.Body.Scope = append([]string(nil), fence.Body.Scope...)
+	fence.Body.Scope[0] = "attacker.scope"
+	reservationAsset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos"}
+	reservation := ExposureReservation{ReservationID: "sha256:" + strings.Repeat("e", 64),
+		AgreementDigest: record.AgreementDigest, Asset: &reservationAsset, SpendAtomic: 25, MaximumLossAtomic: 25}
+	engine := &Engine{OwnerID: "owner:aliases", AgentID: "agent:buyer", MandateDigest: testDigest, Authority: authority}
+	_, held, err := engine.ReserveAgreement(t.Context(), record.AgreementDigest, reservation,
+		allowSettlement{}, 1, stableFence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held.Agreement.Body.Obligations[0].Amount.AmountAtomic = "888"
+	held.Agreement.Body.Obligations[0].SettlementParameters[0] ^= 0xff
+	reservationAsset.AssetIdentifier = "attacker"
+	reservation.Asset.Unit = "attacker-unit"
+
+	_, snapshotLimits, reservations := authority.Snapshot()
+	if len(reservations) != 1 || reservations[0].Asset == nil ||
+		reservations[0].Asset.AssetIdentifier != "native" || reservations[0].Asset.Unit != "nanotos" {
+		t.Fatalf("reservation retained a caller asset alias: %+v", reservations)
+	}
+	// Outputs are detached too: mutating a returned body, owner pin, or hold
+	// must not rewrite the journal in memory.
+	retained.Agreement.Body.Obligations[0].Amount.AmountAtomic = "777"
+	retained.Agreement.Body.Obligations[0].SettlementParameters[0] ^= 0xff
+	snapshotLimits.CustodyNativeAsset.AssetIdentifier = "attacker"
+	reservations[0].Asset.AssetIdentifier = "attacker"
+	again, found := authority.Engagement(record.AgreementDigest)
+	_, againLimits, againReservations := authority.Snapshot()
+	if !found || again.Agreement.Body.Obligations[0].Amount.AmountAtomic != "25" ||
+		string(again.Agreement.Body.Obligations[0].SettlementParameters) != "tos1seller" ||
+		againLimits.CustodyNativeAsset == nil || againLimits.CustodyNativeAsset.AssetIdentifier != "native" ||
+		len(againReservations) != 1 || againReservations[0].Asset == nil ||
+		againReservations[0].Asset.AssetIdentifier != "native" {
+		t.Fatalf("authority snapshot exposed mutable economic aliases: agreement=%+v limits=%+v reservations=%+v",
+			again, againLimits, againReservations)
 	}
 }
 
@@ -617,4 +816,42 @@ func reserveFields(revision uint64) map[string]commerce.SemanticValue {
 
 func zeroDigest() string {
 	return "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+// seedDirectPaymentCustodyStateForTest equips adapter-focused live fixtures
+// with the same typed Agreement, reservation, and materialized ledger that the
+// production Engagement/Billing autonomies establish before custody.
+func seedDirectPaymentCustodyStateForTest(t *testing.T, authority *PersonalAuthority,
+	body commerce.AgentAgreementBody, obligation commerce.SettlementObligation) {
+	t.Helper()
+	digest, err := commerce.AgreementBodyDigest(body)
+	if err != nil || digest != obligation.AgreementBodyDigest {
+		t.Fatalf("direct-payment fixture Agreement mismatch: digest=%s obligation=%s err=%v",
+			digest, obligation.AgreementBodyDigest, err)
+	}
+	exposure, err := localAgreementPaymentExposure(body, authority.doc.AgentID)
+	if err != nil || exposure.Asset == nil || !exposure.MaximumLoss.IsUint64() || exposure.MaximumLoss.Sign() <= 0 {
+		t.Fatalf("direct-payment fixture exposure is invalid: exposure=%+v err=%v", exposure, err)
+	}
+	reservationID, err := codec.Digest("tos.test.direct-payment-reservation.v1", struct {
+		Agreement string `json:"agreement_body_digest"`
+	}{Agreement: digest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := *exposure.Asset
+	reservation := ExposureReservation{ReservationID: reservationID, AgreementDigest: digest, Asset: &asset,
+		SpendAtomic: exposure.MaximumLoss.Uint64(), MaximumLossAtomic: exposure.MaximumLoss.Uint64()}
+	if err := admitReservation(authority.doc, reservation); err != nil {
+		t.Fatalf("direct-payment fixture reservation: %v", err)
+	}
+	state, err := commerce.NewSettlementState(obligation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.doc.Reservations[reservationID] = reservation
+	authority.doc.Engagements[digest] = EngagementRecord{Agreement: commerce.AgentAgreement{Body: body},
+		AgreementDigest: digest, State: EngagementSettling, StateRevision: 1, ReservationID: reservationID}
+	authority.doc.SettlementLedger[obligation.ObligationInstanceID] = SettlementLedgerRecord{
+		Obligation: obligation, State: state}
 }

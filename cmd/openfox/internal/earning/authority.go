@@ -20,6 +20,8 @@ import (
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
 	"github.com/tosnetwork/openfox/pkg/config"
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
+	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 )
 
 func authorityCommand() *cobra.Command {
@@ -164,9 +166,24 @@ func openPersonalAuthority(settings config.EarningSettings, create bool) (*openf
 	if err != nil {
 		return nil, func() {}, err
 	}
-	authority, err := openfoxearning.OpenPersonalAuthority(directory, settings.OwnerID, settings.AgentID, settings.AuthorityID, key,
-		openfoxearning.PortfolioLimits{ComputeUnits: settings.Resources.CPUUnits, SpendAtomic: settings.Resources.APIAtomicBudget,
-			ReceivableAtomic: maximumLoss, MaximumLossAtomic: maximumLoss})
+	limits := openfoxearning.PortfolioLimits{ComputeUnits: settings.Resources.CPUUnits,
+		SpendAtomic: settings.Resources.APIAtomicBudget, ReceivableAtomic: maximumLoss,
+		MaximumLossAtomic: maximumLoss, CustodyFinalityGraceSeconds: settings.TOSPayment.CustodyFinalityGraceSeconds}
+	if settings.Gates.DirectPayment {
+		network := configuredRelayNetwork(settings.TOSPayment.Network)
+		networkDigest, digestErr := agentrelay.NetworkDomainDigest(network)
+		if digestErr != nil {
+			for i := range key {
+				key[i] = 0
+			}
+			return nil, func() {}, fmt.Errorf("direct payment authority network domain: %w", digestErr)
+		}
+		limits.CustodyNetworkDomainDigest = networkDigest
+		limits.CustodySourceAccount = settings.TOSPayment.SourceAccount
+		limits.CustodyNativeAsset = &commerce.AssetIdentityV1{AssetNamespace: "tos.asset",
+			AssetIdentifier: "native", Unit: "nanotos"}
+	}
+	authority, err := openfoxearning.OpenPersonalAuthority(directory, settings.OwnerID, settings.AgentID, settings.AuthorityID, key, limits)
 	for i := range key {
 		key[i] = 0
 	}

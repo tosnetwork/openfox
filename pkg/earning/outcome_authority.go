@@ -62,6 +62,19 @@ func (authority *OutcomeRecordingAuthority) Admit(action commerce.AuthorizedActi
 	return authority.capture(action, resolution, err)
 }
 
+func (authority *OutcomeRecordingAuthority) AdmitRelaySponsorshipPayment(action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence,
+	payment commerce.AgreementPaymentRequest, purpose RelaySponsorshipCustodyPurpose) (
+	commerce.ActionResolution, SponsorshipCustodyBinding, error) {
+	delegate, ok := authority.EconomicAuthority.(RelaySponsorshipAdmissionAuthority)
+	if !ok {
+		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, errors.New("relay sponsorship admission authority is unavailable")
+	}
+	resolution, binding, err := delegate.AdmitRelaySponsorshipPayment(action, fields, request, fence, payment, purpose)
+	resolution, captureErr := authority.capture(action, resolution, err)
+	return resolution, binding, captureErr
+}
+
 func (authority *OutcomeRecordingAuthority) Transition(stableActionID, requestDigest string,
 	state commerce.ActionResolutionState, sinkReference string, evidence []string) (commerce.ActionResolution, error) {
 	resolution, err := authority.EconomicAuthority.Transition(stableActionID, requestDigest, state, sinkReference, evidence)

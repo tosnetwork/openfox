@@ -373,6 +373,31 @@ func (server *SharedAuthorityServer) dispatch(ctx context.Context, grant SharedA
 			return nil, err
 		}
 		return backing.SignAction(input.Action, input.Fence)
+	case "admit-relay-sponsorship-payment":
+		var input struct {
+			Action  commerce.AuthorizedAction        `json:"action"`
+			Fields  []commerce.SemanticFieldValue    `json:"fields"`
+			Request []byte                           `json:"request"`
+			Fence   commerce.WriterFence             `json:"fence"`
+			Payment commerce.AgreementPaymentRequest `json:"payment"`
+			Purpose RelaySponsorshipCustodyPurpose   `json:"purpose"`
+		}
+		if err := decodeSharedBody(raw, &input); err != nil {
+			return nil, err
+		}
+		if err := validateFence(input.Fence); err != nil {
+			return nil, err
+		}
+		fields, err := commerce.ImportSemanticFields(input.Action.ActionKind, input.Fields)
+		if err != nil {
+			return nil, err
+		}
+		resolution, binding, err := backing.AdmitRelaySponsorshipPayment(input.Action, fields,
+			input.Request, input.Fence, input.Payment, input.Purpose)
+		return struct {
+			Resolution commerce.ActionResolution `json:"resolution"`
+			Binding    SponsorshipCustodyBinding `json:"binding"`
+		}{resolution, binding}, err
 	case "authorize-custody":
 		var input struct {
 			Action        commerce.AuthorizedAction        `json:"action"`
@@ -1054,6 +1079,28 @@ func (client *SharedAuthorityClient) SignAction(action commerce.AuthorizedAction
 	}{action, fence}, &out)
 	return out, err
 }
+func (client *SharedAuthorityClient) AdmitRelaySponsorshipPayment(action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence,
+	payment commerce.AgreementPaymentRequest, purpose RelaySponsorshipCustodyPurpose) (
+	commerce.ActionResolution, SponsorshipCustodyBinding, error) {
+	var out struct {
+		Resolution commerce.ActionResolution `json:"resolution"`
+		Binding    SponsorshipCustodyBinding `json:"binding"`
+	}
+	wireFields, err := commerce.ExportSemanticFields(action.ActionKind, fields)
+	if err != nil {
+		return out.Resolution, out.Binding, err
+	}
+	err = client.call(context.Background(), "admit-relay-sponsorship-payment", struct {
+		Action  commerce.AuthorizedAction        `json:"action"`
+		Fields  []commerce.SemanticFieldValue    `json:"fields"`
+		Request []byte                           `json:"request"`
+		Fence   commerce.WriterFence             `json:"fence"`
+		Payment commerce.AgreementPaymentRequest `json:"payment"`
+		Purpose RelaySponsorshipCustodyPurpose   `json:"purpose"`
+	}{action, wireFields, request, fence, payment, purpose}, &out)
+	return out.Resolution, out.Binding, err
+}
 func (client *SharedAuthorityClient) AuthorizeCustodyPayment(action commerce.AuthorizedAction,
 	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence,
 	payment commerce.AgreementPaymentRequest, source string,
@@ -1131,7 +1178,21 @@ func (client *SharedAuthorityClient) RecordAgreementEvidence(digest string, evid
 		return EngagementRecord{}, errors.New("Agreement is absent")
 	}
 	candidate := record.Agreement
-	candidate.AuthorizationEvidence = append(candidate.AuthorizationEvidence, evidence)
+	evidenceDigest, digestErr := codec.Digest("tos.agreement-authorization-evidence.v1", evidence)
+	if digestErr != nil {
+		return EngagementRecord{}, digestErr
+	}
+	retained := false
+	for _, existing := range candidate.AuthorizationEvidence {
+		existingDigest, err := codec.Digest("tos.agreement-authorization-evidence.v1", existing)
+		if err == nil && existingDigest == evidenceDigest {
+			retained = true
+			break
+		}
+	}
+	if !retained {
+		candidate.AuthorizationEvidence = append(candidate.AuthorizationEvidence, evidence)
+	}
 	sort.Slice(candidate.AuthorizationEvidence, func(i, j int) bool {
 		leftEvidence, rightEvidence := candidate.AuthorizationEvidence[i], candidate.AuthorizationEvidence[j]
 		left, right := leftEvidence.AuthoritySubject, rightEvidence.AuthoritySubject

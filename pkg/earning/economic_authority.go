@@ -6,6 +6,7 @@ import (
 	"time"
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 )
 
 // EconomicAuthority is the owner-scoped linearization boundary. The personal
@@ -62,13 +63,49 @@ type EconomicAuthority interface {
 	reconciliationSnapshot() (uint64, []ExposureReservation, map[string]EngagementRecord)
 }
 
-// SponsorshipCustodyBinding is owner-authorized before custody signs the
-// top-up. All three values are exact digests from the selected Quote and the
-// per-action frozen observer snapshot; partial binding is forbidden.
+// RelaySponsorshipCustodyPurpose is the exact semantic purpose stored by the
+// owner authority when it atomically admits a Provider-funded gas top-up and
+// its maximum-loss hold. Its digest also binds the AuthorizedAction, but that
+// caller-provided digest is never sufficient authorization by itself.
+type RelaySponsorshipCustodyPurpose struct {
+	SchemaVersion                    uint16                           `json:"schema_version"`
+	PaymentRequestDigest             string                           `json:"payment_request_digest"`
+	RelayExecutionDigest             string                           `json:"relay_execution_request_digest"`
+	QuoteRequest                     agentrelay.RelayQuoteRequestBody `json:"quote_request"`
+	AgreementBody                    commerce.AgentAgreementBody      `json:"agreement_body"`
+	AgreementBodyDigest              string                           `json:"agreement_body_digest"`
+	AgreementObligationID            string                           `json:"agreement_obligation_id"`
+	ProviderQuoteDigest              string                           `json:"provider_quote_digest"`
+	SponsorshipTerminalProfileDigest string                           `json:"sponsorship_terminal_profile_digest"`
+	FinalityProfileCBORDigest        string                           `json:"finality_profile_cbor_digest"`
+	ReleaseProfileDigest             string                           `json:"release_profile_digest"`
+	CorroborationSnapshotID          string                           `json:"corroboration_snapshot_identity"`
+}
+
+// SponsorshipCustodyBinding identifies the exact durable owner-authority
+// admission that custody must look up. The authority revalidates its stored
+// purpose, payment, retained action and live reservation; this value is not a
+// bearer permission. The three evidence digests are emitted for tosctl.
 type SponsorshipCustodyBinding struct {
+	AdmissionID               string `json:"admission_id"`
+	PaymentRequestDigest      string `json:"payment_request_digest"`
+	PurposeDigest             string `json:"purpose_digest"`
+	ReservationID             string `json:"reservation_id"`
 	FinalityProfileCBORDigest string `json:"finality_profile_cbor_digest"`
 	ReleaseProfileDigest      string `json:"release_profile_digest"`
 	CorroborationSnapshotID   string `json:"corroboration_snapshot_identity"`
 }
 
+// RelaySponsorshipAdmissionAuthority atomically persists both the exact relay
+// purpose and its live maximum-loss reservation with the prepared payment
+// action. Custody accepts only the returned admission identity.
+type RelaySponsorshipAdmissionAuthority interface {
+	AdmitRelaySponsorshipPayment(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte,
+		commerce.WriterFence, commerce.AgreementPaymentRequest, RelaySponsorshipCustodyPurpose) (
+		commerce.ActionResolution, SponsorshipCustodyBinding, error)
+}
+
 var _ EconomicAuthority = (*PersonalAuthority)(nil)
+var _ RelaySponsorshipAdmissionAuthority = (*PersonalAuthority)(nil)
+var _ RelaySponsorshipAdmissionAuthority = (*SharedAuthorityClient)(nil)
+var _ RelaySponsorshipAdmissionAuthority = (*OutcomeRecordingAuthority)(nil)

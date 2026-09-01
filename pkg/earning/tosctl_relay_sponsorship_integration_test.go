@@ -37,6 +37,9 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	fixture.prepared.QuoteBody.SponsorshipReleaseProfileURI = policy.ProfileURI
 	fixture.prepared.QuoteBody.SponsorshipReleaseProfileDigest = policy.ProfileDigest
 	execution, agreement, obligation := relaySponsorshipFixture(t, fixture)
+	const providerWalletA = "provider-a"
+	const providerSourceA = "0:sponsor-a"
+	const feeReserveA = uint64(1)
 
 	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authorityDirectory := filepath.Join(root, "authority")
@@ -44,7 +47,8 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 		t.Fatal(err)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:provider",
-		fixture.profile.ProviderAgentID, "authority:provider", authorityKey, PortfolioLimits{})
+		fixture.profile.ProviderAgentID, "authority:provider", authorityKey,
+		relaySponsorshipTestLimits(t, fixture, providerSourceA))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,9 +66,6 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	broadcastStableIDs := []string{}
 	terminalReady := false
 	var frozenPrimaryConfig string
-	const providerWalletA = "provider-a"
-	const providerSourceA = "0:sponsor-a"
-	const feeReserveA = uint64(1)
 	sink := &TOSCTLPaymentSink{Authority: authority, Executable: "/usr/bin/tosctl", ConfigPath: paths[0],
 		Wallet: providerWalletA, SourceAccount: providerSourceA, NetworkGlobalID: fixture.network.GlobalID,
 		RelayNetworkDomain: &fixture.network, RelayNetworkPreflight: func(context.Context, string,
@@ -87,6 +88,7 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 		case "economic-payment-prepare":
 			boc := []byte("sponsored-payment-boc")
 			bocDigest := sha256.Sum256(boc)
+			validUntil, _ := strconv.ParseUint(relayTestCLIFlag(args, "--valid-until"), 10, 32)
 			if relayTestCLIFlag(args, "--wallet") != providerWalletA ||
 				relayTestCLIFlag(args, "--fee-reserve-nanotos") != strconv.FormatUint(feeReserveA, 10) ||
 				relayTestCLIFlag(args, "-c") != frozenPrimaryConfig {
@@ -98,7 +100,7 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 				ObligationInstanceID: payment.ObligationInstanceID, Account: providerSourceA,
 				Target: string(payment.Destination), AmountNanoTOS: amount, ControllerEpoch: 1, Seqno: 7,
 				NetworkGlobalID: fixture.network.GlobalID, NetworkDomain: fixture.network,
-				ValidUntil: uint32(payment.ExpiresAtUnix), ActionKind: "agent-task-send",
+				ValidUntil: uint32(validUntil), ActionKind: "agent-task-send",
 				SponsorshipCommitmentBodyHash: testStringPointer("tvm-cell-sha256:" + strings.Repeat("1", 64)),
 				ExactSignedBOC:                base64.StdEncoding.EncodeToString(boc), ExactSignedBOCDigest: "sha256:" + hex.EncodeToString(bocDigest[:])}), nil
 		case "economic-payment-broadcast":
@@ -211,7 +213,8 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	preparedResolution, err := authority.Admit(signedAction, material.fields, material.canonical, fence, nil)
+	preparedResolution, _, err := authority.AdmitRelaySponsorshipPayment(signedAction, material.fields,
+		material.canonical, fence, material.payment, material.purpose)
 	if err != nil || preparedResolution.State != commerce.ActionPrepared {
 		t.Fatalf("seed PREPARED crash boundary: resolution=%+v err=%v", preparedResolution, err)
 	}
@@ -244,7 +247,9 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	// Terminal recovery is chain-query-only. It may atomically journal the exact
 	// custody winner before stdout, but it must not mint another release
 	// observation or chain side effect, and it converges the same owner-authorized
-	// payment action from SUBMITTED to ACCEPTED.
+	// payment result without letting caller-verified evidence release or mutate
+	// the authority-owned bearer lifecycle. The action remains SUBMITTED until
+	// a future authority-internal verifier can establish exact finality.
 	corroborationCalls := commandCalls["economic-payment-corroborate"]
 	resolution, err = processor.ResolveFinalized(t.Context(), execution, recovery)
 	if err != nil || resolution.Status != agentrelay.SponsorshipResolutionUnknown ||
@@ -259,9 +264,8 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	if err != nil || resolution.Status != agentrelay.SponsorshipResolutionCorroboratedTerminal ||
 		resolution.TransactionEvidence == nil || commandCalls["economic-payment-sponsorship-corroborated-terminal"] != 2 ||
 		commandCalls["economic-payment-corroborate"] != corroborationCalls ||
-		actionResolution.State != commerce.ActionAccepted ||
-		actionResolution.SinkReference != resolution.TransferReference ||
-		!equalStrings(actionResolution.EvidenceRefs, resolution.EvidenceRefs) {
+		actionResolution.State != commerce.ActionSubmitted ||
+		actionResolution.SinkReference != "" || len(actionResolution.EvidenceRefs) != 0 {
 		t.Fatalf("observed sponsorship did not converge through the terminal-only query: calls=%v action=%+v resolution=%+v err=%v",
 			commandCalls, actionResolution, resolution, err)
 	}

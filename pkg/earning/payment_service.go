@@ -14,6 +14,14 @@ type AgreementPaymentSink interface {
 	ResolvePayment(context.Context, commerce.AgreementPaymentRequest) (commerce.AgreementPaymentEvidence, error)
 }
 
+// SubmittedPaymentBroadcastResumer resumes the exact custody-prepared BOC
+// after the authority has crossed PREPARED -> SUBMITTED but before the first
+// broadcast/result survived a process crash. It must never prepare or sign a
+// replacement payment.
+type SubmittedPaymentBroadcastResumer interface {
+	ResumePaymentBroadcast(context.Context, commerce.AgreementPaymentRequest, string) error
+}
+
 type PaymentService struct {
 	Engine             *Engine
 	Sink               AgreementPaymentSink
@@ -25,7 +33,7 @@ func (service PaymentService) Pay(ctx context.Context, request commerce.Agreemen
 	policyRevision uint64, fence commerce.WriterFence) (commerce.AgreementPaymentEvidence, SettlementLedgerRecord, EngagementRecord, error) {
 	gate := service.Engine != nil && service.Engine.Gates.DirectPayment
 	scope := "payment"
-	actionKind := "payment.direct"
+	actionKind := commerce.PaymentActionKind(request)
 	if service.Engine != nil && service.ExternalSettlement {
 		gate = service.Engine.Gates.ExternalSettlement
 		scope = "external-settlement"
@@ -33,7 +41,7 @@ func (service PaymentService) Pay(ctx context.Context, request commerce.Agreemen
 	}
 	if service.Engine == nil || service.Engine.Authority == nil || service.Sink == nil || service.Verifier == nil ||
 		!service.Engine.permits(scope, gate, false) || request.PayerAgentID != service.Engine.AgentID ||
-		(service.ExternalSettlement && request.SchemaVersion != 2) || (!service.ExternalSettlement && request.SchemaVersion != 1) {
+		(service.ExternalSettlement && request.SchemaVersion != 2) || (!service.ExternalSettlement && request.SchemaVersion != 3) {
 		return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("direct Agreement payment is disabled or not this Agent's obligation")
 	}
 	canonical, fields, err := commerce.PaymentAuthorizationMaterial(request)
@@ -58,14 +66,24 @@ func (service PaymentService) Pay(ctx context.Context, request commerce.Agreemen
 		return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, err
 	}
 	var evidence commerce.AgreementPaymentEvidence
-	if prior.State == commerce.ActionUnknown {
+	sinkOwnsSubmissionFence := false
+	if fencedSink, ok := service.Sink.(RelaySponsorshipSubmissionFenceSink); ok {
+		sinkOwnsSubmissionFence = fencedSink.ManagesRelaySponsorshipSubmissionFence()
+	}
+	// A custody-managed PREPARED action is a durable crash seam, not a reason
+	// to switch to query-only resolution. Re-entering SubmitPayment is exact:
+	// the authority returns the retained bearer and tosctl returns the retained
+	// signed BOC before the sink establishes SUBMITTED.
+	if prior.State == commerce.ActionUnknown || prior.State == commerce.ActionPrepared && sinkOwnsSubmissionFence {
 		if admitted.State != commerce.ActionPrepared {
 			return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("new payment is not in prepared state")
 		}
-		admitted, err = service.Engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-			commerce.ActionSubmitted, "", nil)
-		if err != nil {
-			return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, err
+		if !sinkOwnsSubmissionFence {
+			admitted, err = service.Engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
+				commerce.ActionSubmitted, "", nil)
+			if err != nil {
+				return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{}, err
+			}
 		}
 		evidence, err = service.Sink.SubmitPayment(ctx, action, fence, fields, canonical, request)
 		if err != nil {
@@ -75,10 +93,17 @@ func (service PaymentService) Pay(ctx context.Context, request commerce.Agreemen
 			}
 		}
 	} else {
+		var resumeErr error
+		if prior.State == commerce.ActionSubmitted {
+			if resumer, ok := service.Sink.(SubmittedPaymentBroadcastResumer); ok {
+				resumeErr = resumer.ResumePaymentBroadcast(ctx, request, action.ExactRequestDigest)
+			}
+		}
 		evidence, err = service.Sink.ResolvePayment(ctx, request)
 		if err != nil || evidence.PaymentRequestDigest == "" {
+			resolutionErr := firstError(err, resumeErr)
 			return commerce.AgreementPaymentEvidence{}, SettlementLedgerRecord{}, EngagementRecord{},
-				firstError(err, errors.New("ambiguous payment remains unresolved at the selected Adapter"))
+				firstError(resolutionErr, errors.New("ambiguous payment remains unresolved at the selected Adapter"))
 		}
 	}
 	if err := commerce.VerifyAgreementPaymentEvidence(request, evidence, service.Verifier, service.Engine.now()); err != nil {

@@ -68,7 +68,8 @@ func TestTOSCTLPaymentSinkThreeNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:three-node-e2e", "agent:payer",
-		"authority:openfox-three-node-e2e", key, PortfolioLimits{SpendAtomic: 10_000_000_000})
+		"authority:openfox-three-node-e2e", key,
+		PortfolioLimits{SpendAtomic: 10_000_000_000, MaximumLossAtomic: 10_000_000_000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,15 +80,18 @@ func TestTOSCTLPaymentSinkThreeNode(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	mandate := threeNodeDigest("mandate:" + runID)
-	agreement := threeNodeDigest("agreement:" + runID)
-	instance := threeNodeDigest("obligation-instance:" + runID)
-	obligation := commerce.SettlementObligation{AgreementBodyDigest: agreement, AgreementObligationID: "payment:three-node-e2e",
-		ObligationInstanceID: instance, Sequence: 1, PayerAgentID: "agent:payer", PayeeAgentID: "agent:provider",
-		Amount:                 commerce.AgreementAmount{AssetNamespace: "tos.asset", AssetIdentifier: "native", AmountAtomic: "100000000", Unit: "nanotos"},
-		MaximumAggregateAmount: commerce.AgreementAmount{AssetNamespace: "tos.asset", AssetIdentifier: "native", AmountAtomic: "100000000", Unit: "nanotos"},
-		ExpiresAtUnix:          uint64(now.Add(5 * time.Minute).Unix()), SettlementAdapterURI: "tos.payment.direct.v1",
-		SettlementParametersDigest: threeNodeDigest("settlement-parameters:" + runID), MandateDigest: mandate,
-		StableActionID: threeNodeDigest("billing-action:" + runID)}
+	body := pilotAgreementForBuyer(t, "agent:payer", "agent:provider", threeRolePilotSpec{Name: "tosctl-payment-" + runID,
+		Amount: "100000000", Target: target, Task: "exercise one exact Agreement-bound direct TOS payment"}, now)
+	agreement, err := commerce.AgreementBodyDigest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instances, err := commerce.MaterializeSettlementObligations("owner:three-node-e2e", "agent:payer",
+		agreement, "pay", mandate, body.Obligations[0])
+	if err != nil || len(instances) != 1 {
+		t.Fatalf("materialize live direct payment: instances=%d err=%v", len(instances), err)
+	}
+	obligation := instances[0]
 	request, err := commerce.BuildAgreementPaymentRequest("owner:three-node-e2e", "agent:payer", "tos:local-three-node",
 		[]byte(target), obligation)
 	if err != nil {
@@ -108,6 +112,7 @@ func TestTOSCTLPaymentSinkThreeNode(t *testing.T) {
 	if resolution, err := authority.Admit(action, fields, canonical, fence, nil); err != nil || resolution.State != commerce.ActionPrepared {
 		t.Fatalf("admit payment action: resolution=%+v err=%v", resolution, err)
 	}
+	seedDirectPaymentCustodyStateForTest(t, authority, body, obligation)
 	sink := &TOSCTLPaymentSink{Authority: authority, Executable: executable, ConfigPath: primary, Wallet: wallet,
 		SourceAccount: source, NetworkGlobalID: int32(networkGlobalID64), FeeReserveNanoTOS: 50_000_000,
 		RelayNetworkDomain: liveTOSCustodyNetworkDomain(t, "tos:local-three-node", int32(networkGlobalID64)),

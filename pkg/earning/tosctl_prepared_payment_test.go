@@ -28,7 +28,7 @@ func TestValidateTOSCTLPreparedPaymentBindsFullNetworkDomain(t *testing.T) {
 			WorkchainID: network.WorkchainID}, ValidUntil: uint32(request.ExpiresAtUnix),
 		ActionKind: "agent-native-send", ExactSignedBOC: base64.StdEncoding.EncodeToString(boc),
 		ExactSignedBOCDigest: "sha256:" + hex.EncodeToString(bocDigest[:])}
-	if err := validateTOSCTLPreparedPayment(prepared, request, network, "0:source", 7, false); err != nil {
+	if err := validateTOSCTLPreparedPayment(prepared, request, network, "0:source", 7, request.ExpiresAtUnix, false); err != nil {
 		t.Fatal(err)
 	}
 	mutations := map[string]func(*tosctlPaymentPrepared){
@@ -50,7 +50,7 @@ func TestValidateTOSCTLPreparedPaymentBindsFullNetworkDomain(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			changed := prepared
 			mutate(&changed)
-			if err := validateTOSCTLPreparedPayment(changed, request, network, "0:source", 7, false); err == nil {
+			if err := validateTOSCTLPreparedPayment(changed, request, network, "0:source", 7, request.ExpiresAtUnix, false); err == nil {
 				t.Fatal("mutated prepared payment was accepted")
 			}
 		})
@@ -74,16 +74,16 @@ func TestValidateTOSCTLPreparedPaymentSeparatesSponsoredActions(t *testing.T) {
 		ValidUntil: uint32(request.ExpiresAtUnix), ActionKind: "agent-task-send",
 		SponsorshipCommitmentBodyHash: &commitment, ExactSignedBOC: base64.StdEncoding.EncodeToString(boc),
 		ExactSignedBOCDigest: "sha256:" + hex.EncodeToString(bocDigest[:])}
-	if err := validateTOSCTLPreparedPayment(prepared, request, network, "0:source", 7, true); err != nil {
+	if err := validateTOSCTLPreparedPayment(prepared, request, network, "0:source", 7, request.ExpiresAtUnix, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateTOSCTLPreparedPayment(prepared, request, network, "0:source", 7, false); err == nil {
+	if err := validateTOSCTLPreparedPayment(prepared, request, network, "0:source", 7, request.ExpiresAtUnix, false); err == nil {
 		t.Fatal("sponsored action was accepted as an ordinary payment")
 	}
 	invalidCommitment := prepared
 	invalid := "tvm-cell-sha256:1"
 	invalidCommitment.SponsorshipCommitmentBodyHash = &invalid
-	if err := validateTOSCTLPreparedPayment(invalidCommitment, request, network, "0:source", 7, true); err == nil {
+	if err := validateTOSCTLPreparedPayment(invalidCommitment, request, network, "0:source", 7, request.ExpiresAtUnix, true); err == nil {
 		t.Fatal("non-canonical sponsorship commitment was accepted")
 	}
 }

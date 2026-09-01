@@ -120,7 +120,7 @@ func TestTOSCTLRelaySponsorOnlyAbsenceResolvesThroughProcessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:provider",
-		fixture.profile.ProviderAgentID, "authority:provider", authorityKey, PortfolioLimits{})
+		fixture.profile.ProviderAgentID, "authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestTOSCTLRelayDualAbsencePreservesFrozenComponentAndUsesQueryOnlyPromotion
 		t.Fatal(err)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:provider",
-		fixture.profile.ProviderAgentID, "authority:provider", authorityKey, PortfolioLimits{})
+		fixture.profile.ProviderAgentID, "authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}

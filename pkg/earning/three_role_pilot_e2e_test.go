@@ -241,6 +241,7 @@ func runThreeRoleSeller(t *testing.T, spec threeRolePilotSpec, outputDirectory s
 	if err != nil || len(ledgers) != 1 {
 		t.Fatalf("billing ledgers=%d state=%s err=%v", len(ledgers), record.State, err)
 	}
+	seedDirectPaymentCustodyStateForTest(t, payerAuthority, body, ledgers[0].Obligation)
 	request, err := commerce.BuildAgreementPaymentRequest("owner:pilot-buyer", "agent:pilot-buyer", "tos:local-three-node",
 		[]byte(spec.Target), ledgers[0].Obligation)
 	if err != nil {
@@ -287,27 +288,32 @@ func runThreeRoleSeller(t *testing.T, spec threeRolePilotSpec, outputDirectory s
 }
 
 func pilotAgreement(t *testing.T, providerID string, spec threeRolePilotSpec, now time.Time) commerce.AgentAgreementBody {
+	return pilotAgreementForBuyer(t, "agent:pilot-buyer", providerID, spec, now)
+}
+
+func pilotAgreementForBuyer(t *testing.T, buyerID, providerID string, spec threeRolePilotSpec,
+	now time.Time) commerce.AgentAgreementBody {
 	t.Helper()
 	profile := commerce.AgentSignatureProfileDigest()
 	body := commerce.AgentAgreementBody{SchemaVersion: 1,
 		AgreementID: "agreement:" + strings.TrimPrefix(threeNodeDigest(spec.Name+now.String()), "sha256:"), Version: 1,
 		NetworkContext: "tos:local-three-node", Participants: []commerce.AgreementParticipant{
-			{AgentID: "agent:pilot-buyer", Roles: []string{"buyer"}}, {AgentID: providerID, Roles: []string{"provider"}}},
+			{AgentID: buyerID, Roles: []string{"buyer"}}, {AgentID: providerID, Roles: []string{"provider"}}},
 		TermsContentType: "text/plain", Terms: []byte(spec.Task), ValidFromUnix: uint64(now.Add(-time.Minute).Unix()),
 		ExpiresAtUnix: uint64(now.Add(50 * time.Minute).Unix()), Obligations: []commerce.AgreementObligation{
-			{ObligationID: "pay", Kind: "payment", ObligorAgentID: "agent:pilot-buyer", BeneficiaryAgentID: providerID,
+			{ObligationID: "pay", Kind: "payment", ObligorAgentID: buyerID, BeneficiaryAgentID: providerID,
 				DependsOnObligationIDs: []string{"work"}, SubjectContentType: "text/plain", Subject: []byte("pay after verified delivery"),
 				Amount:    &commerce.AgreementAmount{AssetNamespace: "tos.asset", AssetIdentifier: "native", AmountAtomic: spec.Amount, Unit: "nanotos"},
 				DueAtUnix: uint64(now.Add(30 * time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(45 * time.Minute).Unix()),
 				ConfidentialityPolicy: "participants", CancellationPolicy: "before-due", DisputePolicy: "evidence",
 				SettlementAdapterURI: "tos.payment.direct.v1", SettlementParameters: []byte(spec.Target),
 				AuthorizationPredicateIDs: []string{"buyer-payment"}},
-			{ObligationID: "work", Kind: "service", ObligorAgentID: providerID, BeneficiaryAgentID: "agent:pilot-buyer",
+			{ObligationID: "work", Kind: "service", ObligorAgentID: providerID, BeneficiaryAgentID: buyerID,
 				SubjectContentType: "text/plain", Subject: []byte(spec.Task), ConfidentialityPolicy: "participants",
 				CancellationPolicy: "before-start", DisputePolicy: "evidence", AuthorizationPredicateIDs: []string{"provider-work"}}},
 		AuthorizationPredicates: []commerce.AgreementAuthorizationPredicate{
 			{PredicateID: "buyer-payment", AuthoritySubject: commerce.AgreementAuthoritySubject{SubjectKind: "agent",
-				SubjectNamespace: "tos.agent", SubjectIdentifier: "agent:pilot-buyer"}, ObligationIDs: []string{"pay"},
+				SubjectNamespace: "tos.agent", SubjectIdentifier: buyerID}, ObligationIDs: []string{"pay"},
 				EvidenceProfileURI: commerce.EvidenceProfileAgentSignature, EvidenceProfileVersion: 1,
 				EvidenceProfileDigest: profile, ExpiresAtUnix: uint64(now.Add(50 * time.Minute).Unix())},
 			{PredicateID: "provider-work", AuthoritySubject: commerce.AgreementAuthoritySubject{SubjectKind: "agent",

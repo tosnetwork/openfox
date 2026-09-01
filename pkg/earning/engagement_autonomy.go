@@ -45,7 +45,8 @@ type BoundedEngagementPlanner struct {
 func (planner BoundedEngagementPlanner) PlanEngagement(_ context.Context, record EngagementRecord,
 	inventory InventorySnapshot, fence commerce.WriterFence) (PlannedEngagement, error) {
 	if planner.OwnerID == "" || planner.AgentID == "" || inventory.OwnerID != planner.OwnerID || inventory.AgentID != planner.AgentID ||
-		record.State != EngagementAgreed && record.State != EngagementReserved && record.State != EngagementFundingPending &&
+		record.State != EngagementProposed && record.State != EngagementAuthorizing &&
+			record.State != EngagementAgreed && record.State != EngagementReserved && record.State != EngagementFundingPending &&
 			record.State != EngagementReady && record.State != EngagementExecutionPrepared && record.State != EngagementExecuting &&
 			record.State != EngagementExecutionSucceeded && record.State != EngagementDelivered && record.State != EngagementSettling ||
 		commerce.ValidateAgreementBody(record.Agreement.Body) != nil {
@@ -61,26 +62,29 @@ func (planner BoundedEngagementPlanner) PlanEngagement(_ context.Context, record
 	if err != nil {
 		return PlannedEngagement{}, err
 	}
-	reservation := ExposureReservation{ReservationID: reservationID, AgreementDigest: record.AgreementDigest}
+	paymentExposure, err := localAgreementPaymentExposure(record.Agreement.Body, planner.AgentID)
+	if err != nil || !paymentExposure.MaximumLoss.IsUint64() {
+		return PlannedEngagement{}, errors.New("Agreement payment exposure exceeds local Portfolio range")
+	}
+	reservation := ExposureReservation{ReservationID: reservationID, AgreementDigest: record.AgreementDigest,
+		SpendAtomic: paymentExposure.MaximumLoss.Uint64(), MaximumLossAtomic: paymentExposure.MaximumLoss.Uint64()}
+	if paymentExposure.Asset != nil {
+		asset := *paymentExposure.Asset
+		reservation.Asset = &asset
+	}
 	var executions []PlannedExecution
 	for _, obligation := range record.Agreement.Body.Obligations {
 		if obligation.Amount != nil {
-			if obligation.Amount.AmountAtomic == "" {
+			boundedAmount := maximumAgreementObligationAmount(obligation)
+			if boundedAmount.AmountAtomic == "" {
 				if obligation.ObligorAgentID == planner.AgentID || obligation.BeneficiaryAgentID == planner.AgentID {
 					return PlannedEngagement{}, errors.New("local Portfolio cannot reserve a value without atomic conversion")
 				}
 				continue
 			}
-			amount, parseErr := strconv.ParseUint(obligation.Amount.AmountAtomic, 10, 64)
+			amount, parseErr := strconv.ParseUint(boundedAmount.AmountAtomic, 10, 64)
 			if parseErr != nil {
 				return PlannedEngagement{}, errors.New("Agreement amount exceeds local Portfolio range")
-			}
-			if obligation.ObligorAgentID == planner.AgentID {
-				if reservation.SpendAtomic > math.MaxUint64-amount || reservation.MaximumLossAtomic > math.MaxUint64-amount {
-					return PlannedEngagement{}, errors.New("Agreement payment exposure exceeds local Portfolio range")
-				}
-				reservation.SpendAtomic += amount
-				reservation.MaximumLossAtomic += amount
 			}
 			if obligation.BeneficiaryAgentID == planner.AgentID {
 				if reservation.ReceivableAtomic > math.MaxUint64-amount {
@@ -192,8 +196,9 @@ type ExternalAdapterIdentity struct {
 }
 
 type DirectPaymentRequestBuilder struct {
-	OwnerID, AgentID string
-	ExternalAdapters map[string]ExternalAdapterIdentity
+	OwnerID, AgentID          string
+	NativeNetworkDomainDigest string
+	ExternalAdapters          map[string]ExternalAdapterIdentity
 }
 
 func (builder DirectPaymentRequestBuilder) BuildPaymentRequest(record EngagementRecord, ledger SettlementLedgerRecord) (commerce.AgreementPaymentRequest, error) {
@@ -204,8 +209,14 @@ func (builder DirectPaymentRequestBuilder) BuildPaymentRequest(record Engagement
 					record.Agreement.Body.NetworkContext, external.SystemID, external.AdapterProfileDigest,
 					obligation.SettlementParameters, ledger.Obligation, ledger.State.OutstandingAmount)
 			}
-			return commerce.BuildAgreementPaymentRequestAmount(builder.OwnerID, builder.AgentID, record.Agreement.Body.NetworkContext,
-				obligation.SettlementParameters, ledger.Obligation, ledger.State.OutstandingAmount)
+			if builder.NativeNetworkDomainDigest == "" ||
+				!sameAgreementAmountAsset(ledger.State.OutstandingAmount, ledger.Obligation.Amount) ||
+				ledger.State.OutstandingAmount.AmountAtomic != ledger.Obligation.Amount.AmountAtomic {
+				return commerce.AgreementPaymentRequest{}, errors.New("native payment lacks an owner-pinned domain or requires unsupported partial domain-bound settlement")
+			}
+			return commerce.BuildDomainBoundAgreementPaymentRequest(builder.OwnerID, builder.AgentID,
+				record.Agreement.Body.NetworkContext, builder.NativeNetworkDomainDigest,
+				obligation.SettlementParameters, ledger.Obligation)
 		}
 	}
 	return commerce.AgreementPaymentRequest{}, errors.New("materialized payment has no exact Agreement Adapter parameters")

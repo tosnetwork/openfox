@@ -106,10 +106,11 @@ type RelaySponsorshipEvidenceSnapshot struct {
 	SnapshotIdentity      string `json:"snapshot_identity"`
 }
 
-type RelaySponsorshipSnapshotPaymentSink interface {
+type RelaySponsorshipPaymentSink interface {
 	SubmitRelaySponsorshipPayment(context.Context, commerce.AuthorizedAction, commerce.WriterFence,
 		map[string]commerce.SemanticValue, []byte, commerce.AgreementPaymentRequest,
-		agentrelay.FinalityProfile, RelaySponsorshipEvidenceSnapshot) (commerce.AgreementPaymentEvidence, error)
+		SponsorshipCustodyBinding, agentrelay.FinalityProfile,
+		agentrelay.SponsorshipReleaseProfile, *RelaySponsorshipEvidenceSnapshot) (commerce.AgreementPaymentEvidence, error)
 }
 
 // RelaySponsorshipBroadcastResumer may resume only the already prepared exact
@@ -117,7 +118,7 @@ type RelaySponsorshipSnapshotPaymentSink interface {
 // cross its durable begin-broadcast boundary; a Broadcasting record remains
 // query-only and must never be rebuilt or assigned another sequence.
 type RelaySponsorshipBroadcastResumer interface {
-	ResumeRelaySponsorshipBroadcast(context.Context, commerce.AgreementPaymentRequest,
+	ResumeRelaySponsorshipBroadcast(context.Context, commerce.AgreementPaymentRequest, string,
 		*RelaySponsorshipEvidenceSnapshot) error
 }
 
@@ -267,6 +268,7 @@ type relaySponsorshipPaymentMaterial struct {
 	fields    map[string]commerce.SemanticValue
 	canonical []byte
 	action    commerce.AuthorizedAction
+	purpose   RelaySponsorshipCustodyPurpose
 }
 
 func (processor *AgreementSponsorshipProcessor) PrepareRecovery(ctx context.Context,
@@ -334,7 +336,12 @@ func (processor *AgreementSponsorshipProcessor) EnsureFinalized(ctx context.Cont
 	payment, fields, canonical := material.payment, material.fields, material.canonical
 
 	prior := processor.Engine.Authority.Resolve(action.StableActionID, action.ExactRequestDigest)
-	admitted, err := processor.Engine.Authority.Admit(action, fields, canonical, processor.WriterFence, nil)
+	admissionAuthority, ok := processor.Engine.Authority.(RelaySponsorshipAdmissionAuthority)
+	if !ok {
+		return agentrelay.SponsorshipResolution{}, errors.New("gas sponsorship has no atomic owner exposure admission")
+	}
+	admitted, custodyBinding, err := admissionAuthority.AdmitRelaySponsorshipPayment(action, fields, canonical,
+		processor.WriterFence, payment, material.purpose)
 	if err != nil {
 		return agentrelay.SponsorshipResolution{}, err
 	}
@@ -346,7 +353,8 @@ func (processor *AgreementSponsorshipProcessor) EnsureFinalized(ctx context.Cont
 		var resumeErr error
 		if prior.State == commerce.ActionSubmitted {
 			if resumer, ok := processor.Sink.(RelaySponsorshipBroadcastResumer); ok {
-				resumeErr = resumer.ResumeRelaySponsorshipBroadcast(ctx, payment, token.EvidenceSnapshot)
+				resumeErr = resumer.ResumeRelaySponsorshipBroadcast(ctx, payment, action.ExactRequestDigest,
+					token.EvidenceSnapshot)
 			} else {
 				resumeErr = errors.New("submitted sponsorship has no exact custody broadcast resumer")
 			}
@@ -392,18 +400,20 @@ func (processor *AgreementSponsorshipProcessor) EnsureFinalized(ctx context.Cont
 	}
 	var evidence commerce.AgreementPaymentEvidence
 	var submitErr error
-	if token.EvidenceSnapshot != nil {
-		terminalProfile, profileErr := relaySponsorshipTerminalProfile(execution)
-		if profileErr != nil {
-			return agentrelay.SponsorshipResolution{}, profileErr
-		}
-		if sink, ok := processor.Sink.(RelaySponsorshipSnapshotPaymentSink); ok {
-			evidence, submitErr = sink.SubmitRelaySponsorshipPayment(ctx, action, processor.WriterFence,
-				fields, canonical, payment, terminalProfile, *token.EvidenceSnapshot)
-		} else {
-			submitErr = errors.New("observed sponsorship payment sink cannot use its frozen corroboration snapshot")
-		}
+	terminalProfile, profileErr := relaySponsorshipTerminalProfile(execution)
+	if profileErr != nil {
+		return agentrelay.SponsorshipResolution{}, profileErr
+	}
+	if sink, ok := processor.Sink.(RelaySponsorshipPaymentSink); ok {
+		evidence, submitErr = sink.SubmitRelaySponsorshipPayment(ctx, action, processor.WriterFence,
+			fields, canonical, payment, custodyBinding, terminalProfile,
+			execution.QuoteRequest.Body.SelectedSponsorshipReleaseProfile(), token.EvidenceSnapshot)
+	} else if token.EvidenceSnapshot != nil {
+		submitErr = errors.New("observed sponsorship payment sink cannot use its frozen corroboration snapshot")
 	} else {
+		// Compatibility for non-custodial test/adapter sinks. A production
+		// authority-backed custody sink implements RelaySponsorshipPaymentSink;
+		// its ordinary SubmitPayment path can never activate the exception.
 		evidence, submitErr = processor.Sink.SubmitPayment(ctx, action, processor.WriterFence, fields, canonical, payment)
 	}
 	if processor.EvidenceResolver != nil {
@@ -714,10 +724,11 @@ func (processor *AgreementSponsorshipProcessor) acceptRecoveredTypedSponsorshipE
 		}
 		return nil
 	}
-	_, err := processor.Engine.Authority.Transition(token.PaymentActionStableID,
-		token.PaymentActionExactRequestDigest, commerce.ActionAccepted,
-		resolution.TransferReference, resolution.EvidenceRefs)
-	return err
+	// The evidence is verified for the caller, but EconomicAuthority does not
+	// yet own the external finality verifier. Keep the action and its exposure
+	// hold non-terminal instead of turning caller-provided references into a
+	// capacity-release oracle.
+	return nil
 }
 
 func (processor *AgreementSponsorshipProcessor) resolveTypedEvidence(ctx context.Context,
@@ -742,12 +753,8 @@ func (processor *AgreementSponsorshipProcessor) resolveTypedEvidence(ctx context
 			len(resolution.EvidenceRefs) == 0 {
 			return agentrelay.SponsorshipResolution{}, errors.New("typed gas sponsorship finality evidence is incomplete")
 		}
-		if admitted.State != commerce.ActionAccepted && admitted.State != commerce.ActionTerminal {
-			if _, err := processor.Engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-				commerce.ActionAccepted, resolution.TransferReference, resolution.EvidenceRefs); err != nil {
-				return agentrelay.SponsorshipResolution{}, err
-			}
-		}
+		_ = action
+		_ = admitted
 		return resolution, nil
 	default:
 		return agentrelay.SponsorshipResolution{}, errors.New("typed gas sponsorship resolution status is unknown")
@@ -843,14 +850,54 @@ func (processor *AgreementSponsorshipProcessor) prepareSponsorshipPayment(ctx co
 	if err != nil {
 		return relaySponsorshipPaymentMaterial{}, err
 	}
+	paymentDigest, err := commerce.AgreementPaymentRequestDigest(payment)
+	if err != nil {
+		return relaySponsorshipPaymentMaterial{}, err
+	}
+	executionDigest, err := agentrelay.RelayExecutionRequestDigest(execution)
+	if err != nil {
+		return relaySponsorshipPaymentMaterial{}, err
+	}
+	quoteDigest, err := agentrelay.ProviderRelayQuoteDigest(execution.ProviderQuote.Body)
+	if err != nil {
+		return relaySponsorshipPaymentMaterial{}, err
+	}
+	terminalProfile, err := relaySponsorshipTerminalProfile(execution)
+	if err != nil {
+		return relaySponsorshipPaymentMaterial{}, err
+	}
+	terminalProfileCBOR, err := codec.Marshal(terminalProfile)
+	if err != nil {
+		return relaySponsorshipPaymentMaterial{}, err
+	}
+	releaseProfile := execution.QuoteRequest.Body.SelectedSponsorshipReleaseProfile()
+	snapshotID := zeroSHA256Digest()
+	if snapshot != nil {
+		snapshotID = snapshot.SnapshotIdentity
+	}
+	purpose := RelaySponsorshipCustodyPurpose{SchemaVersion: 1, PaymentRequestDigest: paymentDigest,
+		RelayExecutionDigest: executionDigest, QuoteRequest: execution.QuoteRequest.Body,
+		AgreementBody: agreement.Body, AgreementBodyDigest: agreementDigest,
+		AgreementObligationID: obligation.ObligationID, ProviderQuoteDigest: quoteDigest,
+		SponsorshipTerminalProfileDigest: terminalProfile.ProfileDigest,
+		FinalityProfileCBORDigest:        sha256Digest(terminalProfileCBOR), ReleaseProfileDigest: releaseProfile.ProfileDigest,
+		CorroborationSnapshotID: snapshotID}
+	purposeDigest, err := relaySponsorshipCustodyPurposeDigest(purpose)
+	if err != nil {
+		return relaySponsorshipPaymentMaterial{}, err
+	}
 	action, err := commerce.BuildAuthorizedAction(processor.Engine.OwnerID, processor.Engine.AgentID, commerce.PaymentActionKind(payment),
-		fields, canonical, processor.WriterFence, processor.PolicyRevision, processor.Engine.MandateDigest, "", "pending",
+		fields, canonical, processor.WriterFence, processor.PolicyRevision, processor.Engine.MandateDigest, purposeDigest, "pending",
 		minUint64(payment.ExpiresAtUnix, processor.WriterFence.Body.ExpiresAtUnix))
 	if err != nil || action.StableActionID != payment.StableActionID {
 		return relaySponsorshipPaymentMaterial{}, errors.New("gas sponsorship payment identity mismatch")
 	}
 	return relaySponsorshipPaymentMaterial{payment: payment, fields: fields,
-		canonical: append([]byte(nil), canonical...), action: action}, nil
+		canonical: append([]byte(nil), canonical...), action: action, purpose: purpose}, nil
+}
+
+func relaySponsorshipCustodyPurposeDigest(purpose RelaySponsorshipCustodyPurpose) (string, error) {
+	return codec.Digest("tos.openfox.relay-sponsorship-custody-purpose.v1", purpose)
 }
 
 func (processor *AgreementSponsorshipProcessor) recoveryNetworkMatches(execution agentrelay.RelayExecutionRequest,
@@ -965,12 +1012,11 @@ func (processor *AgreementSponsorshipProcessor) acceptEvidence(ctx context.Conte
 	if err != nil {
 		return agentrelay.SponsorshipResolution{}, err
 	}
-	if resolution.State != commerce.ActionAccepted && resolution.State != commerce.ActionTerminal {
-		if _, err := processor.Engine.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-			commerce.ActionAccepted, evidence.ExactTransferReference, []string{evidenceDigest}); err != nil {
-			return agentrelay.SponsorshipResolution{}, err
-		}
-	}
+	// Preserve the live hold. A generic Action transition cannot authenticate
+	// the verifier-specific evidence used above and therefore cannot safely
+	// release an offline custody capability.
+	_ = action
+	_ = resolution
 	return agentrelay.SponsorshipResolution{Status: agentrelay.SponsorshipResolutionFinalized,
 		TransferReference: evidence.ExactTransferReference, EvidenceRefs: []string{evidenceDigest}}, nil
 }

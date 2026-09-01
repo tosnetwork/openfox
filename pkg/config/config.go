@@ -1131,6 +1131,10 @@ type EarningTOSPaymentSettings struct {
 	MaximumTransactions uint32                           `json:"maximum_transactions,omitempty"`
 	ResolveAttempts     uint32                           `json:"resolve_attempts,omitempty"`
 	ResolveIntervalMS   uint32                           `json:"resolve_interval_ms,omitempty"`
+	// CustodyFinalityGraceSeconds is the owner's explicit worst-case
+	// inclusion/finality/reorg window used only after every signed Agreement
+	// payment horizon has elapsed. Zero keeps custody holds indefinitely.
+	CustodyFinalityGraceSeconds uint64 `json:"custody_finality_grace_seconds,omitempty"`
 }
 
 // EarningTOSEscrowSettings pins every network, code, custody, budget, and

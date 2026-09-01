@@ -33,7 +33,7 @@ type relayResumableSponsorshipPaymentSink struct {
 }
 
 func (sink *relayResumableSponsorshipPaymentSink) ResumeRelaySponsorshipBroadcast(_ context.Context,
-	_ commerce.AgreementPaymentRequest, snapshot *RelaySponsorshipEvidenceSnapshot) error {
+	_ commerce.AgreementPaymentRequest, _ string, snapshot *RelaySponsorshipEvidenceSnapshot) error {
 	sink.resumes++
 	sink.sawSnapshot = snapshot != nil
 	return nil
@@ -213,7 +213,7 @@ func TestAgreementSponsorshipRejectsStructurallyValidUnverifiedEvidenceBeforeCli
 	attempt := fixture.attempt(t)
 	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, PortfolioLimits{})
+		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestAgreementSponsorshipProcessorPersistsAndQueriesExactPaymentBeforeRetry(
 	execution, agreement, obligation := relaySponsorshipFixture(t, fixture)
 	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, PortfolioLimits{})
+		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestAgreementSponsorshipAdmittedPaymentDrainsUnderSuccessorWriter(t *testin
 	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	directory := privateTempDir(t)
 	authorityA, err := OpenPersonalAuthority(directory, "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, PortfolioLimits{})
+		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,8 @@ func TestAgreementSponsorshipAdmittedPaymentDrainsUnderSuccessorWriter(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	admitted, err := authorityA.Admit(actionA, materialA.fields, materialA.canonical, fenceA, nil)
+	admitted, _, err := authorityA.AdmitRelaySponsorshipPayment(actionA, materialA.fields,
+		materialA.canonical, fenceA, materialA.payment, materialA.purpose)
 	if err != nil || admitted.State != commerce.ActionPrepared {
 		t.Fatalf("writer A could not establish the exact payment admission: admitted=%+v err=%v", admitted, err)
 	}
@@ -443,7 +444,7 @@ func TestAgreementSponsorshipAdmittedPaymentDrainsUnderSuccessorWriter(t *testin
 	}
 
 	authorityB, err := OpenPersonalAuthority(directory, "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, PortfolioLimits{})
+		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +509,7 @@ func TestAgreementSponsorshipSubmittedAndUnresolvedNeverCallsCustodyAgain(t *tes
 	execution, agreement, obligation := relaySponsorshipFixture(t, fixture)
 	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, PortfolioLimits{})
+		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +542,8 @@ func TestAgreementSponsorshipSubmittedAndUnresolvedNeverCallsCustodyAgain(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	admitted, err := authority.Admit(action, material.fields, material.canonical, fence, nil)
+	admitted, _, err := authority.AdmitRelaySponsorshipPayment(action, material.fields,
+		material.canonical, fence, material.payment, material.purpose)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +564,7 @@ func TestAgreementSponsorshipResumesExactValidatorFinalityBroadcastWithoutSnapsh
 	execution, agreement, obligation := relaySponsorshipFixture(t, fixture)
 	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, PortfolioLimits{})
+		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +597,8 @@ func TestAgreementSponsorshipResumesExactValidatorFinalityBroadcastWithoutSnapsh
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = authority.Admit(action, material.fields, material.canonical, fence, nil); err != nil {
+	if _, _, err = authority.AdmitRelaySponsorshipPayment(action, material.fields,
+		material.canonical, fence, material.payment, material.purpose); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = authority.Transition(action.StableActionID, action.ExactRequestDigest,
@@ -663,3 +666,22 @@ func relaySponsorshipFixtureForMode(t *testing.T, fixture *relayTestFixture, mod
 
 var _ AgreementPaymentSink = (*relaySponsorshipPaymentSink)(nil)
 var _ commerce.PaymentEvidenceVerifier = (*relaySponsorshipPaymentSink)(nil)
+
+func relaySponsorshipTestLimits(t *testing.T, fixture *relayTestFixture, sourceAccounts ...string) PortfolioLimits {
+	t.Helper()
+	domainDigest, err := agentrelay.NetworkDomainDigest(fixture.network)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := commerce.AssetIdentityV1{AssetNamespace: fixture.asset.AssetNamespace,
+		AssetIdentifier: fixture.asset.AssetIdentifier, Unit: fixture.asset.Unit}
+	sourceAccount := "0:sponsor"
+	if len(sourceAccounts) == 1 {
+		sourceAccount = sourceAccounts[0]
+	} else if len(sourceAccounts) > 1 {
+		t.Fatal("relay sponsorship test has ambiguous custody source account")
+	}
+	return PortfolioLimits{SpendAtomic: 1_000_000_000, MaximumLossAtomic: 1_000_000_000,
+		CustodyNetworkDomainDigest: domainDigest, CustodyNativeAsset: &asset,
+		CustodySourceAccount: sourceAccount}
+}

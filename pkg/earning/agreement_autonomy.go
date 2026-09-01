@@ -20,6 +20,13 @@ type AgreementAdmissionPolicy interface {
 	EvaluateAgreement(context.Context, EngagementRecord, InventorySnapshot, time.Time) (AgreementAdmissionDecision, error)
 }
 
+// PortfolioSnapshotSource exposes the typed, owner-authoritative aggregate
+// exposure state used by Agreement admission. Keeping this narrower than
+// EconomicAuthority also lets policy evaluation remain read-only.
+type PortfolioSnapshotSource interface {
+	Snapshot() (uint64, PortfolioLimits, []ExposureReservation)
+}
+
 // BoundedAgreementAdmissionPolicy is the deterministic boundary after any AI
 // negotiation proposal. It never infers unknown prices, extensions, evidence
 // profiles, or settlement support. A model may recommend an Agreement, but
@@ -27,9 +34,16 @@ type AgreementAdmissionPolicy interface {
 type BoundedAgreementAdmissionPolicy struct {
 	LocalAgentID                 string
 	MaximumOutgoingPaymentAtomic string
-	AllowedRequiredExtensions    []string
-	AllowedCounterparties        []string
-	AllowedEvidenceProfiles      []string
+	// MaximumLossAtomic is the hard worst-case loss ceiling for one asset
+	// bucket. When Portfolio is set, admission also includes every live
+	// reservation in that same bucket and rejects stale Inventory revisions.
+	// Empty disables only this explicit ceiling for legacy callers; a supplied
+	// Portfolio remains authoritative.
+	MaximumLossAtomic         string
+	Portfolio                 PortfolioSnapshotSource
+	AllowedRequiredExtensions []string
+	AllowedCounterparties     []string
+	AllowedEvidenceProfiles   []string
 }
 
 func (policy BoundedAgreementAdmissionPolicy) EvaluateAgreement(_ context.Context, record EngagementRecord,
@@ -42,14 +56,22 @@ func (policy BoundedAgreementAdmissionPolicy) EvaluateAgreement(_ context.Contex
 	if !ok || maximum.Sign() < 0 {
 		return AgreementAdmissionDecision{}, errors.New("Agreement outgoing-payment policy is invalid")
 	}
-	participant, counterpartyAllowed := false, len(policy.AllowedCounterparties) == 0
+	var maximumLoss *big.Int
+	if policy.MaximumLossAtomic != "" {
+		maximumLoss, ok = new(big.Int).SetString(policy.MaximumLossAtomic, 10)
+		if !ok || maximumLoss.Sign() < 0 {
+			return AgreementAdmissionDecision{}, errors.New("Agreement maximum-loss policy is invalid")
+		}
+	}
+	participant, counterpartyAllowed := false, true
 	for _, candidate := range record.Agreement.Body.Participants {
 		if candidate.AgentID == policy.LocalAgentID {
 			participant = true
 			continue
 		}
-		if containsString(policy.AllowedCounterparties, candidate.AgentID) {
-			counterpartyAllowed = true
+		if len(policy.AllowedCounterparties) != 0 &&
+			!containsString(policy.AllowedCounterparties, candidate.AgentID) {
+			counterpartyAllowed = false
 		}
 	}
 	if !participant || !counterpartyAllowed {
@@ -89,16 +111,114 @@ func (policy BoundedAgreementAdmissionPolicy) EvaluateAgreement(_ context.Contex
 			return AgreementAdmissionDecision{Reason: "settlement Adapter is unavailable"}, nil
 		}
 		if obligation.ObligorAgentID == policy.LocalAgentID {
-			if obligation.Amount.AmountAtomic == "" {
+			if len(policy.AllowedCounterparties) != 0 &&
+				!containsString(policy.AllowedCounterparties, obligation.BeneficiaryAgentID) {
+				return AgreementAdmissionDecision{Reason: "outgoing payment beneficiary is outside owner policy"}, nil
+			}
+			boundedAmount := maximumAgreementObligationAmount(obligation)
+			if boundedAmount.AmountAtomic == "" {
 				return AgreementAdmissionDecision{Reason: "outgoing decimal amount has no owner-pinned atomic conversion"}, nil
 			}
-			amount, ok := new(big.Int).SetString(obligation.Amount.AmountAtomic, 10)
+			amount, ok := new(big.Int).SetString(boundedAmount.AmountAtomic, 10)
 			if !ok || amount.Sign() < 0 || amount.Cmp(maximum) > 0 {
 				return AgreementAdmissionDecision{Reason: "outgoing payment exceeds owner policy"}, nil
 			}
 		}
 	}
+	exposure, exposureErr := localAgreementPaymentExposure(record.Agreement.Body, policy.LocalAgentID)
+	if exposureErr != nil {
+		return AgreementAdmissionDecision{Reason: exposureErr.Error()}, nil
+	}
+	if maximumLoss != nil && exposure.MaximumLoss.Cmp(maximumLoss) > 0 {
+		return AgreementAdmissionDecision{Reason: "Agreement maximum loss exceeds owner policy"}, nil
+	}
+	if policy.Portfolio != nil {
+		revision, limits, reservations := policy.Portfolio.Snapshot()
+		if revision != inventory.PortfolioRevision {
+			return AgreementAdmissionDecision{}, errors.New("Agreement admission Inventory has a stale Portfolio revision")
+		}
+		effectiveLimit := new(big.Int).SetUint64(limits.MaximumLossAtomic)
+		if maximumLoss != nil {
+			if !maximumLoss.IsUint64() || limits.MaximumLossAtomic > maximumLoss.Uint64() {
+				return AgreementAdmissionDecision{}, errors.New("Portfolio maximum-loss authority exceeds owner policy")
+			}
+			if maximumLoss.Cmp(effectiveLimit) < 0 {
+				effectiveLimit.Set(maximumLoss)
+			}
+		}
+		alreadyHeld := false
+		if record.ReservationID != "" {
+			if !hasExactLiveAgreementPaymentReservation(record, policy.LocalAgentID, reservations) {
+				return AgreementAdmissionDecision{}, errors.New("Agreement admission has an invalid pre-sign maximum-loss hold")
+			}
+			alreadyHeld = true
+		}
+		used := new(big.Int)
+		for _, reservation := range reservations {
+			if reservation.Released || !sameExposureAsset(reservation.Asset, exposure.Asset) {
+				continue
+			}
+			used.Add(used, new(big.Int).SetUint64(reservation.MaximumLossAtomic))
+		}
+		if !alreadyHeld {
+			used.Add(used, exposure.MaximumLoss)
+		}
+		if used.Cmp(effectiveLimit) > 0 {
+			return AgreementAdmissionDecision{Reason: "Agreement maximum loss exceeds aggregate Portfolio limit"}, nil
+		}
+	}
 	return AgreementAdmissionDecision{Accept: true, Reason: "Agreement satisfies deterministic owner policy"}, nil
+}
+
+type agreementPaymentExposure struct {
+	Asset       *commerce.AssetIdentityV1
+	MaximumLoss *big.Int
+}
+
+// localAgreementPaymentExposure computes the exact bounded amount that the
+// local Agent can owe under the Agreement. Periodic/installment obligations
+// use their body-bound maximum aggregate, never merely one installment.
+// Multiple outgoing assets are rejected because one generic Portfolio
+// reservation cannot safely add unlike atomic units.
+func localAgreementPaymentExposure(body commerce.AgentAgreementBody, localAgentID string) (agreementPaymentExposure, error) {
+	exposure := agreementPaymentExposure{MaximumLoss: new(big.Int)}
+	for _, obligation := range body.Obligations {
+		if obligation.Amount == nil || obligation.ObligorAgentID != localAgentID {
+			continue
+		}
+		amount := maximumAgreementObligationAmount(obligation)
+		if amount.AmountAtomic == "" {
+			return agreementPaymentExposure{}, errors.New("outgoing decimal amount has no owner-pinned atomic conversion")
+		}
+		atomic, ok := new(big.Int).SetString(amount.AmountAtomic, 10)
+		if !ok || atomic.Sign() < 0 {
+			return agreementPaymentExposure{}, errors.New("outgoing payment has an invalid atomic amount")
+		}
+		asset := commerce.AssetIdentityV1{AssetNamespace: amount.AssetNamespace,
+			AssetIdentifier: amount.AssetIdentifier, Unit: amount.Unit}
+		if exposure.Asset == nil {
+			copy := asset
+			exposure.Asset = &copy
+		} else if *exposure.Asset != asset {
+			return agreementPaymentExposure{}, errors.New("Agreement has multiple incomparable outgoing assets")
+		}
+		exposure.MaximumLoss.Add(exposure.MaximumLoss, atomic)
+	}
+	return exposure, nil
+}
+
+func maximumAgreementObligationAmount(obligation commerce.AgreementObligation) commerce.AgreementAmount {
+	if obligation.BillingTerms != nil {
+		return obligation.BillingTerms.MaximumAggregateAmount
+	}
+	return *obligation.Amount
+}
+
+func sameExposureAsset(left, right *commerce.AssetIdentityV1) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 type WriterFenceProvider func(context.Context) (commerce.WriterFence, error)
@@ -108,10 +228,15 @@ type AgreementAutonomy struct {
 	Engine      *Engine
 	Inventory   InventorySource
 	Policy      AgreementAdmissionPolicy
-	IdentityKey ed25519.PrivateKey
-	Verifier    commerce.AgreementEvidenceVerifier
-	Fence       WriterFenceProvider
-	Now         func() time.Time
+	// Planner and Prerequisite are required only when this Agent can incur an
+	// outgoing Agreement loss. They materialize the complete Portfolio hold at
+	// the authority linearization point before any local signature is created.
+	Planner      EngagementPlanner
+	Prerequisite SettlementPrerequisiteChecker
+	IdentityKey  ed25519.PrivateKey
+	Verifier     commerce.AgreementEvidenceVerifier
+	Fence        WriterFenceProvider
+	Now          func() time.Time
 }
 
 // Process drains at most max typed Agreement events and then evaluates all
@@ -144,27 +269,32 @@ func (service AgreementAutonomy) Process(ctx context.Context, max uint32) (uint3
 	}
 	records := service.Engine.Authority.EngagementSnapshot()
 	for _, record := range records {
-		if record.State != EngagementProposed && record.State != EngagementAuthorizing {
+		if record.State != EngagementProposed && record.State != EngagementAuthorizing &&
+			record.State != EngagementAgreed && record.State != EngagementReserved {
 			continue
 		}
 		if !uniqueUnforkedAgreementLeaf(record, records) {
 			continue
 		}
-		if hasAgentEvidence(record, service.Engine.AgentID) {
-			continue
-		}
+		retainedLocalEvidence := hasAgentEvidence(record, service.Engine.AgentID)
 		if !hasLocalAgentSignaturePredicate(record, service.Engine.AgentID) {
 			// Non-generic body-bound profiles are driven by their installed
 			// Adapter (for Paid Demand: reserved Provider Offer or wallet accept),
 			// never substituted with an Agent chat signature.
 			continue
 		}
-		decision, evaluateErr := service.Policy.EvaluateAgreement(ctx, record, inventory, now)
-		if evaluateErr != nil {
-			return processed, evaluateErr
+		if !retainedLocalEvidence {
+			decision, evaluateErr := service.Policy.EvaluateAgreement(ctx, record, inventory, now)
+			if evaluateErr != nil {
+				return processed, evaluateErr
+			}
+			if !decision.Accept {
+				continue
+			}
 		}
-		if !decision.Accept {
-			continue
+		exposure, exposureErr := localAgreementPaymentExposure(record.Agreement.Body, service.Engine.AgentID)
+		if exposureErr != nil {
+			return processed, exposureErr
 		}
 		recipient := agreementCounterparty(record, service.Engine.AgentID)
 		if recipient == "" {
@@ -174,12 +304,57 @@ func (service AgreementAutonomy) Process(ctx context.Context, max uint32) (uint3
 		if fenceErr != nil {
 			return processed, fenceErr
 		}
+		if exposure.MaximumLoss.Sign() > 0 {
+			if record.ReservationID == "" {
+				if service.Planner == nil || service.Prerequisite == nil {
+					return processed, errors.New("buyer Agreement has no pre-sign Portfolio reservation path")
+				}
+				planned, planErr := service.Planner.PlanEngagement(ctx, record, inventory, fence)
+				if planErr != nil {
+					return processed, planErr
+				}
+				_, held, reserveErr := service.Engine.ReserveAgreement(ctx, record.AgreementDigest,
+					planned.Reservation, service.Prerequisite, inventory.PolicyRevision, fence)
+				if reserveErr != nil {
+					return processed, reserveErr
+				}
+				record = held
+			} else {
+				_, _, reservations := service.Engine.Authority.Snapshot()
+				if !hasExactLiveAgreementPaymentReservation(record, service.Engine.AgentID, reservations) {
+					return processed, errors.New("buyer Agreement has no exact live pre-sign maximum-loss hold")
+				}
+			}
+		}
 		if _, _, authorizeErr := service.Engine.AuthorizeAgreement(ctx, record.AgreementDigest, recipient,
 			service.IdentityKey, service.Verifier, inventory.PolicyRevision, fence); authorizeErr != nil {
 			return processed, authorizeErr
 		}
 	}
 	return processed, nil
+}
+
+// hasExactLiveAgreementPaymentReservation recognizes the durable retry case:
+// the authority committed the hold and Engagement linkage, but the process
+// stopped before it could persist or send local Agreement evidence. The hold
+// must cover the exact same-asset maximum loss; unrelated, undersized, or
+// released reservations never turn a retry into permission to sign.
+func hasExactLiveAgreementPaymentReservation(record EngagementRecord, localAgentID string,
+	reservations []ExposureReservation) bool {
+	exposure, err := localAgreementPaymentExposure(record.Agreement.Body, localAgentID)
+	if err != nil || exposure.Asset == nil || exposure.MaximumLoss.Sign() <= 0 ||
+		!exposure.MaximumLoss.IsUint64() || record.ReservationID == "" {
+		return false
+	}
+	wanted := exposure.MaximumLoss.Uint64()
+	for _, reservation := range reservations {
+		if reservation.ReservationID == record.ReservationID {
+			return !reservation.Released && reservation.AgreementDigest == record.AgreementDigest &&
+				sameExposureAsset(reservation.Asset, exposure.Asset) &&
+				reservation.MaximumLossAtomic == wanted && reservation.SpendAtomic >= wanted
+		}
+	}
+	return false
 }
 
 // uniqueUnforkedAgreementLeaf permits automatic authorization only when one

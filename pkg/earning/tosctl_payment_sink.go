@@ -121,10 +121,6 @@ func (sink *TOSCTLPaymentSink) custodyNetworkDomainAt(ctx context.Context,
 		return commerce.CustodyNetworkDomain{}, errors.New("TOS custody payment network domain is invalid")
 	}
 	switch request.SchemaVersion {
-	case 1:
-		if request.NetworkDomainDigest != "" {
-			return commerce.CustodyNetworkDomain{}, errors.New("legacy direct payment carries an unexpected network-domain digest")
-		}
 	case 3:
 		if request.NetworkDomainDigest != digest {
 			return commerce.CustodyNetworkDomain{}, errors.New("relay-eligible payment conflicts with the pinned network domain")
@@ -133,7 +129,7 @@ func (sink *TOSCTLPaymentSink) custodyNetworkDomainAt(ctx context.Context,
 			return commerce.CustodyNetworkDomain{}, err
 		}
 	default:
-		return commerce.CustodyNetworkDomain{}, errors.New("TOS custody does not accept this payment request profile")
+		return commerce.CustodyNetworkDomain{}, errors.New("native TOS custody requires a full owner-pinned network domain")
 	}
 	return commerce.CustodyNetworkDomain{NetworkID: domain.NetworkID, GlobalID: domain.GlobalID,
 		ZeroStateRootHash: domain.ZeroStateRootHash, ZeroStateFileHash: domain.ZeroStateFileHash,
@@ -160,7 +156,8 @@ type tosctlPaymentPrepared struct {
 }
 
 func validateTOSCTLPreparedPayment(prepared tosctlPaymentPrepared, request commerce.AgreementPaymentRequest,
-	network commerce.CustodyNetworkDomain, sourceAccount string, amount uint64, sponsored bool) error {
+	network commerce.CustodyNetworkDomain, sourceAccount string, amount, authorizedValidUntil uint64,
+	sponsored bool) error {
 	boc, bocErr := base64.StdEncoding.Strict().DecodeString(prepared.ExactSignedBOC)
 	bocDigest := sha256.Sum256(boc)
 	if prepared.Schema != "tosctl.agent-account.agreement-payment-prepared.v1" ||
@@ -172,7 +169,8 @@ func validateTOSCTLPreparedPayment(prepared tosctlPaymentPrepared, request comme
 		prepared.NetworkDomain.ZeroStateRootHash != network.ZeroStateRootHash ||
 		prepared.NetworkDomain.ZeroStateFileHash != network.ZeroStateFileHash ||
 		prepared.NetworkDomain.WorkchainID != network.WorkchainID ||
-		request.ExpiresAtUnix > uint64(^uint32(0)) || prepared.ValidUntil != uint32(request.ExpiresAtUnix) ||
+		authorizedValidUntil == 0 || authorizedValidUntil > request.ExpiresAtUnix ||
+		authorizedValidUntil > uint64(^uint32(0)) || prepared.ValidUntil != uint32(authorizedValidUntil) ||
 		prepared.ExactSignedBOC == "" || bocErr != nil || len(boc) == 0 ||
 		prepared.ExactSignedBOCDigest != "sha256:"+hex.EncodeToString(bocDigest[:]) {
 		return fmt.Errorf("tosctl returned an unrelated prepared payment: schema=%q action=%q agreement=%q obligation=%q account=%q target=%q amount=%d digest=%q",
@@ -333,6 +331,15 @@ func (sink *TOSCTLPaymentSink) SubmitPayment(ctx context.Context, action commerc
 	return sink.submitPayment(ctx, action, fence, fields, canonicalRequest, request, sink.ConfigPath, nil, nil)
 }
 
+// ResumePaymentBroadcast asks custody to submit only the signed BOC already
+// journaled under this stable action. It intentionally shares the same exact
+// broadcast-by-ID primitive as sponsorship recovery; no authorization,
+// sequence allocation, prepare, or re-signing occurs here.
+func (sink *TOSCTLPaymentSink) ResumePaymentBroadcast(ctx context.Context,
+	request commerce.AgreementPaymentRequest, exactRequestDigest string) error {
+	return sink.ResumeRelaySponsorshipBroadcast(ctx, request, exactRequestDigest, nil)
+}
+
 type tosctlFrozenCustodyIdentity struct {
 	wallet        string
 	sourceAccount string
@@ -344,35 +351,50 @@ func (sink *TOSCTLPaymentSink) SubmitRelaySponsorshipPayment(ctx context.Context
 	action commerce.AuthorizedAction, fence commerce.WriterFence,
 	fields map[string]commerce.SemanticValue, canonicalRequest []byte,
 	request commerce.AgreementPaymentRequest,
+	binding SponsorshipCustodyBinding,
 	finality agentrelay.FinalityProfile,
-	frozen RelaySponsorshipEvidenceSnapshot) (commerce.AgreementPaymentEvidence, error) {
-	profile := agentrelay.SponsorshipReleaseProfile{EvidenceClass: agentrelay.SponsorshipReleaseEvidenceClass(frozen.EvidenceClass),
-		ProfileURI: frozen.ProfileURI, ProfileDigest: frozen.ProfileDigest}
-	if err := sink.ValidateRelaySponsorshipEvidenceSnapshot(profile, frozen); err != nil {
-		return commerce.AgreementPaymentEvidence{}, err
-	}
-	configPath, err := sink.relaySponsorshipSnapshotPrimaryConfig(frozen)
-	if err != nil {
-		return commerce.AgreementPaymentEvidence{}, err
+	releaseProfile agentrelay.SponsorshipReleaseProfile,
+	frozen *RelaySponsorshipEvidenceSnapshot) (commerce.AgreementPaymentEvidence, error) {
+	configPath := sink.ConfigPath
+	var identity *tosctlFrozenCustodyIdentity
+	if frozen != nil {
+		if err := sink.ValidateRelaySponsorshipEvidenceSnapshot(releaseProfile, *frozen); err != nil {
+			return commerce.AgreementPaymentEvidence{}, err
+		}
+		var err error
+		configPath, err = sink.relaySponsorshipSnapshotPrimaryConfig(*frozen)
+		if err != nil {
+			return commerce.AgreementPaymentEvidence{}, err
+		}
+		frozenNetwork, err := sink.relaySponsorshipSnapshotNetwork(*frozen)
+		if err != nil {
+			return commerce.AgreementPaymentEvidence{}, err
+		}
+		identity = &tosctlFrozenCustodyIdentity{wallet: frozen.CustodyWallet,
+			sourceAccount: frozen.ProviderSourceAccount, network: frozenNetwork,
+			feeReserve: frozen.FeeReserveNanoTOS}
 	}
 	finalityCBOR, err := codec.Marshal(finality)
-	if err != nil || !sink.SupportsRelaySponsorshipTerminalFinalityProfile(finality, &frozen) {
+	if err != nil || !sink.SupportsRelaySponsorshipTerminalFinalityProfile(finality, frozen) {
 		return commerce.AgreementPaymentEvidence{}, errors.New("selected sponsorship finality profile is unsupported")
 	}
-	binding := &SponsorshipCustodyBinding{FinalityProfileCBORDigest: sha256Digest(finalityCBOR),
-		ReleaseProfileDigest: frozen.ProfileDigest, CorroborationSnapshotID: frozen.SnapshotIdentity}
-	frozenNetwork, err := sink.relaySponsorshipSnapshotNetwork(frozen)
-	if err != nil {
-		return commerce.AgreementPaymentEvidence{}, err
+	paymentDigest, err := commerce.AgreementPaymentRequestDigest(request)
+	snapshotID := zeroSHA256Digest()
+	if frozen != nil {
+		snapshotID = frozen.SnapshotIdentity
 	}
-	identity := &tosctlFrozenCustodyIdentity{wallet: frozen.CustodyWallet,
-		sourceAccount: frozen.ProviderSourceAccount, network: frozenNetwork,
-		feeReserve: frozen.FeeReserveNanoTOS}
-	return sink.submitPayment(ctx, action, fence, fields, canonicalRequest, request, configPath, binding, identity)
+	if err != nil || binding.PaymentRequestDigest != paymentDigest ||
+		binding.FinalityProfileCBORDigest != sha256Digest(finalityCBOR) ||
+		binding.ReleaseProfileDigest != releaseProfile.ProfileDigest ||
+		binding.CorroborationSnapshotID != snapshotID {
+		return commerce.AgreementPaymentEvidence{}, errors.New("relay sponsorship custody purpose changes its exact payment or evidence profile")
+	}
+	return sink.submitPayment(ctx, action, fence, fields, canonicalRequest, request, configPath, &binding, identity)
 }
 
 func (sink *TOSCTLPaymentSink) ResumeRelaySponsorshipBroadcast(ctx context.Context,
-	request commerce.AgreementPaymentRequest, frozen *RelaySponsorshipEvidenceSnapshot) error {
+	request commerce.AgreementPaymentRequest, exactRequestDigest string,
+	frozen *RelaySponsorshipEvidenceSnapshot) error {
 	if err := sink.validate(); err != nil {
 		return err
 	}
@@ -404,9 +426,14 @@ func (sink *TOSCTLPaymentSink) ResumeRelaySponsorshipBroadcast(ctx context.Conte
 		wallet = frozen.CustodyWallet
 		sourceAccount = frozen.ProviderSourceAccount
 	}
-	if request.SchemaVersion != 3 || request.StableActionID == "" ||
+	canonical, fields, materialErr := commerce.PaymentAuthorizationMaterial(request)
+	derivedStableActionID, _, stableErr := commerce.DeriveStableActionID(commerce.PaymentActionKind(request), fields)
+	resolution := sink.Authority.Resolve(request.StableActionID, exactRequestDigest)
+	if request.SchemaVersion != 3 || request.StableActionID == "" || !canonicalSHA256(exactRequestDigest) ||
+		materialErr != nil || len(canonical) == 0 || stableErr != nil || derivedStableActionID != request.StableActionID ||
+		resolution.State != commerce.ActionSubmitted || resolution.ExactRequestDigest != exactRequestDigest ||
 		networkID == "" || request.NetworkID != networkID {
-		return errors.New("submitted sponsorship recovery changes the exact payment")
+		return errors.New("submitted payment recovery lacks an exact authority boundary")
 	}
 	raw, err := sink.run(ctx, []string{"agent", "account", "economic-payment-broadcast",
 		"--wallet", wallet, "--stable-action-id", request.StableActionID, "--yes", "-c", configPath})
@@ -466,7 +493,7 @@ func (sink *TOSCTLPaymentSink) submitPayment(ctx context.Context, action commerc
 	}
 	preparedRaw, err := sink.run(ctx, []string{"agent", "account", "economic-payment-prepare",
 		"--wallet", wallet, "--target", string(request.Destination), "--amount-nanotos", strconv.FormatUint(amount, 10),
-		"--fee-reserve-nanotos", strconv.FormatUint(feeReserve, 10), "--valid-until", strconv.FormatUint(request.ExpiresAtUnix, 10),
+		"--fee-reserve-nanotos", strconv.FormatUint(feeReserve, 10), "--valid-until", strconv.FormatUint(authorization.ExpiresAtUnix, 10),
 		"--authorization-file", authorizationPath, "--yes", "-c", configPath})
 	if err != nil {
 		return commerce.AgreementPaymentEvidence{}, fmt.Errorf("prepare Agreement payment: %w", err)
@@ -476,6 +503,7 @@ func (sink *TOSCTLPaymentSink) submitPayment(ctx context.Context, action commerc
 		return commerce.AgreementPaymentEvidence{}, fmt.Errorf("decode tosctl prepared payment: %w", err)
 	}
 	if err := validateTOSCTLPreparedPayment(prepared, request, networkDomain, sourceAccount, amount,
+		authorization.ExpiresAtUnix,
 		sponsorshipBinding != nil); err != nil {
 		return commerce.AgreementPaymentEvidence{}, err
 	}

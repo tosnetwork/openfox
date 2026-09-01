@@ -24,6 +24,12 @@ Earning](guides/autonomous-earning.md). The files under `docs/design/` explain
 why the runtime was built; they are not substitutes for current CLI and
 configuration guidance.
 
+The canonical post-experiment capability reconciliation is maintained in
+`tos-service-spec`: [Agent Commerce Trust and Market Infrastructure
+Delta](https://github.com/tosnetwork/tos-service-spec/blob/main/docs/OPENFOX_AGENT_COMMERCE_TRUST_AND_MARKET_INFRASTRUCTURE_DESIGN.md)
+and its [Codex review
+record](https://github.com/tosnetwork/tos-service-spec/blob/main/docs/OPENFOX_AGENT_COMMERCE_TRUST_AND_MARKET_INFRASTRUCTURE_DESIGN_REVIEW_REPORT.md).
+
 ## Principles
 
 - Choose the document type directory first. Do not create language buckets such as `docs/zh/` or `docs/fr/`.

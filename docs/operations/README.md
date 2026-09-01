@@ -16,6 +16,10 @@ general deployment guarantee. For current product usage, start with the
 - [Eight-Agent Market Campaign Report](eight-agent-market-campaign-report.md):
   measured three-hour financial, evolution, infrastructure, and operator
   findings.
+- [Eight-Agent Generic Intent Social Earning Report](eight-agent-generic-intent-social-earning-report.md):
+  selective AI-led buying and declining through one heterogeneous signed
+  Intent, direct TOS settlement, `.tos` identity checks, and evidence-bounded
+  trust, negotiation, settlement, and market-infrastructure recommendations.
 - [Bounded Adaptive Earning Campaigns](bounded-adaptive-earning-campaigns.md):
   gated Campaign 1--6 plus trusted-capability and mobile-control objectives,
   conditions, experiment prompts, causal acceptance thresholds, and stop rules

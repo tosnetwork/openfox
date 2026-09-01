@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/evolution"
 	"github.com/tosnetwork/openfox/pkg/providers"
@@ -46,11 +47,38 @@ type EvolutionExecutionLearningRecorder struct {
 
 func NewEvolutionExecutionLearningRecorder(cfg config.EvolutionConfig, workspace, agentID string,
 	provider providers.LLMProvider, model string, capability ...string) (*EvolutionExecutionLearningRecorder, error) {
+	if cfg.Enabled && cfg.EffectiveMode() == "apply" {
+		return nil, errors.New("earning evolution apply requires the acquisition-fenced constructor")
+	}
+	return newEvolutionExecutionLearningRecorder(cfg, workspace, "", agentID, provider, model, nil, capability...)
+}
+
+// NewEvolutionExecutionLearningRecorderWithAcquisition connects apply-mode
+// earning evolution to the same externally fenced quarantine admission used
+// by every other capability acquisition path. Model-authored drafts remain
+// non-loader-visible until a separate review and promotion step.
+func NewEvolutionExecutionLearningRecorderWithAcquisition(cfg config.EvolutionConfig, workspace, ownerID, agentID string,
+	provider providers.LLMProvider, model string, fence capabilitycontrol.CapabilityAcquisitionFence,
+	capability ...string,
+) (*EvolutionExecutionLearningRecorder, error) {
+	if cfg.Enabled && cfg.EffectiveMode() == "apply" && fence == nil {
+		return nil, errors.New("earning evolution apply requires an external capability-acquisition fence")
+	}
+	return newEvolutionExecutionLearningRecorder(cfg, workspace, ownerID, agentID, provider, model, fence, capability...)
+}
+
+func newEvolutionExecutionLearningRecorder(cfg config.EvolutionConfig, workspace, ownerID, agentID string,
+	provider providers.LLMProvider, model string, fence capabilitycontrol.CapabilityAcquisitionFence,
+	capability ...string,
+) (*EvolutionExecutionLearningRecorder, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
 	if !filepath.IsAbs(workspace) || filepath.Clean(workspace) != workspace || strings.TrimSpace(agentID) == "" {
 		return nil, errors.New("earning evolution requires a canonical workspace and Agent identity")
+	}
+	if fence != nil && strings.TrimSpace(ownerID) == "" {
+		return nil, errors.New("earning evolution acquisition requires an Owner identity")
 	}
 	info, err := os.Lstat(workspace)
 	resolved, resolveErr := filepath.EvalSymlinks(workspace)
@@ -77,6 +105,11 @@ func NewEvolutionExecutionLearningRecorder(cfg config.EvolutionConfig, workspace
 			return evolution.NewLLMTaskSuccessJudge(provider, model, &evolution.HeuristicSuccessJudge{})
 		},
 		ApplierFactory: func(current string) *evolution.Applier {
+			if fence != nil {
+				return evolution.NewTrustedApplierWithAcquisition(
+					evolution.NewPaths(current, cfg.StateDir), nil, fence, []byte(ownerID), []byte(agentID),
+				)
+			}
 			return evolution.NewTrustedApplier(evolution.NewPaths(current, cfg.StateDir), nil)
 		},
 	})

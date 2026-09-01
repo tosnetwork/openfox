@@ -721,6 +721,7 @@ func runCommand() *cobra.Command {
 						Prerequisite: prerequisite, Gate: gate, Fence: fenceSource,
 						Scheduler: &openfoxearning.SchedulerService{Authority: authority, OwnerID: cfg.Earning.OwnerID,
 							AgentID: cfg.Earning.AgentID, MandateDigest: cfg.Earning.MandateDigest}}
+					var learningAcquisitionFence capabilitycontrol.CapabilityAcquisitionFence
 					if cfg.Earning.Gates.Execution {
 						capabilitySettings := cfg.Earning.TrustedCapability
 						controlAuthority, authorityErr := capabilitycontrol.OpenHTTPSControlAuthorityFromFile(capabilitySettings.ControlAuthorityEndpoint, capabilitySettings.ControlAuthorityTokenFile, capabilitySettings.ControlAuthorityPublicKey)
@@ -738,6 +739,7 @@ func runCommand() *cobra.Command {
 						}
 						defer capabilityStore.Close()
 						defer capabilityAuthority.Close()
+						learningAcquisitionFence = controlAuthority
 						engagementAutonomy.Capability = openfoxearning.ProductionTrustedCapabilityAdmission{Store: capabilityStore,
 							BundleDirectory: capabilitySettings.ExecutionBundleDirectory}
 					}
@@ -772,8 +774,9 @@ func runCommand() *cobra.Command {
 						if len(cfg.Earning.Capabilities) == 1 {
 							learningCapability = cfg.Earning.Capabilities[0].Identifier
 						}
-						learning, learningErr := openfoxearning.NewEvolutionExecutionLearningRecorder(
-							cfg.Evolution, workspace, cfg.Earning.AgentID, llm, model, learningCapability)
+						learning, learningErr := openfoxearning.NewEvolutionExecutionLearningRecorderWithAcquisition(
+							cfg.Evolution, workspace, cfg.Earning.OwnerID, cfg.Earning.AgentID, llm, model,
+							learningAcquisitionFence, learningCapability)
 						if learningErr != nil {
 							return learningErr
 						}

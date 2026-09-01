@@ -34,12 +34,13 @@ func (engine *Engine) AuthorizeAgreement(ctx context.Context, agreementDigest, r
 		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement authorization is disabled or incomplete")
 	}
 	record, found := engine.Authority.Engagement(agreementDigest)
-	if !found || record.State == EngagementCancelled || record.State == EngagementFailed {
+	if !found || record.State == EngagementCancelled || record.State == EngagementFailed || record.NegotiationAmbiguous {
 		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement is not active")
 	}
 	subject := commerce.AgreementAuthoritySubject{SubjectKind: "agent", SubjectNamespace: "tos.agent", SubjectIdentifier: engine.AgentID}
 	var predicateIDs, targets []string
 	var profileDigest string
+	authorizationExpiresAt := record.Agreement.Body.ExpiresAtUnix
 	for _, predicate := range record.Agreement.Body.AuthorizationPredicates {
 		if predicate.AuthoritySubject == subject && predicate.EvidenceProfileURI == commerce.EvidenceProfileAgentSignature {
 			if profileDigest != "" && profileDigest != predicate.EvidenceProfileDigest {
@@ -48,6 +49,7 @@ func (engine *Engine) AuthorizeAgreement(ctx context.Context, agreementDigest, r
 			profileDigest = predicate.EvidenceProfileDigest
 			predicateIDs = append(predicateIDs, predicate.PredicateID)
 			targets = append(targets, predicate.EvidenceTargetProjectionDigest)
+			authorizationExpiresAt = minUint64(authorizationExpiresAt, predicate.ExpiresAtUnix)
 		}
 	}
 	if len(predicateIDs) == 0 {
@@ -62,7 +64,7 @@ func (engine *Engine) AuthorizeAgreement(ctx context.Context, agreementDigest, r
 	acceptance, err := commerce.SignAgreementAcceptance(commerce.AgreementAcceptanceBody{AgreementID: record.Agreement.Body.AgreementID,
 		AgreementVersion: record.Agreement.Body.Version, AgreementBodyDigest: record.AgreementDigest, AcceptingSubject: subject,
 		AcceptedRoles: roles, PredicateIDs: predicateIDs, EvidenceTargetProjectionDigests: targets,
-		ExpiresAtUnix: minUint64(record.Agreement.Body.ExpiresAtUnix, fence.Body.ExpiresAtUnix)}, identityKey)
+		ExpiresAtUnix: minUint64(authorizationExpiresAt, fence.Body.ExpiresAtUnix)}, identityKey)
 	if err != nil {
 		return commerce.ActionResolution{}, EngagementRecord{}, err
 	}
@@ -73,6 +75,9 @@ func (engine *Engine) AuthorizeAgreement(ctx context.Context, agreementDigest, r
 	record, err = engine.Authority.RecordAgreementEvidence(record.AgreementDigest, evidence, verifier)
 	if err != nil {
 		return commerce.ActionResolution{}, EngagementRecord{}, err
+	}
+	if record.NegotiationAmbiguous {
+		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement lineage became ambiguous before authorization send")
 	}
 	canonicalAcceptance, err := codec.Marshal(acceptance)
 	if err != nil {
@@ -91,7 +96,7 @@ func (engine *Engine) AuthorizeAgreement(ctx context.Context, agreementDigest, r
 		"agreement_body_digest": commerce.Digest32(record.AgreementDigest), "authority_subject_digest": commerce.Digest32(subjectDigest),
 		"predicate_set_digest": commerce.Digest32(predicateDigest), "evidence_profile_digest": commerce.Digest32(profileDigest)}
 	action, err := commerce.BuildAuthorizedAction(engine.OwnerID, engine.AgentID, "agreement.authorize", fields, effectRequest, fence,
-		policyRevision, engine.MandateDigest, "", "authorization-unsent", minUint64(record.Agreement.Body.ExpiresAtUnix, fence.Body.ExpiresAtUnix))
+		policyRevision, engine.MandateDigest, "", "authorization-unsent", minUint64(authorizationExpiresAt, fence.Body.ExpiresAtUnix))
 	if err != nil {
 		return commerce.ActionResolution{}, EngagementRecord{}, err
 	}
@@ -104,10 +109,16 @@ func (engine *Engine) AuthorizeAgreement(ctx context.Context, agreementDigest, r
 		return admitted, record, err
 	}
 	if admitted.State == commerce.ActionAccepted || admitted.State == commerce.ActionTerminal {
+		if current, exists := engine.Authority.Engagement(record.AgreementDigest); !exists || current.NegotiationAmbiguous {
+			return admitted, record, errors.New("Agreement lineage became ambiguous before authorization replay")
+		}
 		return admitted, record, nil
 	}
 	if admitted.State != commerce.ActionPrepared {
 		return admitted, record, errors.New("Agreement authorization is not prepared")
+	}
+	if current, exists := engine.Authority.Engagement(record.AgreementDigest); !exists || current.NegotiationAmbiguous {
+		return admitted, record, errors.New("Agreement lineage became ambiguous before authorization send")
 	}
 	resolved, err := engine.Sink.Submit(ctx, action, fence, fields, effectRequest, message)
 	if err != nil {
@@ -138,6 +149,9 @@ func (engine *Engine) SendAgreementEvidence(ctx context.Context, evidence commer
 	updated, err := engine.Authority.RecordAgreementEvidence(record.AgreementDigest, evidence, verifier)
 	if err != nil {
 		return commerce.ActionResolution{}, EngagementRecord{}, err
+	}
+	if updated.NegotiationAmbiguous {
+		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement lineage became ambiguous before evidence send")
 	}
 	canonical, err := codec.Marshal(evidence)
 	if err != nil {
@@ -176,10 +190,16 @@ func (engine *Engine) SendAgreementEvidence(ctx context.Context, evidence commer
 		return admitted, updated, err
 	}
 	if admitted.State == commerce.ActionAccepted || admitted.State == commerce.ActionTerminal {
+		if current, exists := engine.Authority.Engagement(record.AgreementDigest); !exists || current.NegotiationAmbiguous {
+			return admitted, updated, errors.New("Agreement lineage became ambiguous before evidence replay")
+		}
 		return admitted, updated, nil
 	}
 	if admitted.State != commerce.ActionPrepared {
 		return admitted, updated, errors.New("Agreement evidence action is not prepared")
+	}
+	if current, exists := engine.Authority.Engagement(record.AgreementDigest); !exists || current.NegotiationAmbiguous {
+		return admitted, updated, errors.New("Agreement lineage became ambiguous before evidence send")
 	}
 	resolved, err := engine.Sink.Submit(ctx, action, fence, fields, effectRequest, message)
 	if err != nil {
@@ -649,6 +669,9 @@ func (engine *Engine) ProposeAgreement(ctx context.Context, body commerce.AgentA
 	if len(recipients) != 1 {
 		return commerce.ActionResolution{}, errors.New("one direct counterparty is required per Agreement proposal action")
 	}
+	if err := engine.preflightAgreementProposal(body, recipients); err != nil {
+		return commerce.ActionResolution{}, err
+	}
 	recipientDigest, err := codec.Digest("tos.agreement-recipient-set.v1", recipients)
 	if err != nil {
 		return commerce.ActionResolution{}, err
@@ -663,6 +686,9 @@ func (engine *Engine) ProposeAgreement(ctx context.Context, body commerce.AgentA
 	expiresAt := uint64(now.Add(time.Hour).Unix())
 	if fence.Body.ExpiresAtUnix < expiresAt {
 		expiresAt = fence.Body.ExpiresAtUnix
+	}
+	if body.ExpiresAtUnix < expiresAt {
+		expiresAt = body.ExpiresAtUnix
 	}
 	message := OutboundMessage{Kind: "agreement.propose", RecipientAgentIDs: recipients,
 		ContentType: "application/vnd.tos.agent-agreement-body.v1+cbor", Payload: canonical}
@@ -682,8 +708,27 @@ func (engine *Engine) ProposeAgreement(ctx context.Context, body commerce.AgentA
 		return commerce.ActionResolution{}, err
 	}
 	admitted, err := engine.Authority.Admit(action, fields, effectRequest, fence, nil)
-	if err != nil || admitted.State != commerce.ActionPrepared {
+	if err != nil {
 		return admitted, err
+	}
+	// Retain the exact proposal before any Messenger side effect. Concurrent
+	// same-version bodies are serialized by the Authority journal; the loser
+	// records a durable ambiguity and never reaches Sink.Submit. Using the
+	// stable action ID as the local event identity also makes crash/retry
+	// recovery independent of a sink reference that may not yet exist.
+	record, recordErr := engine.Authority.RecordAgreementProposal(body, engine.AgentID,
+		action.StableActionID, action.StableActionID)
+	if recordErr != nil {
+		return admitted, recordErr
+	}
+	if record.NegotiationAmbiguous {
+		return admitted, errors.New("Agreement proposal lineage is ambiguous")
+	}
+	if admitted.State == commerce.ActionAccepted || admitted.State == commerce.ActionTerminal {
+		return admitted, nil
+	}
+	if admitted.State != commerce.ActionPrepared {
+		return admitted, errors.New("Agreement proposal action is not prepared")
 	}
 	resolved, err := engine.Sink.Submit(ctx, action, fence, fields, effectRequest, message)
 	if err != nil {
@@ -693,20 +738,60 @@ func (engine *Engine) ProposeAgreement(ctx context.Context, body commerce.AgentA
 			resolved = recovered
 		}
 	}
-	resolved, err = engine.recordResolution(action, resolved)
+	return engine.recordResolution(action, resolved)
+}
+
+// preflightAgreementProposal rejects locally unverifiable lineage, participant
+// routing, and time bounds before the Messenger side effect is admitted. The
+// durable ledger repeats these checks after delivery so recovery never trusts a
+// send result alone.
+func (engine *Engine) preflightAgreementProposal(body commerce.AgentAgreementBody, recipients []string) error {
+	digest, err := commerce.AgreementBodyDigest(body)
 	if err != nil {
-		return resolved, err
+		return err
 	}
-	if resolved.State == commerce.ActionAccepted || resolved.State == commerce.ActionTerminal {
-		eventID := resolved.SinkReference
-		if eventID == "" {
-			eventID = action.StableActionID
-		}
-		if _, err := engine.Authority.RecordAgreementProposal(body, engine.AgentID, eventID, action.StableActionID); err != nil {
-			return resolved, err
+	now := engine.now().UTC()
+	validFrom := time.Unix(int64(body.ValidFromUnix), 0).UTC()
+	expiresAt := time.Unix(int64(body.ExpiresAtUnix), 0).UTC()
+	if now.Before(validFrom.Add(-commerce.MaxIntentClockSkew)) || !now.Before(expiresAt) {
+		return errors.New("Agreement proposal is premature or expired")
+	}
+	expectedRecipients := make([]string, 0, len(body.Participants)-1)
+	localParticipant := false
+	for _, participant := range body.Participants {
+		if participant.AgentID == engine.AgentID {
+			localParticipant = true
+		} else {
+			expectedRecipients = append(expectedRecipients, participant.AgentID)
 		}
 	}
-	return resolved, nil
+	sort.Strings(expectedRecipients)
+	if !localParticipant || len(expectedRecipients) != len(recipients) {
+		return errors.New("Agreement proposal participants do not match its direct recipients")
+	}
+	for index := range recipients {
+		if recipients[index] != expectedRecipients[index] {
+			return errors.New("Agreement proposal participants do not match its direct recipients")
+		}
+	}
+	if engine.Authority != nil {
+		for _, existing := range engine.Authority.EngagementSnapshot() {
+			if existing.Agreement.Body.AgreementID == body.AgreementID &&
+				existing.Agreement.Body.Version == body.Version && existing.AgreementDigest != digest {
+				return errors.New("conflicting Agreement body for the same ID and version")
+			}
+		}
+	}
+	if body.Version > 1 {
+		predecessor, found := engine.Authority.Engagement(body.PredecessorAgreementDigest)
+		if !found {
+			return errors.New("Agreement predecessor is not locally verified")
+		}
+		if err := validateAgreementSuccessor(predecessor.Agreement.Body, body); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func zeroSHA256Digest() string {

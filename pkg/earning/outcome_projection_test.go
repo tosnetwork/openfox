@@ -97,3 +97,46 @@ func TestOutcomeProjectionDoesNotDeduplicateAssertionsAcrossIssuers(t *testing.T
 		t.Fatal("success-only stream was accepted as a learning denominator")
 	}
 }
+
+func TestOutcomeLearningCutRequiresPayloadSourceBinding(t *testing.T) {
+	memberKey := OutcomeAssertionKey{NetworkID: "tos:test", ActorAgentID: "agent:member",
+		OperationID: testDigest, OperationEnvelopeDigest: zeroSHA256Digest()}
+	memberRef := commerce.OutcomeAssertionRefV1{NetworkID: memberKey.NetworkID, ActorAgentID: memberKey.ActorAgentID,
+		OperationID: memberKey.OperationID, OperationEnvelopeDigest: memberKey.OperationEnvelopeDigest}
+	root, err := commerce.OutcomeAssertionSetRootV1([]commerce.OutcomeAssertionRefV1{memberRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := codec.Marshal(commerce.CohortCheckpointPayloadV1{
+		AdmissionClosureState: "closed", EligibleCount: 1, IncludedAttemptSetRoot: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointKey := OutcomeAssertionKey{NetworkID: "tos:test", ActorAgentID: "agent:checkpoint",
+		OperationID: zeroSHA256Digest(), OperationEnvelopeDigest: testDigest}
+	checkpoint := VerifiedOutcomeAssertion{Key: checkpointKey,
+		Body: commerce.OperationOutcomeEventBodyV1{EventKind: commerce.OutcomeCohortCheckpoint,
+			AssertionProfileURI: commerce.OutcomeProfileCohortCheckpoint}, AssertionPayload: payload,
+		Authority: commerce.OutcomeAuthorityAssessmentV1{AuthorityQualified: true}}
+	member := VerifiedOutcomeAssertion{Key: memberKey,
+		Authority: commerce.OutcomeAuthorityAssessmentV1{AuthorityQualified: true}, payloadEvidenceBound: true}
+	projection := NewOutcomeProjection()
+	projection.assertions[checkpointKey] = checkpoint
+	projection.assertions[memberKey] = member
+	if _, err := projection.LearningCut(checkpointKey, memberKey); err == nil {
+		t.Fatal("source-unbound cohort checkpoint created a learning cut")
+	}
+	checkpoint.payloadEvidenceBound = true
+	member.payloadEvidenceBound = false
+	projection.assertions[checkpointKey] = checkpoint
+	projection.assertions[memberKey] = member
+	if _, err := projection.LearningCut(checkpointKey, memberKey); err == nil {
+		t.Fatal("source-unbound cohort member entered a learning cut")
+	}
+	member.payloadEvidenceBound = true
+	projection.assertions[memberKey] = member
+	if cut, err := projection.LearningCut(checkpointKey, memberKey); err != nil || len(cut.Assertions) != 1 {
+		t.Fatalf("fully qualified source-bound learning cut was rejected: cut=%+v err=%v", cut, err)
+	}
+}

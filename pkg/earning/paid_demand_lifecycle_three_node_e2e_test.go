@@ -361,9 +361,15 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		_, recordErr := provider.RecordAgreementEvidence(agreementDigest, evidence, evidenceRouter)
 		return recordErr
 	}
-	if _, _, err := buyerEngine.ReserveAgreement(ctx, agreementDigest,
-		ExposureReservation{ReservationID: reservation.ReservationID, AgreementDigest: agreementDigest,
-			SpendAtomic: 5_000_000, LockedCapitalAtomic: 5_000_000, MaximumLossAtomic: 5_000_000},
+	buyerEngagement, found := buyer.Engagement(agreementDigest)
+	if !found {
+		t.Fatal("buyer Agreement disappeared before Portfolio reservation")
+	}
+	buyerReservation, err := paidDemandBuyerReservation(buyerEngagement, buyerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := buyerEngine.ReserveAgreement(ctx, agreementDigest, buyerReservation,
 		allowSettlement{}, 1, buyerFence); err != nil {
 		t.Fatal(err)
 	}

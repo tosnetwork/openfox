@@ -82,6 +82,23 @@ func TestPaidDemandProviderReservesBeforeOneExactOffer(t *testing.T) {
 	if err != nil || retryResolution.StableActionID != resolution.StableActionID || retryDigest != firstDigest || sink.calls != 1 {
 		t.Fatalf("exact retry changed Provider Offer: digest=%s/%s calls=%d err=%v", firstDigest, retryDigest, sink.calls, err)
 	}
+	fork := body
+	fork.Terms = []byte("conflicting Paid Demand terms")
+	fork.AuthorizationPredicates = append([]commerce.AgreementAuthorizationPredicate(nil), fork.AuthorizationPredicates...)
+	for index := range fork.AuthorizationPredicates {
+		fork.AuthorizationPredicates[index].EvidenceTargetProjectionDigest = ""
+	}
+	fork, err = commerce.PrepareAgreementTargets(fork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.RecordAgreementProposal(fork, "agent:buyer", "event:fork",
+		"sha256:"+strings.Repeat("e", 64)); err == nil {
+		t.Fatal("conflicting Paid Demand body did not create a durable fork")
+	}
+	if _, _, _, err := service.IssueOffer(context.Background(), binding, "agent:buyer", fence); err == nil || sink.calls != 1 {
+		t.Fatalf("forked Agreement reissued a Provider Offer: calls=%d err=%v", sink.calls, err)
+	}
 }
 
 func paidProviderAgreement(t *testing.T, now time.Time) (commerce.AgentAgreementBody, commerce.PaidDemandQuoteBindingBody) {

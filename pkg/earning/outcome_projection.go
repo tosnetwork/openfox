@@ -25,6 +25,11 @@ type VerifiedOutcomeAssertion struct {
 	Manifest         commerce.OutcomeEvidenceManifestV1    `json:"evidence_manifest"`
 	Extensions       commerce.OutcomeExtensionSetV1        `json:"extension_set"`
 	Authority        commerce.OutcomeAuthorityAssessmentV1 `json:"authority"`
+	// payloadEvidenceBound is deliberately unexported. Authority qualification
+	// authenticates an evidence source, but an Adapter-specific verifier must
+	// additionally prove that source describes the exact assertion payload
+	// before economic or counterparty projections may consume it.
+	payloadEvidenceBound bool
 }
 
 type OutcomeProjection struct {
@@ -49,7 +54,7 @@ func (projection *OutcomeProjection) Ingest(envelope commerce.AgentOperationEnve
 	if err != nil {
 		return VerifiedOutcomeAssertion{}, err
 	}
-	if err := commerce.VerifyOperationOutcomeArtifactsV1(body, assertionPayload, manifest, extensions); err != nil {
+	if err := verifyOperationOutcomeArtifactsForCurrentDependency(body, assertionPayload, manifest, extensions); err != nil {
 		return VerifiedOutcomeAssertion{}, err
 	}
 	envelopeDigest, err := commerce.AgentOperationEnvelopeDigestV1(envelope)
@@ -73,11 +78,23 @@ func (projection *OutcomeProjection) IngestAuthorityQualified(envelope commerce.
 	extensions commerce.OutcomeExtensionSetV1, operationResolver commerce.AgentOperationAuthorityResolver,
 	materials []commerce.OutcomeAuthorityProofMaterialV1, authorityVerifier commerce.OutcomeEvidenceAuthorityVerifierV1,
 	now time.Time) (VerifiedOutcomeAssertion, error) {
+	return projection.ingestAuthorityQualified(envelope, eventPayload, assertionPayload, manifest, extensions,
+		operationResolver, materials, authorityVerifier, now, false)
+}
+
+func (projection *OutcomeProjection) ingestAuthorityQualified(envelope commerce.AgentOperationEnvelopeV1,
+	eventPayload, assertionPayload []byte, manifest commerce.OutcomeEvidenceManifestV1,
+	extensions commerce.OutcomeExtensionSetV1, operationResolver commerce.AgentOperationAuthorityResolver,
+	materials []commerce.OutcomeAuthorityProofMaterialV1, authorityVerifier commerce.OutcomeEvidenceAuthorityVerifierV1,
+	now time.Time, payloadEvidenceBound bool) (VerifiedOutcomeAssertion, error) {
+	if projection == nil {
+		return VerifiedOutcomeAssertion{}, errors.New("outcome projection is unavailable")
+	}
 	body, err := commerce.VerifyOperationOutcomeEnvelopeV1(envelope, eventPayload, operationResolver, now.UTC())
 	if err != nil {
 		return VerifiedOutcomeAssertion{}, err
 	}
-	if err := commerce.VerifyOperationOutcomeArtifactsV1(body, assertionPayload, manifest, extensions); err != nil {
+	if err := verifyOperationOutcomeArtifactsForCurrentDependency(body, assertionPayload, manifest, extensions); err != nil {
 		return VerifiedOutcomeAssertion{}, err
 	}
 	authority, err := commerce.VerifyOperationOutcomeAuthorityV1(body, manifest, materials, authorityVerifier, now.UTC())
@@ -95,7 +112,7 @@ func (projection *OutcomeProjection) IngestAuthorityQualified(envelope commerce.
 		ActorAgentID: envelope.Body.ActorAgentID, OperationID: envelope.Body.OperationID,
 		OperationEnvelopeDigest: envelopeDigest}, EventContentID: envelope.Body.ObjectID, Body: body,
 		AssertionPayload: append([]byte(nil), assertionPayload...), Manifest: manifest, Extensions: extensions,
-		Authority: authority}
+		Authority: authority, payloadEvidenceBound: payloadEvidenceBound}
 	return projection.store(verified)
 }
 
@@ -109,6 +126,10 @@ func (projection *OutcomeProjection) store(verified VerifiedOutcomeAssertion) (V
 		right, _ := codec.Marshal(immutable)
 		if string(left) != string(right) {
 			return VerifiedOutcomeAssertion{}, errors.New("exact outcome assertion key conflicts")
+		}
+		if immutable.payloadEvidenceBound && !prior.payloadEvidenceBound {
+			prior.payloadEvidenceBound = true
+			projection.assertions[key] = prior
 		}
 		return cloneVerifiedOutcomeAssertion(prior), nil
 	}
@@ -191,8 +212,8 @@ func (projection *OutcomeProjection) LearningCut(checkpointKey OutcomeAssertionK
 	if !found || checkpoint.Body.EventKind != commerce.OutcomeCohortCheckpoint || checkpoint.Body.AssertionProfileURI != commerce.OutcomeProfileCohortCheckpoint {
 		return OutcomeLearningCut{}, errors.New("verified cohort checkpoint is required for learning")
 	}
-	if !checkpoint.Authority.AuthorityQualified {
-		return OutcomeLearningCut{}, errors.New("authority-qualified cohort checkpoint is required for learning")
+	if !checkpoint.Authority.AuthorityQualified || !checkpoint.payloadEvidenceBound {
+		return OutcomeLearningCut{}, errors.New("authority-qualified and source-bound cohort checkpoint is required for learning")
 	}
 	var payload commerce.CohortCheckpointPayloadV1
 	if codec.Unmarshal(checkpoint.AssertionPayload, &payload) != nil || payload.AdmissionClosureState != "closed" {
@@ -205,8 +226,8 @@ func (projection *OutcomeProjection) LearningCut(checkpointKey OutcomeAssertionK
 	all := make([]VerifiedOutcomeAssertion, 0, len(explicitMembers))
 	for index, key := range explicitMembers {
 		value, found := projection.assertions[key]
-		if !found || !value.Authority.AuthorityQualified {
-			return OutcomeLearningCut{}, errors.New("learning cut member is absent or not authority-qualified")
+		if !found || !value.Authority.AuthorityQualified || !value.payloadEvidenceBound {
+			return OutcomeLearningCut{}, errors.New("learning cut member is absent, unqualified, or not source-bound")
 		}
 		refs[index] = commerce.OutcomeAssertionRefV1{NetworkID: key.NetworkID, ActorAgentID: key.ActorAgentID,
 			OperationID: key.OperationID, OperationEnvelopeDigest: key.OperationEnvelopeDigest}

@@ -41,16 +41,35 @@ func (authority *PersonalAuthority) RecordAgreementProposal(body commerce.AgentA
 		return EngagementRecord{}, err
 	}
 	if existing, found := authority.doc.Engagements[digest]; found {
-		return existing, nil
+		if existing.ProposerAgentID == proposerAgentID && existing.ProposalActionID == proposalActionID {
+			return existing, nil
+		}
+		if err := authority.recordNegotiationConflictLocked(body.AgreementID, "proposal_identity_conflict", digest); err != nil {
+			return EngagementRecord{}, err
+		}
+		return EngagementRecord{}, errors.New("Agreement proposal identity conflicts with the retained exact body")
 	}
 	for priorDigest, existing := range authority.doc.Engagements {
-		if existing.Agreement.Body.AgreementID == body.AgreementID && existing.Agreement.Body.Version == body.Version && priorDigest != digest {
+		if existing.Agreement.Body.AgreementID == body.AgreementID &&
+			existing.Agreement.Body.Version == body.Version && priorDigest != digest {
+			if err := authority.recordNegotiationConflictLocked(body.AgreementID, "agreement_body_fork", priorDigest, digest); err != nil {
+				return EngagementRecord{}, err
+			}
 			return EngagementRecord{}, errors.New("conflicting Agreement body for the same ID and version")
 		}
 	}
+	for _, existing := range authority.doc.Engagements {
+		if existing.Agreement.Body.AgreementID == body.AgreementID && existing.NegotiationAmbiguous {
+			return EngagementRecord{}, errors.New("Agreement lineage has a retained negotiation conflict")
+		}
+	}
 	if body.Version > 1 {
-		if _, found := authority.doc.Engagements[body.PredecessorAgreementDigest]; !found {
+		predecessor, found := authority.doc.Engagements[body.PredecessorAgreementDigest]
+		if !found {
 			return EngagementRecord{}, errors.New("Agreement predecessor is not locally verified")
+		}
+		if err := validateAgreementSuccessor(predecessor.Agreement.Body, body); err != nil {
+			return EngagementRecord{}, err
 		}
 	}
 	now := authority.now().UTC()
@@ -71,6 +90,59 @@ func (authority *PersonalAuthority) RecordAgreementProposal(body commerce.AgentA
 	return record, nil
 }
 
+// recordNegotiationConflictLocked retains a verified equivocation before
+// returning an error to the caller. The rejected body is not promoted to an
+// Agreement, but every retained record in the same Agreement-ID graph is
+// marked so automatic authorization cannot mistake the remaining branch for a
+// unique head after restart.
+func (authority *PersonalAuthority) recordNegotiationConflictLocked(agreementID, code string, digests ...string) error {
+	next := cloneAuthorityDocument(authority.doc)
+	updated := false
+	for key, record := range next.Engagements {
+		if record.Agreement.Body.AgreementID != agreementID {
+			continue
+		}
+		record.NegotiationAmbiguous = true
+		record.NegotiationConflictCodes = appendUniqueSorted(record.NegotiationConflictCodes, code)
+		for _, digest := range digests {
+			if canonicalSHA256(digest) {
+				record.NegotiationConflictDigests = appendUniqueSorted(record.NegotiationConflictDigests, digest)
+			}
+		}
+		next.Engagements[key] = record
+		updated = true
+	}
+	if !updated {
+		return errors.New("Agreement negotiation conflict has no retained lineage")
+	}
+	if err := authority.persist(next); err != nil {
+		return err
+	}
+	authority.doc = next
+	return nil
+}
+
+func validNegotiationConflictRecord(record EngagementRecord) bool {
+	if !record.NegotiationAmbiguous {
+		return len(record.NegotiationConflictCodes) == 0 && len(record.NegotiationConflictDigests) == 0
+	}
+	if len(record.NegotiationConflictCodes) == 0 || len(record.NegotiationConflictDigests) == 0 {
+		return false
+	}
+	for index, code := range record.NegotiationConflictCodes {
+		if code != "agreement_body_fork" && code != "proposal_identity_conflict" ||
+			index > 0 && record.NegotiationConflictCodes[index-1] >= code {
+			return false
+		}
+	}
+	for index, digest := range record.NegotiationConflictDigests {
+		if !canonicalSHA256(digest) || index > 0 && record.NegotiationConflictDigests[index-1] >= digest {
+			return false
+		}
+	}
+	return true
+}
+
 func (authority *PersonalAuthority) ObserveAgreementWithdrawal(agreementDigest, proposalActionID, senderAgentID, eventID string) (EngagementRecord, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
@@ -82,19 +154,20 @@ func (authority *PersonalAuthority) ObserveAgreementWithdrawal(agreementDigest, 
 		return EngagementRecord{}, errors.New("Agreement withdrawal is unrelated to the exact proposal")
 	}
 	switch record.State {
-	case EngagementProposed, EngagementAuthorizing, EngagementAgreed:
+	case EngagementProposed, EngagementAuthorizing:
 		if record.ReservationID != "" {
 			record.State = EngagementCancellationResolving
 		} else {
 			record.State = EngagementCancelled
 		}
-	case EngagementReserved, EngagementFundingPending, EngagementReady, EngagementExecutionPrepared, EngagementExecuting,
-		EngagementDelivered, EngagementSettling:
-		record.State = EngagementCancellationResolving
-	case EngagementSettled, EngagementUnpaid, EngagementCancelled, EngagementFailed:
+	case EngagementCancelled, EngagementFailed:
 		return record, nil
+	case EngagementAgreed, EngagementReserved, EngagementFundingPending, EngagementReady, EngagementExecutionPrepared,
+		EngagementExecuting, EngagementExecutionSucceeded, EngagementDelivered, EngagementSettling, EngagementSettled,
+		EngagementUnpaid, EngagementCancellationResolving:
+		return EngagementRecord{}, errors.New("accepted Agreement cannot be cancelled by withdrawing its proposal")
 	default:
-		record.State = EngagementAmbiguous
+		return EngagementRecord{}, errors.New("Agreement proposal is not withdrawable in its current state")
 	}
 	record.StateRevision++
 	record.LastTransitionAtUnix = uint64(authority.now().UTC().Unix())
@@ -182,6 +255,12 @@ func (authority *PersonalAuthority) RecordAgreementEvidence(agreementDigest stri
 	if !found || record.State == EngagementCancelled || record.State == EngagementFailed {
 		return EngagementRecord{}, errors.New("Agreement evidence has no active proposal")
 	}
+	// Check the durable lineage marker before the exact-evidence replay path.
+	// Otherwise a fork discovered after the first acceptance could turn a
+	// replay into permission for another outbound authorization side effect.
+	if record.NegotiationAmbiguous {
+		return EngagementRecord{}, errors.New("Agreement evidence targets an ambiguous negotiation lineage")
+	}
 	evidenceDigest, err := codec.Digest("tos.agreement-authorization-evidence.v1", evidence)
 	if err != nil {
 		return EngagementRecord{}, err
@@ -190,6 +269,13 @@ func (authority *PersonalAuthority) RecordAgreementEvidence(agreementDigest stri
 		existingDigest, digestErr := codec.Digest("tos.agreement-authorization-evidence.v1", existing)
 		if digestErr == nil && existingDigest == evidenceDigest {
 			return record, nil
+		}
+	}
+	if record.State == EngagementProposed || record.State == EngagementAuthorizing {
+		for _, successor := range authority.doc.Engagements {
+			if successor.Agreement.Body.PredecessorAgreementDigest == agreementDigest {
+				return EngagementRecord{}, errors.New("Agreement evidence targets an unfinished proposal superseded by a verified successor")
+			}
 		}
 	}
 	candidate := record.Agreement
@@ -201,6 +287,9 @@ func (authority *PersonalAuthority) RecordAgreementEvidence(agreementDigest stri
 		return lk < rk
 	})
 	now := authority.now().UTC()
+	if err := validateAgreementAuthorizationTimeForCurrentDependency(candidate, now); err != nil {
+		return EngagementRecord{}, err
+	}
 	if err := commerce.ValidatePartialAgreementAuthorization(candidate, verifier, now); err != nil {
 		return EngagementRecord{}, err
 	}
@@ -238,6 +327,12 @@ func (authority *PersonalAuthority) ReserveEngagement(action commerce.Authorized
 	if !found || !engagementEligibleForReservation(record, authority.doc.AgentID) || request.Reservation.Released ||
 		request.TargetPortfolioRevision != authority.doc.PortfolioRevision+1 {
 		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement is not eligible for reservation")
+	}
+	if paidDemandBuyerCandidate(record, authority.doc.AgentID) {
+		expected, expectedErr := paidDemandBuyerReservation(record, authority.doc.AgentID)
+		if expectedErr != nil || !sameExposureReservation(request.Reservation, expected) {
+			return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Paid Demand buyer reservation does not exactly cover Agreement exposure")
+		}
 	}
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
@@ -285,6 +380,9 @@ func (authority *PersonalAuthority) ReserveEngagement(action commerce.Authorized
 // accepting it on chain. Those acts themselves satisfy the Paid-Demand
 // predicates, so reserving only after complete authorization would be circular.
 func engagementEligibleForReservation(record EngagementRecord, localAgentID string) bool {
+	if record.NegotiationAmbiguous {
+		return false
+	}
 	if record.State == EngagementAgreed {
 		return true
 	}

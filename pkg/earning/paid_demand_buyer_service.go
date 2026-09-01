@@ -37,7 +37,8 @@ func (service PaidDemandBuyerService) AcceptAndFund(ctx context.Context, purchas
 		return nil, EngagementRecord{}, errors.New("Paid Demand buyer service is disabled or incomplete")
 	}
 	record, found := service.Engine.Authority.Engagement(purchase.AgreementDigest)
-	if !found || record.ReservationID == "" || !hasLiveAgreementReservation(service.Engine.Authority, record.ReservationID, record.AgreementDigest) ||
+	if !found || record.NegotiationAmbiguous || record.ReservationID == "" ||
+		!hasLiveAgreementReservation(service.Engine.Authority, record.ReservationID, record.AgreementDigest) ||
 		providerAgentID != purchase.ProviderOffer.Binding.ProviderAgentID || !hasPaidDemandProfileEvidence(record, providerAgentID) ||
 		(record.State != EngagementAuthorizing && record.State != EngagementReserved && record.State != EngagementFundingPending && record.State != EngagementReady) {
 		return nil, EngagementRecord{}, errors.New("Paid Demand buyer has no reserved Agreement and verified Provider Offer")
@@ -57,6 +58,9 @@ func (service PaidDemandBuyerService) AcceptAndFund(ctx context.Context, purchas
 		service.PolicyRevision, fence); err != nil {
 		return nil, record, err
 	}
+	if record.NegotiationAmbiguous {
+		return nil, record, errors.New("Paid Demand Agreement lineage became ambiguous before funding")
+	}
 	if record.State == EngagementReserved {
 		record, err = service.Engine.Authority.transitionEngagement(record.AgreementDigest, EngagementReserved,
 			EngagementFundingPending, "", nil)
@@ -65,12 +69,22 @@ func (service PaidDemandBuyerService) AcceptAndFund(ctx context.Context, purchas
 		}
 	}
 	if record.State == EngagementReady {
+		if current, currentFound := service.Engine.Authority.Engagement(record.AgreementDigest); !currentFound || current.NegotiationAmbiguous {
+			return nil, record, errors.New("Paid Demand Agreement lineage became ambiguous before funding")
+		} else {
+			record = current
+		}
 		funded, fundErr := service.Runtime.Fund(ctx, purchase)
 		return funded, record, fundErr
 	}
 	if record.State != EngagementFundingPending {
 		return nil, record, errors.New("Paid Demand Agreement did not enter funding_pending")
 	}
+	current, currentFound := service.Engine.Authority.Engagement(record.AgreementDigest)
+	if !currentFound || current.NegotiationAmbiguous || current.State != EngagementFundingPending {
+		return nil, record, errors.New("Paid Demand Agreement lineage or funding state changed before funding")
+	}
+	record = current
 	funded, err := service.Runtime.Fund(ctx, purchase)
 	if err != nil {
 		return nil, record, err

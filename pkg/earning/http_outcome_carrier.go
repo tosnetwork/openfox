@@ -241,7 +241,7 @@ func (carrier *HTTPOutcomeCarrier) SearchOutcomes(ctx context.Context, query Out
 
 func validateHTTPOutcomeResult(result OutcomeCarrierResult, carrierID string, expectedKey ed25519.PublicKey) error {
 	key, keyErr := decodeOutcomeCarrierKey(result.CarrierPublicKey)
-	if keyErr != nil || !bytes.Equal(key, expectedKey) || commerce.ValidateOperationCarrierRequestV1(result.Request) != nil ||
+	if keyErr != nil || !bytes.Equal(key, expectedKey) || validateOperationCarrierRequestForCurrentDependency(result.Request) != nil ||
 		result.Request.CarrierID != carrierID || result.Provenance != "carrier-retained-unverified-assertion" ||
 		result.ActorAgentID == "" || result.StoredAtUnix == 0 || result.CarrierSequence == 0 ||
 		commerce.VerifyOperationSubmissionReceiptV1(result.Receipt, key) != nil || result.Receipt.State != commerce.ActionTerminal ||

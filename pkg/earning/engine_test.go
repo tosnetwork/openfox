@@ -18,6 +18,7 @@ type exactSink struct {
 	calls       int
 	resolutions map[string]commerce.ActionResolution
 	messages    []OutboundMessage
+	actions     []commerce.AuthorizedAction
 }
 
 func (sink *exactSink) Submit(_ context.Context, action commerce.AuthorizedAction, fence commerce.WriterFence,
@@ -27,6 +28,7 @@ func (sink *exactSink) Submit(_ context.Context, action commerce.AuthorizedActio
 	}
 	sink.calls++
 	sink.messages = append(sink.messages, message)
+	sink.actions = append(sink.actions, action)
 	resolution := commerce.ActionResolution{StableActionID: action.StableActionID, ExactRequestDigest: action.ExactRequestDigest,
 		State: commerce.ActionTerminal, SinkReference: "event:test", StateRevision: 1}
 	sink.resolutions[action.StableActionID] = resolution
@@ -154,7 +156,7 @@ func TestProposerDurablyRecordsExactAgreementAfterMessengerAdmission(t *testing.
 				ObligationIDs: []string{"pay"}, EvidenceProfileURI: commerce.EvidenceProfileAgentSignature, EvidenceProfileVersion: 1, EvidenceProfileDigest: profile, ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())},
 			{PredicateID: "provider", AuthoritySubject: commerce.AgreementAuthoritySubject{SubjectKind: "agent", SubjectNamespace: "tos.agent", SubjectIdentifier: "agent:a"},
 				ObligationIDs: []string{"work"}, EvidenceProfileURI: commerce.EvidenceProfileAgentSignature, EvidenceProfileVersion: 1, EvidenceProfileDigest: profile, ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())},
-		}, ValidFromUnix: uint64(now.Unix()), ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())}
+		}, ValidFromUnix: uint64(now.Unix()), ExpiresAtUnix: uint64(now.Add(20 * time.Minute).Unix())}
 	body, err = commerce.PrepareAgreementTargets(body)
 	if err != nil {
 		t.Fatal(err)
@@ -169,5 +171,8 @@ func TestProposerDurablyRecordsExactAgreementAfterMessengerAdmission(t *testing.
 	recorded, found := authority.Engagement(digest)
 	if !found || recorded.ProposalActionID != resolution.StableActionID || recorded.State != EngagementProposed {
 		t.Fatalf("proposer ledger did not record exact accepted send: %+v", recorded)
+	}
+	if len(sink.actions) != 1 || sink.actions[0].ExpiresAtUnix != body.ExpiresAtUnix {
+		t.Fatalf("proposal action outlived its Agreement: actions=%+v body_expiry=%d", sink.actions, body.ExpiresAtUnix)
 	}
 }

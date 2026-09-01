@@ -18,6 +18,62 @@ type PaidDemandPurchasePreparer interface {
 	PreparePurchase(context.Context, buyersdk.PaidDemandPurchaseInput) (*buyersdk.PreparedPaidDemandPurchase, error)
 }
 
+type PaidDemandFundingAdmissionDisposition uint8
+
+const (
+	PaidDemandFundingNotApplicable PaidDemandFundingAdmissionDisposition = iota + 1
+	PaidDemandFundingDeferred
+	PaidDemandFundingAdmitted
+)
+
+type PaidDemandFundingAdmissionDecision struct {
+	Disposition PaidDemandFundingAdmissionDisposition
+}
+
+// PaidDemandFundingAdmission is an optional, local routing and admission
+// boundary for a purchase that has otherwise passed the ordinary Paid Demand
+// policy. NotApplicable and Deferred are ordinary skip results. An error is
+// reserved for invalid or conflicting authority state and fails the run.
+// This interface does not add anything to the Agreement or Paid Demand wire
+// formats.
+type PaidDemandFundingAdmission interface {
+	DecidePaidDemandFunding(context.Context, EngagementRecord) (PaidDemandFundingAdmissionDecision, error)
+}
+
+// PaidDemandFundingAdmissionRouter permits several independent local
+// compositions to share one autonomy loop. Exactly one route may claim a
+// candidate; overlapping routes fail closed.
+type PaidDemandFundingAdmissionRouter struct {
+	Admissions []PaidDemandFundingAdmission
+}
+
+func (router PaidDemandFundingAdmissionRouter) DecidePaidDemandFunding(ctx context.Context,
+	record EngagementRecord) (PaidDemandFundingAdmissionDecision, error) {
+	decision := PaidDemandFundingAdmissionDecision{Disposition: PaidDemandFundingNotApplicable}
+	claimed := false
+	for _, admission := range router.Admissions {
+		if admission == nil {
+			return PaidDemandFundingAdmissionDecision{}, errors.New("Paid Demand funding admission route is nil")
+		}
+		candidate, err := admission.DecidePaidDemandFunding(ctx, record)
+		if err != nil {
+			return PaidDemandFundingAdmissionDecision{}, err
+		}
+		switch candidate.Disposition {
+		case PaidDemandFundingNotApplicable:
+			continue
+		case PaidDemandFundingDeferred, PaidDemandFundingAdmitted:
+			if claimed {
+				return PaidDemandFundingAdmissionDecision{}, errors.New("Paid Demand funding candidate matches overlapping admission routes")
+			}
+			claimed, decision = true, candidate
+		default:
+			return PaidDemandFundingAdmissionDecision{}, errors.New("Paid Demand funding admission returned an invalid disposition")
+		}
+	}
+	return decision, nil
+}
+
 // PaidDemandBuyerAutonomy is the profile-specific promotion boundary from a
 // verified Provider Offer to a custody-authorized on-chain acceptance. It does
 // not infer economic terms from chat: every native input is reconstructed from
@@ -33,8 +89,12 @@ type PaidDemandBuyerAutonomy struct {
 	Network      *nativev1.NetworkDomain
 	PublicTerms  paiddemand.PublicTermsV1
 	Prerequisite SettlementPrerequisiteChecker
-	Fence        WriterFenceProvider
-	Now          func() time.Time
+	// FundingAdmission is nil for the ordinary independent-Agreement path.
+	// A local composition, such as a sequential objective-milestone plan, may
+	// install an additional fail-closed check immediately before reservation.
+	FundingAdmission PaidDemandFundingAdmission
+	Fence            WriterFenceProvider
+	Now              func() time.Time
 }
 
 func (service PaidDemandBuyerAutonomy) Process(ctx context.Context, maximum uint32) (uint32, error) {
@@ -84,6 +144,13 @@ func (service PaidDemandBuyerAutonomy) Process(ctx context.Context, maximum uint
 		if !decision.Accept {
 			continue
 		}
+		fundingAllowed, admitErr := paidDemandFundingAdmissionAllows(ctx, service.FundingAdmission, snapshot)
+		if admitErr != nil {
+			return advanced, admitErr
+		}
+		if !fundingAllowed {
+			continue
+		}
 		fence, fenceErr := service.Fence(ctx)
 		if fenceErr != nil {
 			return advanced, fenceErr
@@ -121,7 +188,29 @@ func (service PaidDemandBuyerAutonomy) Process(ctx context.Context, maximum uint
 	return advanced, nil
 }
 
+func paidDemandFundingAdmissionAllows(ctx context.Context, admission PaidDemandFundingAdmission,
+	record EngagementRecord) (bool, error) {
+	if admission == nil {
+		return true, nil
+	}
+	decision, err := admission.DecidePaidDemandFunding(ctx, record)
+	if err != nil {
+		return false, err
+	}
+	switch decision.Disposition {
+	case PaidDemandFundingNotApplicable, PaidDemandFundingDeferred:
+		return false, nil
+	case PaidDemandFundingAdmitted:
+		return true, nil
+	default:
+		return false, errors.New("Paid Demand funding admission returned an invalid disposition")
+	}
+}
+
 func paidDemandBuyerCandidate(record EngagementRecord, localAgentID string) bool {
+	if record.NegotiationAmbiguous {
+		return false
+	}
 	if record.State != EngagementProposed && record.State != EngagementAuthorizing && record.State != EngagementReserved &&
 		record.State != EngagementFundingPending && record.State != EngagementReady {
 		return false
@@ -163,11 +252,27 @@ func paidDemandProviderOffer(record EngagementRecord, providerAgentID string) (c
 }
 
 func paidDemandBuyerReservation(record EngagementRecord, buyerAgentID string) (ExposureReservation, error) {
+	if !canonicalSHA256(record.AgreementDigest) || buyerAgentID == "" {
+		return ExposureReservation{}, errors.New("Paid Demand buyer exposure has an invalid Agreement binding")
+	}
 	var total uint64
+	var asset *commerce.AssetIdentityV1
 	for _, obligation := range record.Agreement.Body.Obligations {
 		if obligation.Amount == nil || obligation.ObligorAgentID != buyerAgentID ||
 			obligation.SettlementAdapterURI != paiddemand.SettlementAdapterURI {
 			continue
+		}
+		candidateAsset := commerce.AssetIdentityV1{AssetNamespace: obligation.Amount.AssetNamespace,
+			AssetIdentifier: obligation.Amount.AssetIdentifier, Unit: obligation.Amount.Unit}
+		if commerce.ValidateAssetIdentityV1(candidateAsset) != nil {
+			return ExposureReservation{}, errors.New("Paid Demand buyer exposure has an invalid asset")
+		}
+		if asset != nil && *asset != candidateAsset {
+			return ExposureReservation{}, errors.New("Paid Demand Agreement mixes buyer payment assets")
+		}
+		if asset == nil {
+			selected := candidateAsset
+			asset = &selected
 		}
 		amount, err := strconv.ParseUint(obligation.Amount.AmountAtomic, 10, 64)
 		if err != nil || amount == 0 || total > math.MaxUint64-amount {
@@ -179,7 +284,7 @@ func paidDemandBuyerReservation(record EngagementRecord, buyerAgentID string) (E
 		return ExposureReservation{}, errors.New("Paid Demand Agreement has no buyer payment exposure")
 	}
 	return ExposureReservation{ReservationID: "reservation:" + record.AgreementDigest[7:],
-		AgreementDigest: record.AgreementDigest, SpendAtomic: total, LockedCapitalAtomic: total,
+		AgreementDigest: record.AgreementDigest, Asset: asset, SpendAtomic: total, LockedCapitalAtomic: total,
 		MaximumLossAtomic: total}, nil
 }
 

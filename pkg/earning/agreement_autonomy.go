@@ -142,8 +142,12 @@ func (service AgreementAutonomy) Process(ctx context.Context, max uint32) (uint3
 	if err != nil {
 		return processed, err
 	}
-	for _, record := range service.Engine.Authority.EngagementSnapshot() {
+	records := service.Engine.Authority.EngagementSnapshot()
+	for _, record := range records {
 		if record.State != EngagementProposed && record.State != EngagementAuthorizing {
+			continue
+		}
+		if !uniqueUnforkedAgreementLeaf(record, records) {
 			continue
 		}
 		if hasAgentEvidence(record, service.Engine.AgentID) {
@@ -176,6 +180,36 @@ func (service AgreementAutonomy) Process(ctx context.Context, max uint32) (uint3
 		}
 	}
 	return processed, nil
+}
+
+// uniqueUnforkedAgreementLeaf permits automatic authorization only when one
+// exact body is the sole leaf of its Agreement-ID graph. A successor makes its
+// predecessor stale, while concurrent roots or successor forks require an
+// explicit local decision and therefore produce no signing side effect.
+func uniqueUnforkedAgreementLeaf(candidate EngagementRecord, records []EngagementRecord) bool {
+	agreementID := candidate.Agreement.Body.AgreementID
+	if agreementID == "" || candidate.AgreementDigest == "" || candidate.NegotiationAmbiguous {
+		return false
+	}
+	successors := make(map[string]bool)
+	for _, record := range records {
+		if record.Agreement.Body.AgreementID == agreementID && record.NegotiationAmbiguous {
+			return false
+		}
+		if record.Agreement.Body.AgreementID == agreementID && record.Agreement.Body.PredecessorAgreementDigest != "" {
+			successors[record.Agreement.Body.PredecessorAgreementDigest] = true
+		}
+	}
+	leaves := 0
+	uniqueDigest := ""
+	for _, record := range records {
+		if record.Agreement.Body.AgreementID != agreementID || successors[record.AgreementDigest] {
+			continue
+		}
+		leaves++
+		uniqueDigest = record.AgreementDigest
+	}
+	return leaves == 1 && uniqueDigest == candidate.AgreementDigest
 }
 
 func hasLocalAgentSignaturePredicate(record EngagementRecord, agentID string) bool {

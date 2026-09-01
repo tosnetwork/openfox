@@ -18,6 +18,7 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
+	"github.com/tosnetwork/tos-service-protocol/pkg/paiddemand"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 )
 
@@ -33,9 +34,14 @@ type paidDemandThreeNodeFixture struct {
 }
 
 // TestPaidDemandAcceptThreeNode is opt-in because it mutates a live local
-// chain. It proves the production OpenFox authority -> tosctl custody -> Agent
-// Account -> V2 escrow -> independent quorum resolver path, including stale
-// writer rejection, exact preparation replay, and on-chain query replay.
+// chain. It proves only the low-level OpenFox authority -> tosctl custody ->
+// Agent Account -> V2 escrow -> independent quorum resolver plumbing,
+// including stale-writer rejection, exact preparation replay, and on-chain
+// query replay. The deployment fixture does not carry the canonical Agreement
+// or negotiation package; the local Agreement below establishes exact
+// reservation authority but is not evidence that this Quote belongs to it.
+// TestPaidDemandAutonomousLifecycleThreeNode and buyersdk.PreparePurchase own
+// the stronger Quote/Agreement/Provider-Offer binding claim.
 func TestPaidDemandAcceptThreeNode(t *testing.T) {
 	if os.Getenv("OPENFOX_PAID_DEMAND_THREE_NODE_E2E") != "1" {
 		t.Skip("set OPENFOX_PAID_DEMAND_THREE_NODE_E2E=1 for the live campaign")
@@ -105,22 +111,84 @@ func TestPaidDemandAcceptThreeNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:three-node-e2e", "agent:payer",
-		"authority:openfox-three-node-e2e", key, PortfolioLimits{SpendAtomic: 10_000_000_000})
+		"authority:openfox-three-node-e2e", key, PortfolioLimits{SpendAtomic: 10_000_000_000,
+			LockedCapitalAtomic: 10_000_000_000, MaximumLossAtomic: 10_000_000_000})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
-	oldFence, err := authority.AcquireWriter(ctx, "writer:stale", []string{"escrow.transition"}, 10*time.Minute)
+	writerScope := []string{"escrow.transition", "portfolio.reserve"}
+	oldFence, err := authority.AcquireWriter(ctx, "writer:stale", writerScope, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fence, err := authority.AcquireWriter(ctx, "writer:current", []string{"escrow.transition"}, 10*time.Minute)
+	fence, err := authority.AcquireWriter(ctx, "writer:current", writerScope, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	engine := &Engine{OwnerID: "owner:three-node-e2e", AgentID: "agent:payer", MandateDigest: threeNodeDigest("paid-demand-mandate"),
 		Authority: authority, Gates: FeatureGates{Agreement: true, TOSEscrow: true}}
-	agreement := threeNodeDigest("paid-demand-agreement")
+	quote, err := nativecore.DecodeAcceptedQuoteV2(pending.State.AcceptedQuote, fixture.Network)
+	if err != nil || quote.Terms == nil || quote.Terms.Proposal == nil || quote.Terms.Proposal.MaximumPrice == nil ||
+		quote.Terms.Proposal.MaximumPrice.Asset == nil || quote.Terms.Proposal.MaximumPrice.Asset.Master == nil {
+		t.Fatalf("decode exact Paid Demand exposure from finalized Quote: %v", err)
+	}
+	payment := quote.Terms.Proposal.MaximumPrice
+	fixtureIdentity := strings.TrimPrefix(fixture.QuoteCommitment, "tvm-cell-sha256:")
+	body, _ := paidProviderAgreement(t, time.Unix(1, 0).UTC())
+	body.AgreementID = "agreement:paid-demand-three-node-custody:" + fixtureIdentity
+	body.NetworkContext = fixture.Network.NetworkId
+	body.ValidFromUnix = 1
+	body.ExpiresAtUnix = quote.Extension.ExecutionDeadline
+	for index := range body.Participants {
+		if body.Participants[index].AgentID == "agent:buyer" {
+			body.Participants[index].AgentID = engine.AgentID
+		}
+	}
+	for index := range body.Obligations {
+		obligation := &body.Obligations[index]
+		if obligation.ObligorAgentID == "agent:buyer" {
+			obligation.ObligorAgentID = engine.AgentID
+		}
+		if obligation.BeneficiaryAgentID == "agent:buyer" {
+			obligation.BeneficiaryAgentID = engine.AgentID
+		}
+		if obligation.Amount != nil {
+			obligation.Amount = &commerce.AgreementAmount{AssetNamespace: "tos.contract",
+				AssetIdentifier: "0:" + hex.EncodeToString(payment.Asset.Master.AccountId),
+				Unit:            "atomic", AmountAtomic: payment.AtomicAmount}
+			obligation.SettlementAdapterURI = paiddemand.SettlementAdapterURI
+		}
+	}
+	for index := range body.AuthorizationPredicates {
+		predicate := &body.AuthorizationPredicates[index]
+		if predicate.AuthoritySubject.RepresentedAgentID == "agent:buyer" {
+			predicate.AuthoritySubject.RepresentedAgentID = engine.AgentID
+		}
+		predicate.ExpiresAtUnix = fixture.AcceptByUnix
+		predicate.EvidenceTargetProjectionDigest = ""
+	}
+	body, err = commerce.PrepareAgreementTargets(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agreement, err := commerce.AgreementBodyDigest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := authority.RecordAgreementProposal(body, "agent:provider",
+		"event:paid-demand-three-node-custody:"+fixtureIdentity,
+		threeNodeDigest("paid-demand-three-node-proposal:"+fixture.QuoteCommitment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := paidDemandBuyerReservation(record, engine.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := engine.ReserveAgreement(ctx, agreement, reservation, allowSettlement{}, 1, fence); err != nil {
+		t.Fatal(err)
+	}
 	expected := threeNodeDigest("paid-demand-pending-acceptance")
 	fields := map[string]commerce.SemanticValue{"owner_id": commerce.ID(engine.OwnerID), "agent_id": commerce.ID(engine.AgentID),
 		"quote_commitment": commerce.Digest32("sha256:" + strings.TrimPrefix(fixture.QuoteCommitment, "tvm-cell-sha256:")), "escrow_account_id": commerce.ID(fixture.EscrowAddress),
@@ -136,13 +204,13 @@ func TestPaidDemandAcceptThreeNode(t *testing.T) {
 		ExpectedStatus  uint8  `json:"expected_status"`
 		BodyHash        string `json:"body_hash"`
 		AmountNanoTOS   uint64 `json:"amount_nanotos"`
-	}{1, "accept", agreement, "payment", fixture.EscrowAddress, fixture.QuoteCommitment,
+	}{1, "accept", agreement, "pay", fixture.EscrowAddress, fixture.QuoteCommitment,
 		nativecore.EscrowStatusPendingAcceptanceV2, fixture.AcceptBodyHash, 100_000_000})
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := buyersdk.CustodyEffectRequest{ActionKind: "escrow.accept", SemanticFields: fields, CanonicalRequest: canonical,
-		AgreementDigest: agreement, ObligationID: "payment", SourceAccount: source, NetworkID: fixture.Network.NetworkId,
+		AgreementDigest: agreement, ObligationID: "pay", SourceAccount: source, NetworkID: fixture.Network.NetworkId,
 		NetworkGlobalID: 3, Destination: fixture.EscrowAddress, AmountNanoTOS: 100_000_000,
 		BodyHash: fixture.AcceptBodyHash, StateInitHashOrZero: zeroDigest, ExpiresAtUnix: fixture.AcceptByUnix}
 	networkDomain := &commerce.CustodyNetworkDomain{NetworkID: fixture.Network.NetworkId, GlobalID: 3,

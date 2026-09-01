@@ -20,6 +20,7 @@ import (
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	"github.com/tosnetwork/tos-service-protocol/pkg/paiddemand"
 )
 
 const (
@@ -71,6 +72,9 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 	defer authority.mu.Unlock()
 	if err := authority.ensureStorageIdentityLocked(); err != nil {
 		return commerce.CustodyActionAuthorization{}, err
+	}
+	if engagement, found := authority.doc.Engagements[payment.AgreementBodyDigest]; found && engagement.NegotiationAmbiguous {
+		return commerce.CustodyActionAuthorization{}, errors.New("ambiguous Agreement lineage cannot authorize a custody payment")
 	}
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.CustodyActionAuthorization{}, errors.New("stale writer cannot authorize custody")
@@ -142,6 +146,14 @@ func (authority *PersonalAuthority) AuthorizeCustodyEffect(action commerce.Autho
 	if err := authority.ensureStorageIdentityLocked(); err != nil {
 		return commerce.CustodyEffectAuthorization{}, err
 	}
+	if template.ActionKind == "escrow.accept" || template.ActionKind == "escrow.fund" {
+		engagement, found := authority.doc.Engagements[template.AgreementBodyDigest]
+		if !found || engagement.NegotiationAmbiguous ||
+			!exactLivePaidDemandReservation(authority.doc, engagement, authority.doc.AgentID,
+				template.AgreementBodyDigest, template.ObligationID) {
+			return commerce.CustodyEffectAuthorization{}, errors.New("Agreement is absent, ambiguous, or unreserved for new escrow exposure")
+		}
+	}
 	now := authority.now().UTC()
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
@@ -179,6 +191,49 @@ func (authority *PersonalAuthority) AuthorizeCustodyEffect(action commerce.Autho
 	template.ApprovalDigestOrZero = approval
 	template.ExpiresAtUnix = minUint64(template.ExpiresAtUnix, action.ExpiresAtUnix)
 	return commerce.SignCustodyEffectAuthorization(template, authority.key)
+}
+
+// exactLivePaidDemandReservation is called while the PersonalAuthority mutex
+// is held at the final accept/fund signing boundary. It reconstructs the
+// profile-specific buyer exposure from the retained Agreement: a caller cannot
+// turn a zero, undersized, wrong-asset, or released reservation into custody
+// authority merely by attaching its ID to the Engagement.
+func exactLivePaidDemandReservation(document authorityDocument, engagement EngagementRecord,
+	buyerAgentID, agreementDigest, obligationID string) bool {
+	if engagement.AgreementDigest != agreementDigest || buyerAgentID == "" ||
+		!paidDemandBuyerPaymentObligation(engagement, buyerAgentID, obligationID) {
+		return false
+	}
+	expected, err := paidDemandBuyerReservation(engagement, buyerAgentID)
+	if err != nil || engagement.ReservationID != expected.ReservationID {
+		return false
+	}
+	reservation, found := document.Reservations[expected.ReservationID]
+	return found && sameExposureReservation(reservation, expected)
+}
+
+func paidDemandBuyerPaymentObligation(engagement EngagementRecord, buyerAgentID, obligationID string) bool {
+	if buyerAgentID == "" || obligationID == "" {
+		return false
+	}
+	for _, obligation := range engagement.Agreement.Body.Obligations {
+		if obligation.ObligationID == obligationID && obligation.Amount != nil &&
+			obligation.ObligorAgentID == buyerAgentID && obligation.SettlementAdapterURI == paiddemand.SettlementAdapterURI {
+			return true
+		}
+	}
+	return false
+}
+
+func sameExposureReservation(left, right ExposureReservation) bool {
+	if left.ReservationID != right.ReservationID || left.AgreementDigest != right.AgreementDigest ||
+		left.ComputeUnits != right.ComputeUnits || left.SpendAtomic != right.SpendAtomic ||
+		left.LockedCapitalAtomic != right.LockedCapitalAtomic || left.ReceivableAtomic != right.ReceivableAtomic ||
+		left.MaximumLossAtomic != right.MaximumLossAtomic || left.Released != right.Released ||
+		(left.Asset == nil) != (right.Asset == nil) {
+		return false
+	}
+	return left.Asset == nil || *left.Asset == *right.Asset
 }
 
 type PortfolioLimits struct {
@@ -219,23 +274,29 @@ const (
 )
 
 type EngagementRecord struct {
-	Agreement                commerce.AgentAgreement                 `json:"agreement"`
-	AgreementDigest          string                                  `json:"agreement_digest"`
-	ProposerAgentID          string                                  `json:"proposer_agent_id"`
-	ProposalEventID          string                                  `json:"proposal_event_id"`
-	ProposalActionID         string                                  `json:"proposal_action_id"`
-	State                    EngagementState                         `json:"state"`
-	StateRevision            uint64                                  `json:"state_revision"`
-	ReservationID            string                                  `json:"reservation_id,omitempty"`
-	ExecutionID              string                                  `json:"execution_id,omitempty"`
-	FundingEvidence          []string                                `json:"funding_evidence,omitempty"`
-	ExecutionEvidence        []string                                `json:"execution_evidence,omitempty"`
-	DeliveryEvidence         []string                                `json:"delivery_evidence,omitempty"`
-	DeliveryEventID          string                                  `json:"delivery_event_id,omitempty"`
-	SettlementEvidence       []string                                `json:"settlement_evidence,omitempty"`
-	AcceptedPrivateInputs    []commerce.AcceptedPrivateContentRecord `json:"accepted_private_inputs,omitempty"`
-	BoundPrivateInputs       []BoundAcceptedPrivateInput             `json:"bound_private_inputs,omitempty"`
-	PrivateHandoffChallenges []BoundPrivateHandoffChallenge          `json:"private_handoff_challenges,omitempty"`
+	Agreement        commerce.AgentAgreement `json:"agreement"`
+	AgreementDigest  string                  `json:"agreement_digest"`
+	ProposerAgentID  string                  `json:"proposer_agent_id"`
+	ProposalEventID  string                  `json:"proposal_event_id"`
+	ProposalActionID string                  `json:"proposal_action_id"`
+	// NegotiationAmbiguous is a durable fail-closed observation. It is
+	// independent of lifecycle State so a body fork discovered after an
+	// Agreement was accepted cannot erase already-incurred obligations.
+	NegotiationAmbiguous       bool                                    `json:"negotiation_ambiguous,omitempty"`
+	NegotiationConflictCodes   []string                                `json:"negotiation_conflict_codes,omitempty"`
+	NegotiationConflictDigests []string                                `json:"negotiation_conflict_digests,omitempty"`
+	State                      EngagementState                         `json:"state"`
+	StateRevision              uint64                                  `json:"state_revision"`
+	ReservationID              string                                  `json:"reservation_id,omitempty"`
+	ExecutionID                string                                  `json:"execution_id,omitempty"`
+	FundingEvidence            []string                                `json:"funding_evidence,omitempty"`
+	ExecutionEvidence          []string                                `json:"execution_evidence,omitempty"`
+	DeliveryEvidence           []string                                `json:"delivery_evidence,omitempty"`
+	DeliveryEventID            string                                  `json:"delivery_event_id,omitempty"`
+	SettlementEvidence         []string                                `json:"settlement_evidence,omitempty"`
+	AcceptedPrivateInputs      []commerce.AcceptedPrivateContentRecord `json:"accepted_private_inputs,omitempty"`
+	BoundPrivateInputs         []BoundAcceptedPrivateInput             `json:"bound_private_inputs,omitempty"`
+	PrivateHandoffChallenges   []BoundPrivateHandoffChallenge          `json:"private_handoff_challenges,omitempty"`
 	// ObligationRuntime is the durable, obligation-scoped execution and
 	// settlement projection. Agreement is still the authority; this map only
 	// records verified progress and must contain exactly one entry for every
@@ -921,7 +982,8 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 		initializeObligationRuntime(&engagement)
 		computed, err := commerce.AgreementBodyDigest(engagement.Agreement.Body)
 		if err != nil || computed != digest || engagement.AgreementDigest != digest || engagement.StateRevision == 0 ||
-			engagement.LastTransitionAtUnix == 0 || !knownEngagementState(engagement.State) {
+			engagement.LastTransitionAtUnix == 0 || !knownEngagementState(engagement.State) ||
+			!validNegotiationConflictRecord(engagement) {
 			return errors.New("personal authority engagement ledger is invalid")
 		}
 		if err := validateObligationRuntime(engagement); err != nil {

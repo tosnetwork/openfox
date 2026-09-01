@@ -58,7 +58,7 @@ func (service PaidDemandProviderService) IssueOffer(ctx context.Context, binding
 		now = service.Now().UTC()
 	}
 	record, found := service.Engine.Authority.Engagement(binding.AgreementBodyDigest)
-	if !found || record.ReservationID == "" ||
+	if !found || record.NegotiationAmbiguous || record.ReservationID == "" ||
 		(record.State != EngagementAuthorizing && record.State != EngagementReserved) ||
 		binding.ProviderAgentID != service.Engine.AgentID || binding.BuyerAgentID != recipientAgentID ||
 		commerce.ValidatePaidDemandAgreementBinding(record.Agreement.Body, binding) != nil ||
@@ -105,13 +105,16 @@ func (service PaidDemandProviderService) IssueOffer(ctx context.Context, binding
 	}
 	if admitted.State == commerce.ActionAccepted || admitted.State == commerce.ActionTerminal {
 		current, exists := service.Engine.Authority.Engagement(binding.AgreementBodyDigest)
-		if !exists || !hasPaidDemandProfileEvidence(current, service.Engine.AgentID) {
+		if !exists || current.NegotiationAmbiguous || !hasPaidDemandProfileEvidence(current, service.Engine.AgentID) {
 			return empty, admitted, EngagementRecord{}, errors.New("completed Provider Offer lacks durable Agreement evidence")
 		}
 		return offer, admitted, current, nil
 	}
 	if admitted.State != commerce.ActionPrepared {
 		return empty, admitted, EngagementRecord{}, errors.New("Provider Offer action is not prepared")
+	}
+	if current, exists := service.Engine.Authority.Engagement(binding.AgreementBodyDigest); !exists || current.NegotiationAmbiguous {
+		return empty, admitted, EngagementRecord{}, errors.New("Provider Offer Agreement lineage became ambiguous before send")
 	}
 	resolved, err := service.Engine.Sink.Submit(ctx, action, fence, fields, effectRequest, message)
 	if err != nil {

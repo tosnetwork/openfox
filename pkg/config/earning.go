@@ -377,6 +377,7 @@ func (settings EarningSettings) Validate() error {
 			!earningRawWC0Pattern.MatchString(escrow.BuyerAddress) || !earningRawWC0Pattern.MatchString(escrow.ProviderWallet) ||
 			!earningRawWC0Pattern.MatchString(escrow.RelayerAddress) || escrow.ActionWallet == "" ||
 			escrow.ProviderActionWallet == "" || escrow.DeploymentWallet == "" ||
+			len(escrow.CustodyQuorumConfigPaths) != 2 ||
 			escrow.NetworkGlobalID == 0 || escrow.NetworkWorkchainID != 0 ||
 			escrow.DeploymentNanoTOS == 0 || escrow.DeploymentNanoTOS > 1_000_000_000 ||
 			escrow.ActionNanoTOS == 0 || escrow.ActionNanoTOS > 1_000_000_000 || escrow.FeeReserveNanoTOS == 0 ||
@@ -393,6 +394,13 @@ func (settings EarningSettings) Validate() error {
 			if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 				return errors.New("Paid Demand code, custody, and journal paths must be canonical and absolute")
 			}
+		}
+		seenCustodyConfigs := map[string]bool{escrow.ConfigPath: true}
+		for _, path := range escrow.CustodyQuorumConfigPaths {
+			if !filepath.IsAbs(path) || filepath.Clean(path) != path || seenCustodyConfigs[path] {
+				return errors.New("Paid Demand custody quorum configs must be distinct canonical absolute paths")
+			}
+			seenCustodyConfigs[path] = true
 		}
 		transportURL, err := url.Parse(escrow.TransportBaseURL)
 		if err != nil || transportURL == nil || transportURL.Host == "" || transportURL.User != nil || transportURL.Path != "" ||

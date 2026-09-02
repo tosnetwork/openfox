@@ -256,7 +256,13 @@ func (service PaidDemandProviderSettlement) submitRelease(ctx context.Context, r
 	if err != nil {
 		return err
 	}
-	return service.ActionSender.BroadcastWalletAction(ctx, prepared)
+	if err := service.ActionSender.BroadcastWalletAction(ctx, prepared); err != nil {
+		return err
+	}
+	if resolver, ok := service.ActionSender.(buyersdk.WalletActionResolver); ok {
+		return resolver.ResolveWalletAction(ctx, prepared)
+	}
+	return nil
 }
 
 func (service PaidDemandProviderSettlement) waitForRelease(ctx context.Context, address, quote, receipt string) (*toschain.FinalizedEscrowV2, bool, error) {

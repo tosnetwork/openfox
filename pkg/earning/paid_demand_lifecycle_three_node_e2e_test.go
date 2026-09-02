@@ -31,13 +31,41 @@ import (
 )
 
 const (
+	// threeNodeBuyerAccount remains the fixed legacy three-role pilot fixture.
+	// The autonomous Paid Demand lifecycle below loads its current-genesis
+	// buyer from qualified deployment evidence instead.
 	threeNodeBuyerAccount    = "0:56ec4f04ad66184f4fecef3776a219745ac5d9acd3288129d28aa9e4c47e5670"
-	threeNodeProviderAccount = "0:6947f92e3d5605e2e6bfbbd307a70918945bb2836237455aec1644aa3f23ae0c"
-	threeNodeAssetMaster     = "0:9592a7f9df238f96d08cc3485047e080b3e2c9f7d96e5db662269dc95271033c"
 	threeNodeAssetMasterCode = "tvm-cell-sha256:18d5b6e780ff0bb451254c2c760d09d6e485638cd1407abb97078752c3c1c9ee"
 	threeNodeAssetWalletCode = "tvm-cell-sha256:8f452d7a4dfd74066b682365177259ed05734435be76b5fd4bd5d8af2b7c3d68"
 	threeNodeRegistryCode    = "tvm-cell-sha256:600f2fda83462bc86a1c32af930c35a4fc8f80f1d2966f5593ceba217a91ffa0"
 )
+
+type lifecycleStablecoinDeploymentEvidence struct {
+	Schema  string `json:"schema"`
+	Status  string `json:"status"`
+	Verdict string `json:"verdict"`
+	Network struct {
+		NetworkID       string `json:"network_id"`
+		GenesisRootHash string `json:"genesis_root_hash"`
+		GenesisFileHash string `json:"genesis_file_hash"`
+	} `json:"network"`
+	Asset struct {
+		Decimals           uint32 `json:"decimals"`
+		MasterContractRaw  string `json:"master_contract_raw"`
+		TestBuyerWalletRaw string `json:"test_buyer_wallet_raw"`
+	} `json:"asset"`
+	Release struct {
+		MinterCodeHash         string `json:"minter_code_hash"`
+		WalletCodeHash         string `json:"wallet_code_hash"`
+		DeploymentScriptSHA256 string `json:"deployment_script_sha256"`
+	} `json:"release"`
+	EndpointVerification []struct {
+		Endpoint   string `json:"endpoint"`
+		Checkpoint struct {
+			Seqno uint32 `json:"seqno"`
+		} `json:"checkpoint"`
+	} `json:"endpoint_verification"`
+}
 
 type lifecycleBridgeSink struct {
 	store   *economicaction.Store
@@ -100,9 +128,15 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
 	tosRepository := mustEnv(t, "OPENFOX_TOS_REPO")
-	network := &nativev1.NetworkDomain{NetworkId: "tos:local-three-node",
-		GenesisRootHash: "sha256:c1219a54e2535252bd31275b962f70e605b5f22f6cd09b615f203082a5eb1308",
-		GenesisFileHash: "sha256:22b2a7bcc471c3da0ddaea29ff9df2611ff6081198969989703e728ff98fa130"}
+	deployment := lifecycleLoadStablecoinDeployment(t,
+		mustEnv(t, "OPENFOX_PAID_DEMAND_DEPLOYMENT_EVIDENCE"))
+	network := &nativev1.NetworkDomain{NetworkId: deployment.Network.NetworkID,
+		GenesisRootHash: deployment.Network.GenesisRootHash,
+		GenesisFileHash: deployment.Network.GenesisFileHash}
+	buyerAccount := deployment.Asset.TestBuyerWalletRaw
+	providerAccount := lifecycleRawAccount(t, mustEnv(t, "OPENFOX_PAID_DEMAND_PROVIDER_ACCOUNT"))
+	assetMaster := deployment.Asset.MasterContractRaw
+	relayerAccount := lifecycleRawAccount(t, mustEnv(t, "OPENFOX_PAID_DEMAND_RELAYER_ACCOUNT"))
 	custodyNetwork := &commerce.CustodyNetworkDomain{NetworkID: network.NetworkId, GlobalID: 3,
 		ZeroStateRootHash: network.GenesisRootHash, ZeroStateFileHash: network.GenesisFileHash, WorkchainID: 0}
 	endpoints := []string{mustEnv(t, "OPENFOX_TOS_RPC_1"), mustEnv(t, "OPENFOX_TOS_RPC_2"), mustEnv(t, "OPENFOX_TOS_RPC_3")}
@@ -116,6 +150,20 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		t.Fatalf("stablecoin wallet code hash=%s", got)
 	}
 	checkpoint := privateTempDir(t)
+	retainedEvidenceDirectory := strings.TrimSpace(os.Getenv("OPENFOX_PAID_DEMAND_LIFECYCLE_EVIDENCE_DIR"))
+	if retainedEvidenceDirectory != "" {
+		if !filepath.IsAbs(retainedEvidenceDirectory) || filepath.Clean(retainedEvidenceDirectory) != retainedEvidenceDirectory {
+			t.Fatal("Paid Demand lifecycle evidence directory must be absolute and clean")
+		}
+		if err := os.MkdirAll(retainedEvidenceDirectory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(retainedEvidenceDirectory)
+		if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+			t.Fatal("Paid Demand lifecycle evidence directory must be owner-private")
+		}
+		checkpoint = retainedEvidenceDirectory
+	}
 	escrowResolver, err := toschain.NewEscrowResolver(chain, network,
 		"tvm-cell-sha256:"+hex.EncodeToString(escrowCode.Hash()), filepath.Join(checkpoint, "escrow.checkpoint"))
 	if err != nil {
@@ -182,8 +230,8 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		Gates: FeatureGates{Contact: true, Agreement: true, TOSEscrow: true}, Authority: buyer}
 
 	executionKey := lifecycleKey("provider-execution")
-	public := paiddemand.PublicTermsV1{SchemaVersion: 1, ProviderWallet: threeNodeProviderAccount,
-		AssetMasterAddress: threeNodeAssetMaster, AssetMasterCodeHash: threeNodeAssetMasterCode,
+	public := paiddemand.PublicTermsV1{SchemaVersion: 1, ProviderWallet: providerAccount,
+		AssetMasterAddress: assetMaster, AssetMasterCodeHash: threeNodeAssetMasterCode,
 		AssetWalletCodeHash: threeNodeAssetWalletCode, AssetDecimals: 6, CapabilityID: capabilityID,
 		CapabilityVersion: capabilityVersion, ExecutionSignerEd25519: executionKey.Public().(ed25519.PublicKey),
 		TransportBinding: nativecore.TransportBindingV1{SecurityMode: nativecore.TransportLoopbackHTTP,
@@ -195,18 +243,18 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	providerIdentityKey := lifecycleKey("provider-intent")
-	intent := lifecycleSupplyIntent(t, network.NetworkId, providerID, publicCanonical, now, providerIdentityKey)
+	intent := lifecycleSupplyIntent(t, network.NetworkId, providerID, assetMaster, publicCanonical, now, providerIdentityKey)
 	intentDigest, _ := commerce.IntentBodyDigest(intent.Body)
 	store, err := OpenPaidDemandNegotiationStore(privateTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiler := PaidDemandSupplyAgreementCompiler{Network: network, BuyerWallet: threeNodeBuyerAccount, Store: store}
+	compiler := PaidDemandSupplyAgreementCompiler{Network: network, BuyerWallet: buyerAccount, Store: store}
 	application := commerce.IntentApplication{SchemaVersion: 1, IntentDigest: intentDigest,
 		IntentIssuerAgentID: providerID, ApplicantAgentID: buyerID,
 		Message:          "Buy one bounded review for 5000000 atomic units.",
 		SettlementOffers: []commerce.SettlementPreference{{AdapterURI: paiddemand.SettlementAdapterURI, Parameters: publicCanonical}},
-		ProposedAmount: &commerce.AgreementAmount{AssetNamespace: "tos.contract", AssetIdentifier: threeNodeAssetMaster,
+		ProposedAmount: &commerce.AgreementAmount{AssetNamespace: "tos.contract", AssetIdentifier: assetMaster,
 			AmountAtomic: "5000000", Unit: "atomic"}, ExpiresAtUnix: uint64(now.Add(75 * time.Minute).Unix())}
 	candidate := CandidateAssessment{IntentDigest: intentDigest, Intent: intent, CarrierIDs: []string{"carrier:a", "carrier:b"},
 		Decision: EconomicDecision{Eligible: true, ExpectedRevenueAtomic: "5000000"}, Inventory: lifecycleInventory("owner:buyer", buyerID, now)}
@@ -292,6 +340,8 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 	configPath := mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG")
 	executable := mustEnv(t, "OPENFOX_TOSCTL")
 	vaultURL := mustEnv(t, "VAULT_URL")
+	quorumConfigPaths := []string{mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_2"),
+		mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_3")}
 	buyerCustodyDirectory := filepath.Join(checkpoint, "buyer-custody")
 	providerCustodyDirectory := filepath.Join(checkpoint, "provider-custody")
 	lifecycleBindAgentWallet(t, executable, configPath, vaultURL, "payer-agent", "buyer-runtime",
@@ -300,26 +350,27 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		"authority:provider", providerAuthorityKey, providerCustodyDirectory)
 	deployer, err := buyersdk.NewTOSCTLPaidDemandEscrowDeployer(buyersdk.TOSCTLPaidDemandEscrowDeployerConfig{
 		BinaryPath: executable, ConfigPath: configPath, WalletName: "operator-funder",
-		RelayerAddress:  "0:3a1b3f9b233abda0afc5657f53bc6bea9d577f622d294805017d3e226560ebc1",
-		AttachedNanoTOS: 200_000_000, Timeout: 15 * time.Second, VaultURL: vaultURL})
+		RelayerAddress:  relayerAccount,
+		AttachedNanoTOS: 200_000_000, Timeout: 15 * time.Second, VaultURL: vaultURL,
+		AcknowledgeUnpinnedManualBroadcast: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	buyerSender, err := buyersdk.NewTOSCTLWalletActionSender(buyersdk.TOSCTLWalletActionSenderConfig{
 		BinaryPath: executable, ConfigPath: configPath, WalletName: "payer-agent", FeeReserveNanoTOS: 50_000_000,
-		VaultURL: vaultURL, JournalDirectory: buyerCustodyDirectory})
+		VaultURL: vaultURL, JournalDirectory: buyerCustodyDirectory, QuorumConfigPaths: quorumConfigPaths})
 	if err != nil {
 		t.Fatal(err)
 	}
 	providerSender, err := buyersdk.NewTOSCTLWalletActionSender(buyersdk.TOSCTLWalletActionSenderConfig{
 		BinaryPath: executable, ConfigPath: configPath, WalletName: "provider-agent", FeeReserveNanoTOS: 50_000_000,
-		VaultURL: vaultURL, JournalDirectory: providerCustodyDirectory})
+		VaultURL: vaultURL, JournalDirectory: providerCustodyDirectory, QuorumConfigPaths: quorumConfigPaths})
 	if err != nil {
 		t.Fatal(err)
 	}
 	paidBuyer, err := buyersdk.NewPaidDemandBuyer(buyersdk.PaidDemandBuyerConfig{NativeClient: nativeClient,
 		AssetResolver: assetResolver, Network: network, RegistryCodeHash: threeNodeRegistryCode,
-		BuyerAddress: threeNodeBuyerAccount, AssetWalletCode: walletCode,
+		BuyerAddress: buyerAccount, AssetWalletCode: walletCode,
 		BudgetLimits:   buyersdk.BudgetLimits{Window: time.Hour, MaxPurchases: 2, MaxPerPurchaseAtomic: "10000000", MaxTotalAtomic: "20000000"},
 		EscrowResolver: escrowResolver, ProviderOfferResolver: offerAuthorities, EscrowCode: escrowCode, Deployer: deployer,
 		ActionSender: buyerSender, EffectAuthorizer: PaidDemandCustodyAuthorizer{Engine: buyerEngine, Fence: buyerFence,
@@ -441,9 +492,81 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 	}
 	t.Logf("autonomous lifecycle settled agreement=%s escrow=%s checkpoint=%d tx=%s",
 		agreementDigest, purchase.Escrow.Address, resolved.Reference.FinalizedCheckpoint, resolved.Reference.TransactionHash)
+	if retainedEvidenceDirectory != "" {
+		writeCampaignJSON(t, filepath.Join(retainedEvidenceDirectory, "paid-demand-lifecycle.json"), map[string]any{
+			"schema":                     "tos.openfox.paid-demand-current-genesis-lifecycle.v1",
+			"completed_at":               time.Now().UTC().Format(time.RFC3339Nano),
+			"network":                    network,
+			"buyer_account":              buyerAccount,
+			"provider_account":           providerAccount,
+			"relayer_account":            relayerAccount,
+			"asset_master":               assetMaster,
+			"agreement_digest":           agreementDigest,
+			"agreement_version":          body.Version,
+			"escrow_address":             purchase.Escrow.Address,
+			"escrow_status":              resolved.State.Status,
+			"finalized_checkpoint":       resolved.Reference.FinalizedCheckpoint,
+			"finalized_transaction_hash": resolved.Reference.TransactionHash,
+			"provider_credit_atomic":     "5000000",
+			"deployment_boundary":        "test-only acknowledged unpinned manual broadcast; autonomous pinned deployment relay remains unimplemented",
+			"claim_scope":                "same-host current-genesis application happy path; no autonomous deployment-custody, external-demand, or independent-operator claim",
+			"verdict":                    "PASS_APPLICATION_LIFECYCLE_WITH_MANUAL_DEPLOYMENT_BOUNDARY",
+		})
+	}
 }
 
-func lifecycleSupplyIntent(t *testing.T, network, providerID string, public []byte, now time.Time,
+func lifecycleLoadStablecoinDeployment(t *testing.T, path string) lifecycleStablecoinDeploymentEvidence {
+	t.Helper()
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		t.Fatal("Paid Demand deployment evidence path must be absolute and clean")
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 ||
+		info.Size() <= 0 || info.Size() > 2<<20 {
+		t.Fatal("Paid Demand deployment evidence must be an owner-private bounded regular file")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || rejectDuplicateJSONKeys(raw) != nil {
+		t.Fatal("Paid Demand deployment evidence is unreadable or ambiguous")
+	}
+	var evidence lifecycleStablecoinDeploymentEvidence
+	if json.Unmarshal(raw, &evidence) != nil ||
+		evidence.Schema != "tos.service.test-stablecoin-deployment.v1" ||
+		evidence.Status != "active-test-only" || evidence.Verdict != "PASS_TEST_STABLECOIN_DEPLOYMENT" ||
+		evidence.Network.NetworkID != "tos:local-three-node" ||
+		!validSHA256Digest(evidence.Network.GenesisRootHash) ||
+		!validSHA256Digest(evidence.Network.GenesisFileHash) || evidence.Asset.Decimals != 6 ||
+		evidence.Release.MinterCodeHash != threeNodeAssetMasterCode ||
+		evidence.Release.WalletCodeHash != threeNodeAssetWalletCode ||
+		!validSHA256Digest(evidence.Release.DeploymentScriptSHA256) ||
+		len(evidence.EndpointVerification) != 3 {
+		t.Fatal("Paid Demand deployment evidence does not qualify the current test asset")
+	}
+	evidence.Asset.MasterContractRaw = lifecycleRawAccount(t, evidence.Asset.MasterContractRaw)
+	evidence.Asset.TestBuyerWalletRaw = lifecycleRawAccount(t, evidence.Asset.TestBuyerWalletRaw)
+	endpoints := map[string]bool{}
+	for _, observation := range evidence.EndpointVerification {
+		if observation.Endpoint == "" || endpoints[observation.Endpoint] || observation.Checkpoint.Seqno == 0 {
+			t.Fatal("Paid Demand deployment evidence has incomplete endpoint corroboration")
+		}
+		endpoints[observation.Endpoint] = true
+	}
+	return evidence
+}
+
+func lifecycleRawAccount(t *testing.T, value string) string {
+	t.Helper()
+	workchain, account, found := strings.Cut(strings.ToLower(strings.TrimSpace(value)), ":")
+	if !found || workchain != "0" || len(account) != 64 {
+		t.Fatalf("Paid Demand account is not a canonical workchain-0 address: %q", value)
+	}
+	if _, err := hex.DecodeString(account); err != nil {
+		t.Fatalf("Paid Demand account is not lowercase hex: %q", value)
+	}
+	return workchain + ":" + account
+}
+
+func lifecycleSupplyIntent(t *testing.T, network, providerID, assetMaster string, public []byte, now time.Time,
 	key ed25519.PrivateKey) commerce.SignedAgentIntent {
 	t.Helper()
 	detail := []byte("Perform one bounded source-code security review and return a content-addressed report.")
@@ -456,7 +579,7 @@ func lifecycleSupplyIntent(t *testing.T, network, providerID string, public []by
 			IntentModes: []commerce.IntentMode{commerce.IntentOffer}, SubjectClasses: []commerce.SubjectClass{commerce.SubjectService},
 			TaxonomyPaths: []string{"tos.taxonomy.v1/service/security/review"}, Keywords: []commerce.IntentKeyword{{Text: "review", Language: "en"}, {Text: "security", Language: "en"}},
 			ValueState: commerce.ValueSpecified, ValueHints: []commerce.ValueHint{{Role: "price", AssetNamespace: "tos.contract",
-				AssetIdentifier: threeNodeAssetMaster, AmountKind: "exact", MinimumDecimal: "5000000", MaximumDecimal: "5000000", Unit: "atomic"}},
+				AssetIdentifier: assetMaster, AmountKind: "exact", MinimumDecimal: "5000000", MaximumDecimal: "5000000", Unit: "atomic"}},
 			Schedule: commerce.IntentSchedule{Flexibility: "flexible"}, FulfillmentModes: []string{"remote"},
 			CapabilityHints: []commerce.CapabilityHint{{CapabilityNamespace: "tos.native", CapabilityIdentifier: "security-review", Relation: "offered"}}},
 			DetailDescriptor: commerce.ContentDescriptor{ContentType: "text/plain", ContentDigest: "sha256:" + hex.EncodeToString(detailHash[:]),

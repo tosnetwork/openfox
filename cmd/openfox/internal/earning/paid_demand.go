@@ -134,14 +134,15 @@ func openPaidDemandRuntime(settings config.EarningSettings, engine *openfoxearni
 	actionSender, err := buyersdk.NewTOSCTLWalletActionSender(buyersdk.TOSCTLWalletActionSenderConfig{
 		BinaryPath: configured.Executable, ConfigPath: configured.ConfigPath, WalletName: configured.ActionWallet,
 		FeeReserveNanoTOS: configured.FeeReserveNanoTOS, VaultURL: configured.VaultURL,
-		JournalDirectory: configured.CustodyJournalDirectory})
+		JournalDirectory: configured.CustodyJournalDirectory, QuorumConfigPaths: configured.CustodyQuorumConfigPaths})
 	if err != nil {
 		return nil, err
 	}
 	providerSender, err := buyersdk.NewTOSCTLWalletActionSender(buyersdk.TOSCTLWalletActionSenderConfig{
 		BinaryPath: configured.Executable, ConfigPath: configured.ConfigPath, WalletName: configured.ProviderActionWallet,
 		FeeReserveNanoTOS: configured.FeeReserveNanoTOS, VaultURL: configured.VaultURL,
-		JournalDirectory: filepath.Join(configured.CustodyJournalDirectory, "provider")})
+		JournalDirectory:  filepath.Join(configured.CustodyJournalDirectory, "provider"),
+		QuorumConfigPaths: configured.CustodyQuorumConfigPaths})
 	if err != nil {
 		return nil, err
 	}

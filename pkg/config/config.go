@@ -1177,6 +1177,7 @@ type EarningTOSEscrowSettings struct {
 	RelayerAddress             string                                  `json:"relayer_address,omitempty"`
 	VaultURL                   string                                  `json:"vault_url,omitempty"`
 	CustodyJournalDirectory    string                                  `json:"custody_journal_directory,omitempty"`
+	CustodyQuorumConfigPaths   []string                                `json:"custody_quorum_config_paths,omitempty"`
 	NetworkGlobalID            int32                                   `json:"network_global_id,omitempty"`
 	NetworkWorkchainID         int32                                   `json:"network_workchain_id,omitempty"`
 	DeploymentNanoTOS          uint64                                  `json:"deployment_nanotos,omitempty"`

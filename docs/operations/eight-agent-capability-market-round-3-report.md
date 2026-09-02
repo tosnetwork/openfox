@@ -9,10 +9,6 @@ native TOS. Separate lanes exercised Gift gratuities and Validator reward
 attribution. A read-only Paid Demand preflight failed closed before making any
 chain mutation.
 
-The capability structure was informed by current public UUMIT examples and
-documentation. The experiment did not call UUMIT APIs and does not claim UUMIT
-interoperability or certification.
-
 ## Result boundary
 
 | Lane | Result | Evidence-bounded conclusion |
@@ -284,40 +280,6 @@ unattributed. A first rerun then stopped before readiness because the original
 zero elections and is not counted. The final rerun used an
 experiment-only 136,120 TOS faucet; default launch and production supply
 settings were not changed.
-
-## Structural comparison with UUMIT
-
-The design deliberately remained a generic market grammar rather than adding
-one API for every business. UUMIT's public material describes a
-Demand→Capability→Transaction→Settlement flow and a
-Create→Freeze→Accept→Deliver→Confirm-and-Settle lifecycle in its
-[getting-started documentation](https://uumit.com/en/docs/getting-started/).
-Its [Agent Card documentation](https://uumit.com/en/docs/protocol/agent-card/)
-exposes discoverable capability, price, quality, and delivery metadata, while
-its [Cursor/MCP documentation](https://uumit.com/en/docs/sdk/cursor-mcp/)
-lists discovery, matching, wallet, pricing, creation, delivery, and settlement
-tools.
-
-UUMIT also presents four broad delivery forms—static content, dynamic
-AI/crawler output, access rights, and service confirmation such as code review
-or consulting—in its
-[delivery explanation](https://www.uumit.com/en/blog/delivery-explained/),
-and a public example deploys a
-[per-query real-time FX Agent](https://uumit.com/blog/deploy-first-agent/).
-
-Round 3 exercised a structurally similar idea locally:
-
-| Market concern | UUMIT public pattern | OpenFox Round 3 evidence |
-|---|---|---|
-| Discovery | capability cards and search/match | two Carrier views of heterogeneous signed Intents |
-| Selection | demand/capability matching | each buyer's own AI fetched, screened, selected, skipped, or declined |
-| Commercial terms | price and transaction lifecycle | ranged offers, bounded dialogue, signed counteroffer lineage, deterministic owner caps |
-| Delivery | several service-output forms | bounded synthetic reports with deliverable digests |
-| Settlement | transaction and settlement lifecycle | direct native TOS under signed Agreement; separate Gift gratuity lane |
-
-No UUMIT account, authentication, API, MCP tool, or settlement was used. The
-comparison supports the generic capability-market shape; it is not evidence
-of wire-level compatibility.
 
 ## What the Agents concluded
 

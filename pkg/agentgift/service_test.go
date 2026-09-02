@@ -96,12 +96,13 @@ func (f *fakeMessenger) SendEstablishedDirect(_ context.Context, r, k string, b 
 }
 
 type fakeCustody struct {
-	boc          []byte
-	prepareCalls int
-	signCalls    int
-	cancelCalls  int
-	failSign     bool
-	failCancel   bool
+	boc             []byte
+	resolveRequests []ResolveRequest
+	prepareCalls    int
+	signCalls       int
+	cancelCalls     int
+	failSign        bool
+	failCancel      bool
 }
 
 func (f *fakeCustody) SenderAccount(context.Context) (string, error) {
@@ -135,7 +136,11 @@ func (f *fakeCustody) SignNativeGift(context.Context, SignRequest) ([]byte, erro
 	}
 	return append([]byte(nil), f.boc...), nil
 }
-func (f *fakeCustody) ResolveNativeGift(context.Context, ResolveRequest) error { return nil }
+func (f *fakeCustody) ResolveNativeGift(_ context.Context, request ResolveRequest) error {
+	request.ExactSignedBOC = append([]byte(nil), request.ExactSignedBOC...)
+	f.resolveRequests = append(f.resolveRequests, request)
+	return nil
+}
 func (f *fakeCustody) CancelSeqno(context.Context, CancelRequest) ([]byte, error) {
 	f.cancelCalls++
 	if f.failCancel {
@@ -262,9 +267,30 @@ func TestSenderRecipientEndToEndAndFinalizedPaid(t *testing.T) {
 	if rr.State != StateBroadcastSubmitted || rr.RetryNotBeforeUnix <= 1_800_000_000 || b.calls != 1 || len(o.reviews) != 1 || o.reviews[0].Action != "send" {
 		t.Fatalf("wrong flow: %+v", rr)
 	}
+	exactSignedBOC := append([]byte(nil), record.ExactSignedBOC...)
+	protocolBOCDigest := record.ExactBOCDigest
+	signedGiftID, globalID := record.SignedGiftID, record.GlobalID
+	controllerEpoch, seqno, validUntil := record.ControllerEpoch, record.Seqno, record.ValidUntil
+	senderAccount, destination, amount := record.SenderAgentAccount, record.DestinationAddress, record.AmountAtomic
 	r.final = StateFinalizedPaid
+	// Finality and custody reconciliation must remain available after the
+	// signed Gift validity has elapsed; it is read-only with respect to chain
+	// submission and must not rebroadcast the exact BOC.
+	sender.now = func() time.Time { return time.Unix(1_800_003_601, 0).UTC() }
 	if record, err = sender.Refresh(ctx, record.IntentID); err != nil || record.State != StateFinalizedPaid {
 		t.Fatalf("sender finality: %+v %v", record, err)
+	}
+	if len(c.resolveRequests) != 1 || !bytes.Equal(c.resolveRequests[0].ExactSignedBOC, exactSignedBOC) ||
+		c.resolveRequests[0].ExactBOCDigest != protocolBOCDigest ||
+		c.resolveRequests[0].SignedGiftID != signedGiftID || c.resolveRequests[0].GlobalID != globalID ||
+		c.resolveRequests[0].ControllerEpoch != controllerEpoch || c.resolveRequests[0].Seqno != seqno ||
+		c.resolveRequests[0].ValidUntil != validUntil ||
+		c.resolveRequests[0].SenderAgentAccount != senderAccount || c.resolveRequests[0].DestinationAddress != destination ||
+		c.resolveRequests[0].AmountAtomic != amount {
+		t.Fatalf("sender finality did not pass the exact durable BOC and tuple to custody: %+v", c.resolveRequests)
+	}
+	if b.calls != 1 {
+		t.Fatalf("expired sender finality reconciliation rebroadcast the exact BOC: calls=%d", b.calls)
 	}
 	if rr, err = recipient.Refresh(ctx, rr.IntentID); err != nil || rr.State != StateFinalizedPaid {
 		t.Fatalf("recipient finality: %+v %v", rr, err)
@@ -279,6 +305,74 @@ func TestSenderRecipientEndToEndAndFinalizedPaid(t *testing.T) {
 	changed = append(changed, 0)
 	if _, conflictErr := recipient.ObserveAndBroadcastOffer(ctx, rr.IntentID, changed); conflictErr == nil {
 		t.Fatal("terminal changed offer did not conflict")
+	}
+}
+
+func TestSenderDraftCrashRecoveryReusesOriginalIntent(t *testing.T) {
+	ctx := context.Background()
+	protocol := fakeProtocol{}
+	resolver := &fakeResolver{recipient: "agent_" + strings.Repeat("b", 64)}
+	messenger := &fakeMessenger{}
+	journal := openTestJournal(t, "sender-draft-crash")
+	create := func(id string, state State, pending PendingEffect, validUntil uint32) Record {
+		t.Helper()
+		intent := RequestIntent{Network: "tos-local", GlobalID: 42, IntentID: id,
+			SenderAgentID: "agent_" + strings.Repeat("a", 64), RecipientAgentID: resolver.recipient,
+			SenderAgentAccount: "-1:" + strings.Repeat("c", 64), AmountAtomic: "1", RequestedValidUntil: validUntil}
+		canonical, requestDigest, err := protocol.CreateAddressRequest(ctx, intent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created, err := journal.Create(Record{IntentID: intent.IntentID, Role: RoleSender, State: state,
+			PendingEffect: pending, Network: intent.Network, GlobalID: intent.GlobalID,
+			SenderAgentID: intent.SenderAgentID, RecipientAgentID: intent.RecipientAgentID,
+			SenderAgentAccount: intent.SenderAgentAccount, AmountAtomic: intent.AmountAtomic,
+			RequestedValidUntil: intent.RequestedValidUntil, RequestDigest: requestDigest,
+			CanonicalRequest: canonical, DisplayMessage: "edge-bound",
+			CreatedAtUnix: 1_799_999_000, UpdatedAtUnix: 1_799_999_000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	valid := create(strings.Repeat("1", 64), StateDraft, EffectNone, 1_800_003_600)
+	expiredDraft := create(strings.Repeat("2", 64), StateDraft, EffectNone, 1_799_999_999)
+	expiredResolved := create(strings.Repeat("3", 64), StateRecipientResolved, EffectNone, 1_799_999_999)
+	unexpectedEffect := create(strings.Repeat("4", 64), StateDraft, EffectSendAddressRequest, 1_800_003_600)
+	directory := filepath.Dir(journal.path)
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenJournal(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	service := newTestService(t, reopened, protocol, resolver, messenger, &fakeCustody{}, &fakeBroadcast{}, &fakeAddress{}, &fakeOwner{})
+
+	if _, err := service.ResumeSenderDraft(ctx, expiredDraft.IntentID); err == nil {
+		t.Fatal("expired sender Draft resumed")
+	}
+	if _, err := service.RequestAddress(ctx, expiredResolved.IntentID); err == nil {
+		t.Fatal("expired recipient-resolved Gift sent an address request")
+	}
+	if _, err := service.ResumeSenderDraft(ctx, unexpectedEffect.IntentID); err == nil {
+		t.Fatal("sender Draft with an unexpected pending effect resumed")
+	}
+	if len(messenger.sent) != 0 {
+		t.Fatal("rejected sender Draft recovery emitted a message")
+	}
+	recovered, err := service.ResumeSenderDraft(ctx, valid.IntentID)
+	if err != nil || recovered.IntentID != valid.IntentID || recovered.State != StateRecipientResolved || len(reopened.List()) != 4 {
+		t.Fatalf("recover original sender Draft: record=%+v err=%v count=%d", recovered, err, len(reopened.List()))
+	}
+	again, err := service.ResumeSenderDraft(ctx, valid.IntentID)
+	if err != nil || again.IntentID != valid.IntentID || again.State != StateRecipientResolved || len(reopened.List()) != 4 {
+		t.Fatalf("idempotent sender Draft recovery: record=%+v err=%v count=%d", again, err, len(reopened.List()))
+	}
+	requested, err := service.RequestAddress(ctx, valid.IntentID)
+	if err != nil || requested.State != StateAddressRequested || requested.IntentID != valid.IntentID || len(messenger.sent) != 1 {
+		t.Fatalf("recovered sender Draft did not continue: record=%+v err=%v sends=%d", requested, err, len(messenger.sent))
 	}
 }
 

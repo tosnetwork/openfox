@@ -79,6 +79,50 @@ func (s *Service) StartSender(ctx context.Context, proposal ModelProposal, netwo
 	return s.journal.Update(intentID, func(v *Record) error { v.State = StateRecipientResolved; v.UpdatedAtUnix = now.Unix(); return nil })
 }
 
+// ResumeSenderDraft completes the only journal transition that can be left
+// unfinished if StartSender stops after durably creating its record. It never
+// creates an intent and accepts only the original sender Draft (or the exact
+// already-completed transition), so callers cannot use recovery to replace or
+// rewrite a Gift.
+func (s *Service) ResumeSenderDraft(ctx context.Context, intent string) (Record, error) {
+	if s == nil || ctx == nil || intent == "" {
+		return Record{}, errors.New("invalid sender Gift draft recovery")
+	}
+	unlock := s.lockIntent(intent)
+	defer unlock()
+	record, found := s.journal.Get(intent)
+	if !found || record.Role != RoleSender ||
+		(record.State != StateDraft && record.State != StateRecipientResolved) {
+		return Record{}, errors.New("Gift is not a recoverable sender draft")
+	}
+	if record.PendingEffect != EffectNone {
+		return Record{}, errors.New("sender Gift draft has an unexpected side effect")
+	}
+	request, requestDigest, err := s.protocol.InspectAddressRequest(ctx, record.CanonicalRequest)
+	if err != nil || request.Network != record.Network || request.GlobalID != record.GlobalID ||
+		request.IntentID != record.IntentID || request.SenderAgentID != record.SenderAgentID ||
+		request.RecipientAgentID != record.RecipientAgentID || request.SenderAgentAccount != record.SenderAgentAccount ||
+		request.AmountAtomic != record.AmountAtomic || request.RequestedValidUntil != record.RequestedValidUntil ||
+		requestDigest != record.RequestDigest {
+		return Record{}, errors.New("sender Gift draft canonical request conflicts with its journal identity")
+	}
+	if record.State == StateRecipientResolved {
+		return record, nil
+	}
+	if record.RequestedValidUntil <= uint32(s.now().UTC().Unix()) {
+		return Record{}, errors.New("sender Gift draft is expired")
+	}
+	now := s.now().UTC().Unix()
+	return s.journal.Update(intent, func(v *Record) error {
+		if v.State != StateDraft || v.PendingEffect != EffectNone {
+			return errors.New("sender Gift draft changed during recovery")
+		}
+		v.State = StateRecipientResolved
+		v.UpdatedAtUnix = now
+		return nil
+	})
+}
+
 func (s *Service) RequestAddress(ctx context.Context, intent string) (Record, error) {
 	unlock := s.lockIntent(intent)
 	defer unlock()
@@ -87,6 +131,9 @@ func (s *Service) RequestAddress(ctx context.Context, intent string) (Record, er
 		return Record{}, errors.New("Gift is not ready for an address request")
 	}
 	now := s.now().UTC().Unix()
+	if record.RequestedValidUntil <= uint32(now) {
+		return Record{}, errors.New("Gift address request validity expired")
+	}
 	record, err := s.journal.Update(intent, func(v *Record) error {
 		v.State = StateAddressRequested
 		v.PendingEffect = EffectSendAddressRequest
@@ -478,9 +525,12 @@ func (s *Service) Refresh(ctx context.Context, intent string) (Record, error) {
 	}
 	if result.State == StateFinalizedPaid && record.Role == RoleSender {
 		if err := s.custody.ResolveNativeGift(ctx, ResolveRequest{
-			IntentID: record.IntentID, SenderAgentAccount: record.SenderAgentAccount,
+			IntentID: record.IntentID, SignedGiftID: record.SignedGiftID,
+			SenderAgentAccount: record.SenderAgentAccount,
 			DestinationAddress: record.DestinationAddress, AmountAtomic: record.AmountAtomic,
-			ExactBOCDigest: record.ExactBOCDigest,
+			ExactBOCDigest: record.ExactBOCDigest, GlobalID: record.GlobalID,
+			ControllerEpoch: record.ControllerEpoch, Seqno: record.Seqno, ValidUntil: record.ValidUntil,
+			ExactSignedBOC: append([]byte(nil), record.ExactSignedBOC...),
 		}); err != nil {
 			unknown, updateErr := s.journal.Update(intent, func(v *Record) error {
 				v.State = StateFinalityUnknown

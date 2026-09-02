@@ -145,7 +145,11 @@ type CancelRequest struct {
 	Seqno, ValidUntil                                                    uint32
 }
 type ResolveRequest struct {
-	IntentID, SenderAgentAccount, DestinationAddress, AmountAtomic, ExactBOCDigest string
+	IntentID, SignedGiftID, SenderAgentAccount, DestinationAddress, AmountAtomic, ExactBOCDigest string
+	GlobalID                                                                                     int32
+	ControllerEpoch                                                                              uint64
+	Seqno, ValidUntil                                                                            uint32
+	ExactSignedBOC                                                                               []byte
 }
 type CustodyReview struct {
 	Network, RecipientAgentID, SenderAgentAccount, OwnerWallet, ControllerKeyID, DeploymentID string

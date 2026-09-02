@@ -419,9 +419,21 @@ func (c *TOSCTLGiftCustody) SignNativeGift(ctx context.Context, request openfoxg
 func (c *TOSCTLGiftCustody) ResolveNativeGift(ctx context.Context, request openfoxgift.ResolveRequest) error {
 	amount, err := strconv.ParseUint(request.AmountAtomic, 10, 64)
 	if err != nil || request.IntentID == "" || request.SenderAgentAccount == "" ||
-		request.DestinationAddress == "" || amount == 0 || request.ExactBOCDigest == "" {
+		request.DestinationAddress == "" || amount == 0 || strconv.FormatUint(amount, 10) != request.AmountAtomic ||
+		request.SignedGiftID == "" || request.ExactBOCDigest == "" || request.GlobalID == 0 ||
+		request.ValidUntil == 0 || len(request.ExactSignedBOC) == 0 {
 		return errors.New("nativeimpl: incomplete finalized Gift custody resolution")
 	}
+	parsed, err := protocolgift.ParseAgentNativeSendBOC(request.ExactSignedBOC)
+	if err != nil || parsed.ExactBOCDigest != request.ExactBOCDigest ||
+		parsed.SenderAgentAccount != request.SenderAgentAccount || parsed.DestinationAddress != request.DestinationAddress ||
+		parsed.AmountAtomic != amount || parsed.SignedGiftID != request.SignedGiftID || parsed.GlobalID != request.GlobalID ||
+		parsed.ControllerEpoch != request.ControllerEpoch || parsed.Seqno != request.Seqno ||
+		parsed.ValidUntil != request.ValidUntil {
+		return errors.New("nativeimpl: exact Gift BOC conflicts with the finalized custody tuple")
+	}
+	rawBOCHash := sha256.Sum256(request.ExactSignedBOC)
+	rawBOCDigest := "sha256:" + hex.EncodeToString(rawBOCHash[:])
 	arguments := []string{"--wallet", c.config.WalletName, "--action-id", request.IntentID, "--quorum-config"}
 	arguments = append(arguments, c.config.QuorumConfigPaths...)
 	arguments = append(arguments, "--max-transactions", strconv.FormatUint(uint64(c.config.MaxTransactions), 10))
@@ -445,7 +457,7 @@ func (c *TOSCTLGiftCustody) ResolveNativeGift(ctx context.Context, request openf
 	if decodeStrictJSON(raw, &result) != nil || result.Schema != "tos.agent-account.native-action-finalized.v1" ||
 		result.Wallet != c.config.WalletName || result.ActionID != request.IntentID ||
 		result.SourceAccount != request.SenderAgentAccount || result.Destination != request.DestinationAddress ||
-		result.AmountNanoTOS != amount || result.ExactSignedBOCDigest != request.ExactBOCDigest ||
+		result.AmountNanoTOS != amount || result.ExactSignedBOCDigest != rawBOCDigest ||
 		len(result.NetworkDomain) == 0 || len(result.Quorum) == 0 || len(result.Transaction) == 0 || result.State != "finalized" {
 		return errors.New("nativeimpl: tosctl returned a conflicting Gift custody resolution")
 	}

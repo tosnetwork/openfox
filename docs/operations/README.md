@@ -24,6 +24,12 @@ general deployment guarantee. For current product usage, start with the
   a second three-hour run with atomic chain and validator evidence, seven
   direct settlements, one rational skip, and a disclosed six-trade buyer
   maximum-loss policy failure plus its corrective requirements.
+- [Eight-Agent Capability Market Round 3 Report](eight-agent-capability-market-round-3-report.md):
+  a three-hour
+  AI-led capability market with ranged negotiation, five audited direct-TOS
+  settlements, a separate Gift ring, exact Validator reward-wallet
+  attribution, candid Agent assessments, and a fail-closed Paid Demand
+  preflight.
 - [Bounded Adaptive Earning Campaigns](bounded-adaptive-earning-campaigns.md):
   gated Campaign 1--6 plus trusted-capability and mobile-control objectives,
   conditions, experiment prompts, causal acceptance thresholds, and stop rules

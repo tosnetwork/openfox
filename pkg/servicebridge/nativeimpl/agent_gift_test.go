@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -113,7 +114,19 @@ type agentWorkchainStatusRunner struct {
 	arguments []string
 }
 
+type agentGiftResolveRunner struct {
+	raw       []byte
+	calls     int
+	arguments []string
+}
+
 func (r *agentWorkchainStatusRunner) run(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+	r.arguments = append([]string(nil), arguments...)
+	return append([]byte(nil), r.raw...), nil
+}
+
+func (r *agentGiftResolveRunner) run(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+	r.calls++
 	r.arguments = append([]string(nil), arguments...)
 	return append([]byte(nil), r.raw...), nil
 }
@@ -225,6 +238,71 @@ func TestTOSCTLCustodySelectsWorkchainZeroExplicitly(t *testing.T) {
 	address, err := custody.SenderAccount(context.Background())
 	if err != nil || address != value.Address || !strings.Contains(strings.Join(runner.arguments, " "), "--workchain 0") {
 		t.Fatalf("workchain-zero status failed: %q %v %v", address, err, runner.arguments)
+	}
+}
+
+func TestTOSCTLGiftCustodySeparatesProtocolAndRawBOCDigests(t *testing.T) {
+	boc, err := base64.StdEncoding.DecodeString(rustGiftBOC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := protocolgift.ParseAgentNativeSendBOC(boc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawHash := sha256.Sum256(boc)
+	rawDigest := "sha256:" + hex.EncodeToString(rawHash[:])
+	if parsed.ExactBOCDigest == rawDigest {
+		t.Fatal("protocol and raw BOC digests unexpectedly share semantics")
+	}
+	actionID := strings.Repeat("a", 64)
+	output := func(digest string) []byte {
+		t.Helper()
+		raw, marshalErr := json.Marshal(map[string]any{
+			"schema": "tos.agent-account.native-action-finalized.v1", "wallet": "agent",
+			"action_id": actionID, "source_account": parsed.SenderAgentAccount,
+			"destination": parsed.DestinationAddress, "amount_nanotos": parsed.AmountAtomic,
+			"exact_signed_boc_digest": digest, "network_domain": map[string]any{"network_id": "tos-fixture"},
+			"quorum": map[string]any{"required": 2}, "transaction": map[string]any{"found": true}, "state": "finalized",
+		})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		return raw
+	}
+	runner := &agentGiftResolveRunner{raw: output(rawDigest)}
+	custody := &TOSCTLGiftCustody{config: TOSCTLGiftCustodyConfig{BinaryPath: "/tosctl", ConfigPath: "/config",
+		WalletName: "agent", QuorumConfigPaths: []string{"/node-2", "/node-3"}, MaxTransactions: 1000,
+		Timeout: time.Second}, runner: runner}
+	request := openfoxgift.ResolveRequest{IntentID: actionID, SenderAgentAccount: parsed.SenderAgentAccount,
+		DestinationAddress: parsed.DestinationAddress, AmountAtomic: strconv.FormatUint(parsed.AmountAtomic, 10),
+		SignedGiftID: parsed.SignedGiftID, ExactBOCDigest: parsed.ExactBOCDigest, GlobalID: parsed.GlobalID,
+		ControllerEpoch: parsed.ControllerEpoch, Seqno: parsed.Seqno, ValidUntil: parsed.ValidUntil,
+		ExactSignedBOC: append([]byte(nil), boc...)}
+	if err := custody.ResolveNativeGift(context.Background(), request); err != nil || runner.calls != 1 ||
+		!strings.Contains(strings.Join(runner.arguments, " "), "native-resolve") {
+		t.Fatalf("raw tosctl digest did not resolve a protocol-bound exact BOC: err=%v calls=%d args=%v", err, runner.calls, runner.arguments)
+	}
+
+	runner.raw = output(parsed.ExactBOCDigest)
+	if err := custody.ResolveNativeGift(context.Background(), request); err == nil || runner.calls != 2 {
+		t.Fatal("tosctl protocol-domain digest was confused with its raw BOC digest")
+	}
+	before := runner.calls
+	wrongDigest := request
+	wrongDigest.ExactBOCDigest = rawDigest
+	if err := custody.ResolveNativeGift(context.Background(), wrongDigest); err == nil || runner.calls != before {
+		t.Fatal("raw BOC digest was accepted as the protocol-domain digest")
+	}
+	wrongBytes := request
+	wrongBytes.ExactSignedBOC = append(append([]byte(nil), boc...), 0)
+	if err := custody.ResolveNativeGift(context.Background(), wrongBytes); err == nil || runner.calls != before {
+		t.Fatal("changed exact BOC bytes reached tosctl resolution")
+	}
+	wrongTuple := request
+	wrongTuple.Seqno++
+	if err := custody.ResolveNativeGift(context.Background(), wrongTuple); err == nil || runner.calls != before {
+		t.Fatal("exact BOC with a changed durable tuple reached tosctl resolution")
 	}
 }
 

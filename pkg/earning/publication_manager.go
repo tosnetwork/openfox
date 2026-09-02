@@ -19,14 +19,18 @@ import (
 const publicationJournalSchema = "tos.openfox.autonomous-publications.v1"
 
 type PublicationEconomics struct {
-	RevenueAtomic   string `json:"revenue_atomic"`
-	UnitCostAtomic  string `json:"unit_cost_atomic"`
-	AssetNamespace  string `json:"asset_namespace"`
-	AssetIdentifier string `json:"asset_identifier"`
-	ValueHintRole   string `json:"value_hint_role"`
-	Unit            string `json:"unit"`
-	EvidenceDigest  string `json:"evidence_digest"`
-	ExpiresAtUnix   uint64 `json:"expires_at_unix"`
+	// RevenueAtomic is the exact advertised amount for legacy/exact offers and
+	// the signed lower bound for ranged offers. MaximumRevenueAtomic is empty
+	// for exact offers and mandatory for a non-degenerate range.
+	RevenueAtomic        string `json:"revenue_atomic"`
+	MaximumRevenueAtomic string `json:"maximum_revenue_atomic,omitempty"`
+	UnitCostAtomic       string `json:"unit_cost_atomic"`
+	AssetNamespace       string `json:"asset_namespace"`
+	AssetIdentifier      string `json:"asset_identifier"`
+	ValueHintRole        string `json:"value_hint_role"`
+	Unit                 string `json:"unit"`
+	EvidenceDigest       string `json:"evidence_digest"`
+	ExpiresAtUnix        uint64 `json:"expires_at_unix"`
 }
 
 type PublicationDraft struct {
@@ -209,7 +213,8 @@ func (manager *PublicationManager) MaintainSupply(ctx context.Context, carrierID
 }
 
 func samePublicationEconomics(left, right PublicationEconomics) bool {
-	return left.RevenueAtomic == right.RevenueAtomic && left.UnitCostAtomic == right.UnitCostAtomic &&
+	return left.RevenueAtomic == right.RevenueAtomic && left.MaximumRevenueAtomic == right.MaximumRevenueAtomic &&
+		left.UnitCostAtomic == right.UnitCostAtomic &&
 		left.AssetNamespace == right.AssetNamespace && left.AssetIdentifier == right.AssetIdentifier &&
 		left.ValueHintRole == right.ValueHintRole && left.Unit == right.Unit
 }
@@ -474,16 +479,23 @@ func (manager *PublicationManager) validateDraft(draft PublicationDraft, invento
 		return errors.New("publication audience is outside owner policy")
 	}
 	if supplyMode {
+		minimumRevenue := draft.Economics.RevenueAtomic
+		maximumRevenue := draft.Economics.MaximumRevenueAtomic
+		if maximumRevenue == "" {
+			maximumRevenue = minimumRevenue
+		}
 		priceBound := false
 		for _, value := range draft.Body.Payload.DiscoveryCard.ValueHints {
 			if value.Role == draft.Economics.ValueHintRole && value.AssetNamespace == draft.Economics.AssetNamespace &&
-				value.AssetIdentifier == draft.Economics.AssetIdentifier && value.Unit == draft.Economics.Unit && value.AmountKind == "exact" &&
-				value.MinimumDecimal == draft.Economics.RevenueAtomic && value.MaximumDecimal == draft.Economics.RevenueAtomic {
+				value.AssetIdentifier == draft.Economics.AssetIdentifier && value.Unit == draft.Economics.Unit &&
+				value.MinimumDecimal == minimumRevenue && value.MaximumDecimal == maximumRevenue &&
+				(value.AmountKind == "exact" && minimumRevenue == maximumRevenue ||
+					value.AmountKind == "range" && minimumRevenue != maximumRevenue) {
 				priceBound = true
 			}
 		}
 		if !priceBound {
-			return errors.New("publication price evidence does not bind an exact advertised value hint")
+			return errors.New("publication price evidence does not bind the advertised value hint")
 		}
 	}
 	if supplyMode {
@@ -498,12 +510,18 @@ func (manager *PublicationManager) validateDraft(draft PublicationDraft, invento
 			return errors.New("publication requires an unavailable settlement Adapter")
 		}
 	}
-	var revenue *big.Int
+	var revenue, maximumRevenue *big.Int
 	if supplyMode {
-		var okRevenue, okCost bool
+		var okRevenue, okMaximumRevenue, okCost bool
 		revenue, okRevenue = new(big.Int).SetString(draft.Economics.RevenueAtomic, 10)
+		maximumRevenueText := draft.Economics.MaximumRevenueAtomic
+		if maximumRevenueText == "" {
+			maximumRevenueText = draft.Economics.RevenueAtomic
+		}
+		maximumRevenue, okMaximumRevenue = new(big.Int).SetString(maximumRevenueText, 10)
 		cost, okCost := new(big.Int).SetString(draft.Economics.UnitCostAtomic, 10)
-		if !okRevenue || !okCost || revenue.Sign() <= 0 || cost.Sign() < 0 || revenue.Cmp(cost) <= 0 {
+		if !okRevenue || !okMaximumRevenue || !okCost || revenue.Sign() <= 0 || maximumRevenue.Sign() <= 0 ||
+			maximumRevenue.Cmp(revenue) < 0 || cost.Sign() < 0 || revenue.Cmp(cost) <= 0 {
 			return errors.New("publication economics are invalid or unprofitable")
 		}
 		if cost.Sign() > 0 {
@@ -542,14 +560,15 @@ func (manager *PublicationManager) validateDraft(draft PublicationDraft, invento
 			prior.RevisionCount >= manager.Policy.MaximumRevisionsPerObject {
 			return errors.New("publication revision lineage or limit is invalid")
 		}
-		old, _ := new(big.Int).SetString(prior.Economics.RevenueAtomic, 10)
-		if supplyMode && old != nil && old.Sign() > 0 {
-			change := new(big.Int).Sub(revenue, old)
-			change.Abs(change)
-			change.Mul(change, big.NewInt(1_000_000)).Quo(change, old)
-			if change.Cmp(new(big.Int).SetUint64(uint64(manager.Policy.MaximumPriceChangePPM))) > 0 {
-				return errors.New("publication price change exceeds owner policy")
-			}
+		oldMinimum, _ := new(big.Int).SetString(prior.Economics.RevenueAtomic, 10)
+		oldMaximumText := prior.Economics.MaximumRevenueAtomic
+		if oldMaximumText == "" {
+			oldMaximumText = prior.Economics.RevenueAtomic
+		}
+		oldMaximum, _ := new(big.Int).SetString(oldMaximumText, 10)
+		if supplyMode && (publicationPriceChangeExceeds(oldMinimum, revenue, manager.Policy.MaximumPriceChangePPM) ||
+			publicationPriceChangeExceeds(oldMaximum, maximumRevenue, manager.Policy.MaximumPriceChangePPM)) {
+			return errors.New("publication price change exceeds owner policy")
 		}
 	} else if found || draft.Body.Revision != 1 || draft.Body.PredecessorDigest != "" || active >= manager.Policy.MaximumActive {
 		return errors.New("new publication identity or active-publication limit is invalid")
@@ -558,6 +577,16 @@ func (manager *PublicationManager) validateDraft(draft PublicationDraft, invento
 		return errors.New("publication rate limit is exhausted")
 	}
 	return nil
+}
+
+func publicationPriceChangeExceeds(old, next *big.Int, maximumPPM uint32) bool {
+	if old == nil || next == nil || old.Sign() <= 0 || next.Sign() <= 0 {
+		return true
+	}
+	change := new(big.Int).Sub(next, old)
+	change.Abs(change)
+	change.Mul(change, big.NewInt(1_000_000)).Quo(change, old)
+	return change.Cmp(new(big.Int).SetUint64(uint64(maximumPPM))) > 0
 }
 
 func containsSortedOrUnsorted(values []string, wanted string) bool {

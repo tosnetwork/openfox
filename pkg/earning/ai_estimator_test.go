@@ -14,6 +14,7 @@ import (
 type estimatorProvider struct {
 	response string
 	messages *[]providers.Message
+	calls    *int
 }
 
 func (provider estimatorProvider) Chat(_ context.Context, messages []providers.Message, tools []providers.ToolDefinition, _ string,
@@ -23,6 +24,9 @@ func (provider estimatorProvider) Chat(_ context.Context, messages []providers.M
 	}
 	if provider.messages != nil {
 		*provider.messages = append([]providers.Message(nil), messages...)
+	}
+	if provider.calls != nil {
+		*provider.calls = *provider.calls + 1
 	}
 	return &providers.LLMResponse{Content: provider.response}, nil
 }

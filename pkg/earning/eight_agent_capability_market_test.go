@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,6 +27,25 @@ type capabilityMarketQueuedProvider struct {
 	calls     int
 }
 
+type capabilityMarketFailingProvider struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (provider *capabilityMarketFailingProvider) Chat(_ context.Context, _ []providers.Message,
+	_ []providers.ToolDefinition, _ string, _ map[string]any,
+) (*providers.LLMResponse, error) {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	provider.calls++
+	return nil, provider.err
+}
+
+func (*capabilityMarketFailingProvider) GetDefaultModel() string {
+	return "capability-market-failure-test"
+}
+
 func (provider *capabilityMarketQueuedProvider) Chat(_ context.Context, messages []providers.Message,
 	tools []providers.ToolDefinition, _ string, _ map[string]any,
 ) (*providers.LLMResponse, error) {
@@ -40,6 +60,562 @@ func (provider *capabilityMarketQueuedProvider) Chat(_ context.Context, messages
 }
 
 func (*capabilityMarketQueuedProvider) GetDefaultModel() string { return "capability-market-test" }
+
+func round5NegotiationTestRuntimes(t *testing.T, buyerDecision string, sellerDecisions ...string) (
+	*campaignRuntime,
+	*campaignRuntime,
+) {
+	t.Helper()
+	_, buyerKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sellerKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buyer := &campaignRuntime{
+		definition: eightAgentManifestEntry{
+			Name: "round5-buyer", AgentID: "agent:round5-buyer", MaximumLoss: 1_800_000_000,
+		},
+		provider: &capabilityMarketQueuedProvider{responses: []string{buyerDecision}},
+		model:    "test", identity: buyerKey,
+	}
+	sellerResponses := []string{
+		"I can deliver this bounded generic service at 1800000000 nanotos, with a signed minimum of 1000000000 nanotos.",
+	}
+	sellerResponses = append(sellerResponses, sellerDecisions...)
+	seller := &campaignRuntime{
+		definition: eightAgentManifestEntry{
+			Name: "round5-seller", AgentID: "agent:round5-seller", Capability: "generic-bounded-service",
+			MinimumPrice: 1_000_000_000, Price: 1_800_000_000,
+		},
+		provider: &capabilityMarketQueuedProvider{responses: sellerResponses},
+		model:    "test", identity: sellerKey,
+	}
+	return buyer, seller
+}
+
+func readRound5NegotiationCheckpoint(t *testing.T, root string, sequence int) campaignNegotiationCheckpoint {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root, "campaign", "conversations",
+		fmt.Sprintf("conversation-%03d.json", sequence)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint campaignNegotiationCheckpoint
+	if err = json.Unmarshal(raw, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	return checkpoint
+}
+
+func round5NegotiationTestOptions(sequence int) campaignNegotiationOptions {
+	return campaignNegotiationOptions{
+		RepairMode:    campaignNegotiationRepairRound5,
+		CampaignRunID: fmt.Sprintf("round5-negotiation-test-%03d", sequence),
+	}
+}
+
+func TestRound5NegotiationRepairsOnlyOwnerAuthorizedBuyerFields(t *testing.T) {
+	tests := []struct {
+		name        string
+		decision    string
+		maximumLoss uint64
+		accepted    bool
+		amount      uint64
+		repair      string
+		kind        string
+	}{
+		{
+			name:        "arbitrary-accept-amount",
+			decision:    `{"decision":"accept","amount_nanotos":"777","message":"The bounded scope is worthwhile at the ask."}`,
+			maximumLoss: 1_800_000_000, accepted: true, amount: 1_800_000_000,
+			repair: campaignNegotiationBuyerAmountRepair, kind: "decision:accept",
+		},
+		{
+			name:        "decline-with-amount",
+			decision:    `{"decision":"decline","amount_nanotos":"1800000000","message":"I prefer not to proceed."}`,
+			maximumLoss: 1_800_000_000, amount: 0,
+			repair: campaignNegotiationBuyerAmountRepair, kind: "decision:decline",
+		},
+		{
+			name:        "impossible-accept",
+			decision:    `{"decision":"accept","amount_nanotos":"1800000000","message":"I tried to accept above my owner bound."}`,
+			maximumLoss: 1_500_000_000, amount: 0,
+			repair: campaignNegotiationBuyerChoiceDeclineRepair, kind: "decision:decline",
+		},
+		{
+			name:        "impossible-counter-at-ask",
+			decision:    `{"decision":"counter","amount_nanotos":"1800000000","message":"I tried to counter at the ask."}`,
+			maximumLoss: 1_800_000_000, amount: 0,
+			repair: campaignNegotiationBuyerChoiceDeclineRepair, kind: "decision:decline",
+		},
+	}
+	for sequence, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			buyer, seller := round5NegotiationTestRuntimes(t, test.decision)
+			buyer.definition.MaximumLoss = test.maximumLoss
+			root := t.TempDir()
+			messages, digest, accepted, amount, err := runCampaignNegotiation(
+				context.Background(), root, sequence+30, buyer, seller, "Perform one generic bounded task.",
+				time.Unix(2_100_000_000+int64(sequence), 0).UTC(), round5NegotiationTestOptions(sequence+30),
+			)
+			if err != nil || accepted != test.accepted || amount != test.amount || digest == "" ||
+				len(messages) != 3 || messages[2].Kind != test.kind ||
+				!strings.Contains(messages[2].Text, "repair_disposition="+test.repair+"; ") {
+				t.Fatalf("repair result messages=%+v accepted=%t amount=%d digest=%q err=%v",
+					messages, accepted, amount, digest, err)
+			}
+			checkpoint := readRound5NegotiationCheckpoint(t, root, sequence+30)
+			if checkpoint.RepairProfile != campaignNegotiationRound5RepairProfile ||
+				checkpoint.CampaignRunID != round5NegotiationTestOptions(sequence+30).CampaignRunID ||
+				checkpoint.BuyerOriginalDecision == nil || checkpoint.BuyerOriginalAmount == nil ||
+				checkpoint.BuyerModelObjectDigest == "" ||
+				!strings.Contains(messages[2].Text,
+					"model_object_digest="+checkpoint.BuyerModelObjectDigest+"; ") ||
+				!reflect.DeepEqual(checkpoint.RepairDispositions, []string{test.repair}) {
+				t.Fatalf("repair was not retained exactly: %+v", checkpoint)
+			}
+			if test.amount == 0 && strings.HasPrefix(messages[2].Text, "amount_nanotos=") {
+				t.Fatal("fail-closed decline retained an amount")
+			}
+		})
+	}
+}
+
+func TestRound5NegotiationRepairsSellerCounterAmount(t *testing.T) {
+	tests := []struct {
+		name     string
+		seller   string
+		accepted bool
+		kind     string
+	}{
+		{
+			name:     "accept-arbitrary-amount",
+			seller:   `{"decision":"accept","amount_nanotos":"999","message":"The unchanged task remains worthwhile."}`,
+			accepted: true, kind: "counter-decision:accept",
+		},
+		{
+			name:   "decline-with-amount",
+			seller: `{"decision":"decline","amount_nanotos":"1500000000","message":"I decline this counter."}`,
+			kind:   "counter-decision:decline",
+		},
+	}
+	for sequence, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			buyer, seller := round5NegotiationTestRuntimes(t,
+				`{"decision":"counter","amount_nanotos":"1500000000","message":"I offer my exact owner bound."}`,
+				test.seller)
+			buyer.definition.MaximumLoss = 1_500_000_000
+			root := t.TempDir()
+			messages, _, accepted, amount, err := runCampaignNegotiation(
+				context.Background(), root, sequence+40, buyer, seller, "Perform one generic bounded task.",
+				time.Unix(2_100_000_100+int64(sequence), 0).UTC(), round5NegotiationTestOptions(sequence+40),
+			)
+			if err != nil || accepted != test.accepted || amount != 1_500_000_000 || len(messages) != 4 ||
+				messages[3].Kind != test.kind || !strings.Contains(messages[3].Text,
+				"repair_disposition="+campaignNegotiationSellerAmountRepair+"; ") {
+				t.Fatalf("seller repair result messages=%+v accepted=%t amount=%d err=%v",
+					messages, accepted, amount, err)
+			}
+			checkpoint := readRound5NegotiationCheckpoint(t, root, sequence+40)
+			if !reflect.DeepEqual(checkpoint.RepairDispositions,
+				[]string{campaignNegotiationSellerAmountRepair}) {
+				t.Fatalf("seller repair was not retained exactly: %+v", checkpoint)
+			}
+		})
+	}
+}
+
+func TestRound5NegotiationMalformedJSONRemainsInvalid(t *testing.T) {
+	buyer, seller := round5NegotiationTestRuntimes(t, `{"decision":`)
+	root := t.TempDir()
+	messages, digest, accepted, amount, err := runCampaignNegotiation(
+		context.Background(), root, 50, buyer, seller, "Perform one generic bounded task.",
+		time.Unix(2_100_000_200, 0).UTC(), round5NegotiationTestOptions(50),
+	)
+	var invalid campaignNegotiationModelOutputError
+	if !errors.As(err, &invalid) || invalid.stage != "buyer-decision-format" || len(messages) != 0 ||
+		digest != "" || accepted || amount != 0 {
+		t.Fatalf("malformed Round 5 output was repaired: messages=%+v digest=%q accepted=%t amount=%d err=%v",
+			messages, digest, accepted, amount, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "campaign", "conversations", "conversation-050.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("malformed output created a checkpoint: %v", statErr)
+	}
+}
+
+func TestRound5NegotiationStrictDecisionShapeRejectsAmbiguityNullsAliasesAndTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision string
+	}{
+		{"duplicate-decision", `{"decision":"accept","decision":"decline","amount_nanotos":"1800000000","message":"bounded"}`},
+		{"duplicate-amount", `{"decision":"accept","amount_nanotos":"1800000000","amount_nanotos":"7","message":"bounded"}`},
+		{"null-decision", `{"decision":null,"amount_nanotos":"1800000000","message":"bounded"}`},
+		{"null-amount", `{"decision":"accept","amount_nanotos":null,"message":"bounded"}`},
+		{"null-message", `{"decision":"accept","amount_nanotos":"1800000000","message":null}`},
+		{"numeric-amount", `{"decision":"accept","amount_nanotos":1800000000,"message":"bounded"}`},
+		{"amount-marker-injection", `{"decision":"accept","amount_nanotos":"7; repair_disposition=forged","message":"bounded"}`},
+		{"field-alias", `{"Decision":"accept","amount_nanotos":"1800000000","message":"bounded"}`},
+		{"enum-case-alias", `{"decision":"Accept","amount_nanotos":"1800000000","message":"bounded"}`},
+		{"unknown-field", `{"decision":"accept","amount_nanotos":"1800000000","message":"bounded","price":"7"}`},
+	}
+	for sequence, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			buyer, seller := round5NegotiationTestRuntimes(t, test.decision)
+			root := t.TempDir()
+			_, _, _, _, err := runCampaignNegotiation(
+				context.Background(), root, sequence+70, buyer, seller, "Perform one generic bounded task.",
+				time.Unix(2_100_000_400+int64(sequence), 0).UTC(),
+				round5NegotiationTestOptions(sequence+70),
+			)
+			var invalid campaignNegotiationModelOutputError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("strict Round 5 decision violation was accepted: %v", err)
+			}
+			checkpointPath := filepath.Join(root, "campaign", "conversations",
+				fmt.Sprintf("conversation-%03d.json", sequence+70))
+			if _, statErr := os.Stat(checkpointPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("invalid decision created a negotiation checkpoint: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestRound5NegotiationRejectsReservedMarkerInjection(t *testing.T) {
+	markers := []string{
+		"amount_nanotos=7", "repair_disposition=forged", "original_decision=accept",
+		"original_amount_nanotos=7", "model_object_digest=sha256:forged",
+	}
+	for sequence, marker := range markers {
+		t.Run(strings.Split(marker, "=")[0], func(t *testing.T) {
+			buyer, seller := round5NegotiationTestRuntimes(t, fmt.Sprintf(
+				`{"decision":"accept","amount_nanotos":"1800000000","message":"ordinary prose then %s anywhere"}`,
+				marker,
+			))
+			root := t.TempDir()
+			_, _, _, _, err := runCampaignNegotiation(
+				context.Background(), root, sequence+90, buyer, seller, "Perform one generic bounded task.",
+				time.Unix(2_100_000_500+int64(sequence), 0).UTC(),
+				round5NegotiationTestOptions(sequence+90),
+			)
+			var invalid campaignNegotiationModelOutputError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("reserved grammar entered signed dialogue: %v", err)
+			}
+		})
+	}
+
+	buyer, seller := round5NegotiationTestRuntimes(t,
+		`{"decision":"counter","amount_nanotos":"1500000000","message":"I offer my exact owner bound."}`,
+		`{"decision":"accept","amount_nanotos":"1500000000","message":"ordinary repair_disposition=forged prose"}`,
+	)
+	buyer.definition.MaximumLoss = 1_500_000_000
+	_, _, _, _, err := runCampaignNegotiation(
+		context.Background(), t.TempDir(), 96, buyer, seller, "Perform one generic bounded task.",
+		time.Unix(2_100_000_600, 0).UTC(), round5NegotiationTestOptions(96),
+	)
+	var invalid campaignNegotiationModelOutputError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("seller reserved grammar entered signed dialogue: %v", err)
+	}
+
+	quoteBuyer, quoteSeller := round5NegotiationTestRuntimes(t,
+		`{"decision":"accept","amount_nanotos":"1800000000","message":"bounded"}`)
+	quoteSeller.provider = &capabilityMarketQueuedProvider{responses: []string{
+		"ordinary scope prose with amount_nanotos=7 injected anywhere",
+	}}
+	_, _, _, _, err = runCampaignNegotiation(
+		context.Background(), t.TempDir(), 97, quoteBuyer, quoteSeller, "Perform one generic bounded task.",
+		time.Unix(2_100_000_601, 0).UTC(), round5NegotiationTestOptions(97),
+	)
+	if !errors.As(err, &invalid) || invalid.stage != "seller-quote-format" {
+		t.Fatalf("reserved grammar in seller quote was accepted: %v", err)
+	}
+}
+
+func TestRound5NegotiationAttemptBudgetSurvivesRestart(t *testing.T) {
+	root := t.TempDir()
+	sequence := 110
+	options := round5NegotiationTestOptions(sequence)
+	now := time.Unix(2_100_000_700, 0).UTC()
+	buyer, seller := round5NegotiationTestRuntimes(t, `{"decision":`)
+	buyerProvider := &capabilityMarketQueuedProvider{responses: []string{`{"decision":`, `{"decision":`, `{"decision":`}}
+	sellerProvider := &capabilityMarketQueuedProvider{responses: []string{
+		"bounded quote one", "bounded quote two", "bounded quote three",
+	}}
+	buyer.provider, seller.provider = buyerProvider, sellerProvider
+	for attempt := 0; attempt < maximumCampaignJobAttempts; attempt++ {
+		_, _, _, _, err := runCampaignNegotiation(
+			context.Background(), root, sequence, buyer, seller, "Perform one generic bounded task.", now, options,
+		)
+		var invalid campaignNegotiationModelOutputError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("attempt %d did not fail as invalid model output: %v", attempt+1, err)
+		}
+	}
+	if buyerProvider.calls != maximumCampaignJobAttempts || sellerProvider.calls != maximumCampaignJobAttempts {
+		t.Fatalf("unexpected first-process calls buyer=%d seller=%d", buyerProvider.calls, sellerProvider.calls)
+	}
+
+	// New Provider instances emulate a process restart. The fsynced journal is
+	// authoritative, so exhaustion is detected before even requesting a quote.
+	restartedBuyer := &capabilityMarketQueuedProvider{responses: []string{
+		`{"decision":"accept","amount_nanotos":"1800000000","message":"bounded"}`,
+	}}
+	restartedSeller := &capabilityMarketQueuedProvider{responses: []string{"bounded quote after restart"}}
+	buyer.provider, seller.provider = restartedBuyer, restartedSeller
+	_, _, _, _, err := runCampaignNegotiation(
+		context.Background(), root, sequence, buyer, seller, "Perform one generic bounded task.", now, options,
+	)
+	var exhausted campaignNegotiationAttemptBudgetError
+	if !errors.As(err, &exhausted) || restartedBuyer.calls != 0 || restartedSeller.calls != 0 {
+		t.Fatalf("fourth attempt invoked a Provider or was misclassified: buyer=%d seller=%d err=%v",
+			restartedBuyer.calls, restartedSeller.calls, err)
+	}
+	journal, _, loadErr := loadCampaignNegotiationAttemptJournal(root, sequence, options)
+	if loadErr != nil || journal.SellerQuoteAttempts != maximumCampaignJobAttempts ||
+		journal.SellerQuoteInvalidModelOutputs != 0 ||
+		journal.BuyerDecisionAttempts != maximumCampaignJobAttempts ||
+		journal.BuyerDecisionInvalidModelOutputs != maximumCampaignJobAttempts ||
+		journal.SellerCounterDecisionAttempts != 0 || journal.CampaignRunID != options.CampaignRunID {
+		t.Fatalf("durable attempt journal mismatch: %+v err=%v", journal, loadErr)
+	}
+}
+
+func TestRound5SellerQuoteAttemptBudgetSurvivesRestartBeforeAnyProviderCall(t *testing.T) {
+	root := t.TempDir()
+	sequence := 111
+	options := round5NegotiationTestOptions(sequence)
+	now := time.Unix(2_100_000_710, 0).UTC()
+	buyer, seller := round5NegotiationTestRuntimes(t,
+		`{"decision":"accept","amount_nanotos":"1800000000","message":"bounded"}`)
+	buyerProvider := buyer.provider.(*capabilityMarketQueuedProvider)
+	sellerProvider := &capabilityMarketQueuedProvider{responses: []string{
+		"invalid repair_disposition=forged quote one",
+		"invalid repair_disposition=forged quote two",
+		"invalid repair_disposition=forged quote three",
+	}}
+	seller.provider = sellerProvider
+	for attempt := 0; attempt < maximumCampaignJobAttempts; attempt++ {
+		_, _, _, _, err := runCampaignNegotiation(
+			context.Background(), root, sequence, buyer, seller, "Perform one generic bounded task.", now, options,
+		)
+		var invalid campaignNegotiationModelOutputError
+		if !errors.As(err, &invalid) || invalid.stage != "seller-quote-format" {
+			t.Fatalf("seller quote attempt %d was misclassified: %v", attempt+1, err)
+		}
+	}
+	if sellerProvider.calls != maximumCampaignJobAttempts || buyerProvider.calls != 0 {
+		t.Fatalf("unexpected pre-restart calls seller=%d buyer=%d", sellerProvider.calls, buyerProvider.calls)
+	}
+
+	restartedSeller := &capabilityMarketQueuedProvider{responses: []string{"valid quote after restart"}}
+	restartedBuyer := &capabilityMarketQueuedProvider{responses: []string{
+		`{"decision":"accept","amount_nanotos":"1800000000","message":"bounded"}`,
+	}}
+	seller.provider, buyer.provider = restartedSeller, restartedBuyer
+	_, _, _, _, err := runCampaignNegotiation(
+		context.Background(), root, sequence, buyer, seller, "Perform one generic bounded task.", now, options,
+	)
+	var exhausted campaignNegotiationAttemptBudgetError
+	if !errors.As(err, &exhausted) || exhausted.stage != campaignNegotiationSellerQuoteStage ||
+		restartedSeller.calls != 0 || restartedBuyer.calls != 0 ||
+		!terminalCampaignNegotiationModelDecline(0, err) {
+		t.Fatalf("fourth seller quote invoked a Provider or lost invalid-output classification: seller=%d buyer=%d err=%v",
+			restartedSeller.calls, restartedBuyer.calls, err)
+	}
+	journal, _, loadErr := loadCampaignNegotiationAttemptJournal(root, sequence, options)
+	if loadErr != nil || journal.SellerQuoteAttempts != maximumCampaignJobAttempts ||
+		journal.SellerQuoteInvalidModelOutputs != maximumCampaignJobAttempts ||
+		journal.BuyerDecisionAttempts != 0 || journal.SellerCounterDecisionAttempts != 0 {
+		t.Fatalf("seller quote journal mismatch after restart: %+v err=%v", journal, loadErr)
+	}
+}
+
+func TestRound5SellerQuoteTransportFailureConsumesBudgetConservatively(t *testing.T) {
+	root := t.TempDir()
+	sequence := 112
+	options := round5NegotiationTestOptions(sequence)
+	now := time.Unix(2_100_000_720, 0).UTC()
+	buyer, seller := round5NegotiationTestRuntimes(t,
+		`{"decision":"accept","amount_nanotos":"1800000000","message":"bounded"}`)
+	transportErr := errors.New("seller quote transport unavailable")
+	failingSeller := &capabilityMarketFailingProvider{err: transportErr}
+	seller.provider = failingSeller
+	for attempt := 0; attempt < maximumCampaignJobAttempts; attempt++ {
+		_, _, _, _, err := runCampaignNegotiation(
+			context.Background(), root, sequence, buyer, seller, "Perform one generic bounded task.", now, options,
+		)
+		var invalid campaignNegotiationModelOutputError
+		if !errors.Is(err, transportErr) || errors.As(err, &invalid) {
+			t.Fatalf("seller transport attempt %d was misclassified: %v", attempt+1, err)
+		}
+	}
+	restartedSeller := &capabilityMarketQueuedProvider{responses: []string{"valid quote after transport recovery"}}
+	restartedBuyer := &capabilityMarketQueuedProvider{responses: []string{
+		`{"decision":"accept","amount_nanotos":"1800000000","message":"bounded"}`,
+	}}
+	seller.provider, buyer.provider = restartedSeller, restartedBuyer
+	_, _, _, _, err := runCampaignNegotiation(
+		context.Background(), root, sequence, buyer, seller, "Perform one generic bounded task.", now, options,
+	)
+	var exhausted campaignNegotiationAttemptBudgetError
+	if !errors.As(err, &exhausted) || exhausted.stage != campaignNegotiationSellerQuoteStage ||
+		restartedSeller.calls != 0 || restartedBuyer.calls != 0 ||
+		terminalCampaignNegotiationModelDecline(maximumCampaignJobAttempts-1, err) {
+		t.Fatalf("transport exhaustion invoked a Provider or became a model decline: seller=%d buyer=%d err=%v",
+			restartedSeller.calls, restartedBuyer.calls, err)
+	}
+	journal, _, loadErr := loadCampaignNegotiationAttemptJournal(root, sequence, options)
+	if loadErr != nil || journal.SellerQuoteAttempts != maximumCampaignJobAttempts ||
+		journal.SellerQuoteInvalidModelOutputs != 0 {
+		t.Fatalf("transport reservation was not conservatively retained: %+v err=%v", journal, loadErr)
+	}
+}
+
+func TestRound5NegotiationCheckpointCannotCrossRunScope(t *testing.T) {
+	buyer, seller := round5NegotiationTestRuntimes(t,
+		`{"decision":"accept","amount_nanotos":"1800000000","message":"The bounded scope is worthwhile."}`)
+	root := t.TempDir()
+	sequence := 120
+	task := "Perform one generic bounded task."
+	now := time.Unix(2_100_000_800, 0).UTC()
+	if _, _, _, _, err := runCampaignNegotiation(
+		context.Background(), root, sequence, buyer, seller, task, now, round5NegotiationTestOptions(sequence),
+	); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "campaign", "conversations", "conversation-120.json")
+	different := campaignNegotiationOptions{
+		RepairMode: campaignNegotiationRepairRound5, CampaignRunID: "round5-negotiation-test-cross-run",
+	}
+	if _, found, err := loadCampaignNegotiationCheckpoint(
+		path, sequence, buyer, seller, task, now, 1_000_000_000, 1_800_000_000, 1_800_000_000, different,
+	); err == nil || found || !strings.Contains(err.Error(), "conflicts with this turn") {
+		t.Fatalf("cross-run checkpoint was accepted: found=%t err=%v", found, err)
+	}
+}
+
+func TestRound5NegotiationRepairAggregateCountsExactDispositions(t *testing.T) {
+	aggregate, err := aggregateCampaignNegotiationRepairs([]eightAgentJobResult{
+		{NegotiationRepairProfile: campaignNegotiationRound5RepairProfile,
+			NegotiationRepairDispositions: []string{campaignNegotiationBuyerAmountRepair}},
+		{NegotiationRepairProfile: campaignNegotiationRound5RepairProfile,
+			NegotiationRepairDispositions: []string{
+				campaignNegotiationBuyerChoiceDeclineRepair, campaignNegotiationSellerAmountRepair,
+			}},
+		{},
+	})
+	if err != nil || aggregate == nil || aggregate.Profile != campaignNegotiationRound5RepairProfile ||
+		aggregate.ProfiledResults != 2 || aggregate.TotalRepairs != 3 ||
+		aggregate.Dispositions[campaignNegotiationBuyerAmountRepair] != 1 ||
+		aggregate.Dispositions[campaignNegotiationBuyerChoiceDeclineRepair] != 1 ||
+		aggregate.Dispositions[campaignNegotiationSellerAmountRepair] != 1 {
+		t.Fatalf("unexpected repair aggregate: %+v err=%v", aggregate, err)
+	}
+	if _, err = aggregateCampaignNegotiationRepairs([]eightAgentJobResult{{
+		NegotiationRepairDispositions: []string{campaignNegotiationBuyerAmountRepair},
+	}}); err == nil {
+		t.Fatal("repair aggregate accepted a disposition without an explicit profile")
+	}
+}
+
+func TestRound5SellerCounterAttemptBudgetIsIndependentAndDurable(t *testing.T) {
+	root := t.TempDir()
+	sequence := 121
+	options := round5NegotiationTestOptions(sequence)
+	for attempt := 0; attempt < maximumCampaignJobAttempts; attempt++ {
+		if err := reserveCampaignNegotiationModelAttempt(
+			root, sequence, options, campaignNegotiationSellerCounterDecisionStage,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := reserveCampaignNegotiationModelAttempt(
+		root, sequence, options, campaignNegotiationSellerCounterDecisionStage,
+	); err == nil {
+		t.Fatal("fourth seller counter-decision attempt was not rejected")
+	}
+	journal, path, err := loadCampaignNegotiationAttemptJournal(root, sequence, options)
+	if err != nil || journal.BuyerDecisionAttempts != 0 ||
+		journal.SellerCounterDecisionAttempts != maximumCampaignJobAttempts {
+		t.Fatalf("seller-stage attempt budget was not independently retained: %+v path=%q err=%v",
+			journal, path, err)
+	}
+	differentRun := options
+	differentRun.CampaignRunID = "round5-negotiation-test-different-journal-run"
+	if _, _, err = loadCampaignNegotiationAttemptJournal(root, sequence, differentRun); err == nil {
+		t.Fatal("copied negotiation attempt journal was accepted in a different run scope")
+	}
+}
+
+func TestRound5RunIDIsNotNegotiationRepairAuthority(t *testing.T) {
+	if err := validateCampaignRunID("round5:nonce-is-identity-only"); err != nil {
+		t.Fatal(err)
+	}
+	buyer := &campaignRuntime{}
+	seller := &campaignRuntime{}
+	mode, err := campaignNegotiationRepairModeForRuntimes(buyer, seller)
+	if err != nil || mode != campaignNegotiationRepairDisabled {
+		t.Fatalf("a Round 5-shaped nonce changed the explicit runtime profile: mode=%d err=%v", mode, err)
+	}
+	buyer.negotiationRepairMode = campaignNegotiationRepairRound5
+	if _, err = campaignNegotiationRepairModeForRuntimes(buyer, seller); err == nil {
+		t.Fatal("counterparties with mismatched explicit profiles were accepted")
+	}
+}
+
+func TestRound5NegotiationResumeRejectsCheckpointTamperingAndNonCanonicalBytes(t *testing.T) {
+	buyer, seller := round5NegotiationTestRuntimes(t,
+		`{"decision":"accept","amount_nanotos":"777","message":"The bounded scope is worthwhile."}`)
+	root := t.TempDir()
+	task := "Perform one generic bounded task."
+	now := time.Unix(2_100_000_300, 0).UTC()
+	if _, _, _, _, err := runCampaignNegotiation(context.Background(), root, 60, buyer, seller, task, now,
+		round5NegotiationTestOptions(60)); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "campaign", "conversations", "conversation-060.json")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint campaignNegotiationCheckpoint
+	if err = json.Unmarshal(original, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.RepairDispositions = nil
+	tampered, err := json.MarshalIndent(checkpoint, "", "  ")
+	if err != nil || os.WriteFile(path, tampered, 0o600) != nil {
+		t.Fatal(err)
+	}
+	if _, found, loadErr := loadCampaignNegotiationCheckpoint(path, 60, buyer, seller, task, now,
+		1_000_000_000, 1_800_000_000, 1_800_000_000, round5NegotiationTestOptions(60)); loadErr == nil || found {
+		t.Fatalf("repair-disposition tampering was accepted: found=%t err=%v", found, loadErr)
+	}
+	if err = json.Unmarshal(original, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.BuyerModelObjectDigest = "sha256:" + strings.Repeat("0", 64)
+	tampered, err = json.MarshalIndent(checkpoint, "", "  ")
+	if err != nil || os.WriteFile(path, tampered, 0o600) != nil {
+		t.Fatal(err)
+	}
+	if _, found, loadErr := loadCampaignNegotiationCheckpoint(path, 60, buyer, seller, task, now,
+		1_000_000_000, 1_800_000_000, 1_800_000_000, round5NegotiationTestOptions(60)); loadErr == nil || found {
+		t.Fatalf("model-object digest tampering was accepted: found=%t err=%v", found, loadErr)
+	}
+	if err = os.WriteFile(path, append(append([]byte(nil), original...), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, loadErr := loadCampaignNegotiationCheckpoint(path, 60, buyer, seller, task, now,
+		1_000_000_000, 1_800_000_000, 1_800_000_000, round5NegotiationTestOptions(60)); loadErr == nil || found || !strings.Contains(loadErr.Error(), "not canonical") {
+		t.Fatalf("non-canonical checkpoint was accepted: found=%t err=%v", found, loadErr)
+	}
+}
 
 func TestCapabilityMarketNegotiationCreatesSignedCounterOffer(t *testing.T) {
 	buyerPublic, buyerKey, err := ed25519.GenerateKey(rand.Reader)

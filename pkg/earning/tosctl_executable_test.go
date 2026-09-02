@@ -5,6 +5,8 @@ package earning
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +18,27 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/tosnetwork/openfox/pkg/config"
+	"github.com/tosnetwork/openfox/pkg/providers"
+	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 )
+
+type campaignPaymentPreflightProvider struct {
+	calls  int
+	closes int
+}
+
+func (provider *campaignPaymentPreflightProvider) Chat(context.Context, []providers.Message,
+	[]providers.ToolDefinition, string, map[string]any,
+) (*providers.LLMResponse, error) {
+	provider.calls++
+	return &providers.LLMResponse{Content: "unexpected"}, nil
+}
+
+func (*campaignPaymentPreflightProvider) GetDefaultModel() string { return "preflight-test" }
+
+func (provider *campaignPaymentPreflightProvider) Close() { provider.closes++ }
 
 func TestTOSCTLExecutableHelper(t *testing.T) {
 	arguments := []string(nil)
@@ -303,17 +325,25 @@ func TestTOSCTLExecutableReplacementCannotChangeEnrolledOrOpenedLaunch(t *testin
 		t.Fatal("path replacement retained the enrolled tosctl authority")
 	}
 
-	// The descriptor opened before replacement is a sealed byte snapshot, so
-	// even an immediate pathname swap cannot redirect the already-authorized
-	// launch to the attacker script.
-	command := exec.Command("/proc/self/fd/3", "-test.run=^TestTOSCTLExecutableHelper$", "--", "normal")
-	command.ExtraFiles = []*os.File{opened}
-	command.Env = []string{}
-	var output bytes.Buffer
-	command.Stdout, command.Stderr = &output, &output
-	if err := command.Run(); err != nil || output.String() != `{"state":"safe"}` {
-		t.Fatalf("opened launch image followed its replaced path: output=%q err=%v", output.String(), err)
-	}
+	t.Run("production command wiring launches the sealed descriptor", func(t *testing.T) {
+		// The descriptor opened before replacement is a sealed byte snapshot, so
+		// even an immediate pathname swap cannot redirect the production command
+		// wiring to the attacker script.
+		command := newSealedTOSCTLCommand(t.Context(),
+			[]string{"-test.run=^TestTOSCTLExecutableHelper$", "--", "normal"}, nil, opened)
+		if command.Path != "/proc/self/fd/3" || len(command.ExtraFiles) != 1 || command.ExtraFiles[0] != opened {
+			t.Fatalf("production launch is not wired to descriptor 3: path=%q extra=%v",
+				command.Path, command.ExtraFiles)
+		}
+		var output bytes.Buffer
+		command.Stdout, command.Stderr = &output, &output
+		if err := command.Run(); errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) ||
+			errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EINVAL) {
+			t.Skip("kernel does not permit the production user/PID namespace wiring")
+		} else if err != nil || output.String() != `{"state":"safe"}` {
+			t.Fatalf("production sealed launch followed its replaced path: output=%q err=%v", output.String(), err)
+		}
+	})
 }
 
 func TestTOSCTLExecutableRejectsWritableOrIndirectAncestry(t *testing.T) {
@@ -345,6 +375,386 @@ func TestTOSCTLExecutableRejectsWritableOrIndirectAncestry(t *testing.T) {
 	if snapshot, _, err := snapshotTOSCTLExecutable(link); err == nil {
 		_ = snapshot.Close()
 		t.Fatal("symlinked tosctl executable was trusted")
+	}
+}
+
+func TestRound5CampaignBootstrapPinsBeforeBinderAndProvider(t *testing.T) {
+	_, authorityKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENFOX_TOSCTL_PRIMARY_CONFIG", filepath.Join(privateTempDir(t), "primary.json"))
+	t.Setenv("OPENFOX_TOS_VAULT_URL", "file:///owner/round5-bootstrap-test-vault")
+	entry := func(index int) eightAgentManifestEntry {
+		return eightAgentManifestEntry{
+			Name:        fmt.Sprintf("bootstrap-agent-%d", index),
+			Wallet:      fmt.Sprintf("bootstrap-wallet-%d", index),
+			AuthorityID: fmt.Sprintf("authority:bootstrap-agent-%d", index),
+		}
+	}
+	journal := privateTempDir(t)
+
+	t.Run("unsafe bootstrap stops bind and Provider factory", func(t *testing.T) {
+		unsafeParent, err := os.MkdirTemp(os.TempDir(), "openfox-round5-bootstrap-unsafe-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(unsafeParent) })
+		if err = os.Chmod(unsafeParent, 0o770); err != nil {
+			t.Fatal(err)
+		}
+		unsafePrivateChild := filepath.Join(unsafeParent, "owner-private-after-writable-parent")
+		if err = os.Mkdir(unsafePrivateChild, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		unsafeMarker := filepath.Join(unsafePrivateChild, "unsafe-bind-ran")
+		unsafeExecutable := filepath.Join(unsafePrivateChild, "tosctl")
+		writeCampaignBindingExecutable(t, unsafeExecutable, unsafeMarker, "unsafe")
+		binderCallbacks, providerCreations := 0, 0
+		wiring := &campaignRuntimeProviderWiring{
+			round5: true, expectedBindings: 8,
+			providerFactory: func(*config.Config) (providers.LLMProvider, string, error) {
+				providerCreations++
+				return &campaignPaymentPreflightProvider{}, "bootstrap-test", nil
+			},
+		}
+		err = withCampaignTOSCTLBootstrap(true, unsafeExecutable, os.Getenv("OPENFOX_TOS_VAULT_URL"),
+			func(bootstrap *TOSCTLPaymentSink) error {
+				for index := 0; index < 8; index++ {
+					manifestEntry := entry(index)
+					if bindErr := wiring.bind(bootstrap, func() error {
+						binderCallbacks++
+						return bindCampaignPayer(t, manifestEntry, authorityKey, journal, bootstrap)
+					}); bindErr != nil {
+						return bindErr
+					}
+				}
+				_, _, providerErr := wiring.createProvider(nil)
+				return providerErr
+			})
+		if err == nil || !strings.Contains(err.Error(), "executable is untrusted") ||
+			binderCallbacks != 0 || providerCreations != 0 {
+			t.Fatalf("unsafe bootstrap crossed startup trust gate: binders=%d providers=%d err=%v",
+				binderCallbacks, providerCreations, err)
+		}
+		if _, statErr := os.Lstat(unsafeMarker); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("unsafe bootstrap executable ran before rejection: %v", statErr)
+		}
+	})
+
+	t.Run("Provider factory requires all eight bindings", func(t *testing.T) {
+		safeRoot := privateTempDir(t)
+		safeExecutable := filepath.Join(safeRoot, "tosctl")
+		writeCampaignBindingExecutable(t, safeExecutable, filepath.Join(safeRoot, "unused"), "unused")
+		providerCreations := 0
+		wiring := &campaignRuntimeProviderWiring{
+			round5: true, expectedBindings: 8,
+			providerFactory: func(*config.Config) (providers.LLMProvider, string, error) {
+				providerCreations++
+				return &campaignPaymentPreflightProvider{}, "bootstrap-test", nil
+			},
+		}
+		sealedFD := -1
+		err = withCampaignTOSCTLBootstrap(true, safeExecutable, os.Getenv("OPENFOX_TOS_VAULT_URL"),
+			func(bootstrap *TOSCTLPaymentSink) error {
+				sealedFD = int(bootstrap.executableSnapshot.Fd())
+				for index := 0; index < 7; index++ {
+					if bindErr := wiring.bind(bootstrap, func() error { return nil }); bindErr != nil {
+						return bindErr
+					}
+				}
+				_, _, providerErr := wiring.createProvider(nil)
+				return providerErr
+			})
+		if err == nil || !strings.Contains(err.Error(), "exactly eight bindings") || providerCreations != 0 {
+			t.Fatalf("Provider factory ran before all bindings: providers=%d err=%v", providerCreations, err)
+		}
+		requireClosedFileDescriptor(t, sealedFD)
+	})
+
+	t.Run("eight sealed bindings share one snapshot before Provider factory", func(t *testing.T) {
+		safeRoot := privateTempDir(t)
+		safeMarker := filepath.Join(safeRoot, "safe-bind-ran")
+		safeExecutable := filepath.Join(safeRoot, "tosctl")
+		writeCampaignAppendingBindingExecutable(t, safeExecutable, safeMarker, "safe")
+		var bootstraps []*TOSCTLPaymentSink
+		var snapshots []*os.File
+		providerCreations := 0
+		wiring := &campaignRuntimeProviderWiring{
+			round5: true, expectedBindings: 8,
+			providerFactory: func(*config.Config) (providers.LLMProvider, string, error) {
+				if len(bootstraps) != 8 || len(snapshots) != 8 {
+					return nil, "", errors.New("Provider factory observed incomplete payer binding")
+				}
+				providerCreations++
+				return &campaignPaymentPreflightProvider{}, "bootstrap-test", nil
+			},
+		}
+		sealedFD := -1
+		err = withCampaignTOSCTLBootstrap(true, safeExecutable, os.Getenv("OPENFOX_TOS_VAULT_URL"),
+			func(bootstrap *TOSCTLPaymentSink) error {
+				for index := 0; index < 8; index++ {
+					manifestEntry := entry(index)
+					if bindErr := wiring.bind(bootstrap, func() error {
+						bootstrap.executableMu.Lock()
+						snapshot := bootstrap.executableSnapshot
+						bootstrap.executableMu.Unlock()
+						if snapshot == nil {
+							return errors.New("sealed snapshot disappeared before payer binding")
+						}
+						if sealedFD < 0 {
+							sealedFD = int(snapshot.Fd())
+						}
+						bootstraps = append(bootstraps, bootstrap)
+						snapshots = append(snapshots, snapshot)
+						return bindCampaignPayer(t, manifestEntry, authorityKey, journal, bootstrap)
+					}); bindErr != nil {
+						return bindErr
+					}
+				}
+				for index := 0; index < 8; index++ {
+					if _, _, providerErr := wiring.createProvider(nil); providerErr != nil {
+						return providerErr
+					}
+				}
+				return nil
+			})
+		if errors.Is(err, errTOSCTLProcessContainmentUnavailable) {
+			if sealedFD >= 0 {
+				requireClosedFileDescriptor(t, sealedFD)
+			}
+			t.Skip("kernel does not permit the user/PID namespace required for sealed Round 5 binding")
+		}
+		if err != nil || len(bootstraps) != 8 || providerCreations != 8 {
+			t.Fatalf("safe bootstrap wiring: bindings=%d providers=%d err=%v",
+				len(bootstraps), providerCreations, err)
+		}
+		for index := range bootstraps {
+			if bootstraps[index] != wiring.bootstrap || snapshots[index] != wiring.snapshot {
+				t.Fatalf("binding %d did not share the production bootstrap snapshot", index)
+			}
+		}
+		if wiring.bootstrap.executableSnapshot != nil {
+			t.Fatal("bootstrap retained its snapshot after Provider construction")
+		}
+		requireClosedFileDescriptor(t, sealedFD)
+		raw, readErr := os.ReadFile(safeMarker)
+		lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+		if readErr != nil || len(lines) != 8 {
+			t.Fatalf("sealed bootstrap did not execute exactly eight bindings: marker=%q err=%v", raw, readErr)
+		}
+		for index, line := range lines {
+			if line != "safe" {
+				t.Fatalf("sealed binding %d executed unexpected bytes: %q", index, line)
+			}
+		}
+	})
+
+	t.Run("pathname swap fails closed independently of containment", func(t *testing.T) {
+		swapRoot := privateTempDir(t)
+		originalMarker := filepath.Join(swapRoot, "original-bind-ran")
+		attackerMarker := filepath.Join(swapRoot, "attacker-bind-ran")
+		swapExecutable := filepath.Join(swapRoot, "tosctl")
+		writeCampaignBindingExecutable(t, swapExecutable, originalMarker, "original")
+		binderCallbacks, providerCreations := 0, 0
+		wiring := &campaignRuntimeProviderWiring{
+			round5: true, expectedBindings: 8,
+			providerFactory: func(*config.Config) (providers.LLMProvider, string, error) {
+				providerCreations++
+				return &campaignPaymentPreflightProvider{}, "bootstrap-test", nil
+			},
+		}
+		sealedFD := -1
+		var retainedBootstrap *TOSCTLPaymentSink
+		err = withCampaignTOSCTLBootstrap(true, swapExecutable, os.Getenv("OPENFOX_TOS_VAULT_URL"),
+			func(bootstrap *TOSCTLPaymentSink) error {
+				retainedBootstrap = bootstrap
+				sealedFD = int(bootstrap.executableSnapshot.Fd())
+				replacement := filepath.Join(swapRoot, "replacement")
+				writeCampaignBindingExecutable(t, replacement, attackerMarker, "attacker")
+				if renameErr := os.Rename(replacement, swapExecutable); renameErr != nil {
+					return renameErr
+				}
+				return wiring.bind(bootstrap, func() error {
+					binderCallbacks++
+					return bindCampaignPayer(t, entry(0), authorityKey, journal, bootstrap)
+				})
+			})
+		if err == nil || !strings.Contains(err.Error(), "executable is untrusted") ||
+			binderCallbacks != 1 || providerCreations != 0 || retainedBootstrap == nil {
+			t.Fatalf("pathname swap escaped sealed bootstrap: binders=%d providers=%d bootstrap=%v err=%v",
+				binderCallbacks, providerCreations, retainedBootstrap, err)
+		}
+		if retainedBootstrap.executableSnapshot != nil {
+			t.Fatal("pathname-swap failure retained the bootstrap snapshot")
+		}
+		requireClosedFileDescriptor(t, sealedFD)
+		for _, marker := range []string{originalMarker, attackerMarker} {
+			if _, statErr := os.Lstat(marker); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("swapped bootstrap executed %s: %v", marker, statErr)
+			}
+		}
+	})
+
+	t.Run("legacy and Round 4 keep direct pathname binding", func(t *testing.T) {
+		legacyRoot := privateTempDir(t)
+		legacyMarker := filepath.Join(legacyRoot, "legacy-bind-ran")
+		legacyExecutable := filepath.Join(legacyRoot, "tosctl")
+		writeCampaignBindingExecutable(t, legacyExecutable, legacyMarker, "legacy")
+		t.Setenv("OPENFOX_TOSCTL", legacyExecutable)
+		binderCallbacks := 0
+		err = withCampaignTOSCTLBootstrap(false, "", "", func(bootstrap *TOSCTLPaymentSink) error {
+			if bootstrap != nil {
+				return errors.New("legacy campaign unexpectedly received a sealed bootstrap")
+			}
+			binderCallbacks++
+			return bindCampaignPayer(t, entry(0), authorityKey, journal, nil)
+		})
+		if err != nil || binderCallbacks != 1 {
+			t.Fatalf("legacy direct binder behavior changed: binders=%d err=%v", binderCallbacks, err)
+		}
+		if raw, readErr := os.ReadFile(legacyMarker); readErr != nil || string(raw) != "legacy" {
+			t.Fatalf("legacy direct binder no longer executes its configured path: marker=%q err=%v", raw, readErr)
+		}
+	})
+}
+
+func writeCampaignBindingExecutable(t *testing.T, path, marker, value string) {
+	t.Helper()
+	quotedMarker := "'" + strings.ReplaceAll(marker, "'", "'\"'\"'") + "'"
+	script := "#!/bin/sh\nprintf '" + value + "' > " + quotedMarker + "\nprintf '{}'\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeCampaignAppendingBindingExecutable(t *testing.T, path, marker, value string) {
+	t.Helper()
+	quotedMarker := "'" + strings.ReplaceAll(marker, "'", "'\"'\"'") + "'"
+	script := "#!/bin/sh\nprintf '" + value + "\\n' >> " + quotedMarker + "\nprintf '{}'\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireClosedFileDescriptor(t *testing.T, descriptor int) {
+	t.Helper()
+	if descriptor < 0 {
+		t.Fatal("sealed executable descriptor was not captured")
+	}
+	var status syscall.Stat_t
+	if err := syscall.Fstat(descriptor, &status); !errors.Is(err, syscall.EBADF) {
+		t.Fatalf("sealed executable descriptor %d remains usable after close: %v", descriptor, err)
+	}
+}
+
+func TestRound5CampaignPaymentPreflightRejectsWritableAncestryBeforeProviderTurn(t *testing.T) {
+	current, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	safeRoot := privateTempDir(t)
+	safeExecutable := filepath.Join(safeRoot, "tosctl")
+	copyExecutableFixture(t, current, safeExecutable)
+	safeProvider := &campaignPaymentPreflightProvider{}
+	safeRuntime := &campaignRuntime{
+		definition: eightAgentManifestEntry{Name: "safe-payment-agent"},
+		provider:   safeProvider,
+		payment:    campaignPaymentPreflightSink(safeExecutable, safeRoot),
+	}
+	if err = preflightCampaignPaymentAdapters(true, []*campaignRuntime{safeRuntime}); err != nil {
+		t.Fatalf("owner-private Round 5 payment Adapter failed preflight: %v", err)
+	}
+	if safeProvider.calls != 0 || safeProvider.closes != 0 || safeRuntime.payment.executableSnapshot == nil {
+		t.Fatalf("safe preflight called or closed Provider, or omitted enrollment: calls=%d closes=%d snapshot=%v",
+			safeProvider.calls, safeProvider.closes, safeRuntime.payment.executableSnapshot)
+	}
+	safeSnapshotFD := int(safeRuntime.payment.executableSnapshot.Fd())
+	closeCampaignRuntimes([]*campaignRuntime{safeRuntime})
+	if safeProvider.closes != 1 || safeRuntime.payment.executableSnapshot != nil {
+		t.Fatalf("safe runtime cleanup closes=%d snapshot=%v",
+			safeProvider.closes, safeRuntime.payment.executableSnapshot)
+	}
+	requireClosedFileDescriptor(t, safeSnapshotFD)
+
+	unsafeParent, err := os.MkdirTemp(os.TempDir(), "openfox-round5-writable-parent-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(unsafeParent) })
+	if err = os.Chmod(unsafeParent, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	unsafePrivateChild := filepath.Join(unsafeParent, "owner-private-after-writable-parent")
+	if err = os.Mkdir(unsafePrivateChild, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unsafeExecutable := filepath.Join(unsafePrivateChild, "tosctl")
+	copyExecutableFixture(t, current, unsafeExecutable)
+
+	firstProvider := &campaignPaymentPreflightProvider{}
+	failingProvider := &campaignPaymentPreflightProvider{}
+	first := &campaignRuntime{
+		definition: eightAgentManifestEntry{Name: "enrolled-before-failure"},
+		provider:   firstProvider,
+		payment:    campaignPaymentPreflightSink(safeExecutable, safeRoot),
+	}
+	failing := &campaignRuntime{
+		definition: eightAgentManifestEntry{Name: "untrusted-payment-agent"},
+		provider:   failingProvider,
+		payment:    campaignPaymentPreflightSink(unsafeExecutable, unsafePrivateChild),
+	}
+	runtimes := []*campaignRuntime{first, failing}
+	if err = preflightCampaignPaymentAdapters(false, runtimes); err != nil ||
+		first.payment.executableSnapshot != nil || failing.payment.executableSnapshot != nil ||
+		firstProvider.closes != 0 || failingProvider.closes != 0 {
+		t.Fatalf("legacy/Round 4 behavior changed: err=%v first_snapshot=%v failing_snapshot=%v closes=%d/%d",
+			err, first.payment.executableSnapshot, failing.payment.executableSnapshot,
+			firstProvider.closes, failingProvider.closes)
+	}
+	err = preflightCampaignPaymentAdapters(true, runtimes)
+	if err == nil || !strings.Contains(err.Error(), "executable is untrusted") {
+		t.Fatalf("Round 5 trusted unsafe executable ancestry: %v", err)
+	}
+	if firstProvider.calls != 0 || failingProvider.calls != 0 ||
+		firstProvider.closes != 1 || failingProvider.closes != 1 ||
+		first.payment.executableSnapshot != nil || failing.payment.executableSnapshot != nil {
+		t.Fatalf("failed preflight did not precede Provider calls and clean partial enrollment: calls=%d/%d closes=%d/%d snapshots=%v/%v",
+			firstProvider.calls, failingProvider.calls, firstProvider.closes, failingProvider.closes,
+			first.payment.executableSnapshot, failing.payment.executableSnapshot)
+	}
+}
+
+func campaignPaymentPreflightSink(executable, directory string) *TOSCTLPaymentSink {
+	domain := agentrelay.NetworkDomain{
+		NetworkID:         "tos:local-three-node",
+		GlobalID:          76_543_219,
+		ZeroStateRootHash: campaignDigest("round5-payment-preflight-root"),
+		ZeroStateFileHash: campaignDigest("round5-payment-preflight-file"),
+		WorkchainID:       0,
+	}
+	return &TOSCTLPaymentSink{
+		Authority:          &PersonalAuthority{},
+		Executable:         executable,
+		ConfigPath:         filepath.Join(directory, "primary.json"),
+		Wallet:             "round5-payment-wallet",
+		SourceAccount:      "0:" + strings.Repeat("12", 32),
+		NetworkGlobalID:    domain.GlobalID,
+		RelayNetworkDomain: &domain,
+		FeeReserveNanoTOS:  50_000_000,
+		QuorumConfigPaths: []string{
+			filepath.Join(directory, "quorum-2.json"),
+			filepath.Join(directory, "quorum-3.json"),
+		},
+		MaximumTransactions: 1000,
+		VaultURL:            "file:///owner/round5-test-vault",
+		EvidenceDirectory:   filepath.Join(directory, "payment-evidence"),
 	}
 }
 

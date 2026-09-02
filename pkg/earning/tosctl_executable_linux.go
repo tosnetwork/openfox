@@ -106,29 +106,7 @@ func (sink *TOSCTLPaymentSink) runPinnedTOSCTL(ctx context.Context, args, enviro
 	executable := os.NewFile(uintptr(fd), "openfox-tosctl-launch")
 	defer executable.Close()
 
-	// Execute the sealed snapshot, not the pathname. A rename, symlink swap or
-	// in-place write after verification therefore cannot change the bytes the
-	// kernel starts.
-	command := exec.CommandContext(ctx, "/proc/self/fd/3", args...)
-	command.ExtraFiles = []*os.File{executable}
-	command.Env = append([]string(nil), environment...)
-	command.SysProcAttr = tosctlProcessContainment()
-	command.WaitDelay = 2 * time.Second
-	command.Cancel = func() error {
-		if command.Process == nil {
-			return os.ErrProcessDone
-		}
-		// Killing namespace PID 1 is the containment operation: the kernel then
-		// kills every process remaining in the PID namespace, including detached
-		// sessions that no longer share the leader's process group.
-		if err := unix.Kill(command.Process.Pid, unix.SIGKILL); err != nil {
-			if errors.Is(err, unix.ESRCH) {
-				return os.ErrProcessDone
-			}
-			return err
-		}
-		return nil
-	}
+	command := newSealedTOSCTLCommand(ctx, args, environment, executable)
 	output := &tosctlSharedOutput{}
 	stdoutRead, stdoutWrite, err := os.Pipe()
 	if err != nil {
@@ -236,6 +214,37 @@ func (sink *TOSCTLPaymentSink) runPinnedTOSCTL(ctx context.Context, args, enviro
 		return nil, errors.New("tosctl emitted unexpected stderr")
 	}
 	return stdout, nil
+}
+
+// newSealedTOSCTLCommand is the single production launch wiring for a pinned
+// executable. Keeping the descriptor handoff here makes it testable that a
+// pathname replacement cannot silently turn a sealed launch back into a path
+// launch.
+func newSealedTOSCTLCommand(ctx context.Context, args, environment []string, executable *os.File) *exec.Cmd {
+	// Execute the sealed snapshot, not the pathname. A rename, symlink swap or
+	// in-place write after verification therefore cannot change the bytes the
+	// kernel starts.
+	command := exec.CommandContext(ctx, "/proc/self/fd/3", args...)
+	command.ExtraFiles = []*os.File{executable}
+	command.Env = append([]string(nil), environment...)
+	command.SysProcAttr = tosctlProcessContainment()
+	command.WaitDelay = 2 * time.Second
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return os.ErrProcessDone
+		}
+		// Killing namespace PID 1 is the containment operation: the kernel then
+		// kills every process remaining in the PID namespace, including detached
+		// sessions that no longer share the leader's process group.
+		if err := unix.Kill(command.Process.Pid, unix.SIGKILL); err != nil {
+			if errors.Is(err, unix.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
+		return nil
+	}
+	return command
 }
 
 // identifyTOSCTLExecutable re-verifies the live pathname immediately before a

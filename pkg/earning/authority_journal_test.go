@@ -668,11 +668,21 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 		"0:source", custodyDomain, nil); err == nil || !strings.Contains(err.Error(), "direct payment adapter") {
 		t.Fatalf("external adapter entered the native custody primitive: %v", err)
 	}
+	replacement := ExposureReservation{
+		ReservationID: "sha256:" + strings.Repeat("d", 64), AgreementDigest: "sha256:" + strings.Repeat("e", 64),
+		Asset: &nativeAsset, SpendAtomic: 25, MaximumLossAtomic: 25,
+	}
+	if err := authority.CheckReservationCapacity(replacement); !errors.Is(err, errAggregatePortfolioLimit) {
+		t.Fatalf("live custody hold did not block advisory replacement capacity: %v", err)
+	}
 	// Caller-asserted terminal state cannot release this offline bearer. Only
 	// the frozen all-outgoing-obligation horizon plus the owner grace can create
 	// the typed tombstone and make the exact hold reusable.
 	authority.now = func() time.Time {
 		return time.Unix(int64(payment.ExpiresAtUnix+limits.CustodyFinalityGraceSeconds), 0).UTC()
+	}
+	if err := authority.CheckReservationCapacity(replacement); err != nil {
+		t.Fatalf("capacity preflight did not apply custody expiry housekeeping: %v", err)
 	}
 	_, _, reservations := authority.Snapshot()
 	if len(reservations) != 1 || !reservations[0].Released ||

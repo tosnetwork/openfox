@@ -30,6 +30,14 @@ general deployment guarantee. For current product usage, start with the
   settlements, a separate Gift ring, exact Validator reward-wallet
   attribution, candid Agent assessments, and a fail-closed Paid Demand
   preflight.
+- [Eight-Agent Capability Market Round 4 Report](eight-agent-capability-market-round-4-report.md):
+  a two-hour AI-led market with early Portfolio screening, durable partial
+  Provider-usage accounting, three direct-TOS settlements, and a separate
+  eight-nominator reward lifecycle using the existing pool and Elector.
+- [Eight-Agent Capability Market Round 5 Report](eight-agent-capability-market-round-5-report.md):
+  a two-hour same-genesis market with deterministic bounded negotiation, six
+  direct-TOS settlements, exact campaign-Account Validator nomination, and
+  evidence-bounded cost, acceptance, escrow, and independence limits.
 - [Bounded Adaptive Earning Campaigns](bounded-adaptive-earning-campaigns.md):
   gated Campaign 1--6 plus trusted-capability and mobile-control objectives,
   conditions, experiment prompts, causal acceptance thresholds, and stop rules

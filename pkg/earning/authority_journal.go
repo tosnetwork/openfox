@@ -89,6 +89,8 @@ type expiredCustodyAuthorization struct {
 
 var ErrCustodyAuthorizationLive = errors.New("issued native custody authorization is still live")
 
+var errAggregatePortfolioLimit = errors.New("aggregate Portfolio limit would be exceeded")
+
 func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.AuthorizedAction,
 	fields map[string]commerce.SemanticValue, canonicalRequest []byte, fence commerce.WriterFence,
 	payment commerce.AgreementPaymentRequest, sourceAccount string,
@@ -1242,6 +1244,27 @@ func (authority *PersonalAuthority) Snapshot() (uint64, PortfolioLimits, []Expos
 	return authority.doc.PortfolioRevision, clonePortfolioLimits(authority.doc.Limits), reservations
 }
 
+// CheckReservationCapacity applies the same aggregate admission calculation
+// as a later portfolio.reserve without creating the candidate reservation.
+// Like Snapshot and Admit, it may persist owner-policy expiry housekeeping for
+// a timed-out custody authorization. It is only an advisory fail-fast check:
+// callers must still use Admit or ReserveEngagement as the linearization point
+// because capacity can change as soon as this method returns.
+func (authority *PersonalAuthority) CheckReservationCapacity(candidate ExposureReservation) error {
+	if authority == nil {
+		return errors.New("portfolio capacity authority is unavailable")
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return err
+	}
+	if err := authority.expireIssuedCustodyLocked(); err != nil {
+		return err
+	}
+	return admitReservation(authority.doc, cloneExposureReservation(candidate))
+}
+
 // ReleaseReservation admits portfolio.release and applies it in one journal
 // transaction. A fence alone cannot release economic capacity.
 func (authority *PersonalAuthority) ReleaseReservation(action commerce.AuthorizedAction,
@@ -2122,7 +2145,7 @@ func admitReservation(document authorityDocument, candidate ExposureReservation)
 		exceeds(used.LockedCapitalAtomic, candidate.LockedCapitalAtomic, document.Limits.LockedCapitalAtomic) ||
 		exceeds(used.ReceivableAtomic, candidate.ReceivableAtomic, document.Limits.ReceivableAtomic) ||
 		exceeds(lossByAsset[candidateBucket], candidate.MaximumLossAtomic, document.Limits.MaximumLossAtomic) {
-		return errors.New("aggregate Portfolio limit would be exceeded")
+		return errAggregatePortfolioLimit
 	}
 	return nil
 }

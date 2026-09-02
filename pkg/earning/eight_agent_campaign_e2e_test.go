@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -38,10 +40,742 @@ import (
 )
 
 const (
-	eightAgentCampaignSchema       = "tos.openfox.eight-agent-market-campaign.v1"
-	sixAgentCampaignSchema         = "tos.openfox.six-agent-autonomous-market-campaign.v1"
-	capabilityMarketCampaignSchema = "tos.openfox.eight-agent-capability-market-campaign.v1"
+	eightAgentCampaignSchema                = "tos.openfox.eight-agent-market-campaign.v1"
+	sixAgentCampaignSchema                  = "tos.openfox.six-agent-autonomous-market-campaign.v1"
+	capabilityMarketCampaignSchema          = "tos.openfox.eight-agent-capability-market-campaign.v1"
+	capabilityMarketRound4CampaignSchema    = "tos.openfox.eight-agent-capability-market-round-4-campaign.v1"
+	capabilityMarketRound4FinancialSchema   = "tos.openfox.eight-agent-capability-market-round-4-financial-summary.v1"
+	capabilityMarketRound4AssessmentsSchema = "tos.openfox.eight-agent-capability-market-round-4-closing-assessments.v1"
+	capabilityMarketRound5CampaignSchema    = "tos.openfox.eight-agent-capability-market-round-5-campaign.v1"
+	capabilityMarketRound5FinancialSchema   = "tos.openfox.eight-agent-capability-market-round-5-financial-summary.v1"
+	capabilityMarketRound5AssessmentsSchema = "tos.openfox.eight-agent-capability-market-round-5-closing-assessments.v1"
+	nominatorRewardExperimentSchema         = "tos.validator.nominator-reward-experiment.v1"
+	campaignValidatorRewardShareBPS         = uint64(4000)
+	campaignMaximumWithdrawalFeeNanoTOS     = uint64(1_000_000_000)
+	campaignRound5DepositMessageNanoTOS     = uint64(5_000_000_000)
+	campaignRound5DepositFeeNanoTOS         = uint64(1_000_000_000)
+	campaignRound5DelegatedPrincipalNanoTOS = uint64(4_000_000_000)
+	campaignRound5DeployMessageNanoTOS      = uint64(30_000_000_000)
 )
+
+type autonomousCampaignProfile struct {
+	capabilityMarket           bool
+	round4                     bool
+	round5                     bool
+	defaultDuration            time.Duration
+	minimumDuration            time.Duration
+	minimumProcessRuntime      time.Duration
+	defaultRounds              int
+	reportFilename             string
+	reportSchema               string
+	financialFilename          string
+	financialSchema            string
+	closingAssessmentsFilename string
+	closingAssessmentsSchema   string
+}
+
+func (profile autonomousCampaignProfile) runScopedEvidence() bool {
+	return profile.round4 || profile.round5
+}
+
+func (profile autonomousCampaignProfile) roundLabel() string {
+	if profile.round5 {
+		return "Round 5"
+	}
+	if profile.round4 {
+		return "Round 4"
+	}
+	return "campaign"
+}
+
+func resolveAutonomousCampaignProfile(capabilityMarket, round4, round5 bool) (autonomousCampaignProfile, error) {
+	profile := autonomousCampaignProfile{
+		defaultDuration:            10 * time.Hour,
+		minimumDuration:            3 * time.Hour,
+		defaultRounds:              5,
+		reportFilename:             "eight-agent-autonomous-campaign-checkpoint.json",
+		reportSchema:               eightAgentCampaignSchema,
+		financialFilename:          "eight-agent-financial-summary.json",
+		financialSchema:            "tos.openfox.eight-agent-financial-summary.v1",
+		closingAssessmentsFilename: "eight-agent-closing-assessments.json",
+		closingAssessmentsSchema:   "tos.openfox.eight-agent-closing-assessments.v1",
+	}
+	if round4 && round5 {
+		return autonomousCampaignProfile{}, errors.New(
+			"OPENFOX_CAMPAIGN_ROUND4 and OPENFOX_CAMPAIGN_ROUND5 are mutually exclusive",
+		)
+	}
+	if (round4 || round5) && !capabilityMarket {
+		round := "ROUND4"
+		if round5 {
+			round = "ROUND5"
+		}
+		return autonomousCampaignProfile{}, errors.New(
+			"OPENFOX_CAMPAIGN_" + round + " requires OPENFOX_CAMPAIGN_CAPABILITY_MARKET=1",
+		)
+	}
+	if capabilityMarket {
+		profile.capabilityMarket = true
+		profile.defaultDuration = 3 * time.Hour
+		profile.defaultRounds = 2
+		profile.reportFilename = "eight-agent-capability-market-checkpoint.json"
+		profile.reportSchema = capabilityMarketCampaignSchema
+		profile.financialFilename = "eight-agent-capability-market-financial-summary.json"
+		profile.financialSchema = "tos.openfox.eight-agent-capability-market-financial-summary.v1"
+		profile.closingAssessmentsFilename = "eight-agent-capability-market-closing-assessments.json"
+	}
+	if round4 {
+		profile.round4 = true
+		profile.defaultDuration = 2 * time.Hour
+		profile.minimumDuration = 2 * time.Hour
+		profile.minimumProcessRuntime = 2 * time.Hour
+		profile.reportFilename = "eight-agent-capability-market-round-4-checkpoint.json"
+		profile.reportSchema = capabilityMarketRound4CampaignSchema
+		profile.financialFilename = "eight-agent-capability-market-round-4-financial-summary.json"
+		profile.financialSchema = capabilityMarketRound4FinancialSchema
+		profile.closingAssessmentsFilename = "eight-agent-capability-market-round-4-closing-assessments.json"
+		profile.closingAssessmentsSchema = capabilityMarketRound4AssessmentsSchema
+	}
+	if round5 {
+		profile.round5 = true
+		profile.defaultDuration = 2 * time.Hour
+		profile.minimumDuration = 2 * time.Hour
+		profile.minimumProcessRuntime = 2 * time.Hour
+		profile.reportFilename = "eight-agent-capability-market-round-5-checkpoint.json"
+		profile.reportSchema = capabilityMarketRound5CampaignSchema
+		profile.financialFilename = "eight-agent-capability-market-round-5-financial-summary.json"
+		profile.financialSchema = capabilityMarketRound5FinancialSchema
+		profile.closingAssessmentsFilename = "eight-agent-capability-market-round-5-closing-assessments.json"
+		profile.closingAssessmentsSchema = capabilityMarketRound5AssessmentsSchema
+	}
+	return profile, nil
+}
+
+func autonomousCampaignProfileFromEnvironment() (autonomousCampaignProfile, error) {
+	return resolveAutonomousCampaignProfile(
+		os.Getenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET") == "1",
+		os.Getenv("OPENFOX_CAMPAIGN_ROUND4") == "1",
+		os.Getenv("OPENFOX_CAMPAIGN_ROUND5") == "1",
+	)
+}
+
+func validateCampaignRuntimeRunScopeFromEnvironment(campaignRunID string, round4, round5 bool) error {
+	if round4 && round5 {
+		return errors.New("Round 4 and Round 5 campaign runtime flags are mutually exclusive")
+	}
+	if !round4 && !round5 {
+		if campaignRunID != "" {
+			return errors.New("campaign run scope is only valid for an explicit round-scoped profile")
+		}
+		return nil
+	}
+	if err := validateCampaignRunID(campaignRunID); err != nil {
+		return fmt.Errorf("campaign runtime scope: %w", err)
+	}
+	if !round5 {
+		// Preserve Round 4's existing generic validated nonce semantics. Round 5
+		// alone adds exact environment identity and profile prerequisites.
+		return nil
+	}
+	profile, err := autonomousCampaignProfileFromEnvironment()
+	if err != nil {
+		return err
+	}
+	if !profile.round5 || profile.round4 || !profile.capabilityMarket {
+		return errors.New("campaign runtime did not resolve the exact Round 5 capability-market profile")
+	}
+	expectedRunID := os.Getenv("OPENFOX_CAMPAIGN_RUN_ID")
+	if err := validateCampaignRunID(expectedRunID); err != nil {
+		return fmt.Errorf("OPENFOX_CAMPAIGN_RUN_ID for Round 5 runtime: %w", err)
+	}
+	if campaignRunID != expectedRunID {
+		return errors.New("Round 5 campaign runtime scope differs from the exact environment run ID")
+	}
+	if !strings.HasPrefix(campaignRunID, "round5:") {
+		return errors.New("Round 5 campaign runtime scope must begin with round5:")
+	}
+	return nil
+}
+
+func validateAutonomousCampaignTiming(profile autonomousCampaignProfile, duration, interval,
+	minimumProcessRuntime time.Duration,
+) error {
+	if duration < profile.minimumDuration {
+		return fmt.Errorf(
+			"autonomous campaign duration must be at least %s for the selected profile",
+			profile.minimumDuration,
+		)
+	}
+	if profile.round5 && duration != 2*time.Hour {
+		return errors.New("Round 5 autonomous campaign duration must be exactly 2h")
+	}
+	if interval < 30*time.Second {
+		return errors.New("autonomous campaign interval must preserve bounded pacing of at least 30s")
+	}
+	if minimumProcessRuntime < profile.minimumProcessRuntime || minimumProcessRuntime > 24*time.Hour {
+		return fmt.Errorf(
+			"autonomous campaign minimum process runtime must be between %s and 24h for the selected profile",
+			profile.minimumProcessRuntime,
+		)
+	}
+	if profile.round5 && minimumProcessRuntime != 2*time.Hour {
+		return errors.New("Round 5 autonomous campaign minimum process runtime must be exactly 2h")
+	}
+	return nil
+}
+
+func isCapabilityMarketCampaignSchema(schema string) bool {
+	return schema == capabilityMarketCampaignSchema || schema == capabilityMarketRound4CampaignSchema ||
+		schema == capabilityMarketRound5CampaignSchema
+}
+
+func campaignSHA256(raw []byte) string {
+	digest := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func campaignRawAddress(value, workchain string) bool {
+	actualWorkchain, accountID, found := strings.Cut(value, ":")
+	if !found || actualWorkchain != workchain || len(accountID) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(accountID)
+	if err != nil || hex.EncodeToString(decoded) != accountID {
+		return false
+	}
+	return !bytes.Equal(decoded, make([]byte, len(decoded)))
+}
+
+func campaignRawHash(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && hex.EncodeToString(decoded) == value &&
+		!bytes.Equal(decoded, make([]byte, len(decoded)))
+}
+
+func campaignCanonicalNetworkHash(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil && len(decoded) == sha256.Size &&
+		value == "sha256:"+hex.EncodeToString(decoded) &&
+		!bytes.Equal(decoded, make([]byte, len(decoded)))
+}
+
+func validRound5CampaignNetworkDomain(domain campaignValidatorNetworkDomain) bool {
+	return domain.NetworkID == "tos:local-three-node" && domain.GlobalID != 0 && domain.GlobalID != 3 &&
+		domain.WorkchainID == 0 &&
+		campaignCanonicalNetworkHash(domain.ZeroStateRootHash) &&
+		campaignCanonicalNetworkHash(domain.ZeroStateFileHash)
+}
+
+func round5CampaignGlobalIDFromEnvironment() (int32, error) {
+	parsed, err := strconv.ParseInt(os.Getenv("OPENFOX_TOS_NETWORK_GLOBAL_ID"), 10, 32)
+	if err != nil || parsed == 0 || parsed == 3 {
+		return 0, errors.New(
+			"OPENFOX_TOS_NETWORK_GLOBAL_ID must be a non-zero unique int32 other than legacy local global ID 3 for Round 5",
+		)
+	}
+	return int32(parsed), nil
+}
+
+func round5CampaignNetworkDomainFromEnvironment() (campaignValidatorNetworkDomain, error) {
+	globalID, err := round5CampaignGlobalIDFromEnvironment()
+	if err != nil {
+		return campaignValidatorNetworkDomain{}, err
+	}
+	rootHash, err := canonicalTOSZeroStateHash(os.Getenv("OPENFOX_TOS_ZERO_STATE_ROOT_HASH"))
+	if err != nil {
+		return campaignValidatorNetworkDomain{}, fmt.Errorf("OPENFOX_TOS_ZERO_STATE_ROOT_HASH: %w", err)
+	}
+	fileHash, err := canonicalTOSZeroStateHash(os.Getenv("OPENFOX_TOS_ZERO_STATE_FILE_HASH"))
+	if err != nil {
+		return campaignValidatorNetworkDomain{}, fmt.Errorf("OPENFOX_TOS_ZERO_STATE_FILE_HASH: %w", err)
+	}
+	workchain, err := strconv.ParseInt(os.Getenv("OPENFOX_TOS_TARGET_WORKCHAIN_ID"), 10, 32)
+	if err != nil || workchain != 0 {
+		return campaignValidatorNetworkDomain{}, errors.New(
+			"OPENFOX_TOS_TARGET_WORKCHAIN_ID must be exactly 0 for Round 5",
+		)
+	}
+	domain := campaignValidatorNetworkDomain{
+		NetworkID: "tos:local-three-node", GlobalID: globalID, WorkchainID: int32(workchain),
+		ZeroStateRootHash: rootHash, ZeroStateFileHash: fileHash,
+	}
+	if !validRound5CampaignNetworkDomain(domain) {
+		return campaignValidatorNetworkDomain{}, errors.New("Round 5 campaign network domain is invalid")
+	}
+	return domain, nil
+}
+
+func campaignMulDivFloor(left, right, divisor uint64) (uint64, error) {
+	if divisor == 0 {
+		return 0, errors.New("validator delegation arithmetic divides by zero")
+	}
+	product := new(big.Int).Mul(new(big.Int).SetUint64(left), new(big.Int).SetUint64(right))
+	product.Quo(product, new(big.Int).SetUint64(divisor))
+	if !product.IsUint64() {
+		return 0, errors.New("validator delegation arithmetic overflows uint64")
+	}
+	return product.Uint64(), nil
+}
+
+type campaignValidatorDelegationRequirement struct {
+	evidenceClass            string
+	network                  string
+	state                    string
+	sameGenesisWallets       bool
+	expectedNetworkDomain    *campaignValidatorNetworkDomain
+	requireSameGenesisClaims bool
+}
+
+func round4CampaignValidatorDelegationRequirement() campaignValidatorDelegationRequirement {
+	return campaignValidatorDelegationRequirement{
+		evidenceClass: "IDENTITY_BOUND_SIMULATION",
+		network:       "tos:local-accelerated-nominator-pool-sidecar",
+		state:         "verified_identity_bound_sidecar",
+	}
+}
+
+func round5CampaignValidatorDelegationRequirement(
+	domain campaignValidatorNetworkDomain,
+) campaignValidatorDelegationRequirement {
+	return campaignValidatorDelegationRequirement{
+		evidenceClass:            "SAME_GENESIS_CAMPAIGN_WALLETS",
+		network:                  "tos:local-accelerated-unified-campaign",
+		state:                    "verified_same_genesis_campaign_wallets",
+		sameGenesisWallets:       true,
+		expectedNetworkDomain:    &domain,
+		requireSameGenesisClaims: true,
+	}
+}
+
+func validCampaignValidatorClaimLimits(limits []string, sameGenesis bool) bool {
+	walletBoundary := "The sidecar wallets are bound to logical OpenFox Agent identities but are not the campaign wallets on the other genesis."
+	if sameGenesis {
+		walletBoundary = "The delegation wallets are the campaign Agent Accounts on the same genesis used for campaign payments."
+	}
+	required := map[string]bool{
+		walletBoundary: false,
+		"The accelerated election timing is test-only and is not a mainnet APR or production liveness claim.":                                false,
+		"Only the effective stake earns network reward; pool surplus has no marginal reward at max_stake_factor=1.":                          false,
+		"Ledger reward delta is exact, but Elector reward attribution is a lower bound because recovery also carries residual keeper value.": false,
+		"Rewards compound inside the pool ledger until a separate withdrawal pays the wallet.":                                               false,
+	}
+	if sameGenesis {
+		required["Delegation and withdrawal are operator-scripted low-level custody harness actions, not autonomous OpenFox AI or PersonalAuthority capital decisions."] = false
+		required["All validators and RPC process views run on one host under one operator; no independent-host, Byzantine-finality, or external-demand claim is made."] = false
+	}
+	if len(limits) != len(required) {
+		return false
+	}
+	for _, limit := range limits {
+		if _, found := required[limit]; !found || required[limit] {
+			return false
+		}
+		required[limit] = true
+	}
+	for _, present := range required {
+		if !present {
+			return false
+		}
+	}
+	return true
+}
+
+func validateCampaignValidatorDelegation(raw []byte, manifestRaw []byte,
+	manifest eightAgentManifest, expectedRunIDs ...string,
+) (*campaignValidatorDelegation, error) {
+	return validateCampaignValidatorDelegationWithRequirement(
+		raw, manifestRaw, manifest, round4CampaignValidatorDelegationRequirement(), expectedRunIDs...,
+	)
+}
+
+func validateCampaignValidatorDelegationWithRequirement(raw []byte, manifestRaw []byte,
+	manifest eightAgentManifest, requirement campaignValidatorDelegationRequirement, expectedRunIDs ...string,
+) (*campaignValidatorDelegation, error) {
+	if len(expectedRunIDs) > 1 {
+		return nil, errors.New("validator delegation received more than one campaign run scope")
+	}
+	if len(raw) == 0 || len(raw) > 4<<20 {
+		return nil, errors.New("validator delegation evidence must be between 1 byte and 4 MiB")
+	}
+	if err := validateCampaignValidatorEvidenceJSONShape(raw); err != nil {
+		return nil, fmt.Errorf("validator delegation evidence JSON shape: %w", err)
+	}
+	var evidence nominatorRewardEvidenceFile
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&evidence); err != nil {
+		return nil, fmt.Errorf("decode validator delegation evidence: %w", err)
+	}
+	if err := requireCampaignJSONEOF(decoder); err != nil {
+		return nil, fmt.Errorf("finish validator delegation evidence: %w", err)
+	}
+	if err := validateCampaignRunID(evidence.CampaignRunID); err != nil {
+		return nil, fmt.Errorf("validator delegation campaign run scope: %w", err)
+	}
+	if len(expectedRunIDs) == 1 {
+		if err := validateCampaignRunID(expectedRunIDs[0]); err != nil {
+			return nil, fmt.Errorf("expected validator delegation campaign run scope: %w", err)
+		}
+		if evidence.CampaignRunID != expectedRunIDs[0] {
+			return nil, errors.New("validator delegation evidence belongs to a different campaign run")
+		}
+	}
+	startedAt, startedErr := time.Parse(time.RFC3339, evidence.StartedAt)
+	finishedAt, finishedErr := time.Parse(time.RFC3339, evidence.FinishedAt)
+	if evidence.Schema != nominatorRewardExperimentSchema || !evidence.Passed ||
+		evidence.Failures == nil || evidence.NotExercised == nil ||
+		evidence.Checks == nil || evidence.Events == nil ||
+		len(evidence.Failures) != 0 || len(evidence.NotExercised) != 0 ||
+		startedErr != nil || finishedErr != nil || finishedAt.Before(startedAt) {
+		return nil, errors.New("validator delegation evidence did not pass its exact schema gate")
+	}
+	if evidence.EvidenceClass != requirement.evidenceClass || evidence.Network != requirement.network {
+		return nil, errors.New("validator delegation evidence class or network boundary is invalid")
+	}
+	if requirement.expectedNetworkDomain == nil {
+		if evidence.NetworkDomain != nil {
+			return nil, errors.New("Round 4 sidecar evidence unexpectedly claims a campaign payment network domain")
+		}
+	} else {
+		if !validRound5CampaignNetworkDomain(*requirement.expectedNetworkDomain) {
+			return nil, errors.New("expected Round 5 campaign payment network domain is invalid")
+		}
+		if evidence.NetworkDomain == nil || !validRound5CampaignNetworkDomain(*evidence.NetworkDomain) ||
+			*evidence.NetworkDomain != *requirement.expectedNetworkDomain {
+			return nil, errors.New("validator delegation evidence belongs to a different campaign payment genesis")
+		}
+	}
+	manifestDigest := campaignSHA256(manifestRaw)
+	if evidence.AgentManifestDigest != manifestDigest {
+		return nil, errors.New("validator delegation evidence is not bound to this campaign manifest")
+	}
+	if !campaignRawAddress(evidence.PoolAddress, "-1") || !campaignRawHash(evidence.PoolCodeHash) {
+		return nil, errors.New("validator delegation pool identity is invalid")
+	}
+	selection := evidence.ValidatorSelection
+	if selection.SelectionStatus != "selected" || selection.ElectionID == 0 ||
+		selection.ElectionID != evidence.RewardEvidence.ElectionID ||
+		selection.ValidatorSetUtimeSince != selection.ElectionID ||
+		selection.ValidatorSetUtimeUntil <= selection.ValidatorSetUtimeSince ||
+		selection.ValidatorSetTotal == 0 || selection.ValidatorSetMain == 0 ||
+		selection.ValidatorSetMain > selection.ValidatorSetTotal ||
+		selection.SelectedWeight == 0 || selection.ValidatorSetTotalWeight == 0 ||
+		selection.SelectedWeight > selection.ValidatorSetTotalWeight ||
+		!campaignRawHash(selection.ValidatorPublicKey) ||
+		!campaignRawHash(selection.ValidatorADNLID) ||
+		selection.SelectedADNLID != selection.ValidatorADNLID {
+		return nil, errors.New("validator delegation ConfigParam 34 selection proof is invalid")
+	}
+	poolConfig, rewardEvidence := evidence.PoolConfig, evidence.RewardEvidence
+	if poolConfig.ValidatorRewardShareBPS != campaignValidatorRewardShareBPS ||
+		rewardEvidence.ValidatorRewardShareBPS != campaignValidatorRewardShareBPS ||
+		poolConfig.MaxNominators < 9 || poolConfig.MaxStakeFactor != 1 ||
+		poolConfig.MinValidatorStakeNanoTOS == 0 || poolConfig.MinNominatorStakeNanoTOS == 0 ||
+		poolConfig.NetworkMinimumEffectiveStakeNanoTOS == 0 ||
+		rewardEvidence.EffectiveStakeNanoTOS != poolConfig.NetworkMinimumEffectiveStakeNanoTOS ||
+		rewardEvidence.StakeAmountSentNanoTOS != rewardEvidence.EffectiveStakeNanoTOS ||
+		rewardEvidence.GrossElectionRewardNanoTOS == 0 ||
+		rewardEvidence.ElectorReturnedCreditNanoTOS < rewardEvidence.StakeAmountSentNanoTOS ||
+		rewardEvidence.ElectorReturnedCreditNanoTOS-rewardEvidence.StakeAmountSentNanoTOS !=
+			rewardEvidence.GrossElectionRewardNanoTOS ||
+		rewardEvidence.ElectionAttribution != "lower-bound-only" ||
+		rewardEvidence.LedgerDeltaAttribution != "exact" || rewardEvidence.SurplusEarnsNetworkReward ||
+		strings.TrimSpace(rewardEvidence.AttributionCaveat) == "" {
+		return nil, errors.New("positive election reward lower-bound evidence is missing or inconsistent")
+	}
+	if len(manifest.Agents) != 8 || len(evidence.AgentRewards) != len(manifest.Agents) {
+		return nil, errors.New("validator delegation evidence must cover exactly the campaign's eight Agents")
+	}
+	expected := make(map[string]eightAgentManifestEntry, len(manifest.Agents))
+	manifestNames := make(map[string]bool, len(manifest.Agents))
+	manifestWallets := make(map[string]bool, len(manifest.Agents))
+	manifestAccounts := make(map[string]bool, len(manifest.Agents))
+	for _, agent := range manifest.Agents {
+		if strings.TrimSpace(agent.Name) == "" || strings.TrimSpace(agent.AgentID) == "" ||
+			strings.TrimSpace(agent.Wallet) == "" || !campaignRawAddress(agent.Target, "0") ||
+			manifestNames[agent.Name] || manifestWallets[agent.Wallet] || manifestAccounts[agent.Target] ||
+			expected[agent.AgentID].AgentID != "" {
+			return nil, errors.New("campaign manifest contains an incomplete or duplicate validator-delegation binding")
+		}
+		manifestNames[agent.Name], manifestWallets[agent.Wallet], manifestAccounts[agent.Target] = true, true, true
+		expected[agent.AgentID] = agent
+	}
+	delegationWallets := make(map[string]bool, len(evidence.AgentRewards))
+	var totalPrincipal, totalLedgerReward, totalElectionFloor, totalWithdrawalCredit uint64
+	payoutVerifiedAgents := 0
+	add := func(total *uint64, amount uint64) error {
+		if ^uint64(0)-*total < amount {
+			return errors.New("validator delegation evidence amount overflows uint64")
+		}
+		*total += amount
+		return nil
+	}
+	seen := make(map[string]bool, len(evidence.AgentRewards))
+	rewardsByAgent := make(map[string]nominatorAgentReward, len(evidence.AgentRewards))
+	for _, reward := range evidence.AgentRewards {
+		agent, ok := expected[reward.AgentID]
+		if !ok || seen[reward.AgentID] || reward.Agent != agent.Name ||
+			reward.CampaignWalletLabel != agent.Wallet ||
+			reward.CampaignAccountAddress != agent.Target {
+			return nil, fmt.Errorf("validator delegation Agent binding is invalid for %q", reward.AgentID)
+		}
+		seen[reward.AgentID] = true
+		if !campaignRawAddress(reward.DelegationWallet, "0") || delegationWallets[reward.DelegationWallet] {
+			return nil, errors.New("validator delegation wallets must be present and unique")
+		}
+		if requirement.sameGenesisWallets && reward.DelegationWallet != reward.CampaignAccountAddress {
+			return nil, fmt.Errorf(
+				"validator delegation wallet is not the campaign Agent Account for %q", reward.AgentID,
+			)
+		}
+		if requirement.sameGenesisWallets {
+			if reward.ConfiguredDeployMessageValueNanoTOS == nil ||
+				*reward.ConfiguredDeployMessageValueNanoTOS != campaignRound5DeployMessageNanoTOS {
+				return nil, fmt.Errorf(
+					"validator delegation does not bind the exact Round 5 Agent Account deploy funding for %q",
+					reward.AgentID,
+				)
+			}
+		} else if reward.ConfiguredDeployMessageValueNanoTOS != nil {
+			return nil, fmt.Errorf("Round 4 reward unexpectedly claims Agent Account deploy funding for %q", reward.AgentID)
+		}
+		if requirement.sameGenesisWallets &&
+			(reward.DepositMessageValueNanoTOS != campaignRound5DepositMessageNanoTOS ||
+				reward.DepositProcessingFeeNanoTOS != campaignRound5DepositFeeNanoTOS ||
+				reward.RecordedPrincipalNanoTOS != campaignRound5DelegatedPrincipalNanoTOS) {
+			return nil, fmt.Errorf(
+				"validator delegation does not use the exact Round 5 partial-principal split for %q", reward.AgentID,
+			)
+		}
+		delegationWallets[reward.DelegationWallet] = true
+		if reward.AttributionStatus != "POSITIVE_LOWER_BOUND" ||
+			reward.DepositProcessingFeeNanoTOS == 0 ||
+			^uint64(0)-reward.RecordedPrincipalNanoTOS < reward.DepositProcessingFeeNanoTOS ||
+			reward.RecordedPrincipalNanoTOS+reward.DepositProcessingFeeNanoTOS !=
+				reward.DepositMessageValueNanoTOS ||
+			reward.RecordedPrincipalNanoTOS < poolConfig.MinNominatorStakeNanoTOS ||
+			reward.RecordedPrincipalNanoTOS >= reward.WalletFundingNanoTOS ||
+			reward.WalletBalanceBeforeDepositNanoTOS != reward.WalletFundingNanoTOS ||
+			reward.WalletBalanceAfterDepositNanoTOS == 0 ||
+			reward.WalletBalanceAfterDepositNanoTOS >= reward.WalletBalanceBeforeDepositNanoTOS ||
+			reward.WalletBalanceBeforeDepositNanoTOS-reward.WalletBalanceAfterDepositNanoTOS <
+				reward.DepositMessageValueNanoTOS ||
+			reward.PrincipalBeforeRecoveryNanoTOS != reward.RecordedPrincipalNanoTOS ||
+			reward.PrincipalAfterRecoveryNanoTOS <= reward.PrincipalBeforeRecoveryNanoTOS ||
+			reward.PrincipalAfterRecoveryNanoTOS-reward.PrincipalBeforeRecoveryNanoTOS !=
+				reward.LedgerRewardDeltaNanoTOS ||
+			reward.ElectionRewardFloorNanoTOS == 0 ||
+			reward.LedgerRewardDeltaNanoTOS < reward.ElectionRewardFloorNanoTOS {
+			return nil, fmt.Errorf("validator delegation reward proof is incomplete for %q", reward.AgentID)
+		}
+		rewardsByAgent[reward.AgentID] = reward
+		amounts := []struct {
+			total  *uint64
+			amount uint64
+		}{
+			{&totalPrincipal, reward.RecordedPrincipalNanoTOS},
+			{&totalLedgerReward, reward.LedgerRewardDeltaNanoTOS},
+			{&totalElectionFloor, reward.ElectionRewardFloorNanoTOS},
+		}
+		for _, amount := range amounts {
+			if err := add(amount.total, amount.amount); err != nil {
+				return nil, err
+			}
+		}
+		if payout := reward.WithdrawalPayout; payout != nil {
+			if payout.PoolEntitlementNanoTOS != reward.PrincipalAfterRecoveryNanoTOS ||
+				payout.WalletCreditNanoTOS == 0 || payout.WalletCreditNanoTOS > payout.PoolEntitlementNanoTOS ||
+				payout.WalletBalanceAfter <= payout.WalletBalanceBefore ||
+				payout.WalletBalanceAfter-payout.WalletBalanceBefore != payout.WalletCreditNanoTOS ||
+				payout.PoolEntitlementNanoTOS-payout.WalletCreditNanoTOS >
+					campaignMaximumWithdrawalFeeNanoTOS {
+				return nil, fmt.Errorf("validator delegation withdrawal proof is incomplete for %q", reward.AgentID)
+			}
+			payoutVerifiedAgents++
+			if err := add(&totalWithdrawalCredit, payout.WalletCreditNanoTOS); err != nil {
+				return nil, err
+			}
+		}
+	}
+	control := evidence.PostStakeControl
+	if len(seen) != len(expected) || payoutVerifiedAgents < 1 ||
+		!campaignRawAddress(control.DelegationWallet, "0") || delegationWallets[control.DelegationWallet] ||
+		control.ExpectedRewardNanoTOS != 0 || control.LedgerRewardDeltaNanoTOS != 0 ||
+		control.RecordedPrincipalNanoTOS < poolConfig.MinNominatorStakeNanoTOS ||
+		control.PrincipalBeforeRecoveryNanoTOS != control.RecordedPrincipalNanoTOS ||
+		control.PrincipalAfterRecoveryNanoTOS != control.PrincipalBeforeRecoveryNanoTOS {
+		return nil, errors.New("post-stake zero-reward control is missing or inconsistent")
+	}
+	if totalPrincipal == 0 || rewardEvidence.RewardActivePrincipalAtStakeNanoTOS < totalPrincipal ||
+		rewardEvidence.RewardActivePrincipalAtStakeNanoTOS-totalPrincipal < poolConfig.MinValidatorStakeNanoTOS ||
+		rewardEvidence.PendingPrincipalNanoTOS != control.RecordedPrincipalNanoTOS ||
+		^uint64(0)-rewardEvidence.RewardActivePrincipalAtStakeNanoTOS < rewardEvidence.PendingPrincipalNanoTOS ||
+		rewardEvidence.TotalLedgerPrincipalNanoTOS !=
+			rewardEvidence.RewardActivePrincipalAtStakeNanoTOS+rewardEvidence.PendingPrincipalNanoTOS ||
+		rewardEvidence.RewardActivePrincipalAtStakeNanoTOS < rewardEvidence.EffectiveStakeNanoTOS ||
+		rewardEvidence.NonRewardEffectiveSurplusNanoTOS !=
+			rewardEvidence.RewardActivePrincipalAtStakeNanoTOS-rewardEvidence.EffectiveStakeNanoTOS {
+		return nil, errors.New("validator delegation active and pending principal arithmetic is inconsistent")
+	}
+	validatorElectionReward, err := campaignMulDivFloor(
+		rewardEvidence.GrossElectionRewardNanoTOS, campaignValidatorRewardShareBPS, 10_000,
+	)
+	if err != nil || validatorElectionReward != rewardEvidence.ValidatorElectionRewardNanoTOS ||
+		rewardEvidence.ValidatorElectionRewardNanoTOS > rewardEvidence.GrossElectionRewardNanoTOS ||
+		rewardEvidence.NominatorElectionRewardNanoTOS !=
+			rewardEvidence.GrossElectionRewardNanoTOS-rewardEvidence.ValidatorElectionRewardNanoTOS {
+		return nil, errors.New("validator delegation 40/60 reward split is inconsistent")
+	}
+	if len(rewardEvidence.AgentElectionRewardFloorNanoTOS) != len(expected) {
+		return nil, errors.New("validator delegation per-Agent reward-floor map is incomplete")
+	}
+	for agentID, reward := range rewardsByAgent {
+		floor, floorErr := campaignMulDivFloor(
+			rewardEvidence.NominatorElectionRewardNanoTOS, reward.RecordedPrincipalNanoTOS, totalPrincipal,
+		)
+		mappedFloor, found := rewardEvidence.AgentElectionRewardFloorNanoTOS[agentID]
+		if floorErr != nil || !found || floor == 0 || reward.ElectionRewardFloorNanoTOS != floor ||
+			mappedFloor != floor || reward.LedgerRewardDeltaNanoTOS < floor {
+			return nil, fmt.Errorf("validator delegation reward floor is not independently attributable for %q", agentID)
+		}
+	}
+	if totalLedgerReward != rewardEvidence.NominatorLedgerRewardNanoTOS {
+		return nil, errors.New("validator delegation exact ledger-reward total is inconsistent")
+	}
+	if !validCampaignValidatorClaimLimits(evidence.ClaimLimits, requirement.requireSameGenesisClaims) {
+		return nil, errors.New("validator delegation evidence omits its claim limits")
+	}
+	return &campaignValidatorDelegation{
+		CampaignRunID: evidence.CampaignRunID,
+		State:         requirement.state, EvidenceClass: evidence.EvidenceClass,
+		EvidenceDigest: campaignSHA256(raw), Network: evidence.Network,
+		NetworkDomain: cloneCampaignValidatorNetworkDomain(evidence.NetworkDomain),
+		PoolAddress:   evidence.PoolAddress, PoolCodeHash: evidence.PoolCodeHash,
+		AgentManifestDigest: manifestDigest, RewardedAgents: len(seen),
+		TotalDelegatedPrincipalNanoTOS: totalPrincipal, TotalLedgerRewardNanoTOS: totalLedgerReward,
+		ElectionRewardFloorNanoTOS:    totalElectionFloor,
+		PayoutVerifiedAgents:          payoutVerifiedAgents,
+		TotalWithdrawalCreditNanoTOS:  totalWithdrawalCredit,
+		PostStakeControlRewardNanoTOS: int64(evidence.PostStakeControl.LedgerRewardDeltaNanoTOS),
+		ClaimLimits:                   append([]string(nil), evidence.ClaimLimits...),
+	}, nil
+}
+
+func campaignValidatorEvidenceLockPath(path string) string {
+	return filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".lock")
+}
+
+func acquireCampaignValidatorEvidenceReadLock(path string) (*os.File, error) {
+	lockPath := campaignValidatorEvidenceLockPath(path)
+	descriptor, err := syscall.Open(
+		lockPath,
+		syscall.O_RDWR|syscall.O_CREAT|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,
+		0o600,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open validator delegation evidence generation lock: %w", err)
+	}
+	lock := os.NewFile(uintptr(descriptor), lockPath)
+	if lock == nil {
+		_ = syscall.Close(descriptor)
+		return nil, errors.New("open validator delegation evidence generation lock returned no file")
+	}
+	info, err := lock.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = lock.Close()
+		return nil, errors.New("validator delegation evidence generation lock is not a regular file")
+	}
+	if err = lock.Chmod(0o600); err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("protect validator delegation evidence generation lock: %w", err)
+	}
+	if err = syscall.Flock(descriptor, syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("validator delegation evidence generation is active: %w", err)
+	}
+	return lock, nil
+}
+
+func releaseCampaignValidatorEvidenceReadLock(lock *os.File) error {
+	if lock == nil {
+		return nil
+	}
+	unlockErr := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	closeErr := lock.Close()
+	if unlockErr != nil {
+		return fmt.Errorf("unlock validator delegation evidence generation: %w", unlockErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close validator delegation evidence generation lock: %w", closeErr)
+	}
+	return nil
+}
+
+func loadCampaignValidatorDelegationLocked(path string, manifestPath string, campaignRunID string,
+	manifest eightAgentManifest, requirements ...campaignValidatorDelegationRequirement,
+) (*campaignValidatorDelegation, error) {
+	if len(requirements) > 1 {
+		return nil, errors.New("validator delegation load received more than one evidence requirement")
+	}
+	requirement := round4CampaignValidatorDelegationRequirement()
+	if len(requirements) == 1 {
+		requirement = requirements[0]
+	}
+	markerPath := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".in-progress")
+	requireNoUnresolvedAttempt := func() error {
+		_, markerErr := os.Lstat(markerPath)
+		if markerErr == nil {
+			return errors.New("validator delegation evidence has an unresolved in-progress attempt")
+		}
+		if !errors.Is(markerErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect validator delegation evidence attempt marker: %w", markerErr)
+		}
+		return nil
+	}
+	if err := requireNoUnresolvedAttempt(); err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read validator delegation evidence: %w", err)
+	}
+	manifestRaw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("read campaign manifest for delegation binding: %w", err)
+	}
+	if err = requireNoUnresolvedAttempt(); err != nil {
+		return nil, err
+	}
+	return validateCampaignValidatorDelegationWithRequirement(
+		raw, manifestRaw, manifest, requirement, campaignRunID,
+	)
+}
+
+func loadCampaignValidatorDelegation(path string, manifestPath string, campaignRunID string,
+	manifest eightAgentManifest, requirements ...campaignValidatorDelegationRequirement,
+) (*campaignValidatorDelegation, error) {
+	if len(requirements) > 1 {
+		return nil, errors.New("validator delegation load received more than one evidence requirement")
+	}
+	lock, err := acquireCampaignValidatorEvidenceReadLock(path)
+	if err != nil {
+		return nil, err
+	}
+	summary, loadErr := loadCampaignValidatorDelegationLocked(
+		path, manifestPath, campaignRunID, manifest, requirements...,
+	)
+	releaseErr := releaseCampaignValidatorEvidenceReadLock(lock)
+	if loadErr != nil {
+		return nil, loadErr
+	}
+	if releaseErr != nil {
+		return nil, releaseErr
+	}
+	return summary, nil
+}
 
 type eightAgentDefinition struct {
 	Name, TOSName, OwnerID, AgentID, AuthorityID, Wallet, Capability, Taxonomy, ModelKind, Template string
@@ -77,54 +811,58 @@ type eightAgentManifest struct {
 }
 
 type eightAgentJobResult struct {
-	Sequence                    int      `json:"sequence"`
-	Disposition                 string   `json:"disposition"`
-	Round                       int      `json:"round"`
-	Buyer                       string   `json:"buyer"`
-	Seller                      string   `json:"seller"`
-	Capability                  string   `json:"capability"`
-	DemandIntentDigest          string   `json:"demand_intent_digest"`
-	AgreementDigest             string   `json:"agreement_digest"`
-	AgreementVersion            uint64   `json:"agreement_version,omitempty"`
-	PredecessorAgreementDigest  string   `json:"predecessor_agreement_digest,omitempty"`
-	NegotiatedAmountNanoTOS     uint64   `json:"negotiated_amount_nanotos,omitempty"`
-	ExecutionID                 string   `json:"execution_id"`
-	DeliverableDigest           string   `json:"deliverable_digest"`
-	PaymentTransaction          string   `json:"payment_transaction"`
-	FinalityReference           string   `json:"finality_reference"`
-	RevenueNanoTOS              uint64   `json:"revenue_nanotos"`
-	MaximumInternalCostNanoTOS  uint64   `json:"maximum_internal_cost_nanotos"`
-	ProjectedNetNanoTOS         uint64   `json:"projected_net_nanotos"`
-	SkillsBefore                []string `json:"skills_before"`
-	SkillsAfter                 []string `json:"skills_after"`
-	ExecutionElapsedMillis      int64    `json:"execution_elapsed_millis"`
-	SettlementElapsedMillis     int64    `json:"settlement_elapsed_millis"`
-	RecoveredPostDelivery       bool     `json:"recovered_post_delivery,omitempty"`
-	EconomicEvidenceDigest      string   `json:"economic_evidence_digest"`
-	EconomicAnalysisMode        string   `json:"economic_analysis_mode"`
-	EconomicStrategyDisposition string   `json:"economic_strategy_disposition,omitempty"`
-	EconomicStrategyRationale   string   `json:"economic_strategy_rationale,omitempty"`
-	BuyerPolicyDisposition      string   `json:"buyer_policy_disposition,omitempty"`
-	BuyerPolicyReason           string   `json:"buyer_policy_reason,omitempty"`
-	ExpectedNetNanoTOS          string   `json:"expected_net_nanotos"`
-	DemandPlanningMode          string   `json:"demand_planning_mode,omitempty"`
-	DemandRationale             string   `json:"demand_rationale,omitempty"`
-	SupplyIntentDigest          string   `json:"supply_intent_digest,omitempty"`
-	SupplyCarrierIDs            []string `json:"supply_carrier_ids,omitempty"`
-	ConversationDigest          string   `json:"conversation_digest,omitempty"`
-	ConversationMessageCount    int      `json:"conversation_message_count,omitempty"`
-	SettlementClass             string   `json:"settlement_class,omitempty"`
-	CampaignResultSourceDigest  string   `json:"campaign_result_source_digest,omitempty"`
-	OutcomeEvidenceDigest       string   `json:"outcome_evidence_digest,omitempty"`
-	OutcomeEvidenceState        string   `json:"outcome_evidence_state,omitempty"`
-	CostEvidenceDigest          string   `json:"cost_evidence_digest,omitempty"`
-	CostEvidenceState           string   `json:"cost_evidence_state,omitempty"`
-	CompletedAt                 string   `json:"completed_at"`
-	CarrierIDs                  []string `json:"carrier_ids"`
+	CampaignRunID                 string   `json:"campaign_run_id,omitempty"`
+	Sequence                      int      `json:"sequence"`
+	Disposition                   string   `json:"disposition"`
+	Round                         int      `json:"round"`
+	Buyer                         string   `json:"buyer"`
+	Seller                        string   `json:"seller"`
+	Capability                    string   `json:"capability"`
+	DemandIntentDigest            string   `json:"demand_intent_digest"`
+	AgreementDigest               string   `json:"agreement_digest"`
+	AgreementVersion              uint64   `json:"agreement_version,omitempty"`
+	PredecessorAgreementDigest    string   `json:"predecessor_agreement_digest,omitempty"`
+	NegotiatedAmountNanoTOS       uint64   `json:"negotiated_amount_nanotos,omitempty"`
+	ExecutionID                   string   `json:"execution_id"`
+	DeliverableDigest             string   `json:"deliverable_digest"`
+	PaymentTransaction            string   `json:"payment_transaction"`
+	FinalityReference             string   `json:"finality_reference"`
+	RevenueNanoTOS                uint64   `json:"revenue_nanotos"`
+	MaximumInternalCostNanoTOS    uint64   `json:"maximum_internal_cost_nanotos"`
+	ProjectedNetNanoTOS           uint64   `json:"projected_net_nanotos"`
+	SkillsBefore                  []string `json:"skills_before"`
+	SkillsAfter                   []string `json:"skills_after"`
+	ExecutionElapsedMillis        int64    `json:"execution_elapsed_millis"`
+	SettlementElapsedMillis       int64    `json:"settlement_elapsed_millis"`
+	RecoveredPostDelivery         bool     `json:"recovered_post_delivery,omitempty"`
+	EconomicEvidenceDigest        string   `json:"economic_evidence_digest"`
+	EconomicAnalysisMode          string   `json:"economic_analysis_mode"`
+	EconomicStrategyDisposition   string   `json:"economic_strategy_disposition,omitempty"`
+	EconomicStrategyRationale     string   `json:"economic_strategy_rationale,omitempty"`
+	BuyerPolicyDisposition        string   `json:"buyer_policy_disposition,omitempty"`
+	BuyerPolicyReason             string   `json:"buyer_policy_reason,omitempty"`
+	ExpectedNetNanoTOS            string   `json:"expected_net_nanotos"`
+	DemandPlanningMode            string   `json:"demand_planning_mode,omitempty"`
+	DemandRationale               string   `json:"demand_rationale,omitempty"`
+	SupplyIntentDigest            string   `json:"supply_intent_digest,omitempty"`
+	SupplyCarrierIDs              []string `json:"supply_carrier_ids,omitempty"`
+	ConversationDigest            string   `json:"conversation_digest,omitempty"`
+	ConversationMessageCount      int      `json:"conversation_message_count,omitempty"`
+	NegotiationRepairProfile      string   `json:"negotiation_repair_profile,omitempty"`
+	NegotiationRepairDispositions []string `json:"negotiation_repair_dispositions,omitempty"`
+	SettlementClass               string   `json:"settlement_class,omitempty"`
+	CampaignResultSourceDigest    string   `json:"campaign_result_source_digest,omitempty"`
+	OutcomeEvidenceDigest         string   `json:"outcome_evidence_digest,omitempty"`
+	OutcomeEvidenceState          string   `json:"outcome_evidence_state,omitempty"`
+	CostEvidenceDigest            string   `json:"cost_evidence_digest,omitempty"`
+	CostEvidenceState             string   `json:"cost_evidence_state,omitempty"`
+	CompletedAt                   string   `json:"completed_at"`
+	CarrierIDs                    []string `json:"carrier_ids"`
 }
 
 type campaignAcceptedAgreementCheckpoint struct {
 	Schema                   string                      `json:"schema"`
+	CampaignRunID            string                      `json:"campaign_run_id,omitempty"`
 	Sequence                 int                         `json:"sequence"`
 	BuyerAgentID             string                      `json:"buyer_agent_id"`
 	SellerAgentID            string                      `json:"seller_agent_id"`
@@ -137,13 +875,14 @@ type campaignAcceptedAgreementCheckpoint struct {
 }
 
 type autonomousCampaignDemand struct {
-	Decision     string   `json:"decision"`
-	SellerAgent  string   `json:"seller_agent"`
-	Capability   string   `json:"capability"`
-	Task         string   `json:"task"`
-	Rationale    string   `json:"rationale"`
-	IntentDigest string   `json:"-"`
-	CarrierIDs   []string `json:"-"`
+	Decision            string   `json:"decision"`
+	SellerAgent         string   `json:"seller_agent"`
+	Capability          string   `json:"capability"`
+	Task                string   `json:"task"`
+	Rationale           string   `json:"rationale"`
+	IntentDigest        string   `json:"-"`
+	CarrierIDs          []string `json:"-"`
+	CapacityDisposition string   `json:"-"`
 }
 
 type autonomousCampaignCatalogEntry struct {
@@ -178,6 +917,75 @@ type campaignNegotiationDecision struct {
 	Message       string `json:"message"`
 }
 
+type campaignNegotiationRepairMode uint8
+
+type campaignNegotiationOptions struct {
+	RepairMode    campaignNegotiationRepairMode
+	CampaignRunID string
+}
+
+const (
+	campaignNegotiationRepairDisabled campaignNegotiationRepairMode = iota
+	campaignNegotiationRepairRound5
+	campaignNegotiationRound5RepairProfile      = "round5-owner-bounds-v1"
+	campaignNegotiationBuyerAmountRepair        = "buyer_amount_canonicalized"
+	campaignNegotiationBuyerChoiceDeclineRepair = "buyer_incompatible_choice_declined"
+	campaignNegotiationSellerAmountRepair       = "seller_amount_canonicalized"
+)
+
+func resolveCampaignNegotiationRepairMode(
+	modes []campaignNegotiationRepairMode,
+) (campaignNegotiationRepairMode, error) {
+	if len(modes) > 1 {
+		return campaignNegotiationRepairDisabled, errors.New("negotiation received multiple repair profiles")
+	}
+	if len(modes) == 0 {
+		return campaignNegotiationRepairDisabled, nil
+	}
+	if modes[0] != campaignNegotiationRepairDisabled && modes[0] != campaignNegotiationRepairRound5 {
+		return campaignNegotiationRepairDisabled, errors.New("negotiation repair profile is invalid")
+	}
+	return modes[0], nil
+}
+
+func resolveCampaignNegotiationOptions(
+	options []campaignNegotiationOptions,
+) (campaignNegotiationOptions, error) {
+	if len(options) > 1 {
+		return campaignNegotiationOptions{}, errors.New("negotiation received multiple option profiles")
+	}
+	resolved := campaignNegotiationOptions{}
+	if len(options) == 1 {
+		resolved = options[0]
+	}
+	if _, err := resolveCampaignNegotiationRepairMode([]campaignNegotiationRepairMode{resolved.RepairMode}); err != nil {
+		return campaignNegotiationOptions{}, err
+	}
+	if resolved.RepairMode == campaignNegotiationRepairRound5 {
+		if validateCampaignRunID(resolved.CampaignRunID) != nil {
+			return campaignNegotiationOptions{}, errors.New("Round 5 negotiation requires an exact campaign run scope")
+		}
+	} else if resolved.CampaignRunID != "" {
+		return campaignNegotiationOptions{}, errors.New("legacy negotiation cannot claim a Round 5 run scope")
+	}
+	return resolved, nil
+}
+
+func campaignNegotiationRepairModeForRuntimes(
+	buyer, seller *campaignRuntime,
+) (campaignNegotiationRepairMode, error) {
+	if buyer == nil || seller == nil || buyer.negotiationRepairMode != seller.negotiationRepairMode {
+		return campaignNegotiationRepairDisabled, errors.New(
+			"campaign counterparties do not share one explicit negotiation repair profile",
+		)
+	}
+	if buyer.negotiationRepairMode != campaignNegotiationRepairDisabled &&
+		buyer.negotiationRepairMode != campaignNegotiationRepairRound5 {
+		return campaignNegotiationRepairDisabled, errors.New("campaign negotiation repair profile is invalid")
+	}
+	return buyer.negotiationRepairMode, nil
+}
+
 // campaignNegotiationModelOutputError identifies an AI response that cannot be
 // admitted under the frozen negotiation grammar or owner bounds. It is kept
 // distinct from provider/transport, signature, checkpoint, and storage errors:
@@ -186,6 +994,212 @@ type campaignNegotiationDecision struct {
 type campaignNegotiationModelOutputError struct {
 	stage string
 	err   error
+}
+
+type campaignNegotiationAttemptBudgetError struct {
+	stage               string
+	attempts            uint32
+	invalidModelOutputs uint32
+}
+
+func (failure campaignNegotiationAttemptBudgetError) Error() string {
+	return "Round 5 negotiation model-call attempt budget is exhausted for " + failure.stage
+}
+
+type campaignNegotiationAttemptJournal struct {
+	Schema                                   string `json:"schema"`
+	CampaignRunID                            string `json:"campaign_run_id"`
+	Sequence                                 int    `json:"sequence"`
+	SellerQuoteAttempts                      uint32 `json:"seller_quote_attempts"`
+	SellerQuoteInvalidModelOutputs           uint32 `json:"seller_quote_invalid_model_outputs"`
+	BuyerDecisionAttempts                    uint32 `json:"buyer_decision_attempts"`
+	BuyerDecisionInvalidModelOutputs         uint32 `json:"buyer_decision_invalid_model_outputs"`
+	SellerCounterDecisionAttempts            uint32 `json:"seller_counter_decision_attempts"`
+	SellerCounterDecisionInvalidModelOutputs uint32 `json:"seller_counter_decision_invalid_model_outputs"`
+}
+
+const campaignNegotiationAttemptJournalSchema = "tos.openfox.round5-negotiation-attempt-budget.v1"
+
+const (
+	campaignNegotiationSellerQuoteStage           = "seller-quote"
+	campaignNegotiationBuyerDecisionStage         = "buyer-decision"
+	campaignNegotiationSellerCounterDecisionStage = "seller-counter-decision"
+)
+
+func campaignNegotiationAttemptJournalPath(root string, sequence int) (string, error) {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || sequence < 0 {
+		return "", errors.New("Round 5 negotiation attempt journal scope is invalid")
+	}
+	directory := filepath.Join(root, "campaign", "negotiation-attempts")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(directory)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		return "", errors.New("Round 5 negotiation attempt journal directory is not owner-private")
+	}
+	return filepath.Join(directory, fmt.Sprintf("sequence-%03d.json", sequence)), nil
+}
+
+func loadCampaignNegotiationAttemptJournal(root string, sequence int,
+	options campaignNegotiationOptions,
+) (campaignNegotiationAttemptJournal, string, error) {
+	journal := campaignNegotiationAttemptJournal{
+		Schema: campaignNegotiationAttemptJournalSchema, CampaignRunID: options.CampaignRunID, Sequence: sequence,
+	}
+	if options.RepairMode != campaignNegotiationRepairRound5 ||
+		validateCampaignRunID(options.CampaignRunID) != nil {
+		return journal, "", errors.New("Round 5 negotiation attempt journal has no valid run scope")
+	}
+	path, err := campaignNegotiationAttemptJournalPath(root, sequence)
+	if err != nil {
+		return journal, "", err
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return journal, path, nil
+	}
+	if err != nil {
+		return journal, "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 ||
+		info.Size() <= 0 || info.Size() > 64<<10 {
+		return journal, "", errors.New("retained Round 5 negotiation attempt journal is not an owner-private bounded file")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || int64(len(raw)) != info.Size() || rejectDuplicateJSONKeys(raw) != nil {
+		return journal, "", errors.New("retained Round 5 negotiation attempt journal is unreadable or ambiguous")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&journal); err == nil {
+		err = requireCampaignJSONEOF(decoder)
+	}
+	canonical, marshalErr := json.MarshalIndent(journal, "", "  ")
+	if err != nil || marshalErr != nil || !bytes.Equal(raw, canonical) ||
+		journal.Schema != campaignNegotiationAttemptJournalSchema ||
+		journal.CampaignRunID != options.CampaignRunID || journal.Sequence != sequence ||
+		journal.SellerQuoteAttempts > uint32(maximumCampaignJobAttempts) ||
+		journal.SellerQuoteInvalidModelOutputs > journal.SellerQuoteAttempts ||
+		journal.BuyerDecisionAttempts > uint32(maximumCampaignJobAttempts) ||
+		journal.BuyerDecisionInvalidModelOutputs > journal.BuyerDecisionAttempts ||
+		journal.SellerCounterDecisionAttempts > uint32(maximumCampaignJobAttempts) ||
+		journal.SellerCounterDecisionInvalidModelOutputs > journal.SellerCounterDecisionAttempts {
+		return journal, "", errors.New("retained Round 5 negotiation attempt journal is invalid or conflicts with this run")
+	}
+	return journal, path, nil
+}
+
+func ensureCampaignNegotiationModelAttemptAvailable(root string, sequence int,
+	options campaignNegotiationOptions, stage string,
+) error {
+	journal, _, err := loadCampaignNegotiationAttemptJournal(root, sequence, options)
+	if err != nil {
+		return err
+	}
+	var attempts, invalidModelOutputs uint32
+	switch stage {
+	case campaignNegotiationSellerQuoteStage:
+		attempts = journal.SellerQuoteAttempts
+		invalidModelOutputs = journal.SellerQuoteInvalidModelOutputs
+	case campaignNegotiationBuyerDecisionStage:
+		attempts = journal.BuyerDecisionAttempts
+		invalidModelOutputs = journal.BuyerDecisionInvalidModelOutputs
+	case campaignNegotiationSellerCounterDecisionStage:
+		attempts = journal.SellerCounterDecisionAttempts
+		invalidModelOutputs = journal.SellerCounterDecisionInvalidModelOutputs
+	default:
+		return errors.New("Round 5 negotiation attempt stage is invalid")
+	}
+	if attempts >= uint32(maximumCampaignJobAttempts) {
+		return campaignNegotiationAttemptBudgetError{
+			stage: stage, attempts: attempts, invalidModelOutputs: invalidModelOutputs,
+		}
+	}
+	return nil
+}
+
+func reserveCampaignNegotiationModelAttempt(root string, sequence int,
+	options campaignNegotiationOptions, stage string,
+) error {
+	journal, path, err := loadCampaignNegotiationAttemptJournal(root, sequence, options)
+	if err != nil {
+		return err
+	}
+	switch stage {
+	case campaignNegotiationSellerQuoteStage:
+		if journal.SellerQuoteAttempts >= uint32(maximumCampaignJobAttempts) {
+			return campaignNegotiationAttemptBudgetError{stage: stage, attempts: journal.SellerQuoteAttempts,
+				invalidModelOutputs: journal.SellerQuoteInvalidModelOutputs}
+		}
+		journal.SellerQuoteAttempts++
+	case campaignNegotiationBuyerDecisionStage:
+		if journal.BuyerDecisionAttempts >= uint32(maximumCampaignJobAttempts) {
+			return campaignNegotiationAttemptBudgetError{stage: stage, attempts: journal.BuyerDecisionAttempts,
+				invalidModelOutputs: journal.BuyerDecisionInvalidModelOutputs}
+		}
+		journal.BuyerDecisionAttempts++
+	case campaignNegotiationSellerCounterDecisionStage:
+		if journal.SellerCounterDecisionAttempts >= uint32(maximumCampaignJobAttempts) {
+			return campaignNegotiationAttemptBudgetError{stage: stage,
+				attempts:            journal.SellerCounterDecisionAttempts,
+				invalidModelOutputs: journal.SellerCounterDecisionInvalidModelOutputs}
+		}
+		journal.SellerCounterDecisionAttempts++
+	default:
+		return errors.New("Round 5 negotiation attempt stage is invalid")
+	}
+	encoded, err := json.MarshalIndent(journal, "", "  ")
+	if err != nil {
+		return err
+	}
+	// The monotonically increasing count is itself the unambiguous durable
+	// receipt. A crash after this fsynced write conservatively consumes an
+	// attempt; there is no stranded in-flight marker to interpret on restart.
+	if err = fileutil.WriteFileAtomic(path, encoded, 0o600); err != nil {
+		return fmt.Errorf("persist Round 5 negotiation attempt before model call: %w", err)
+	}
+	return nil
+}
+
+func recordCampaignNegotiationInvalidModelOutput(root string, sequence int,
+	options campaignNegotiationOptions, stage string, failure error,
+) error {
+	var invalid campaignNegotiationModelOutputError
+	if !errors.As(failure, &invalid) || options.RepairMode != campaignNegotiationRepairRound5 {
+		return failure
+	}
+	journal, path, err := loadCampaignNegotiationAttemptJournal(root, sequence, options)
+	if err != nil {
+		return fmt.Errorf("load Round 5 negotiation attempt journal after invalid model output: %w", err)
+	}
+	switch stage {
+	case campaignNegotiationSellerQuoteStage:
+		if journal.SellerQuoteInvalidModelOutputs >= journal.SellerQuoteAttempts {
+			return errors.New("Round 5 seller quote invalid-output receipt has no reserved attempt")
+		}
+		journal.SellerQuoteInvalidModelOutputs++
+	case campaignNegotiationBuyerDecisionStage:
+		if journal.BuyerDecisionInvalidModelOutputs >= journal.BuyerDecisionAttempts {
+			return errors.New("Round 5 buyer decision invalid-output receipt has no reserved attempt")
+		}
+		journal.BuyerDecisionInvalidModelOutputs++
+	case campaignNegotiationSellerCounterDecisionStage:
+		if journal.SellerCounterDecisionInvalidModelOutputs >= journal.SellerCounterDecisionAttempts {
+			return errors.New("Round 5 seller counter invalid-output receipt has no reserved attempt")
+		}
+		journal.SellerCounterDecisionInvalidModelOutputs++
+	default:
+		return errors.New("Round 5 negotiation invalid-output stage is invalid")
+	}
+	encoded, err := json.MarshalIndent(journal, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = fileutil.WriteFileAtomic(path, encoded, 0o600); err != nil {
+		return fmt.Errorf("persist Round 5 invalid-model-output receipt: %w", err)
+	}
+	return failure
 }
 
 func (failure campaignNegotiationModelOutputError) Error() string { return failure.err.Error() }
@@ -201,6 +1215,7 @@ func wrapInvalidCampaignNegotiationModelOutput(stage string, err error) error {
 
 type campaignNegotiationCheckpoint struct {
 	Schema                  string                        `json:"schema"`
+	CampaignRunID           string                        `json:"campaign_run_id,omitempty"`
 	Sequence                int                           `json:"sequence"`
 	BuyerAgentID            string                        `json:"buyer_agent_id"`
 	SellerAgentID           string                        `json:"seller_agent_id"`
@@ -215,16 +1230,213 @@ type campaignNegotiationCheckpoint struct {
 	ConversationDigest      string                        `json:"conversation_digest"`
 	Messages                []campaignConversationMessage `json:"messages"`
 	AgreementAuthority      bool                          `json:"agreement_authority"`
+	RepairProfile           string                        `json:"repair_profile,omitempty"`
+	RepairDispositions      []string                      `json:"repair_dispositions,omitempty"`
+	BuyerOriginalDecision   *string                       `json:"buyer_original_decision,omitempty"`
+	BuyerOriginalAmount     *string                       `json:"buyer_original_amount_nanotos,omitempty"`
+	BuyerModelObjectDigest  string                        `json:"buyer_model_object_digest,omitempty"`
+	SellerOriginalDecision  *string                       `json:"seller_original_decision,omitempty"`
+	SellerOriginalAmount    *string                       `json:"seller_original_amount_nanotos,omitempty"`
+	SellerModelObjectDigest string                        `json:"seller_model_object_digest,omitempty"`
 }
 
 type eightAgentCampaignReport struct {
-	Schema                 string                          `json:"schema"`
-	Network                string                          `json:"network"`
-	StartedAt              string                          `json:"started_at"`
-	UpdatedAt              string                          `json:"updated_at"`
-	RequestedRunSec        int64                           `json:"requested_run_seconds"`
-	ProcessEvidenceWindows []campaignProcessEvidenceWindow `json:"process_evidence_windows,omitempty"`
-	Results                []eightAgentJobResult           `json:"results"`
+	Schema                 string                              `json:"schema"`
+	CampaignRunID          string                              `json:"campaign_run_id,omitempty"`
+	Network                string                              `json:"network"`
+	StartedAt              string                              `json:"started_at"`
+	UpdatedAt              string                              `json:"updated_at"`
+	RequestedRunSec        int64                               `json:"requested_run_seconds"`
+	ProcessEvidenceWindows []campaignProcessEvidenceWindow     `json:"process_evidence_windows,omitempty"`
+	Results                []eightAgentJobResult               `json:"results"`
+	NegotiationRepair      *campaignNegotiationRepairAggregate `json:"negotiation_repair,omitempty"`
+	ValidatorDelegation    *campaignValidatorDelegation        `json:"validator_delegation,omitempty"`
+	ProviderUsage          *campaignProviderUsageReference     `json:"provider_usage,omitempty"`
+}
+
+type campaignNegotiationRepairAggregate struct {
+	Profile         string         `json:"profile"`
+	ProfiledResults int            `json:"profiled_results"`
+	TotalRepairs    int            `json:"total_repairs"`
+	Dispositions    map[string]int `json:"dispositions"`
+}
+
+func aggregateCampaignNegotiationRepairs(
+	results []eightAgentJobResult,
+) (*campaignNegotiationRepairAggregate, error) {
+	var aggregate *campaignNegotiationRepairAggregate
+	for _, result := range results {
+		if result.NegotiationRepairProfile == "" {
+			if len(result.NegotiationRepairDispositions) != 0 {
+				return nil, errors.New("negotiation repair dispositions have no explicit profile")
+			}
+			continue
+		}
+		if result.NegotiationRepairProfile != campaignNegotiationRound5RepairProfile {
+			return nil, errors.New("campaign result has an unknown negotiation repair profile")
+		}
+		if aggregate == nil {
+			aggregate = &campaignNegotiationRepairAggregate{
+				Profile: result.NegotiationRepairProfile, Dispositions: map[string]int{},
+			}
+		}
+		aggregate.ProfiledResults++
+		for _, disposition := range result.NegotiationRepairDispositions {
+			switch disposition {
+			case campaignNegotiationBuyerAmountRepair,
+				campaignNegotiationBuyerChoiceDeclineRepair,
+				campaignNegotiationSellerAmountRepair:
+			default:
+				return nil, errors.New("campaign result has an unknown negotiation repair disposition")
+			}
+			aggregate.Dispositions[disposition]++
+			aggregate.TotalRepairs++
+		}
+	}
+	return aggregate, nil
+}
+
+type campaignValidatorDelegation struct {
+	CampaignRunID                  string                          `json:"campaign_run_id"`
+	State                          string                          `json:"state"`
+	EvidenceClass                  string                          `json:"evidence_class"`
+	EvidenceDigest                 string                          `json:"evidence_digest"`
+	Network                        string                          `json:"network"`
+	NetworkDomain                  *campaignValidatorNetworkDomain `json:"network_domain,omitempty"`
+	PoolAddress                    string                          `json:"pool_address"`
+	PoolCodeHash                   string                          `json:"pool_code_hash"`
+	AgentManifestDigest            string                          `json:"agent_manifest_digest"`
+	RewardedAgents                 int                             `json:"rewarded_agents"`
+	TotalDelegatedPrincipalNanoTOS uint64                          `json:"total_delegated_principal_nanotos"`
+	TotalLedgerRewardNanoTOS       uint64                          `json:"total_ledger_reward_nanotos"`
+	ElectionRewardFloorNanoTOS     uint64                          `json:"election_reward_floor_nanotos"`
+	PayoutVerifiedAgents           int                             `json:"payout_verified_agents"`
+	TotalWithdrawalCreditNanoTOS   uint64                          `json:"total_withdrawal_credit_nanotos"`
+	PostStakeControlRewardNanoTOS  int64                           `json:"post_stake_control_reward_nanotos"`
+	ClaimLimits                    []string                        `json:"claim_limits"`
+}
+
+type campaignValidatorNetworkDomain struct {
+	NetworkID         string `json:"network_id"`
+	GlobalID          int32  `json:"global_id"`
+	WorkchainID       int32  `json:"workchain_id"`
+	ZeroStateRootHash string `json:"zero_state_root_hash"`
+	ZeroStateFileHash string `json:"zero_state_file_hash"`
+}
+
+func cloneCampaignValidatorNetworkDomain(
+	domain *campaignValidatorNetworkDomain,
+) *campaignValidatorNetworkDomain {
+	if domain == nil {
+		return nil
+	}
+	cloned := *domain
+	return &cloned
+}
+
+type nominatorWithdrawalPayout struct {
+	PoolEntitlementNanoTOS uint64 `json:"pool_entitlement_nanotos"`
+	WalletBalanceBefore    uint64 `json:"wallet_balance_before_nanotos"`
+	WalletBalanceAfter     uint64 `json:"wallet_balance_after_nanotos"`
+	WalletCreditNanoTOS    uint64 `json:"wallet_credit_nanotos"`
+}
+
+type nominatorPoolConfigEvidence struct {
+	ValidatorRewardShareBPS             uint64 `json:"validator_reward_share_bps"`
+	MaxNominators                       uint64 `json:"max_nominators"`
+	MinValidatorStakeNanoTOS            uint64 `json:"min_validator_stake_nanotos"`
+	MinNominatorStakeNanoTOS            uint64 `json:"min_nominator_stake_nanotos"`
+	NetworkMinimumEffectiveStakeNanoTOS uint64 `json:"network_minimum_effective_stake_nanotos"`
+	MaxStakeFactor                      uint64 `json:"max_stake_factor"`
+}
+
+type nominatorValidatorSelectionEvidence struct {
+	SelectionStatus         string `json:"selection_status"`
+	ElectionID              uint64 `json:"election_id"`
+	ValidatorPublicKey      string `json:"validator_public_key"`
+	ValidatorADNLID         string `json:"validator_adnl_id"`
+	SelectedADNLID          string `json:"selected_adnl_id"`
+	SelectedWeight          uint64 `json:"selected_weight"`
+	ValidatorSetUtimeSince  uint64 `json:"validator_set_utime_since"`
+	ValidatorSetUtimeUntil  uint64 `json:"validator_set_utime_until"`
+	ValidatorSetTotal       uint64 `json:"validator_set_total"`
+	ValidatorSetMain        uint64 `json:"validator_set_main"`
+	ValidatorSetTotalWeight uint64 `json:"validator_set_total_weight"`
+}
+
+type nominatorRewardDistributionEvidence struct {
+	StakeAmountSentNanoTOS              uint64            `json:"stake_amount_sent_nanotos"`
+	EffectiveStakeNanoTOS               uint64            `json:"effective_stake_nanotos"`
+	RewardActivePrincipalAtStakeNanoTOS uint64            `json:"reward_active_principal_at_stake_nanotos"`
+	PendingPrincipalNanoTOS             uint64            `json:"pending_principal_nanotos"`
+	TotalLedgerPrincipalNanoTOS         uint64            `json:"total_ledger_principal_nanotos"`
+	NonRewardEffectiveSurplusNanoTOS    uint64            `json:"non_reward_effective_surplus_nanotos"`
+	SurplusEarnsNetworkReward           bool              `json:"surplus_earns_network_reward"`
+	ElectorReturnedCreditNanoTOS        uint64            `json:"elector_returned_credit_nanotos"`
+	GrossElectionRewardNanoTOS          uint64            `json:"gross_election_reward_nanotos"`
+	ValidatorElectionRewardNanoTOS      uint64            `json:"validator_election_reward_nanotos"`
+	NominatorElectionRewardNanoTOS      uint64            `json:"nominator_election_reward_nanotos"`
+	ElectionID                          uint64            `json:"election_id"`
+	ValidatorRewardShareBPS             uint64            `json:"validator_reward_share_bps"`
+	NominatorLedgerRewardNanoTOS        uint64            `json:"nominator_ledger_reward_nanotos"`
+	AgentElectionRewardFloorNanoTOS     map[string]uint64 `json:"agent_election_reward_floor_nanotos"`
+	LedgerDeltaAttribution              string            `json:"ledger_delta_attribution"`
+	ElectionAttribution                 string            `json:"election_reward_attribution"`
+	AttributionCaveat                   string            `json:"attribution_caveat"`
+}
+
+type nominatorAgentReward struct {
+	Agent                               string                     `json:"agent"`
+	AgentID                             string                     `json:"agent_id"`
+	CampaignWalletLabel                 string                     `json:"campaign_wallet_label"`
+	CampaignAccountAddress              string                     `json:"campaign_account_address"`
+	ConfiguredDeployMessageValueNanoTOS *uint64                    `json:"configured_deploy_message_value_nanotos,omitempty"`
+	DelegationWallet                    string                     `json:"delegation_wallet"`
+	WalletFundingNanoTOS                uint64                     `json:"wallet_funding_nanotos"`
+	WalletBalanceBeforeDepositNanoTOS   uint64                     `json:"wallet_balance_before_deposit_nanotos"`
+	WalletBalanceAfterDepositNanoTOS    uint64                     `json:"wallet_balance_after_deposit_nanotos"`
+	DepositMessageValueNanoTOS          uint64                     `json:"deposit_message_value_nanotos"`
+	DepositProcessingFeeNanoTOS         uint64                     `json:"deposit_processing_fee_nanotos"`
+	RecordedPrincipalNanoTOS            uint64                     `json:"recorded_principal_nanotos"`
+	PrincipalBeforeRecoveryNanoTOS      uint64                     `json:"principal_before_recovery_nanotos"`
+	PrincipalAfterRecoveryNanoTOS       uint64                     `json:"principal_after_recovery_nanotos"`
+	LedgerRewardDeltaNanoTOS            uint64                     `json:"ledger_reward_delta_nanotos"`
+	ElectionRewardFloorNanoTOS          uint64                     `json:"election_reward_floor_nanotos"`
+	AttributionStatus                   string                     `json:"attribution_status"`
+	WithdrawalPayout                    *nominatorWithdrawalPayout `json:"withdrawal_payout"`
+}
+
+type nominatorPostStakeControl struct {
+	DelegationWallet               string `json:"delegation_wallet"`
+	RecordedPrincipalNanoTOS       uint64 `json:"recorded_principal_nanotos"`
+	PrincipalBeforeRecoveryNanoTOS uint64 `json:"principal_before_recovery_nanotos"`
+	PrincipalAfterRecoveryNanoTOS  uint64 `json:"principal_after_recovery_nanotos"`
+	LedgerRewardDeltaNanoTOS       int64  `json:"ledger_reward_delta_nanotos"`
+	ExpectedRewardNanoTOS          int64  `json:"expected_reward_nanotos"`
+}
+
+type nominatorRewardEvidenceFile struct {
+	Schema              string                              `json:"schema"`
+	StartedAt           string                              `json:"started_at"`
+	FinishedAt          string                              `json:"finished_at"`
+	Network             string                              `json:"network"`
+	EvidenceClass       string                              `json:"evidence_class"`
+	NetworkDomain       *campaignValidatorNetworkDomain     `json:"network_domain,omitempty"`
+	CampaignRunID       string                              `json:"campaign_run_id"`
+	AgentManifestDigest string                              `json:"agent_manifest_digest"`
+	PoolAddress         string                              `json:"pool_address"`
+	PoolCodeHash        string                              `json:"pool_code_hash"`
+	PoolConfig          nominatorPoolConfigEvidence         `json:"pool_config"`
+	ValidatorSelection  nominatorValidatorSelectionEvidence `json:"validator_selection"`
+	RewardEvidence      nominatorRewardDistributionEvidence `json:"reward_evidence"`
+	AgentRewards        []nominatorAgentReward              `json:"agent_nominator_rewards"`
+	PostStakeControl    nominatorPostStakeControl           `json:"post_stake_control"`
+	ClaimLimits         []string                            `json:"claim_limits"`
+	Checks              []map[string]any                    `json:"checks"`
+	NotExercised        []string                            `json:"not_exercised"`
+	Events              []map[string]any                    `json:"events"`
+	Failures            []string                            `json:"failures"`
+	Passed              bool                                `json:"passed"`
 }
 
 type campaignProcessEvidenceWindow struct {
@@ -260,20 +1472,22 @@ func eightAgentCampaignWriterScope() []string {
 }
 
 type campaignRuntime struct {
-	definition      eightAgentManifestEntry
-	cfg             *config.Config
-	provider        providers.LLMProvider
-	model           string
-	identity        ed25519.PrivateKey
-	authority       *PersonalAuthority
-	fence           commerce.WriterFence
-	publisher       *PublicationManager
-	payment         *TOSCTLPaymentSink
-	learning        ExecutionLearningRecorder
-	collector       Collector
-	agentContext    AgentContextSource
-	catalogOverride []autonomousCampaignCatalogEntry
-	marketHistory   []campaignMarketHistory
+	definition            eightAgentManifestEntry
+	cfg                   *config.Config
+	provider              providers.LLMProvider
+	providerUsage         *campaignProviderUsageRecorder
+	model                 string
+	identity              ed25519.PrivateKey
+	authority             *PersonalAuthority
+	fence                 commerce.WriterFence
+	publisher             *PublicationManager
+	payment               *TOSCTLPaymentSink
+	learning              ExecutionLearningRecorder
+	collector             Collector
+	agentContext          AgentContextSource
+	catalogOverride       []autonomousCampaignCatalogEntry
+	marketHistory         []campaignMarketHistory
+	negotiationRepairMode campaignNegotiationRepairMode
 }
 
 type campaignMarketHistory struct {
@@ -709,6 +1923,13 @@ func configureCampaignDocument(t *testing.T, document map[string]any, entry eigh
 	if err != nil {
 		t.Fatal("OPENFOX_TOS_TARGET_WORKCHAIN_ID must be an int32")
 	}
+	globalID := int32(3)
+	if os.Getenv("OPENFOX_CAMPAIGN_ROUND5") == "1" {
+		globalID, err = round5CampaignGlobalIDFromEnvironment()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	// The general OpenFox daemon gates remain disabled in this isolated test
 	// config; the acceptance harness owns the explicit payment Gate. Still pin
 	// the complete custody domain here because authority construction must not
@@ -716,7 +1937,7 @@ func configureCampaignDocument(t *testing.T, document map[string]any, entry eigh
 	earning["tos_payment"] = map[string]any{
 		"enabled": false,
 		"network": map[string]any{
-			"network_id": "tos:local-three-node", "global_id": 3,
+			"network_id": "tos:local-three-node", "global_id": globalID,
 			"zero_state_root_hash": rootHash, "zero_state_file_hash": fileHash,
 			"workchain_id": workchainID,
 		},
@@ -886,8 +2107,8 @@ func socialIntentCampaignDefinitions(definitions []eightAgentDefinition) []eight
 	return updated
 }
 
-// capabilityMarketCampaignDefinitions is the UUMIT-inspired experiment
-// profile. Business meaning stays in the generic signed Intent detail and the
+// capabilityMarketCampaignDefinitions is the generic capability-market
+// experiment profile. Business meaning stays in the signed Intent detail and the
 // complete Agreement; these roles do not introduce POI-, API-, report-, or
 // localization-specific protocol objects.
 func capabilityMarketCampaignDefinitions(definitions []eightAgentDefinition) []eightAgentDefinition {
@@ -1026,6 +2247,1153 @@ func TestCapabilityMarketCampaignDefinitionsAreGenericRangedOffers(t *testing.T)
 			t.Fatalf("incomplete capability-market economics for %s: %+v", definition.Name, definition)
 		}
 		names[definition.TOSName], capabilities[definition.Capability] = true, true
+	}
+}
+
+func TestAutonomousCampaignRound4ProfileIsIndependent(t *testing.T) {
+	legacy, err := resolveAutonomousCampaignProfile(false, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.defaultDuration != 10*time.Hour || legacy.minimumDuration != 3*time.Hour ||
+		legacy.minimumProcessRuntime != 0 || legacy.defaultRounds != 5 ||
+		legacy.reportFilename != "eight-agent-autonomous-campaign-checkpoint.json" ||
+		legacy.reportSchema != eightAgentCampaignSchema {
+		t.Fatalf("legacy autonomous profile changed: %+v", legacy)
+	}
+
+	capability, err := resolveAutonomousCampaignProfile(true, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !capability.capabilityMarket || capability.round4 || capability.round5 ||
+		capability.defaultDuration != 3*time.Hour ||
+		capability.minimumDuration != 3*time.Hour || capability.minimumProcessRuntime != 0 ||
+		capability.reportFilename != "eight-agent-capability-market-checkpoint.json" ||
+		capability.reportSchema != capabilityMarketCampaignSchema {
+		t.Fatalf("legacy capability-market profile changed: %+v", capability)
+	}
+
+	round4, err := resolveAutonomousCampaignProfile(true, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !round4.capabilityMarket || !round4.round4 || round4.round5 ||
+		round4.defaultDuration != 2*time.Hour ||
+		round4.minimumDuration != 2*time.Hour || round4.minimumProcessRuntime != 2*time.Hour ||
+		round4.defaultRounds != 2 ||
+		round4.reportFilename != "eight-agent-capability-market-round-4-checkpoint.json" ||
+		round4.reportSchema != capabilityMarketRound4CampaignSchema ||
+		round4.financialFilename != "eight-agent-capability-market-round-4-financial-summary.json" ||
+		round4.financialSchema != capabilityMarketRound4FinancialSchema ||
+		round4.closingAssessmentsFilename != "eight-agent-capability-market-round-4-closing-assessments.json" ||
+		round4.closingAssessmentsSchema != capabilityMarketRound4AssessmentsSchema {
+		t.Fatalf("Round 4 profile is incomplete: %+v", round4)
+	}
+	if _, err = resolveAutonomousCampaignProfile(false, true, false); err == nil {
+		t.Fatal("Round 4 was enabled without the capability-market profile")
+	}
+	if !isCapabilityMarketCampaignSchema(capability.reportSchema) ||
+		!isCapabilityMarketCampaignSchema(round4.reportSchema) ||
+		isCapabilityMarketCampaignSchema(legacy.reportSchema) {
+		t.Fatal("capability-market campaign schema classification is not profile-exact")
+	}
+}
+
+func TestAutonomousCampaignRound5ProfileIsStrictAndIndependent(t *testing.T) {
+	round5, err := resolveAutonomousCampaignProfile(true, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !round5.capabilityMarket || round5.round4 || !round5.round5 ||
+		round5.defaultDuration != 2*time.Hour || round5.minimumDuration != 2*time.Hour ||
+		round5.minimumProcessRuntime != 2*time.Hour || round5.defaultRounds != 2 ||
+		round5.reportFilename != "eight-agent-capability-market-round-5-checkpoint.json" ||
+		round5.reportSchema != capabilityMarketRound5CampaignSchema ||
+		round5.financialFilename != "eight-agent-capability-market-round-5-financial-summary.json" ||
+		round5.financialSchema != capabilityMarketRound5FinancialSchema ||
+		round5.closingAssessmentsFilename != "eight-agent-capability-market-round-5-closing-assessments.json" ||
+		round5.closingAssessmentsSchema != capabilityMarketRound5AssessmentsSchema {
+		t.Fatalf("Round 5 profile is incomplete: %+v", round5)
+	}
+	if !isCapabilityMarketCampaignSchema(round5.reportSchema) {
+		t.Fatal("Round 5 schema was not classified as capability-market evidence")
+	}
+	if _, err = resolveAutonomousCampaignProfile(false, false, true); err == nil {
+		t.Fatal("Round 5 was enabled without the capability-market profile")
+	}
+	if _, err = resolveAutonomousCampaignProfile(true, true, true); err == nil {
+		t.Fatal("Round 4 and Round 5 were enabled together")
+	}
+	if err = validateAutonomousCampaignTiming(
+		round5, 2*time.Hour, 30*time.Second, 2*time.Hour,
+	); err != nil {
+		t.Fatalf("exact Round 5 timing was rejected: %v", err)
+	}
+	for name, timing := range map[string]struct {
+		duration time.Duration
+		process  time.Duration
+	}{
+		"short-duration": {duration: 2*time.Hour - time.Second, process: 2 * time.Hour},
+		"long-duration":  {duration: 2*time.Hour + time.Second, process: 2 * time.Hour},
+		"short-process":  {duration: 2 * time.Hour, process: 2*time.Hour - time.Second},
+		"long-process":   {duration: 2 * time.Hour, process: 2*time.Hour + time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateAutonomousCampaignTiming(
+				round5, timing.duration, 30*time.Second, timing.process,
+			); err == nil {
+				t.Fatal("non-exact Round 5 timing was accepted")
+			}
+		})
+	}
+}
+
+func TestCampaignClosingBoundaryRequiresCurrentRunFinalizedDirectTOSPayment(t *testing.T) {
+	const campaignRunID = "round5:closing-boundary-001"
+	valid := eightAgentJobResult{
+		CampaignRunID:      campaignRunID,
+		Disposition:        "settled",
+		SettlementClass:    "agreement_direct_tos",
+		PaymentTransaction: "transaction:finalized",
+		FinalityReference:  "masterchain:finalized",
+	}
+	tests := []struct {
+		name   string
+		runID  string
+		result *eightAgentJobResult
+		want   bool
+	}{
+		{name: "finalized direct TOS", runID: campaignRunID, result: &valid, want: true},
+		{name: "no result", runID: campaignRunID},
+		{name: "missing report run", result: &valid},
+		{name: "invalid report run", runID: "round5:bad run", result: &valid},
+		{name: "foreign run", runID: campaignRunID, result: func() *eightAgentJobResult {
+			candidate := valid
+			candidate.CampaignRunID = "round5:closing-boundary-foreign"
+			return &candidate
+		}()},
+		{name: "legacy empty disposition", runID: campaignRunID, result: func() *eightAgentJobResult {
+			candidate := valid
+			candidate.Disposition = ""
+			return &candidate
+		}()},
+		{name: "skipped", runID: campaignRunID, result: func() *eightAgentJobResult {
+			candidate := valid
+			candidate.Disposition = "skipped:buyer-strategy"
+			return &candidate
+		}()},
+		{name: "different settlement class", runID: campaignRunID, result: func() *eightAgentJobResult {
+			candidate := valid
+			candidate.SettlementClass = "gift"
+			return &candidate
+		}()},
+		{name: "missing transaction", runID: campaignRunID, result: func() *eightAgentJobResult {
+			candidate := valid
+			candidate.PaymentTransaction = " "
+			return &candidate
+		}()},
+		{name: "missing finality", runID: campaignRunID, result: func() *eightAgentJobResult {
+			candidate := valid
+			candidate.FinalityReference = "\t"
+			return &candidate
+		}()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report := eightAgentCampaignReport{CampaignRunID: test.runID}
+			if test.result != nil {
+				report.Results = []eightAgentJobResult{*test.result}
+			}
+			if got := campaignHasCurrentRunFinalizedDirectTOSPayment(report); got != test.want {
+				t.Fatalf("finalized direct TOS boundary=%t, want=%t", got, test.want)
+			}
+		})
+	}
+
+	profile := autonomousCampaignProfile{capabilityMarket: true, round5: true}
+	delegation := &campaignValidatorDelegation{State: "verified_same_genesis_campaign_wallets"}
+	configuredOnly := campaignClosingEvidenceBoundary(eightAgentCampaignReport{
+		CampaignRunID: campaignRunID, ValidatorDelegation: delegation,
+	}, profile)
+	if !strings.Contains(configuredOnly, "configured for the same genesis") ||
+		strings.Contains(configuredOnly, "same genesis used for campaign payments") {
+		t.Fatalf("zero-payment closing boundary overstated same-genesis use: %s", configuredOnly)
+	}
+	used := campaignClosingEvidenceBoundary(eightAgentCampaignReport{
+		CampaignRunID: campaignRunID, ValidatorDelegation: delegation,
+		Results: []eightAgentJobResult{valid},
+	}, profile)
+	if !strings.Contains(used, "same genesis used for campaign payments") ||
+		strings.Contains(used, "configured for the same genesis") {
+		t.Fatalf("finalized-payment closing boundary lost same-genesis use evidence: %s", used)
+	}
+}
+
+func TestAutonomousCampaignRound4TimingDoesNotWeakenLegacyMinimum(t *testing.T) {
+	legacy, _ := resolveAutonomousCampaignProfile(false, false, false)
+	capability, _ := resolveAutonomousCampaignProfile(true, false, false)
+	round4, _ := resolveAutonomousCampaignProfile(true, true, false)
+	tests := []struct {
+		name                  string
+		profile               autonomousCampaignProfile
+		duration              time.Duration
+		interval              time.Duration
+		minimumProcessRuntime time.Duration
+		wantError             bool
+	}{
+		{name: "round4-exact-boundary", profile: round4, duration: 2 * time.Hour,
+			interval: 30 * time.Second, minimumProcessRuntime: 2 * time.Hour},
+		{name: "round4-short-duration", profile: round4, duration: 2*time.Hour - time.Second,
+			interval: 30 * time.Second, minimumProcessRuntime: 2 * time.Hour, wantError: true},
+		{name: "round4-short-process-window", profile: round4, duration: 2 * time.Hour,
+			interval: 30 * time.Second, minimumProcessRuntime: 2*time.Hour - time.Second, wantError: true},
+		{name: "round4-unbounded-pacing", profile: round4, duration: 2 * time.Hour,
+			interval: 29 * time.Second, minimumProcessRuntime: 2 * time.Hour, wantError: true},
+		{name: "legacy-capability-still-rejects-two-hours", profile: capability, duration: 2 * time.Hour,
+			interval: 30 * time.Second, wantError: true},
+		{name: "legacy-capability-three-hours", profile: capability, duration: 3 * time.Hour,
+			interval: 30 * time.Second},
+		{name: "legacy-autonomous-still-rejects-two-hours", profile: legacy, duration: 2 * time.Hour,
+			interval: 30 * time.Second, wantError: true},
+		{name: "legacy-autonomous-three-hours", profile: legacy, duration: 3 * time.Hour,
+			interval: 30 * time.Second},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateAutonomousCampaignTiming(
+				test.profile, test.duration, test.interval, test.minimumProcessRuntime,
+			)
+			if (err != nil) != test.wantError {
+				t.Fatalf("timing validation error=%v, want_error=%t", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestAutonomousCampaignRound4EnvironmentRequiresCapabilityMarket(t *testing.T) {
+	t.Setenv("OPENFOX_CAMPAIGN_ROUND4", "1")
+	t.Setenv("OPENFOX_CAMPAIGN_ROUND5", "0")
+	t.Setenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET", "0")
+	if _, err := autonomousCampaignProfileFromEnvironment(); err == nil {
+		t.Fatal("Round 4 environment flag bypassed the capability-market prerequisite")
+	}
+	t.Setenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET", "1")
+	profile, err := autonomousCampaignProfileFromEnvironment()
+	if err != nil || !profile.round4 || profile.reportSchema != capabilityMarketRound4CampaignSchema {
+		t.Fatalf("Round 4 environment did not select its independent profile: profile=%+v err=%v", profile, err)
+	}
+}
+
+func TestAutonomousCampaignRound5EnvironmentRequiresCapabilityMarket(t *testing.T) {
+	t.Setenv("OPENFOX_CAMPAIGN_ROUND4", "0")
+	t.Setenv("OPENFOX_CAMPAIGN_ROUND5", "1")
+	t.Setenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET", "0")
+	if _, err := autonomousCampaignProfileFromEnvironment(); err == nil {
+		t.Fatal("Round 5 environment flag bypassed the capability-market prerequisite")
+	}
+	t.Setenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET", "1")
+	profile, err := autonomousCampaignProfileFromEnvironment()
+	if err != nil || !profile.round5 || profile.round4 || profile.reportSchema != capabilityMarketRound5CampaignSchema {
+		t.Fatalf("Round 5 environment did not select its independent profile: profile=%+v err=%v", profile, err)
+	}
+	t.Setenv("OPENFOX_CAMPAIGN_ROUND4", "1")
+	if _, err = autonomousCampaignProfileFromEnvironment(); err == nil {
+		t.Fatal("simultaneous Round 4 and Round 5 environment flags were accepted")
+	}
+}
+
+func TestRound5CampaignNetworkDomainComesFromExactCampaignEnvironment(t *testing.T) {
+	rootHash := "sha256:" + strings.Repeat("31", 32)
+	fileHash := "sha256:" + strings.Repeat("42", 32)
+	t.Setenv("OPENFOX_TOS_ZERO_STATE_ROOT_HASH", rootHash)
+	t.Setenv("OPENFOX_TOS_ZERO_STATE_FILE_HASH", fileHash)
+	t.Setenv("OPENFOX_TOS_TARGET_WORKCHAIN_ID", "0")
+	t.Setenv("OPENFOX_TOS_NETWORK_GLOBAL_ID", "76543219")
+	domain, err := round5CampaignNetworkDomainFromEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if domain != (campaignValidatorNetworkDomain{
+		NetworkID: "tos:local-three-node", GlobalID: 76_543_219, WorkchainID: 0,
+		ZeroStateRootHash: rootHash, ZeroStateFileHash: fileHash,
+	}) {
+		t.Fatalf("unexpected Round 5 environment domain: %+v", domain)
+	}
+	t.Setenv("OPENFOX_TOS_TARGET_WORKCHAIN_ID", "-1")
+	if _, err = round5CampaignNetworkDomainFromEnvironment(); err == nil {
+		t.Fatal("Round 5 accepted a non-zero campaign workchain")
+	}
+	t.Setenv("OPENFOX_TOS_TARGET_WORKCHAIN_ID", "0")
+	t.Setenv("OPENFOX_TOS_NETWORK_GLOBAL_ID", "3")
+	if _, err = round5CampaignNetworkDomainFromEnvironment(); err == nil {
+		t.Fatal("Round 5 accepted the replay-prone legacy local global ID")
+	}
+}
+
+func setRound5SupplyRunScopeEnvironment(t *testing.T, runID string) {
+	t.Helper()
+	t.Setenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET", "1")
+	t.Setenv("OPENFOX_CAMPAIGN_ROUND4", "0")
+	t.Setenv("OPENFOX_CAMPAIGN_ROUND5", "1")
+	t.Setenv("OPENFOX_CAMPAIGN_RUN_ID", runID)
+	t.Setenv("OPENFOX_TOS_NETWORK_GLOBAL_ID", "76543219")
+	t.Setenv("OPENFOX_TOS_TARGET_WORKCHAIN_ID", "0")
+	t.Setenv("OPENFOX_TOS_ZERO_STATE_ROOT_HASH", "sha256:"+strings.Repeat("31", 32))
+	t.Setenv("OPENFOX_TOS_ZERO_STATE_FILE_HASH", "sha256:"+strings.Repeat("42", 32))
+}
+
+func TestRound5SupplyPublicationEstablishesExactRunScope(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const runID = "round5:supply-publication-scope-001"
+	setRound5SupplyRunScopeEnvironment(t, runID)
+	actual, err := campaignSupplyRound5RunScopeFromEnvironment(root)
+	if err != nil || actual != runID {
+		t.Fatalf("Round 5 supply run scope=%q err=%v", actual, err)
+	}
+	markerPath := filepath.Join(root, campaignRunIDMarkerFilename)
+	marker, err := os.ReadFile(markerPath)
+	if err != nil || string(marker) != runID+"\n" {
+		t.Fatalf("Round 5 supply marker=%q err=%v", marker, err)
+	}
+	info, err := os.Lstat(markerPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
+		t.Fatalf("Round 5 supply marker is not exact owner-private data: info=%v err=%v", info, err)
+	}
+	lock, err := acquireCampaignRunLock(root, runID)
+	if err != nil {
+		t.Fatalf("Round 5 supply run scope did not admit its exact single writer: %v", err)
+	}
+	if err = lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRound5SupplyPublicationRejectsInvalidProfileRunAndDomain(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T)
+	}{
+		{name: "capability-market-disabled", mutate: func(t *testing.T) {
+			t.Setenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET", "0")
+		}},
+		{name: "round-profiles-conflict", mutate: func(t *testing.T) {
+			t.Setenv("OPENFOX_CAMPAIGN_ROUND4", "1")
+		}},
+		{name: "missing-run-id", mutate: func(t *testing.T) {
+			t.Setenv("OPENFOX_CAMPAIGN_RUN_ID", "")
+		}},
+		{name: "padded-run-id", mutate: func(t *testing.T) {
+			t.Setenv("OPENFOX_CAMPAIGN_RUN_ID", " round5:supply-publication-scope-002 ")
+		}},
+		{name: "wrong-round-prefix", mutate: func(t *testing.T) {
+			t.Setenv("OPENFOX_CAMPAIGN_RUN_ID", "round4:supply-publication-scope-002")
+		}},
+		{name: "legacy-global-id", mutate: func(t *testing.T) {
+			t.Setenv("OPENFOX_TOS_NETWORK_GLOBAL_ID", "3")
+		}},
+		{name: "non-basechain-workchain", mutate: func(t *testing.T) {
+			t.Setenv("OPENFOX_TOS_TARGET_WORKCHAIN_ID", "-1")
+		}},
+		{name: "missing-zero-state", mutate: func(t *testing.T) {
+			t.Setenv("OPENFOX_TOS_ZERO_STATE_ROOT_HASH", "")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Chmod(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			setRound5SupplyRunScopeEnvironment(t, "round5:supply-publication-scope-002")
+			test.mutate(t)
+			if runID, err := campaignSupplyRound5RunScopeFromEnvironment(root); err == nil || runID != "" {
+				t.Fatalf("invalid Round 5 supply scope was accepted: run_id=%q err=%v", runID, err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, campaignRunIDMarkerFilename)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("invalid Round 5 scope created a durable marker: %v", err)
+			}
+		})
+	}
+}
+
+func TestRound5SupplyPublicationRejectsDifferentExistingRunScope(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setRound5SupplyRunScopeEnvironment(t, "round5:supply-publication-scope-original")
+	if _, err := campaignSupplyRound5RunScopeFromEnvironment(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENFOX_CAMPAIGN_RUN_ID", "round5:supply-publication-scope-copied")
+	if runID, err := campaignSupplyRound5RunScopeFromEnvironment(root); err == nil || runID != "" {
+		t.Fatalf("different Round 5 run reused the publication root: run_id=%q err=%v", runID, err)
+	}
+}
+
+func TestSupplyPublicationRunIDDoesNotEnableRound5Profile(t *testing.T) {
+	profiles := []struct {
+		name             string
+		capabilityMarket string
+		round4           string
+	}{
+		{name: "legacy"},
+		{name: "legacy-capability-market", capabilityMarket: "1"},
+		{name: "round4", capabilityMarket: "1", round4: "1"},
+	}
+	for _, profile := range profiles {
+		t.Run(profile.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Chmod(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET", profile.capabilityMarket)
+			t.Setenv("OPENFOX_CAMPAIGN_ROUND4", profile.round4)
+			t.Setenv("OPENFOX_CAMPAIGN_ROUND5", "0")
+			t.Setenv("OPENFOX_CAMPAIGN_RUN_ID", "round5:nonce-is-evidence-only")
+			// An invalid Round 5 domain proves that no hidden domain/profile gate
+			// was enabled merely from the nonce prefix.
+			t.Setenv("OPENFOX_TOS_NETWORK_GLOBAL_ID", "3")
+			runID, err := campaignSupplyRound5RunScopeFromEnvironment(root)
+			if err != nil || runID != "" {
+				t.Fatalf("legacy supply behavior changed: run_id=%q err=%v", runID, err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, campaignRunIDMarkerFilename)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("run ID prefix established an implicit Round 5 scope: %v", err)
+			}
+		})
+	}
+}
+
+func TestCampaignRuntimeRunScopePreservesProfilesAndRequiresExactRound5Environment(t *testing.T) {
+	setRound5SupplyRunScopeEnvironment(t, "round5:runtime-scope-exact-001")
+	if err := validateCampaignRuntimeRunScopeFromEnvironment(
+		"round5:runtime-scope-exact-001", false, true,
+	); err != nil {
+		t.Fatalf("exact Round 5 runtime scope was rejected: %v", err)
+	}
+	if err := validateCampaignRuntimeRunScopeFromEnvironment(
+		"round5:runtime-scope-different-001", false, true,
+	); err == nil {
+		t.Fatal("Round 5 runtime accepted a valid but different run ID from its environment")
+	}
+	t.Setenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET", "0")
+	if err := validateCampaignRuntimeRunScopeFromEnvironment(
+		"round5:runtime-scope-exact-001", false, true,
+	); err == nil {
+		t.Fatal("Round 5 runtime bypassed the capability-market prerequisite")
+	}
+
+	t.Setenv("OPENFOX_CAMPAIGN_ROUND5", "0")
+	t.Setenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET", "1")
+	if err := validateCampaignRuntimeRunScopeFromEnvironment("", false, false); err != nil {
+		t.Fatalf("legacy runtime without a run scope changed: %v", err)
+	}
+	if err := validateCampaignRuntimeRunScopeFromEnvironment(
+		"round5:nonce-must-not-enable-profile", false, false,
+	); err == nil {
+		t.Fatal("Round 5-shaped nonce enabled a legacy runtime scope")
+	}
+	t.Setenv("OPENFOX_CAMPAIGN_RUN_ID", "different-environment-value")
+	if err := validateCampaignRuntimeRunScopeFromEnvironment(
+		"generic-round4-runtime-scope", true, false,
+	); err != nil {
+		t.Fatalf("Round 4 generic validated nonce semantics changed: %v", err)
+	}
+}
+
+func TestCampaignSupplySelectionRejectsRound5SixAgentModeBeforeScope(t *testing.T) {
+	for _, test := range []struct {
+		name                             string
+		publishEight, publishSix, round5 bool
+		wantError                        bool
+	}{
+		{name: "round5-eight", publishEight: true, round5: true},
+		{name: "round5-six", publishSix: true, round5: true, wantError: true},
+		{name: "round5-both", publishEight: true, publishSix: true, round5: true, wantError: true},
+		{name: "legacy-six", publishSix: true},
+		{name: "legacy-both", publishEight: true, publishSix: true},
+		{name: "no-selection", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateCampaignSupplySelection(test.publishEight, test.publishSix, test.round5)
+			if (err != nil) != test.wantError {
+				t.Fatalf("selection error=%v want_error=%t", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestValidateRound5CampaignRuntimeConfigsPreflightsAllAgentsBeforeConstruction(t *testing.T) {
+	expected := campaignValidatorNetworkDomain{
+		NetworkID: "tos:local-three-node", GlobalID: 76_543_219, WorkchainID: 0,
+		ZeroStateRootHash: "sha256:" + strings.Repeat("31", 32),
+		ZeroStateFileHash: "sha256:" + strings.Repeat("42", 32),
+	}
+	manifest := eightAgentManifest{Schema: eightAgentCampaignSchema}
+	for index := 0; index < 8; index++ {
+		manifest.Agents = append(manifest.Agents, eightAgentManifestEntry{
+			Name: fmt.Sprintf("agent-%d", index), Target: fmt.Sprintf("0:%064x", index+1),
+		})
+	}
+	validConfigs := func() []*config.Config {
+		configs := make([]*config.Config, len(manifest.Agents))
+		for index, entry := range manifest.Agents {
+			configs[index] = &config.Config{Earning: config.EarningSettings{
+				TOSPayment: config.EarningTOSPaymentSettings{
+					Network: config.EarningAgentRelayNetworkSettings{
+						NetworkID: expected.NetworkID, GlobalID: expected.GlobalID,
+						WorkchainID: expected.WorkchainID, ZeroStateRootHash: expected.ZeroStateRootHash,
+						ZeroStateFileHash: expected.ZeroStateFileHash,
+					},
+					SourceAccount: entry.Target,
+				},
+			}}
+		}
+		return configs
+	}
+	if err := validateRound5CampaignRuntimeConfigs(manifest, validConfigs(), expected); err != nil {
+		t.Fatalf("complete Round 5 config preflight failed: %v", err)
+	}
+	mutations := []struct {
+		name   string
+		mutate func([]*config.Config) []*config.Config
+	}{
+		{name: "network-id", mutate: func(configs []*config.Config) []*config.Config {
+			configs[7].Earning.TOSPayment.Network.NetworkID = "tos:other"
+			return configs
+		}},
+		{name: "global-id", mutate: func(configs []*config.Config) []*config.Config {
+			configs[7].Earning.TOSPayment.Network.GlobalID++
+			return configs
+		}},
+		{name: "workchain", mutate: func(configs []*config.Config) []*config.Config {
+			configs[7].Earning.TOSPayment.Network.WorkchainID = -1
+			return configs
+		}},
+		{name: "zero-root", mutate: func(configs []*config.Config) []*config.Config {
+			configs[7].Earning.TOSPayment.Network.ZeroStateRootHash = "sha256:" + strings.Repeat("52", 32)
+			return configs
+		}},
+		{name: "zero-file", mutate: func(configs []*config.Config) []*config.Config {
+			configs[7].Earning.TOSPayment.Network.ZeroStateFileHash = "sha256:" + strings.Repeat("62", 32)
+			return configs
+		}},
+		{name: "source-account", mutate: func(configs []*config.Config) []*config.Config {
+			configs[7].Earning.TOSPayment.SourceAccount = "0:" + strings.Repeat("f", 64)
+			return configs
+		}},
+		{name: "missing-last-config", mutate: func(configs []*config.Config) []*config.Config {
+			configs[7] = nil
+			return configs
+		}},
+		{name: "partial-config-set", mutate: func(configs []*config.Config) []*config.Config {
+			return configs[:7]
+		}},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			if err := validateRound5CampaignRuntimeConfigs(
+				manifest, mutation.mutate(validConfigs()), expected,
+			); err == nil {
+				t.Fatal("Round 5 runtime config mismatch was accepted")
+			}
+		})
+	}
+	sevenAgentManifest := manifest
+	sevenAgentManifest.Agents = append([]eightAgentManifestEntry(nil), manifest.Agents[:7]...)
+	if err := validateRound5CampaignRuntimeConfigs(
+		sevenAgentManifest, validConfigs()[:7], expected,
+	); err == nil {
+		t.Fatal("Round 5 config preflight accepted fewer than eight manifest Agents")
+	}
+}
+
+func campaignValidatorDelegationFixture(t *testing.T) (eightAgentManifest, []byte, []byte) {
+	t.Helper()
+	manifest := eightAgentManifest{Schema: eightAgentCampaignSchema}
+	for index := 0; index < 8; index++ {
+		manifest.Agents = append(manifest.Agents, eightAgentManifestEntry{
+			Name: fmt.Sprintf("agent-%d", index), AgentID: fmt.Sprintf("agent:test:%d", index),
+			Wallet: fmt.Sprintf("wallet-label-%d", index), Target: fmt.Sprintf("0:%064x", index+1),
+		})
+	}
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewards := make([]map[string]any, 0, len(manifest.Agents))
+	electionFloors := make(map[string]uint64, len(manifest.Agents))
+	for index, agent := range manifest.Agents {
+		electionFloors[agent.AgentID] = 9_000_000_000
+		reward := map[string]any{
+			"agent": agent.Name, "agent_id": agent.AgentID,
+			"campaign_wallet_label": agent.Wallet, "campaign_account_address": agent.Target,
+			"delegation_wallet":                     fmt.Sprintf("0:%064x", index+101),
+			"wallet_funding_nanotos":                uint64(1_100_000_000_000),
+			"wallet_balance_before_deposit_nanotos": uint64(1_100_000_000_000),
+			"wallet_balance_after_deposit_nanotos":  uint64(100_000_000_000),
+			"deposit_message_value_nanotos":         uint64(1_000_000_000_000),
+			"deposit_processing_fee_nanotos":        uint64(1_000_000_000),
+			"recorded_principal_nanotos":            uint64(999_000_000_000),
+			"principal_before_recovery_nanotos":     uint64(999_000_000_000),
+			"principal_after_recovery_nanotos":      uint64(1_009_000_000_000),
+			"ledger_reward_delta_nanotos":           uint64(10_000_000_000),
+			"election_reward_floor_nanotos":         uint64(9_000_000_000),
+			"attribution_status":                    "POSITIVE_LOWER_BOUND",
+			"withdrawal_payout":                     nil,
+		}
+		if index == 0 {
+			reward["withdrawal_payout"] = map[string]any{
+				"pool_entitlement_nanotos":      uint64(1_009_000_000_000),
+				"wallet_balance_before_nanotos": uint64(100_000_000_000),
+				"wallet_balance_after_nanotos":  uint64(1_108_000_000_000),
+				"wallet_credit_nanotos":         uint64(1_008_000_000_000),
+			}
+		}
+		rewards = append(rewards, reward)
+	}
+	evidence := map[string]any{
+		"schema": nominatorRewardExperimentSchema, "passed": true,
+		"started_at":            "2030-01-01T00:00:00Z",
+		"finished_at":           "2030-01-01T00:30:00Z",
+		"network":               "tos:local-accelerated-nominator-pool-sidecar",
+		"evidence_class":        "IDENTITY_BOUND_SIMULATION",
+		"campaign_run_id":       "round4-fixture",
+		"agent_manifest_digest": campaignSHA256(manifestRaw),
+		"pool_address":          "-1:" + strings.Repeat("12", 32),
+		"pool_code_hash":        strings.Repeat("ab", 32),
+		"pool_config": map[string]any{
+			"validator_reward_share_bps":              uint64(4_000),
+			"max_nominators":                          uint64(40),
+			"min_validator_stake_nanotos":             uint64(5_000_000_000_000),
+			"min_nominator_stake_nanotos":             uint64(100_000_000_000),
+			"network_minimum_effective_stake_nanotos": uint64(10_000_000_000_000),
+			"max_stake_factor":                        uint64(1),
+		},
+		"validator_selection": map[string]any{
+			"selection_status":           "selected",
+			"election_id":                uint64(2_000_000_000),
+			"validator_public_key":       strings.Repeat("34", 32),
+			"validator_adnl_id":          strings.Repeat("56", 32),
+			"selected_adnl_id":           strings.Repeat("56", 32),
+			"selected_weight":            uint64(100),
+			"validator_set_utime_since":  uint64(2_000_000_000),
+			"validator_set_utime_until":  uint64(2_000_000_300),
+			"validator_set_total":        uint64(5),
+			"validator_set_main":         uint64(5),
+			"validator_set_total_weight": uint64(500),
+		},
+		"reward_evidence": map[string]any{
+			"stake_amount_sent_nanotos":                uint64(10_000_000_000_000),
+			"effective_stake_nanotos":                  uint64(10_000_000_000_000),
+			"reward_active_principal_at_stake_nanotos": uint64(13_091_000_000_000),
+			"pending_principal_nanotos":                uint64(999_000_000_000),
+			"total_ledger_principal_nanotos":           uint64(14_090_000_000_000),
+			"non_reward_effective_surplus_nanotos":     uint64(3_091_000_000_000),
+			"surplus_earns_network_reward":             false,
+			"elector_returned_credit_nanotos":          uint64(10_120_000_000_000),
+			"gross_election_reward_nanotos":            uint64(120_000_000_000),
+			"validator_election_reward_nanotos":        uint64(48_000_000_000),
+			"nominator_election_reward_nanotos":        uint64(72_000_000_000),
+			"election_id":                              uint64(2_000_000_000),
+			"validator_reward_share_bps":               uint64(4_000),
+			"nominator_ledger_reward_nanotos":          uint64(80_000_000_000),
+			"agent_election_reward_floor_nanotos":      electionFloors,
+			"ledger_delta_attribution":                 "exact",
+			"election_reward_attribution":              "lower-bound-only",
+			"attribution_caveat":                       "keeper value makes this only a lower bound",
+		},
+		"agent_nominator_rewards": rewards,
+		"post_stake_control": map[string]any{
+			"delegation_wallet":                 "0:" + strings.Repeat("78", 32),
+			"recorded_principal_nanotos":        uint64(999_000_000_000),
+			"principal_before_recovery_nanotos": uint64(999_000_000_000),
+			"principal_after_recovery_nanotos":  uint64(999_000_000_000),
+			"ledger_reward_delta_nanotos":       int64(0), "expected_reward_nanotos": int64(0),
+		},
+		"claim_limits": []string{
+			"The sidecar wallets are bound to logical OpenFox Agent identities but are not the campaign wallets on the other genesis.",
+			"The accelerated election timing is test-only and is not a mainnet APR or production liveness claim.",
+			"Only the effective stake earns network reward; pool surplus has no marginal reward at max_stake_factor=1.",
+			"Ledger reward delta is exact, but Elector reward attribution is a lower bound because recovery also carries residual keeper value.",
+			"Rewards compound inside the pool ledger until a separate withdrawal pays the wallet.",
+		},
+		"checks":        []any{},
+		"not_exercised": []any{},
+		"events":        []any{},
+		"failures":      []any{},
+	}
+	raw, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manifest, manifestRaw, raw
+}
+
+func TestCampaignValidatorDelegationRequiresEightPositiveBoundRewards(t *testing.T) {
+	manifest, manifestRaw, raw := campaignValidatorDelegationFixture(t)
+	summary, err := validateCampaignValidatorDelegation(raw, manifestRaw, manifest, "round4-fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.CampaignRunID != "round4-fixture" ||
+		summary.State != "verified_identity_bound_sidecar" || summary.RewardedAgents != 8 ||
+		summary.TotalDelegatedPrincipalNanoTOS != 8*999_000_000_000 ||
+		summary.TotalLedgerRewardNanoTOS != 8*10_000_000_000 ||
+		summary.ElectionRewardFloorNanoTOS != 8*9_000_000_000 ||
+		summary.PayoutVerifiedAgents != 1 || summary.TotalWithdrawalCreditNanoTOS != 1_008_000_000_000 ||
+		summary.PostStakeControlRewardNanoTOS != 0 || !strings.HasPrefix(summary.EvidenceDigest, "sha256:") {
+		t.Fatalf("unexpected delegation summary: %+v", summary)
+	}
+	if _, err := validateCampaignValidatorDelegation(
+		raw, manifestRaw, manifest, "round4:different-fixture",
+	); err == nil {
+		t.Fatal("delegation evidence from a different campaign run was accepted")
+	}
+}
+
+func campaignRound5ValidatorDelegationFixture(t *testing.T) (
+	eightAgentManifest,
+	[]byte,
+	[]byte,
+	campaignValidatorDelegationRequirement,
+) {
+	t.Helper()
+	manifest, manifestRaw, sidecarRaw := campaignValidatorDelegationFixture(t)
+	var evidence map[string]any
+	if err := json.Unmarshal(sidecarRaw, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	domain := campaignValidatorNetworkDomain{
+		NetworkID:         "tos:local-three-node",
+		GlobalID:          76_543_219,
+		WorkchainID:       0,
+		ZeroStateRootHash: "sha256:" + strings.Repeat("a1", 32),
+		ZeroStateFileHash: "sha256:" + strings.Repeat("b2", 32),
+	}
+	evidence["network"] = "tos:local-accelerated-unified-campaign"
+	evidence["evidence_class"] = "SAME_GENESIS_CAMPAIGN_WALLETS"
+	evidence["campaign_run_id"] = "round5-fixture"
+	evidence["network_domain"] = map[string]any{
+		"network_id": domain.NetworkID, "global_id": domain.GlobalID, "workchain_id": domain.WorkchainID,
+		"zero_state_root_hash": domain.ZeroStateRootHash,
+		"zero_state_file_hash": domain.ZeroStateFileHash,
+	}
+	for index, rawReward := range evidence["agent_nominator_rewards"].([]any) {
+		reward := rawReward.(map[string]any)
+		reward["delegation_wallet"] = manifest.Agents[index].Target
+		reward["configured_deploy_message_value_nanotos"] = campaignRound5DeployMessageNanoTOS
+		reward["wallet_funding_nanotos"] = uint64(20_000_000_000)
+		reward["wallet_balance_before_deposit_nanotos"] = uint64(20_000_000_000)
+		reward["wallet_balance_after_deposit_nanotos"] = uint64(15_000_000_000)
+		reward["deposit_message_value_nanotos"] = campaignRound5DepositMessageNanoTOS
+		reward["deposit_processing_fee_nanotos"] = campaignRound5DepositFeeNanoTOS
+		reward["recorded_principal_nanotos"] = campaignRound5DelegatedPrincipalNanoTOS
+		reward["principal_before_recovery_nanotos"] = campaignRound5DelegatedPrincipalNanoTOS
+		reward["principal_after_recovery_nanotos"] = uint64(14_000_000_000)
+		if index == 0 {
+			reward["withdrawal_payout"] = map[string]any{
+				"pool_entitlement_nanotos":      uint64(14_000_000_000),
+				"wallet_balance_before_nanotos": uint64(15_000_000_000),
+				"wallet_balance_after_nanotos":  uint64(28_000_000_000),
+				"wallet_credit_nanotos":         uint64(13_000_000_000),
+			}
+		}
+	}
+	evidence["pool_config"].(map[string]any)["min_nominator_stake_nanotos"] = uint64(1_000_000_000)
+	evidence["reward_evidence"].(map[string]any)["pending_principal_nanotos"] = uint64(4_000_000_000)
+	evidence["reward_evidence"].(map[string]any)["total_ledger_principal_nanotos"] = uint64(13_095_000_000_000)
+	control := evidence["post_stake_control"].(map[string]any)
+	control["recorded_principal_nanotos"] = uint64(4_000_000_000)
+	control["principal_before_recovery_nanotos"] = uint64(4_000_000_000)
+	control["principal_after_recovery_nanotos"] = uint64(4_000_000_000)
+	evidence["claim_limits"] = []string{
+		"The delegation wallets are the campaign Agent Accounts on the same genesis used for campaign payments.",
+		"The accelerated election timing is test-only and is not a mainnet APR or production liveness claim.",
+		"Only the effective stake earns network reward; pool surplus has no marginal reward at max_stake_factor=1.",
+		"Ledger reward delta is exact, but Elector reward attribution is a lower bound because recovery also carries residual keeper value.",
+		"Rewards compound inside the pool ledger until a separate withdrawal pays the wallet.",
+		"Delegation and withdrawal are operator-scripted low-level custody harness actions, not autonomous OpenFox AI or PersonalAuthority capital decisions.",
+		"All validators and RPC process views run on one host under one operator; no independent-host, Byzantine-finality, or external-demand claim is made.",
+	}
+	raw, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manifest, manifestRaw, raw, round5CampaignValidatorDelegationRequirement(domain)
+}
+
+func TestCampaignRound5ValidatorDelegationRequiresSameGenesisCampaignWallets(t *testing.T) {
+	manifest, manifestRaw, raw, requirement := campaignRound5ValidatorDelegationFixture(t)
+	summary, err := validateCampaignValidatorDelegationWithRequirement(
+		raw, manifestRaw, manifest, requirement, "round5-fixture",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.State != "verified_same_genesis_campaign_wallets" ||
+		summary.EvidenceClass != "SAME_GENESIS_CAMPAIGN_WALLETS" ||
+		summary.Network != "tos:local-accelerated-unified-campaign" ||
+		summary.NetworkDomain == nil || *summary.NetworkDomain != *requirement.expectedNetworkDomain ||
+		summary.RewardedAgents != 8 || summary.TotalDelegatedPrincipalNanoTOS == 0 ||
+		summary.TotalLedgerRewardNanoTOS == 0 || summary.PayoutVerifiedAgents < 1 {
+		t.Fatalf("unexpected Round 5 delegation summary: %+v", summary)
+	}
+	if _, err = validateCampaignValidatorDelegation(raw, manifestRaw, manifest, "round5-fixture"); err == nil {
+		t.Fatal("same-genesis evidence was silently treated as a Round 4 proxy sidecar")
+	}
+	_, _, sidecarRaw := campaignValidatorDelegationFixture(t)
+	if _, err = validateCampaignValidatorDelegationWithRequirement(
+		sidecarRaw, manifestRaw, manifest, requirement, "round4-fixture",
+	); err == nil {
+		t.Fatal("Round 4 proxy/different-genesis evidence was accepted for Round 5")
+	}
+}
+
+func TestCampaignRound5ValidatorDelegationRejectsProxyAndGenesisMismatch(t *testing.T) {
+	manifest, manifestRaw, raw, requirement := campaignRound5ValidatorDelegationFixture(t)
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "proxy-delegation-wallet", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["delegation_wallet"] =
+				"0:" + strings.Repeat("c3", 32)
+		}},
+		{name: "wrong-attached-deposit", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["deposit_message_value_nanotos"] =
+				float64(campaignRound5DepositMessageNanoTOS + 1)
+		}},
+		{name: "wrong-processing-fee", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["deposit_processing_fee_nanotos"] =
+				float64(campaignRound5DepositFeeNanoTOS + 1)
+		}},
+		{name: "wrong-recorded-principal", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["recorded_principal_nanotos"] =
+				float64(campaignRound5DelegatedPrincipalNanoTOS + 1)
+		}},
+		{name: "missing-configured-deploy-value", mutate: func(value map[string]any) {
+			delete(value["agent_nominator_rewards"].([]any)[0].(map[string]any),
+				"configured_deploy_message_value_nanotos")
+		}},
+		{name: "null-configured-deploy-value", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["configured_deploy_message_value_nanotos"] = nil
+		}},
+		{name: "wrong-configured-deploy-value", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["configured_deploy_message_value_nanotos"] =
+				float64(campaignRound5DeployMessageNanoTOS + 1)
+		}},
+		{name: "different-zero-state-root", mutate: func(value map[string]any) {
+			value["network_domain"].(map[string]any)["zero_state_root_hash"] =
+				"sha256:" + strings.Repeat("d4", 32)
+		}},
+		{name: "different-zero-state-file", mutate: func(value map[string]any) {
+			value["network_domain"].(map[string]any)["zero_state_file_hash"] =
+				"sha256:" + strings.Repeat("e5", 32)
+		}},
+		{name: "different-global-id", mutate: func(value map[string]any) {
+			value["network_domain"].(map[string]any)["global_id"] = float64(4)
+		}},
+		{name: "different-workchain", mutate: func(value map[string]any) {
+			value["network_domain"].(map[string]any)["workchain_id"] = float64(-1)
+		}},
+		{name: "different-network-id", mutate: func(value map[string]any) {
+			value["network_domain"].(map[string]any)["network_id"] = "tos:other"
+		}},
+		{name: "missing-domain", mutate: func(value map[string]any) {
+			delete(value, "network_domain")
+		}},
+		{name: "old-different-genesis-claim", mutate: func(value map[string]any) {
+			limits := value["claim_limits"].([]any)
+			limits[0] = "The sidecar wallets are bound to logical OpenFox Agent identities but are not the campaign wallets on the other genesis."
+		}},
+		{name: "missing-operator-scripted-claim", mutate: func(value map[string]any) {
+			limits := value["claim_limits"].([]any)
+			value["claim_limits"] = append(limits[:5], limits[6:]...)
+		}},
+		{name: "missing-single-host-claim", mutate: func(value map[string]any) {
+			limits := value["claim_limits"].([]any)
+			value["claim_limits"] = limits[:6]
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var value map[string]any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(value)
+			mutated, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = validateCampaignValidatorDelegationWithRequirement(
+				mutated, manifestRaw, manifest, requirement, "round5-fixture",
+			); err == nil {
+				t.Fatal("invalid Round 5 validator delegation evidence was accepted")
+			}
+		})
+	}
+}
+
+func TestCampaignValidatorDelegationRejectsUnresolvedSidecarAttempt(t *testing.T) {
+	manifest, manifestRaw, raw := campaignValidatorDelegationFixture(t)
+	directory := t.TempDir()
+	evidencePath := filepath.Join(directory, "validator-evidence.json")
+	manifestPath := filepath.Join(directory, "manifest.json")
+	if err := os.WriteFile(evidencePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, manifestRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	producerLock, err := os.OpenFile(campaignValidatorEvidenceLockPath(evidencePath), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = syscall.Flock(int(producerLock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = loadCampaignValidatorDelegation(
+		evidencePath, manifestPath, "round4-fixture", manifest,
+	); err == nil || !strings.Contains(err.Error(), "generation is active") {
+		t.Fatalf("sidecar evidence was accepted while its producer lock was held: %v", err)
+	}
+	if err = syscall.Flock(int(producerLock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err = producerLock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	markerPath := filepath.Join(directory, ".validator-evidence.json.in-progress")
+	if err := os.WriteFile(markerPath, []byte("unresolved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCampaignValidatorDelegation(
+		evidencePath, manifestPath, "round4-fixture", manifest,
+	); err == nil || !strings.Contains(err.Error(), "unresolved in-progress attempt") {
+		t.Fatalf("old PASS evidence was accepted while a sidecar attempt was unresolved: %v", err)
+	}
+	if err := os.Remove(markerPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCampaignValidatorDelegation(
+		evidencePath, manifestPath, "round4-fixture", manifest,
+	); err != nil {
+		t.Fatalf("stable evidence was rejected after its attempt marker cleared: %v", err)
+	}
+}
+
+func TestCampaignValidatorDelegationExternalEvidencePreflight(t *testing.T) {
+	if os.Getenv("OPENFOX_CAMPAIGN_VALIDATOR_EVIDENCE_PREFLIGHT") != "1" {
+		t.Skip("set OPENFOX_CAMPAIGN_VALIDATOR_EVIDENCE_PREFLIGHT=1")
+	}
+	root := mustEnv(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_ROOT")
+	runID := mustEnv(t, "OPENFOX_CAMPAIGN_RUN_ID")
+	if err := ensureCampaignRunScope(root, runID); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(root, "eight-agent-manifest.json")
+	manifest := loadEightAgentManifest(t, manifestPath)
+	requirement := round4CampaignValidatorDelegationRequirement()
+	if os.Getenv("OPENFOX_CAMPAIGN_ROUND5") == "1" {
+		domain, domainErr := round5CampaignNetworkDomainFromEnvironment()
+		if domainErr != nil {
+			t.Fatal(domainErr)
+		}
+		requirement = round5CampaignValidatorDelegationRequirement(domain)
+	}
+	summary, err := loadCampaignValidatorDelegation(
+		mustEnv(t, "OPENFOX_CAMPAIGN_NOMINATOR_REWARD_EVIDENCE"), manifestPath, runID, manifest, requirement,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RewardedAgents != 8 || summary.PayoutVerifiedAgents < 1 ||
+		summary.PostStakeControlRewardNanoTOS != 0 {
+		t.Fatalf("external Validator evidence summary is incomplete: %+v", summary)
+	}
+	t.Logf("validated Validator evidence state=%s digest=%s rewarded_agents=%d reward_nanotos=%d payout_nanotos=%d",
+		summary.State, summary.EvidenceDigest, summary.RewardedAgents, summary.TotalLedgerRewardNanoTOS,
+		summary.TotalWithdrawalCreditNanoTOS)
+}
+
+func TestCampaignValidatorDelegationRejectsOverclaimAndBrokenAttribution(t *testing.T) {
+	manifest, manifestRaw, raw := campaignValidatorDelegationFixture(t)
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "production-overclaim", mutate: func(value map[string]any) {
+			value["evidence_class"] = "PRODUCTION"
+		}},
+		{name: "wrong-manifest", mutate: func(value map[string]any) {
+			value["agent_manifest_digest"] = "sha256:" + strings.Repeat("00", 32)
+		}},
+		{name: "malformed-pool-address", mutate: func(value map[string]any) {
+			value["pool_address"] = "-1:" + strings.Repeat("AB", 32)
+		}},
+		{name: "zero-pool-code-hash", mutate: func(value map[string]any) {
+			value["pool_code_hash"] = strings.Repeat("00", 32)
+		}},
+		{name: "unselected-config-34-validator", mutate: func(value map[string]any) {
+			value["validator_selection"].(map[string]any)["selection_status"] = "candidate"
+		}},
+		{name: "config-34-election-mismatch", mutate: func(value map[string]any) {
+			value["validator_selection"].(map[string]any)["election_id"] = float64(2_000_000_001)
+		}},
+		{name: "config-34-key-format", mutate: func(value map[string]any) {
+			value["validator_selection"].(map[string]any)["validator_public_key"] = strings.Repeat("AB", 32)
+		}},
+		{name: "config-34-adnl-mismatch", mutate: func(value map[string]any) {
+			value["validator_selection"].(map[string]any)["selected_adnl_id"] = strings.Repeat("57", 32)
+		}},
+		{name: "config-34-zero-weight", mutate: func(value map[string]any) {
+			value["validator_selection"].(map[string]any)["selected_weight"] = float64(0)
+		}},
+		{name: "config-34-main-exceeds-total", mutate: func(value map[string]any) {
+			value["validator_selection"].(map[string]any)["validator_set_main"] = float64(6)
+		}},
+		{name: "returned-credit-does-not-close", mutate: func(value map[string]any) {
+			value["reward_evidence"].(map[string]any)["elector_returned_credit_nanotos"] =
+				float64(10_120_000_000_001)
+		}},
+		{name: "validator-split-does-not-close", mutate: func(value map[string]any) {
+			value["reward_evidence"].(map[string]any)["validator_election_reward_nanotos"] =
+				float64(48_000_000_001)
+		}},
+		{name: "active-principal-does-not-close", mutate: func(value map[string]any) {
+			value["reward_evidence"].(map[string]any)["total_ledger_principal_nanotos"] =
+				float64(14_090_000_000_001)
+		}},
+		{name: "agent-floor-does-not-close", mutate: func(value map[string]any) {
+			agentID := manifest.Agents[0].AgentID
+			value["reward_evidence"].(map[string]any)["agent_election_reward_floor_nanotos"].(map[string]any)[agentID] =
+				float64(9_000_000_001)
+		}},
+		{name: "ledger-sum-does-not-close", mutate: func(value map[string]any) {
+			value["reward_evidence"].(map[string]any)["nominator_ledger_reward_nanotos"] =
+				float64(80_000_000_001)
+		}},
+		{name: "zero-agent-reward", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["ledger_reward_delta_nanotos"] = float64(0)
+		}},
+		{name: "round4-unexpected-configured-deploy-value", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["configured_deploy_message_value_nanotos"] =
+				float64(campaignRound5DeployMessageNanoTOS)
+		}},
+		{name: "malformed-delegation-wallet", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["delegation_wallet"] =
+				"0:" + strings.Repeat("AB", 32)
+		}},
+		{name: "payout-entitlement-mismatch", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["withdrawal_payout"].(map[string]any)["pool_entitlement_nanotos"] =
+				float64(1_009_000_000_001)
+		}},
+		{name: "payout-credit-delta-mismatch", mutate: func(value map[string]any) {
+			value["agent_nominator_rewards"].([]any)[0].(map[string]any)["withdrawal_payout"].(map[string]any)["wallet_balance_after_nanotos"] =
+				float64(1_108_000_000_001)
+		}},
+		{name: "payout-credit-exceeds-entitlement", mutate: func(value map[string]any) {
+			payout := value["agent_nominator_rewards"].([]any)[0].(map[string]any)["withdrawal_payout"].(map[string]any)
+			payout["wallet_credit_nanotos"] = float64(1_009_000_000_001)
+			payout["wallet_balance_after_nanotos"] = float64(1_109_000_000_001)
+		}},
+		{name: "payout-fee-gap-exceeds-bound", mutate: func(value map[string]any) {
+			payout := value["agent_nominator_rewards"].([]any)[0].(map[string]any)["withdrawal_payout"].(map[string]any)
+			payout["wallet_credit_nanotos"] = float64(1_007_999_999_999)
+			payout["wallet_balance_after_nanotos"] = float64(1_107_999_999_999)
+		}},
+		{name: "rewarded-control", mutate: func(value map[string]any) {
+			value["post_stake_control"].(map[string]any)["ledger_reward_delta_nanotos"] = float64(1)
+		}},
+		{name: "missing-control-zero-field", mutate: func(value map[string]any) {
+			delete(value["post_stake_control"].(map[string]any), "ledger_reward_delta_nanotos")
+		}},
+		{name: "missing-surplus-reward-boolean", mutate: func(value map[string]any) {
+			delete(value["reward_evidence"].(map[string]any), "surplus_earns_network_reward")
+		}},
+		{name: "control-wallet-reuses-agent-wallet", mutate: func(value map[string]any) {
+			value["post_stake_control"].(map[string]any)["delegation_wallet"] =
+				value["agent_nominator_rewards"].([]any)[0].(map[string]any)["delegation_wallet"]
+		}},
+		{name: "fractional-integer-evidence", mutate: func(value map[string]any) {
+			value["reward_evidence"].(map[string]any)["gross_election_reward_nanotos"] = 120_000_000_000.5
+		}},
+		{name: "no-positive-withdrawal", mutate: func(value map[string]any) {
+			delete(value["agent_nominator_rewards"].([]any)[0].(map[string]any), "withdrawal_payout")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var value map[string]any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(value)
+			mutated, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = validateCampaignValidatorDelegation(mutated, manifestRaw, manifest); err == nil {
+				t.Fatal("invalid validator delegation evidence was accepted")
+			}
+		})
+	}
+}
+
+func TestCampaignValidatorDelegationRejectsAmbiguousJSON(t *testing.T) {
+	manifest, manifestRaw, raw := campaignValidatorDelegationFixture(t)
+	tests := []struct {
+		name string
+		raw  func() []byte
+	}{
+		{name: "duplicate-field", raw: func() []byte {
+			return bytes.Replace(raw, []byte(`"passed":true`), []byte(`"passed":true,"passed":true`), 1)
+		}},
+		{name: "unknown-top-level-field", raw: func() []byte {
+			var value map[string]any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				t.Fatal(err)
+			}
+			value["unreviewed_extension"] = true
+			mutated, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return mutated
+		}},
+		{name: "case-aliased-known-field", raw: func() []byte {
+			return bytes.Replace(raw, []byte(`"pool_address":`), []byte(`"Pool_Address":"-1:`+
+				strings.Repeat("34", 32)+`","pool_address":`), 1)
+		}},
+		{name: "unknown-nested-field", raw: func() []byte {
+			var value map[string]any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				t.Fatal(err)
+			}
+			value["reward_evidence"].(map[string]any)["unreviewed_extension"] = true
+			mutated, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return mutated
+		}},
+		{name: "trailing-json-value", raw: func() []byte {
+			return append(append([]byte(nil), raw...), []byte(` {}`)...)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := validateCampaignValidatorDelegation(test.raw(), manifestRaw, manifest); err == nil {
+				t.Fatal("ambiguous validator delegation JSON was accepted")
+			}
+		})
 	}
 }
 
@@ -1229,10 +3597,48 @@ func campaignDigest(value string) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
+func validateCampaignSupplySelection(publishEight, publishSix, round5 bool) error {
+	if !publishEight && !publishSix {
+		return errors.New("supply publication requires an explicit Agent manifest selection")
+	}
+	if round5 && publishSix {
+		return errors.New("Round 5 supply publication requires the complete eight-Agent manifest")
+	}
+	return nil
+}
+
+// campaignSupplyRound5RunScopeFromEnvironment keeps the publication-only
+// helper on the same explicit Round 5 profile and network-domain boundary as
+// the autonomous campaign. A run ID is evidence identity, never authority to
+// enable Round 5 by itself, so legacy and Round 4 publication behavior stays
+// unchanged unless the explicit Round 5 flag is set.
+func campaignSupplyRound5RunScopeFromEnvironment(root string) (string, error) {
+	if os.Getenv("OPENFOX_CAMPAIGN_ROUND5") != "1" {
+		return "", nil
+	}
+	runID := os.Getenv("OPENFOX_CAMPAIGN_RUN_ID")
+	if err := validateCampaignRuntimeRunScopeFromEnvironment(runID, false, true); err != nil {
+		return "", fmt.Errorf("Round 5 supply publication run scope: %w", err)
+	}
+	if _, err := round5CampaignNetworkDomainFromEnvironment(); err != nil {
+		return "", fmt.Errorf("Round 5 supply publication network domain: %w", err)
+	}
+	if err := ensureCampaignRunScope(root, runID); err != nil {
+		return "", fmt.Errorf("establish Round 5 supply publication run scope: %w", err)
+	}
+	return runID, nil
+}
+
 func TestPublishEightOpenFoxSupply(t *testing.T) {
+	publishEight := os.Getenv("OPENFOX_PUBLISH_EIGHT_AGENT_SUPPLY") == "1"
 	publishSix := os.Getenv("OPENFOX_PUBLISH_SIX_AGENT_SUPPLY") == "1"
-	if os.Getenv("OPENFOX_PUBLISH_EIGHT_AGENT_SUPPLY") != "1" && !publishSix {
+	if !publishEight && !publishSix {
 		t.Skip("set OPENFOX_PUBLISH_EIGHT_AGENT_SUPPLY=1 or OPENFOX_PUBLISH_SIX_AGENT_SUPPLY=1")
+	}
+	if err := validateCampaignSupplySelection(
+		publishEight, publishSix, os.Getenv("OPENFOX_CAMPAIGN_ROUND5") == "1",
+	); err != nil {
+		t.Fatal(err)
 	}
 	root := mustEnv(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_ROOT")
 	var manifest eightAgentManifest
@@ -1243,7 +3649,24 @@ func TestPublishEightOpenFoxSupply(t *testing.T) {
 	} else {
 		manifest = loadEightAgentManifest(t, filepath.Join(root, "eight-agent-manifest.json"))
 	}
-	runtimes := openCampaignRuntimes(t, root, manifest)
+	campaignRunID, err := campaignSupplyRound5RunScopeFromEnvironment(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runLock *os.File
+	if campaignRunID != "" {
+		runLock, err = acquireCampaignRunLock(root, campaignRunID)
+		if err != nil {
+			t.Fatalf("acquire Round 5 supply publication single-writer lock: %v", err)
+		}
+		defer runLock.Close()
+	}
+	var runtimes []*campaignRuntime
+	if campaignRunID != "" {
+		runtimes = openCampaignRuntimes(t, root, manifest, campaignRunID)
+	} else {
+		runtimes = openCampaignRuntimes(t, root, manifest)
+	}
 	defer closeCampaignRuntimes(runtimes)
 	for _, runtime := range runtimes {
 		now := time.Now().UTC().Truncate(time.Second)
@@ -1454,32 +3877,81 @@ func TestEightOpenFoxAgenticInternetCampaign(t *testing.T) {
 }
 
 // TestEightOpenFoxAutonomousMarketCampaign runs eight distinct OpenFox
-// identities for at least three wall-clock hours against the signed supply
-// Intents that they discover through the configured Carriers. The harness fixes
-// only the owner policy, available capabilities, safety bounds, and pacing;
-// each buyer AI chooses whether to buy, which discovered counterparty to
-// contact, and the exact bounded task.
+// identities for the profile's minimum wall-clock duration against signed
+// supply Intents discovered through the configured Carriers. Legacy profiles
+// preserve their three-hour minimum; the explicit Round 4 profile has its own
+// two-hour minimum, while Round 5 requires an exact two-hour same-genesis
+// campaign-wallet evidence run. The harness fixes only owner policy,
+// available capabilities, safety bounds, and pacing; each buyer AI chooses
+// whether to buy, which discovered counterparty to contact, and the exact
+// bounded task.
 func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
 	if os.Getenv("OPENFOX_EIGHT_AGENT_AUTONOMOUS_CAMPAIGN") != "1" {
 		t.Skip("set OPENFOX_EIGHT_AGENT_AUTONOMOUS_CAMPAIGN=1")
 	}
+	profile, err := autonomousCampaignProfileFromEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
 	processStarted := time.Now().UTC()
-	minimumProcessRuntime := parseCampaignDuration(t, "OPENFOX_CAMPAIGN_MINIMUM_PROCESS_RUNTIME", 0)
-	if minimumProcessRuntime < 0 || minimumProcessRuntime > 24*time.Hour {
-		t.Fatal("OPENFOX_CAMPAIGN_MINIMUM_PROCESS_RUNTIME must be between 0 and 24h")
-	}
+	minimumProcessRuntime := parseCampaignDuration(
+		t, "OPENFOX_CAMPAIGN_MINIMUM_PROCESS_RUNTIME", profile.minimumProcessRuntime,
+	)
 	root := mustEnv(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_ROOT")
-	manifest := loadEightAgentManifest(t, filepath.Join(root, "eight-agent-manifest.json"))
-	capabilityMarket := os.Getenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET") == "1"
-	defaultDuration := 10 * time.Hour
-	if capabilityMarket {
-		defaultDuration = 3 * time.Hour
+	campaignRunID := ""
+	if profile.runScopedEvidence() {
+		campaignRunID = os.Getenv("OPENFOX_CAMPAIGN_RUN_ID")
+		if profile.round4 {
+			campaignRunID = strings.TrimSpace(campaignRunID)
+		}
+		if err := validateCampaignRuntimeRunScopeFromEnvironment(
+			campaignRunID, profile.round4, profile.round5,
+		); err != nil {
+			t.Fatalf("establish %s campaign runtime scope: %v", profile.roundLabel(), err)
+		}
+		if err := ensureCampaignRunScope(root, campaignRunID); err != nil {
+			t.Fatalf("establish %s campaign run scope: %v", profile.roundLabel(), err)
+		}
+		runLock, lockErr := acquireCampaignRunLock(root, campaignRunID)
+		if lockErr != nil {
+			t.Fatalf("acquire %s single-writer lock: %v", profile.roundLabel(), lockErr)
+		}
+		defer runLock.Close()
 	}
-	duration := parseCampaignDuration(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_DURATION", defaultDuration)
-	rounds := 5
-	if capabilityMarket {
-		rounds = 2
+	manifestPath := filepath.Join(root, "eight-agent-manifest.json")
+	manifest := loadEightAgentManifest(t, manifestPath)
+	delegationEvidencePath := strings.TrimSpace(os.Getenv("OPENFOX_CAMPAIGN_NOMINATOR_REWARD_EVIDENCE"))
+	var preflightDelegation *campaignValidatorDelegation
+	delegationRequirement := round4CampaignValidatorDelegationRequirement()
+	if profile.round5 {
+		domain, domainErr := round5CampaignNetworkDomainFromEnvironment()
+		if domainErr != nil {
+			t.Fatalf("establish Round 5 campaign payment network domain: %v", domainErr)
+		}
+		delegationRequirement = round5CampaignValidatorDelegationRequirement(domain)
 	}
+	if profile.runScopedEvidence() && delegationEvidencePath == "" {
+		t.Fatalf("OPENFOX_CAMPAIGN_NOMINATOR_REWARD_EVIDENCE is required for %s", profile.roundLabel())
+	}
+	if profile.runScopedEvidence() {
+		delegationLock, lockErr := acquireCampaignValidatorEvidenceReadLock(delegationEvidencePath)
+		if lockErr != nil {
+			t.Fatalf("lock %s validator delegation evidence generation: %v", profile.roundLabel(), lockErr)
+		}
+		t.Cleanup(func() {
+			if releaseErr := releaseCampaignValidatorEvidenceReadLock(delegationLock); releaseErr != nil {
+				t.Errorf("release %s validator delegation evidence generation lock: %v", profile.roundLabel(), releaseErr)
+			}
+		})
+		preflightDelegation, err = loadCampaignValidatorDelegationLocked(
+			delegationEvidencePath, manifestPath, campaignRunID, manifest, delegationRequirement,
+		)
+		if err != nil {
+			t.Fatalf("preflight %s validator delegation evidence: %v", profile.roundLabel(), err)
+		}
+	}
+	duration := parseCampaignDuration(t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_DURATION", profile.defaultDuration)
+	rounds := profile.defaultRounds
 	if value := strings.TrimSpace(os.Getenv("OPENFOX_CAMPAIGN_ROUNDS")); value != "" {
 		parsed, parseErr := strconv.Atoi(value)
 		if parseErr != nil || parsed < 1 || parsed > 12 {
@@ -1491,18 +3963,14 @@ func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
 		t, "OPENFOX_EIGHT_AGENT_CAMPAIGN_INTERVAL",
 		duration/time.Duration(len(manifest.Agents)*rounds),
 	)
-	if duration < 3*time.Hour || interval < 30*time.Second {
-		t.Fatal("autonomous eight-agent campaign must preserve at least three real hours and bounded pacing")
+	if err = validateAutonomousCampaignTiming(profile, duration, interval, minimumProcessRuntime); err != nil {
+		t.Fatal(err)
 	}
-	reportFilename, reportSchema := "eight-agent-autonomous-campaign-checkpoint.json", eightAgentCampaignSchema
-	if capabilityMarket {
-		reportFilename, reportSchema = "eight-agent-capability-market-checkpoint.json", capabilityMarketCampaignSchema
-	}
-	reportPath := filepath.Join(root, "reports", reportFilename)
+	reportPath := filepath.Join(root, "reports", profile.reportFilename)
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	report := loadOrCreateNamedCampaignReport(t, reportPath, duration, reportSchema)
+	report := loadOrCreateNamedCampaignReport(t, reportPath, duration, profile.reportSchema, campaignRunID)
 	processWindow := len(report.ProcessEvidenceWindows)
 	report.ProcessEvidenceWindows = append(report.ProcessEvidenceWindows, campaignProcessEvidenceWindow{
 		StartedAt:                processStarted.Format(time.RFC3339Nano),
@@ -1510,10 +3978,10 @@ func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
 	})
 	report.UpdatedAt = processStarted.Format(time.RFC3339Nano)
 	writeCampaignJSON(t, reportPath, report)
-	runtimes := openCampaignRuntimes(t, root, manifest)
+	runtimes := openCampaignRuntimes(t, root, manifest, campaignRunID)
 	defer closeCampaignRuntimes(runtimes)
 	turns := len(manifest.Agents) * rounds
-	if capabilityMarket {
+	if profile.capabilityMarket {
 		adopted, recoverErr := adoptCapabilityMarketResultJournals(root, &report, runtimes, turns)
 		if recoverErr != nil {
 			t.Fatalf("recover capability-market result journal: %v", recoverErr)
@@ -1559,7 +4027,7 @@ func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
 		buyerIndex := sequence % len(runtimes)
 		buyer := runtimes[buyerIndex]
 		plan, resumedPlan, planErr := resumeAutonomousCampaignDemand(
-			t.Context(), root, sequence, buyer, runtimes,
+			t.Context(), root, sequence, buyer, runtimes, campaignRunID,
 		)
 		if planErr == nil && !resumedPlan {
 			plan, planErr = planAutonomousCampaignDemand(t.Context(), sequence/len(runtimes)+1, buyer, runtimes)
@@ -1568,13 +4036,24 @@ func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
 			t.Fatalf("buyer %s bulletin planning: %v", buyer.definition.Name, planErr)
 		}
 		if plan.Decision == "skip" {
+			disposition := "skipped:buyer-strategy"
+			demandPlanningMode := "buyer-ai-carrier-discovery"
+			if plan.CapacityDisposition != "" {
+				if !campaignPortfolioCapacitySkipped(plan.CapacityDisposition) {
+					t.Fatalf("buyer %s returned an invalid capacity disposition %q",
+						buyer.definition.Name, plan.CapacityDisposition)
+				}
+				disposition = plan.CapacityDisposition
+				demandPlanningMode = "portfolio-capacity-prefilter"
+			}
 			result := eightAgentJobResult{
-				Sequence: sequence, Round: sequence/len(runtimes) + 1,
-				Disposition: "skipped:buyer-strategy", Buyer: buyer.definition.Name,
-				EconomicAnalysisMode: "not-run", DemandPlanningMode: "buyer-ai-carrier-discovery",
+				CampaignRunID: campaignRunID,
+				Sequence:      sequence, Round: sequence/len(runtimes) + 1,
+				Disposition: disposition, Buyer: buyer.definition.Name,
+				EconomicAnalysisMode: "not-run", DemandPlanningMode: demandPlanningMode,
 				DemandRationale: plan.Rationale, CompletedAt: time.Now().UTC().Format(time.RFC3339Nano),
 			}
-			if capabilityMarket {
+			if profile.capabilityMarket {
 				if _, evidenceErr := persistCapabilityMarketResultEvidence(root, &result, buyer, nil); evidenceErr != nil {
 					t.Fatalf("retain capability-market decision %d: %v", sequence, evidenceErr)
 				}
@@ -1582,8 +4061,10 @@ func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
 			report.Results = append(report.Results, result)
 			report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			writeCampaignJSON(t, reportPath, report)
-			campaignGroupSend(t, buyer.definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
-				fmt.Sprintf("round %d: no voluntary purchase after bulletin review — %s", result.Round, plan.Rationale))
+			if !campaignPortfolioCapacitySkipped(result.Disposition) {
+				campaignGroupSend(t, buyer.definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
+					fmt.Sprintf("round %d: no voluntary purchase after bulletin review — %s", result.Round, plan.Rationale))
+			}
 			t.Logf("turn=%d buyer=%s disposition=%s rationale=%q", sequence+1, result.Buyer,
 				result.Disposition, result.DemandRationale)
 			continue
@@ -1592,39 +4073,55 @@ func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
 		if sellerIndex < 0 || sellerIndex == buyerIndex {
 			t.Fatalf("buyer %s selected invalid seller %q", buyer.definition.Name, plan.SellerAgent)
 		}
-		campaignGroupSend(t, buyer.definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
-			fmt.Sprintf("round %d: requesting %s from %s after signed bulletin discovery — %s",
-				sequence/len(runtimes)+1, plan.Capability, plan.SellerAgent, plan.Rationale))
 		var result eightAgentJobResult
 		var jobErr error
-		for attempt := 0; attempt < maximumCampaignJobAttempts; attempt++ {
-			result, jobErr = runEightAgentJob(t.Context(), root, sequence, sequence/len(runtimes)+1, attempt,
-				buyer, runtimes[sellerIndex], plan.Task, due)
-			if jobErr == nil {
-				break
-			}
-			var retryable retryableCampaignJobError
-			if !errors.As(jobErr, &retryable) || attempt+1 == maximumCampaignJobAttempts {
-				break
-			}
-			for _, runtime := range []*campaignRuntime{runtimes[sellerIndex], buyer} {
-				engine := &Engine{OwnerID: runtime.definition.OwnerID, AgentID: runtime.definition.AgentID,
-					MandateDigest: runtime.cfg.Earning.MandateDigest, Authority: runtime.authority}
-				if _, reconcileErr := engine.ReconcileApply(t.Context(), 1, runtime.fence); reconcileErr != nil {
-					t.Fatalf("campaign job %d retry reconciliation: %v", sequence, reconcileErr)
+		contactDisposition := ""
+		if !resumedPlan {
+			contactDisposition, jobErr = campaignPreConversationContact(sequence, buyer, runtimes[sellerIndex], func() {
+				campaignGroupSend(t, buyer.definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
+					fmt.Sprintf("round %d: requesting %s from %s after signed bulletin discovery — %s",
+						sequence/len(runtimes)+1, plan.Capability, plan.SellerAgent, plan.Rationale))
+			})
+		}
+		if jobErr == nil && contactDisposition != "" {
+			result = campaignPortfolioCapacityResult(
+				sequence, sequence/len(runtimes)+1, buyer, runtimes[sellerIndex], contactDisposition,
+			)
+		} else if jobErr == nil {
+			for attempt := 0; attempt < maximumCampaignJobAttempts; attempt++ {
+				result, jobErr = runEightAgentJob(t.Context(), root, sequence, sequence/len(runtimes)+1, attempt,
+					buyer, runtimes[sellerIndex], plan.Task, due, campaignRunID)
+				if jobErr == nil {
+					break
 				}
+				var retryable retryableCampaignJobError
+				if !errors.As(jobErr, &retryable) || attempt+1 == maximumCampaignJobAttempts {
+					break
+				}
+				for _, runtime := range []*campaignRuntime{runtimes[sellerIndex], buyer} {
+					engine := &Engine{OwnerID: runtime.definition.OwnerID, AgentID: runtime.definition.AgentID,
+						MandateDigest: runtime.cfg.Earning.MandateDigest, Authority: runtime.authority}
+					if _, reconcileErr := engine.ReconcileApply(t.Context(), 1, runtime.fence); reconcileErr != nil {
+						t.Fatalf("campaign job %d retry reconciliation: %v", sequence, reconcileErr)
+					}
+				}
+				t.Logf("safe retry sequence=%d attempt=%d error=%v", sequence, attempt+1, jobErr)
 			}
-			t.Logf("safe retry sequence=%d attempt=%d error=%v", sequence, attempt+1, jobErr)
 		}
 		if jobErr != nil {
 			t.Fatalf("campaign job %d buyer=%s seller=%s: %v", sequence,
 				buyer.definition.Name, runtimes[sellerIndex].definition.Name, jobErr)
 		}
-		result.DemandPlanningMode = "buyer-ai-carrier-discovery"
+		if campaignPortfolioCapacitySkipped(result.Disposition) {
+			result.DemandPlanningMode = "portfolio-capacity-prefilter"
+		} else {
+			result.DemandPlanningMode = "buyer-ai-carrier-discovery"
+		}
 		result.DemandRationale = plan.Rationale
+		result.CampaignRunID = campaignRunID
 		result.SupplyIntentDigest = plan.IntentDigest
 		result.SupplyCarrierIDs = append([]string(nil), plan.CarrierIDs...)
-		if capabilityMarket {
+		if profile.capabilityMarket {
 			history, evidenceErr := persistCapabilityMarketResultEvidence(root, &result, buyer, runtimes[sellerIndex])
 			if evidenceErr != nil {
 				t.Fatalf("retain capability-market result %d: %v", sequence, evidenceErr)
@@ -1636,9 +4133,11 @@ func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
 		report.Results = append(report.Results, result)
 		report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		writeCampaignJSON(t, reportPath, report)
-		campaignGroupSend(t, result.Seller, fmt.Sprintf("campaign-outcome-%03d", sequence),
-			fmt.Sprintf("round %d outcome for %s: %s; payment=%s", result.Round, result.Buyer,
-				result.Disposition, result.PaymentTransaction))
+		if !campaignPortfolioCapacitySkipped(result.Disposition) {
+			campaignGroupSend(t, result.Seller, fmt.Sprintf("campaign-outcome-%03d", sequence),
+				fmt.Sprintf("round %d outcome for %s: %s; payment=%s", result.Round, result.Buyer,
+					result.Disposition, result.PaymentTransaction))
+		}
 		t.Logf("turn=%d buyer=%s seller=%s disposition=%s task=%q", sequence+1,
 			result.Buyer, result.Seller, result.Disposition, plan.Task)
 	}
@@ -1660,15 +4159,51 @@ func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
 	report.ProcessEvidenceWindows[processWindow].CompletedAt = processCompleted.Format(time.RFC3339Nano)
 	report.ProcessEvidenceWindows[processWindow].ObservedRunSeconds = int64(observed / time.Second)
 	report.ProcessEvidenceWindows[processWindow].Outcome = "completed"
+	if profile.runScopedEvidence() {
+		delegation, evidenceErr := loadCampaignValidatorDelegationLocked(
+			delegationEvidencePath, manifestPath, campaignRunID, manifest, delegationRequirement,
+		)
+		if evidenceErr != nil {
+			t.Fatalf("validate %s validator delegation evidence: %v", profile.roundLabel(), evidenceErr)
+		}
+		if !sameJSON(preflightDelegation, delegation) {
+			t.Fatalf("%s validator delegation evidence changed after campaign preflight", profile.roundLabel())
+		}
+		report.ValidatorDelegation = delegation
+	}
+	repairAggregate, aggregateErr := aggregateCampaignNegotiationRepairs(report.Results)
+	if aggregateErr != nil {
+		t.Fatalf("aggregate negotiation repair evidence: %v", aggregateErr)
+	}
+	if profile.round5 && repairAggregate == nil {
+		repairAggregate = &campaignNegotiationRepairAggregate{
+			Profile: campaignNegotiationRound5RepairProfile, Dispositions: map[string]int{},
+		}
+	}
+	if profile.round5 && repairAggregate.Profile != campaignNegotiationRound5RepairProfile {
+		t.Fatal("Round 5 report has an invalid negotiation repair profile aggregate")
+	}
+	if !profile.round5 && repairAggregate != nil {
+		t.Fatal("legacy campaign unexpectedly contains Round 5 negotiation repair evidence")
+	}
+	report.NegotiationRepair = repairAggregate
 	report.UpdatedAt = processCompleted.Format(time.RFC3339Nano)
 	writeCampaignJSON(t, reportPath, report)
-	if capabilityMarket {
-		writeNamedCampaignSummaries(t, root, report, manifest, "eight-agent-capability-market-financial-summary.json",
-			"tos.openfox.eight-agent-capability-market-financial-summary.v1")
+	if profile.runScopedEvidence() {
+		// Closing assessments are LLM calls too. Capture them before sealing the
+		// owner-private usage aggregate referenced by the final report.
+		writeCampaignClosingAssessments(t, root, runtimes, report, profile)
+		providerUsage, usageErr := writeCampaignProviderUsageSummary(root, campaignRunID, runtimes)
+		if usageErr != nil {
+			t.Fatalf("write %s provider usage evidence: %v", profile.roundLabel(), usageErr)
+		}
+		report.ProviderUsage = providerUsage
+		report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		writeCampaignJSON(t, reportPath, report)
 	} else {
-		writeCampaignSummaries(t, root, report, manifest)
+		writeCampaignClosingAssessments(t, root, runtimes, report, profile)
 	}
-	writeCampaignClosingAssessments(t, root, runtimes, report)
+	writeNamedCampaignSummaries(t, root, report, manifest, profile.financialFilename, profile.financialSchema)
 	t.Logf("eight-agent autonomous campaign completed report=%s", reportPath)
 }
 
@@ -1747,12 +4282,23 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 			t.Fatalf("buyer %s demand planning: %v", runtimes[buyerIndex].definition.Name, planErr)
 		}
 		if plan.Decision == "skip" {
-			campaignGroupSend(t, runtimes[buyerIndex].definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
-				fmt.Sprintf("round %d: no voluntary purchase — %s", sequence/len(runtimes)+1, plan.Rationale))
+			disposition := "skipped:buyer-strategy"
+			demandPlanningMode := "buyer-ai"
+			if plan.CapacityDisposition != "" {
+				if !campaignPortfolioCapacitySkipped(plan.CapacityDisposition) {
+					t.Fatalf("buyer %s returned an invalid capacity disposition %q",
+						runtimes[buyerIndex].definition.Name, plan.CapacityDisposition)
+				}
+				disposition = plan.CapacityDisposition
+				demandPlanningMode = "portfolio-capacity-prefilter"
+			} else {
+				campaignGroupSend(t, runtimes[buyerIndex].definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
+					fmt.Sprintf("round %d: no voluntary purchase — %s", sequence/len(runtimes)+1, plan.Rationale))
+			}
 			result := eightAgentJobResult{
 				Sequence: sequence, Round: sequence/len(runtimes) + 1,
-				Disposition: "skipped:buyer-strategy", Buyer: runtimes[buyerIndex].definition.Name,
-				EconomicAnalysisMode: "not-run", DemandPlanningMode: "buyer-ai", DemandRationale: plan.Rationale,
+				Disposition: disposition, Buyer: runtimes[buyerIndex].definition.Name,
+				EconomicAnalysisMode: "not-run", DemandPlanningMode: demandPlanningMode, DemandRationale: plan.Rationale,
 				CompletedAt: time.Now().UTC().Format(time.RFC3339Nano),
 			}
 			report.Results = append(report.Results, result)
@@ -1771,42 +4317,58 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 		if sellerIndex < 0 || sellerIndex == buyerIndex {
 			t.Fatalf("buyer %s selected invalid seller %q", runtimes[buyerIndex].definition.Name, plan.SellerAgent)
 		}
-		campaignGroupSend(t, runtimes[buyerIndex].definition.Name, fmt.Sprintf("campaign-plan-%03d", sequence),
-			fmt.Sprintf("round %d: requesting %s from %s — %s", sequence/len(runtimes)+1,
-				plan.Capability, plan.SellerAgent, plan.Rationale))
 		var result eightAgentJobResult
-		var jobErr error
-		for attempt := 0; attempt < maximumCampaignJobAttempts; attempt++ {
-			result, jobErr = runEightAgentJob(t.Context(), root, sequence, sequence/len(runtimes)+1, attempt,
-				runtimes[buyerIndex], runtimes[sellerIndex], plan.Task, due)
-			if jobErr == nil {
-				break
-			}
-			var retryable retryableCampaignJobError
-			if !errors.As(jobErr, &retryable) || attempt+1 == maximumCampaignJobAttempts {
-				break
-			}
-			for _, runtime := range []*campaignRuntime{runtimes[sellerIndex], runtimes[buyerIndex]} {
-				engine := &Engine{
-					OwnerID: runtime.definition.OwnerID, AgentID: runtime.definition.AgentID,
-					MandateDigest: runtime.cfg.Earning.MandateDigest, Authority: runtime.authority,
+		contactDisposition, jobErr := campaignPreConversationContact(
+			sequence, runtimes[buyerIndex], runtimes[sellerIndex], func() {
+				campaignGroupSend(t, runtimes[buyerIndex].definition.Name,
+					fmt.Sprintf("campaign-plan-%03d", sequence),
+					fmt.Sprintf("round %d: requesting %s from %s — %s", sequence/len(runtimes)+1,
+						plan.Capability, plan.SellerAgent, plan.Rationale))
+			},
+		)
+		if jobErr == nil && contactDisposition != "" {
+			result = campaignPortfolioCapacityResult(
+				sequence, sequence/len(runtimes)+1, runtimes[buyerIndex], runtimes[sellerIndex], contactDisposition,
+			)
+		} else if jobErr == nil {
+			for attempt := 0; attempt < maximumCampaignJobAttempts; attempt++ {
+				result, jobErr = runEightAgentJob(t.Context(), root, sequence, sequence/len(runtimes)+1, attempt,
+					runtimes[buyerIndex], runtimes[sellerIndex], plan.Task, due)
+				if jobErr == nil {
+					break
 				}
-				if _, reconcileErr := engine.ReconcileApply(t.Context(), 1, runtime.fence); reconcileErr != nil {
-					t.Fatalf("campaign job %d retry reconciliation: %v", sequence, reconcileErr)
+				var retryable retryableCampaignJobError
+				if !errors.As(jobErr, &retryable) || attempt+1 == maximumCampaignJobAttempts {
+					break
 				}
+				for _, runtime := range []*campaignRuntime{runtimes[sellerIndex], runtimes[buyerIndex]} {
+					engine := &Engine{
+						OwnerID: runtime.definition.OwnerID, AgentID: runtime.definition.AgentID,
+						MandateDigest: runtime.cfg.Earning.MandateDigest, Authority: runtime.authority,
+					}
+					if _, reconcileErr := engine.ReconcileApply(t.Context(), 1, runtime.fence); reconcileErr != nil {
+						t.Fatalf("campaign job %d retry reconciliation: %v", sequence, reconcileErr)
+					}
+				}
+				t.Logf("safe retry sequence=%d attempt=%d error=%v", sequence, attempt+1, jobErr)
 			}
-			t.Logf("safe retry sequence=%d attempt=%d error=%v", sequence, attempt+1, jobErr)
 		}
 		if jobErr != nil {
 			t.Fatalf("campaign job %d buyer=%s seller=%s: %v", sequence,
 				runtimes[buyerIndex].definition.Name, runtimes[sellerIndex].definition.Name, jobErr)
 		}
-		result.DemandPlanningMode = "buyer-ai"
+		if campaignPortfolioCapacitySkipped(result.Disposition) {
+			result.DemandPlanningMode = "portfolio-capacity-prefilter"
+		} else {
+			result.DemandPlanningMode = "buyer-ai"
+		}
 		result.DemandRationale = plan.Rationale
 		report.Results = append(report.Results, result)
-		campaignGroupSend(t, result.Seller, fmt.Sprintf("campaign-outcome-%03d", sequence),
-			fmt.Sprintf("round %d outcome for %s: %s; payment=%s", result.Round, result.Buyer,
-				result.Disposition, result.PaymentTransaction))
+		if !campaignPortfolioCapacitySkipped(result.Disposition) {
+			campaignGroupSend(t, result.Seller, fmt.Sprintf("campaign-outcome-%03d", sequence),
+				fmt.Sprintf("round %d outcome for %s: %s; payment=%s", result.Round, result.Buyer,
+					result.Disposition, result.PaymentTransaction))
+		}
 		report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		writeCampaignJSON(t, reportPath, report)
 		t.Logf("turn=%d buyer=%s seller=%s disposition=%s task=%q", sequence+1,
@@ -1830,23 +4392,55 @@ func TestSixOpenFoxAutonomousMarketCampaign(t *testing.T) {
 func planAutonomousCampaignDemand(ctx context.Context, round int, buyer *campaignRuntime,
 	runtimes []*campaignRuntime,
 ) (autonomousCampaignDemand, error) {
-	if buyer == nil || buyer.provider == nil || len(runtimes) < 2 {
+	if buyer == nil || round < 1 || len(runtimes) < 2 {
 		return autonomousCampaignDemand{}, errors.New("autonomous demand planner is incomplete")
 	}
-	catalog := append([]autonomousCampaignCatalogEntry(nil), buyer.catalogOverride...)
-	if len(catalog) == 0 {
-		var err error
-		catalog, err = discoverAutonomousCampaignCatalog(ctx, buyer, runtimes)
-		if err != nil {
-			return autonomousCampaignDemand{}, err
-		}
-	}
 	allowed := map[string]*campaignRuntime{}
+	capacityEligibleRuntimes := []*campaignRuntime{buyer}
 	for _, candidate := range runtimes {
 		if candidate == nil || candidate == buyer {
 			continue
 		}
+		disposition, capacityErr := campaignPreConversationPortfolioCapacity(round, buyer, candidate)
+		if capacityErr != nil {
+			return autonomousCampaignDemand{}, fmt.Errorf("filter demand-planning Portfolio capacity: %w", capacityErr)
+		}
+		if disposition != "" {
+			continue
+		}
 		allowed[candidate.definition.Name] = candidate
+		capacityEligibleRuntimes = append(capacityEligibleRuntimes, candidate)
+	}
+	if len(allowed) == 0 {
+		return autonomousCampaignDemand{
+			Decision: "skip", CapacityDisposition: "skipped:no-feasible-portfolio-capacity",
+			Rationale: "No listed seller fits the current aggregate Portfolio/capacity limits; skip before AI discovery or contact.",
+		}, nil
+	}
+	if buyer.provider == nil {
+		return autonomousCampaignDemand{}, errors.New("autonomous demand planner has no AI provider")
+	}
+	catalog := append([]autonomousCampaignCatalogEntry(nil), buyer.catalogOverride...)
+	if len(catalog) == 0 {
+		var err error
+		catalog, err = discoverAutonomousCampaignCatalog(ctx, buyer, capacityEligibleRuntimes)
+		if err != nil {
+			return autonomousCampaignDemand{}, err
+		}
+	} else {
+		filtered := make([]autonomousCampaignCatalogEntry, 0, len(catalog))
+		for _, listing := range catalog {
+			if allowed[listing.Agent] != nil {
+				filtered = append(filtered, listing)
+			}
+		}
+		catalog = filtered
+		if len(catalog) == 0 {
+			return autonomousCampaignDemand{
+				Decision: "skip", CapacityDisposition: "skipped:no-feasible-portfolio-capacity",
+				Rationale: "No discovered seller fits the current aggregate Portfolio/capacity limits; skip before AI discovery or contact.",
+			}, nil
+		}
 	}
 	input, err := json.Marshal(map[string]any{
 		"round": round, "buyer": map[string]any{
@@ -1928,8 +4522,15 @@ func planAutonomousCampaignDemand(ctx context.Context, round int, buyer *campaig
 }
 
 func resumeAutonomousCampaignDemand(ctx context.Context, root string, sequence int, buyer *campaignRuntime,
-	runtimes []*campaignRuntime,
+	runtimes []*campaignRuntime, campaignRunIDs ...string,
 ) (autonomousCampaignDemand, bool, error) {
+	if len(campaignRunIDs) > 1 {
+		return autonomousCampaignDemand{}, false, errors.New("retained campaign plan received multiple run scopes")
+	}
+	campaignRunID := ""
+	if len(campaignRunIDs) == 1 {
+		campaignRunID = campaignRunIDs[0]
+	}
 	path := filepath.Join(root, "campaign", "agreements", fmt.Sprintf("accepted-preflight-%03d.json", sequence))
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1949,7 +4550,8 @@ func resumeAutonomousCampaignDemand(ctx context.Context, root string, sequence i
 		err = requireCampaignJSONEOF(decoder)
 	}
 	if err != nil || checkpoint.Schema != "tos.openfox.campaign-accepted-agreement.v1" ||
-		checkpoint.Sequence != sequence || buyer == nil || checkpoint.BuyerAgentID != buyer.definition.AgentID ||
+		checkpoint.CampaignRunID != campaignRunID || checkpoint.Sequence != sequence || buyer == nil ||
+		checkpoint.BuyerAgentID != buyer.definition.AgentID ||
 		checkpoint.DemandIntentDigest == "" || commerce.ValidateAgreementBody(checkpoint.Body) != nil ||
 		len(checkpoint.Body.Terms) < 24 || len(checkpoint.Body.Terms) > 4096 {
 		return autonomousCampaignDemand{}, false, errors.New("retained campaign plan checkpoint conflicts")
@@ -2066,16 +4668,11 @@ func discoverAutonomousCampaignCatalog(ctx context.Context, buyer *campaignRunti
 }
 
 func writeCampaignClosingAssessments(t *testing.T, root string, runtimes []*campaignRuntime,
-	report eightAgentCampaignReport,
+	report eightAgentCampaignReport, profile autonomousCampaignProfile,
 ) {
 	t.Helper()
 	results := make([]campaignClosingAssessment, 0, len(runtimes))
-	boundary := "Be candid about same-host, closed-economy, direct-payment, and missing Gift/escrow limitations."
-	filename := "eight-agent-closing-assessments.json"
-	if os.Getenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET") == "1" {
-		boundary = "Be candid about the same-host closed economy. Direct TOS belongs to this campaign record; any Gift, escrow preflight, Validator election, or adversarial lane is separate evidence and must not be claimed unless its supplied artifact is actually present. Unknown model/API cost is not zero."
-		filename = "eight-agent-capability-market-closing-assessments.json"
-	}
+	boundary := campaignClosingEvidenceBoundary(report, profile)
 	for _, runtime := range runtimes {
 		assessment := campaignClosingAssessment{Agent: runtime.definition.Name,
 			CompletedAt: time.Now().UTC().Format(time.RFC3339Nano)}
@@ -2105,10 +4702,44 @@ func writeCampaignClosingAssessments(t *testing.T, root string, runtimes []*camp
 			assessment.Error = err.Error()
 		}
 		results = append(results, assessment)
-		writeCampaignJSON(t, filepath.Join(root, "reports", filename), map[string]any{
-			"schema": "tos.openfox.eight-agent-closing-assessments.v1", "assessments": results,
+		writeCampaignJSON(t, filepath.Join(root, "reports", profile.closingAssessmentsFilename), map[string]any{
+			"schema": profile.closingAssessmentsSchema, "assessments": results,
 		})
 	}
+}
+
+func campaignHasCurrentRunFinalizedDirectTOSPayment(report eightAgentCampaignReport) bool {
+	if validateCampaignRunID(report.CampaignRunID) != nil {
+		return false
+	}
+	for _, result := range report.Results {
+		if result.CampaignRunID == report.CampaignRunID && result.Disposition == "settled" &&
+			result.SettlementClass == "agreement_direct_tos" &&
+			strings.TrimSpace(result.PaymentTransaction) != "" &&
+			strings.TrimSpace(result.FinalityReference) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func campaignClosingEvidenceBoundary(report eightAgentCampaignReport, profile autonomousCampaignProfile) string {
+	boundary := "Be candid about same-host, closed-economy, direct-payment, and missing Gift/escrow limitations."
+	if profile.capabilityMarket {
+		boundary = "Be candid about the same-host closed economy. Direct TOS belongs to this campaign record; any Gift, escrow preflight, Validator election, or adversarial lane is separate evidence and must not be claimed unless its supplied artifact is actually present. Unknown model/API cost is not zero."
+	}
+	if report.ValidatorDelegation != nil {
+		if report.ValidatorDelegation.State == "verified_same_genesis_campaign_wallets" {
+			if campaignHasCurrentRunFinalizedDirectTOSPayment(report) {
+				boundary = "Be candid about the same-host closed economy and unknown model/API cost. The campaign record includes a verified accelerated delegation experiment in which all eight actual campaign Agent Accounts delegated part of their TOS and received a positive ledger reward on the same genesis used for campaign payments, with at least one delegation withdrawal verified. Treat it only as bounded test evidence: election timing is test-only, Elector attribution remains a lower bound, and the reward is neither service revenue nor a mainnet APR. Gift, escrow, external demand, and independent-host evidence remain separate and absent unless independently supplied."
+			} else {
+				boundary = "Be candid about the same-host closed economy and unknown model/API cost. The campaign record includes a verified accelerated delegation experiment in which all eight actual campaign Agent Accounts delegated part of their TOS and received a positive ledger reward, with at least one delegation withdrawal verified. The market was configured for the same genesis, but no current-run direct TOS market payment finalized with a transaction and finality reference; this proves configuration only, not actual market-payment use. Treat the delegation only as bounded test evidence: election timing is test-only, Elector attribution remains a lower bound, and the reward is neither service revenue nor a mainnet APR. Gift, escrow, external demand, and independent-host evidence remain separate and absent unless independently supplied."
+			}
+		} else {
+			boundary = "Be candid about the same-host closed economy and unknown model/API cost. The campaign record includes a verified, identity-bound accelerated sidecar delegation experiment. Treat its positive nominator reward only as test evidence: it used fresh sidecar wallets on a different genesis, test-only election timing, a reward lower bound rather than exact Elector attribution, and is neither service revenue nor a mainnet APR. Gift, escrow, external demand, and independent-host evidence remain separate and absent unless independently supplied."
+		}
+	}
+	return boundary
 }
 
 func requireCampaignJSONEOF(decoder *json.Decoder) error {
@@ -2143,6 +4774,11 @@ func (failure retryableCampaignJobError) Unwrap() error { return failure.err }
 const maximumCampaignJobAttempts = 3
 
 func terminalCampaignNegotiationModelDecline(attempt int, err error) bool {
+	var exhausted campaignNegotiationAttemptBudgetError
+	if errors.As(err, &exhausted) {
+		return exhausted.attempts >= uint32(maximumCampaignJobAttempts) &&
+			exhausted.invalidModelOutputs == exhausted.attempts
+	}
 	var invalidOutput campaignNegotiationModelOutputError
 	return attempt+1 >= maximumCampaignJobAttempts && errors.As(err, &invalidOutput)
 }
@@ -2253,19 +4889,48 @@ func loadOrCreateNamedCampaignReport(
 	path string,
 	duration time.Duration,
 	schema string,
+	campaignRunIDs ...string,
 ) eightAgentCampaignReport {
 	t.Helper()
+	if len(campaignRunIDs) > 1 {
+		t.Fatal("campaign checkpoint received more than one run scope")
+	}
+	campaignRunID := ""
+	if len(campaignRunIDs) == 1 {
+		campaignRunID = campaignRunIDs[0]
+	}
+	if campaignRunID != "" {
+		if err := validateCampaignRunID(campaignRunID); err != nil {
+			t.Fatalf("campaign checkpoint run scope: %v", err)
+		}
+	}
+	if (schema == capabilityMarketRound4CampaignSchema || schema == capabilityMarketRound5CampaignSchema) &&
+		campaignRunID == "" {
+		t.Fatal("round-scoped campaign checkpoint requires a run scope")
+	}
 	if raw, err := os.ReadFile(path); err == nil {
 		var report eightAgentCampaignReport
-		if json.Unmarshal(raw, &report) != nil || report.Schema != schema ||
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if rejectDuplicateJSONKeys(raw) != nil || decoder.Decode(&report) != nil || requireCampaignJSONEOF(decoder) != nil ||
+			report.Schema != schema ||
 			report.RequestedRunSec != int64(duration/time.Second) {
 			t.Fatal("campaign checkpoint is incompatible")
 		}
+		canonical, marshalErr := json.MarshalIndent(report, "", "  ")
+		if marshalErr != nil || !bytes.Equal(canonical, raw) {
+			t.Fatal("campaign checkpoint is not the exact canonical report object")
+		}
+		if err := validateCampaignCheckpointRunScope(report, campaignRunID); err != nil {
+			t.Fatalf("campaign checkpoint run scope: %v", err)
+		}
 		return report
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read campaign checkpoint: %v", err)
 	}
 	now := time.Now().UTC()
 	report := eightAgentCampaignReport{
-		Schema: schema, Network: "tos:local-three-node",
+		Schema: schema, CampaignRunID: campaignRunID, Network: "tos:local-three-node",
 		StartedAt: now.Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano),
 		RequestedRunSec: int64(duration / time.Second),
 	}
@@ -2273,8 +4938,132 @@ func loadOrCreateNamedCampaignReport(
 	return report
 }
 
-func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest) []*campaignRuntime {
+func validateRound5CampaignRuntimeConfigs(manifest eightAgentManifest, configs []*config.Config,
+	expected campaignValidatorNetworkDomain,
+) error {
+	if len(manifest.Agents) != 8 {
+		return errors.New("Round 5 campaign config preflight requires exactly eight manifest Agents")
+	}
+	if len(configs) != len(manifest.Agents) {
+		return errors.New("Round 5 campaign config preflight did not cover every manifest Agent")
+	}
+	for index, entry := range manifest.Agents {
+		cfg := configs[index]
+		if cfg == nil {
+			return fmt.Errorf("Round 5 Agent %s config is unavailable", entry.Name)
+		}
+		configured := campaignValidatorNetworkDomain{
+			NetworkID:         cfg.Earning.TOSPayment.Network.NetworkID,
+			GlobalID:          cfg.Earning.TOSPayment.Network.GlobalID,
+			WorkchainID:       cfg.Earning.TOSPayment.Network.WorkchainID,
+			ZeroStateRootHash: cfg.Earning.TOSPayment.Network.ZeroStateRootHash,
+			ZeroStateFileHash: cfg.Earning.TOSPayment.Network.ZeroStateFileHash,
+		}
+		if configured != expected {
+			return fmt.Errorf("Round 5 Agent %s payment domain differs from the evidence genesis", entry.Name)
+		}
+		if entry.Target != cfg.Earning.TOSPayment.SourceAccount {
+			return fmt.Errorf("Round 5 Agent %s manifest target differs from its configured payment account", entry.Name)
+		}
+	}
+	return nil
+}
+
+type campaignProviderFactory func(*config.Config) (providers.LLMProvider, string, error)
+
+// campaignRuntimeProviderWiring is the narrow ordering seam between Round 5
+// custody bootstrap and Provider construction. Production passes
+// providers.CreateProvider here; tests can observe that exact invocation point
+// without pretending that an unrelated counter is Provider construction.
+type campaignRuntimeProviderWiring struct {
+	round5           bool
+	expectedBindings int
+	providerFactory  campaignProviderFactory
+	bootstrap        *TOSCTLPaymentSink
+	snapshot         *os.File
+	bindings         int
+}
+
+func (wiring *campaignRuntimeProviderWiring) bind(bootstrap *TOSCTLPaymentSink, bind func() error) error {
+	if wiring == nil || !wiring.round5 || wiring.expectedBindings != 8 || bootstrap == nil || bind == nil {
+		return errors.New("Round 5 campaign Provider wiring requires exactly eight sealed payer bindings")
+	}
+	bootstrap.executableMu.Lock()
+	snapshot := bootstrap.executableSnapshot
+	bootstrap.executableMu.Unlock()
+	if snapshot == nil {
+		return errors.New("Round 5 campaign payer binding does not have a sealed TOSCTL snapshot")
+	}
+	if wiring.bootstrap == nil {
+		wiring.bootstrap = bootstrap
+		wiring.snapshot = snapshot
+	} else if wiring.bootstrap != bootstrap || wiring.snapshot != snapshot {
+		return errors.New("Round 5 campaign payer bindings do not share one sealed TOSCTL snapshot")
+	}
+	if wiring.bindings >= wiring.expectedBindings {
+		return errors.New("Round 5 campaign payer binding count exceeds exactly eight")
+	}
+	if err := bind(); err != nil {
+		return err
+	}
+	wiring.bindings++
+	return nil
+}
+
+func (wiring *campaignRuntimeProviderWiring) createProvider(
+	cfg *config.Config,
+) (providers.LLMProvider, string, error) {
+	if wiring == nil || wiring.providerFactory == nil {
+		return nil, "", errors.New("campaign Provider factory is unavailable")
+	}
+	if wiring.round5 {
+		if wiring.expectedBindings != 8 || wiring.bindings != wiring.expectedBindings ||
+			wiring.bootstrap == nil || wiring.snapshot == nil {
+			return nil, "", errors.New(
+				"Round 5 campaign Provider construction requires exactly eight bindings through one sealed TOSCTL snapshot",
+			)
+		}
+		wiring.bootstrap.executableMu.Lock()
+		snapshot := wiring.bootstrap.executableSnapshot
+		wiring.bootstrap.executableMu.Unlock()
+		if snapshot != wiring.snapshot {
+			return nil, "", errors.New(
+				"Round 5 campaign Provider construction requires exactly eight bindings through one sealed TOSCTL snapshot",
+			)
+		}
+	}
+	return wiring.providerFactory(cfg)
+}
+
+func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest,
+	campaignRunIDs ...string,
+) []*campaignRuntime {
 	t.Helper()
+	if len(campaignRunIDs) > 1 {
+		t.Fatal("campaign runtimes received more than one run scope")
+	}
+	campaignRunID := ""
+	if len(campaignRunIDs) == 1 {
+		campaignRunID = campaignRunIDs[0]
+	}
+	round4 := os.Getenv("OPENFOX_CAMPAIGN_ROUND4") == "1"
+	round5 := os.Getenv("OPENFOX_CAMPAIGN_ROUND5") == "1"
+	roundScoped := round4 || round5
+	roundLabel := "Round 4"
+	if round5 {
+		roundLabel = "Round 5"
+	}
+	if err := validateCampaignRuntimeRunScopeFromEnvironment(campaignRunID, round4, round5); err != nil {
+		t.Fatalf("%s campaign runtime scope: %v", roundLabel, err)
+	}
+	var expectedRound5Domain campaignValidatorNetworkDomain
+	if round5 {
+		var domainErr error
+		expectedRound5Domain, domainErr = round5CampaignNetworkDomainFromEnvironment()
+		if domainErr != nil {
+			t.Fatalf("load Round 5 campaign payment domain: %v", domainErr)
+		}
+	}
 	writerLease := parseCampaignDuration(t, "OPENFOX_CAMPAIGN_WRITER_LEASE", 4*time.Hour)
 	if writerLease < 4*time.Hour || writerLease > 24*time.Hour {
 		t.Fatal("OPENFOX_CAMPAIGN_WRITER_LEASE must be between 4h and 24h")
@@ -2288,241 +5077,374 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 		}
 		trustedIntents[entry.AgentID] = ed25519.PublicKey(publicKey)
 	}
+	var round5Configs []*config.Config
+	if round5 {
+		round5Configs = make([]*config.Config, len(manifest.Agents))
+		for index, entry := range manifest.Agents {
+			cfg, loadErr := config.LoadConfig(filepath.Join(entry.ConfigDirectory, "config.json"))
+			if loadErr != nil {
+				t.Fatalf("preflight Round 5 Agent %s config: %v", entry.Name, loadErr)
+			}
+			round5Configs[index] = cfg
+		}
+		if err := validateRound5CampaignRuntimeConfigs(manifest, round5Configs, expectedRound5Domain); err != nil {
+			t.Fatalf("preflight Round 5 Agent configs before runtime construction: %v", err)
+		}
+	}
+	round5AuthorityKeys := make([]ed25519.PrivateKey, len(manifest.Agents))
+	bootstrapExecutable, bootstrapVaultURL := "", ""
+	if round5 {
+		bootstrapExecutable = mustEnv(t, "OPENFOX_TOSCTL")
+		bootstrapVaultURL = mustEnv(t, "OPENFOX_TOS_VAULT_URL")
+	}
+	providerWiring := &campaignRuntimeProviderWiring{
+		round5:           round5,
+		expectedBindings: len(manifest.Agents),
+		providerFactory:  providers.CreateProvider,
+	}
 	runtimes := make([]*campaignRuntime, 0, len(manifest.Agents))
-	for _, entry := range manifest.Agents {
-		cfg, err := config.LoadConfig(filepath.Join(entry.ConfigDirectory, "config.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		provider, model, err := providers.CreateProvider(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		contextBuilder := openfoxagent.NewContextBuilder(cfg.WorkspacePath())
-		agentContext := contextBuilder.BuildSystemPromptWithCache
-		authorityKey := readPilotPrivateKey(
-			t,
-			filepath.Join(cfg.Earning.StateDir, "campaign-authority-v3", "authority-ed25519.key"),
-		)
-		identityKey := readPilotPrivateKey(t, filepath.Join(cfg.Earning.StateDir, "identity", "agent-ed25519.key"))
-		pinnedNetwork := agentrelay.NetworkDomain{NetworkID: cfg.Earning.TOSPayment.Network.NetworkID,
-			GlobalID:          cfg.Earning.TOSPayment.Network.GlobalID,
-			ZeroStateRootHash: cfg.Earning.TOSPayment.Network.ZeroStateRootHash,
-			ZeroStateFileHash: cfg.Earning.TOSPayment.Network.ZeroStateFileHash,
-			WorkchainID:       cfg.Earning.TOSPayment.Network.WorkchainID}
-		pinnedNetworkDigest, err := agentrelay.NetworkDomainDigest(pinnedNetwork)
-		if err != nil {
-			t.Fatal(err)
-		}
-		nativeAsset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos"}
-		authority, err := OpenPersonalAuthority(
-			filepath.Join(cfg.Earning.StateDir, "campaign-authority-v3"),
-			entry.OwnerID,
-			entry.AgentID,
-			entry.AuthorityID,
-			authorityKey,
-			PortfolioLimits{
-				ComputeUnits: 64, SpendAtomic: 50_000_000_000,
-				ReceivableAtomic: 50_000_000_000, MaximumLossAtomic: entry.MaximumLoss,
-				CustodyNetworkDomainDigest: pinnedNetworkDigest, CustodyNativeAsset: &nativeAsset,
-				CustodySourceAccount:        cfg.Earning.TOSPayment.SourceAccount,
-				CustodyFinalityGraceSeconds: cfg.Earning.TOSPayment.CustodyFinalityGraceSeconds,
-			},
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, authorityLimits, _ := authority.Snapshot()
-		if authorityLimits.MaximumLossAtomic != entry.MaximumLoss {
-			_ = authority.Close()
-			t.Fatalf("campaign authority %s maximum-loss limit=%d, manifest=%d",
-				entry.Name, authorityLimits.MaximumLossAtomic, entry.MaximumLoss)
-		}
-		fence, err := authority.AcquireWriter(
-			t.Context(),
-			"writer:eight-agent:"+entry.Name,
-			eightAgentCampaignWriterScope(),
-			writerLease,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		engine := &Engine{
-			OwnerID:       entry.OwnerID,
-			AgentID:       entry.AgentID,
-			MandateDigest: cfg.Earning.MandateDigest,
-			Gates: FeatureGates{
-				Publication: true,
-				Execution:   true,
-			},
-			Authority:        authority,
-			PublicationSinks: map[string]PublicationSink{},
-			Collector:        Collector{Authority: trustedIntents},
-		}
-		if _, reconcileErr := engine.ReconcileApply(t.Context(), 1, fence); reconcileErr != nil {
-			t.Fatalf("startup reconciliation %s: %v", entry.Name, reconcileErr)
-		}
-		for _, carrier := range cfg.Earning.Carriers {
-			sink, sinkErr := NewHTTPPublicationSink(
-				carrier.ID,
-				carrier.Endpoint,
-				carrier.RelayToken.String(),
-				30*time.Second,
-			)
-			if sinkErr != nil {
-				t.Fatal(sinkErr)
+	if err := withCampaignTOSCTLBootstrap(
+		round5, bootstrapExecutable, bootstrapVaultURL,
+		func(bootstrap *TOSCTLPaymentSink) error {
+			if bootstrap != nil {
+				for index, entry := range manifest.Agents {
+					cfg := round5Configs[index]
+					authorityKey := readPilotPrivateKey(
+						t,
+						filepath.Join(cfg.Earning.StateDir, "campaign-authority-v3", "authority-ed25519.key"),
+					)
+					round5AuthorityKeys[index] = authorityKey
+					custodyDirectory := filepath.Join(root, "campaign", "custody", entry.Name)
+					if err := os.MkdirAll(custodyDirectory, 0o700); err != nil {
+						return err
+					}
+					if err := providerWiring.bind(bootstrap, func() error {
+						return bindCampaignPayer(t, entry, authorityKey, custodyDirectory, bootstrap)
+					}); err != nil {
+						return err
+					}
+				}
 			}
-			engine.PublicationSinks[carrier.ID] = sink
-		}
-		inventory := InventorySourceFunc(func(context.Context) (InventorySnapshot, error) {
-			now := time.Now().UTC()
-			portfolioRevision, _, _ := authority.Snapshot()
-			return InventorySnapshot{
-				OwnerID:       entry.OwnerID,
-				AgentID:       entry.AgentID,
-				CreatedAtUnix: uint64(now.Add(-time.Second).Unix()),
-				ExpiresAtUnix: uint64(
-					now.Add(10 * time.Minute).Unix(),
-				),
-				SourceGeneration:  1,
-				PortfolioRevision: portfolioRevision,
-				PolicyRevision:    1,
-				ConsistencyToken: campaignDigest(
-					"inventory:" + entry.AgentID,
-				),
-				Available: ResourceCapacity{
-					CPUUnits: 64, MemoryBytes: 1 << 30, StorageBytes: 1 << 30,
-					ModelTokens: 128_000, APIAtomicBudget: entry.MaximumCost, Concurrency: 1,
-				},
-				Capabilities: []Capability{
-					{
-						Namespace:            "tos.skill",
-						Identifier:           entry.Capability,
-						Version:              "1.0.0",
-						State:                CapabilityReady,
-						Authority:            entry.AuthorityID,
-						EvidenceDigest:       campaignDigest("capability:" + entry.Capability),
-						RevocationGeneration: 1,
-						ExpiresAtUnix:        uint64(now.Add(10 * time.Minute).Unix()),
+			for index, entry := range manifest.Agents {
+				var cfg *config.Config
+				var err error
+				if round5 {
+					cfg = round5Configs[index]
+				} else {
+					cfg, err = config.LoadConfig(filepath.Join(entry.ConfigDirectory, "config.json"))
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				provider, model, err := providerWiring.createProvider(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var providerUsage *campaignProviderUsageRecorder
+				if roundScoped {
+					wrappedProvider, usageRecorder, usageErr := wrapCampaignProviderUsage(
+						root, campaignRunID, entry.Name, provider,
+					)
+					if usageErr != nil {
+						if stateful, ok := provider.(providers.StatefulProvider); ok {
+							stateful.Close()
+						}
+						t.Fatalf("open %s provider usage evidence for %s: %v", roundLabel, entry.Name, usageErr)
+					}
+					provider = wrappedProvider
+					providerUsage = usageRecorder
+				}
+				contextBuilder := openfoxagent.NewContextBuilder(cfg.WorkspacePath())
+				agentContext := contextBuilder.BuildSystemPromptWithCache
+				var authorityKey ed25519.PrivateKey
+				if round5 {
+					authorityKey = round5AuthorityKeys[index]
+				} else {
+					authorityKey = readPilotPrivateKey(
+						t,
+						filepath.Join(cfg.Earning.StateDir, "campaign-authority-v3", "authority-ed25519.key"),
+					)
+				}
+				identityKey := readPilotPrivateKey(t, filepath.Join(cfg.Earning.StateDir, "identity", "agent-ed25519.key"))
+				pinnedNetwork := agentrelay.NetworkDomain{NetworkID: cfg.Earning.TOSPayment.Network.NetworkID,
+					GlobalID:          cfg.Earning.TOSPayment.Network.GlobalID,
+					ZeroStateRootHash: cfg.Earning.TOSPayment.Network.ZeroStateRootHash,
+					ZeroStateFileHash: cfg.Earning.TOSPayment.Network.ZeroStateFileHash,
+					WorkchainID:       cfg.Earning.TOSPayment.Network.WorkchainID}
+				pinnedNetworkDigest, err := agentrelay.NetworkDomainDigest(pinnedNetwork)
+				if err != nil {
+					t.Fatal(err)
+				}
+				nativeAsset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos"}
+				authority, err := OpenPersonalAuthority(
+					filepath.Join(cfg.Earning.StateDir, "campaign-authority-v3"),
+					entry.OwnerID,
+					entry.AgentID,
+					entry.AuthorityID,
+					authorityKey,
+					PortfolioLimits{
+						ComputeUnits: 64, SpendAtomic: 50_000_000_000,
+						ReceivableAtomic: 50_000_000_000, MaximumLossAtomic: entry.MaximumLoss,
+						CustodyNetworkDomainDigest: pinnedNetworkDigest, CustodyNativeAsset: &nativeAsset,
+						CustodySourceAccount:        cfg.Earning.TOSPayment.SourceAccount,
+						CustodyFinalityGraceSeconds: cfg.Earning.TOSPayment.CustodyFinalityGraceSeconds,
 					},
-				},
-				SupportedSettlementAdapters: []string{"tos.payment.direct.v1"},
-			}, nil
-		})
-		carriers := make([]Carrier, 0, len(cfg.Earning.Carriers))
-		for _, carrierConfig := range cfg.Earning.Carriers {
-			carrier, carrierErr := NewHTTPCarrier(
-				carrierConfig.ID,
-				carrierConfig.Endpoint,
-				carrierConfig.ReadToken.String(),
-				30*time.Second,
-			)
-			if carrierErr != nil {
-				t.Fatal(carrierErr)
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, authorityLimits, _ := authority.Snapshot()
+				if authorityLimits.MaximumLossAtomic != entry.MaximumLoss {
+					_ = authority.Close()
+					t.Fatalf("campaign authority %s maximum-loss limit=%d, manifest=%d",
+						entry.Name, authorityLimits.MaximumLossAtomic, entry.MaximumLoss)
+				}
+				fence, err := authority.AcquireWriter(
+					t.Context(),
+					"writer:eight-agent:"+entry.Name,
+					eightAgentCampaignWriterScope(),
+					writerLease,
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				engine := &Engine{
+					OwnerID:       entry.OwnerID,
+					AgentID:       entry.AgentID,
+					MandateDigest: cfg.Earning.MandateDigest,
+					Gates: FeatureGates{
+						Publication: true,
+						Execution:   true,
+					},
+					Authority:        authority,
+					PublicationSinks: map[string]PublicationSink{},
+					Collector:        Collector{Authority: trustedIntents},
+				}
+				if _, reconcileErr := engine.ReconcileApply(t.Context(), 1, fence); reconcileErr != nil {
+					t.Fatalf("startup reconciliation %s: %v", entry.Name, reconcileErr)
+				}
+				for _, carrier := range cfg.Earning.Carriers {
+					sink, sinkErr := NewHTTPPublicationSink(
+						carrier.ID,
+						carrier.Endpoint,
+						carrier.RelayToken.String(),
+						30*time.Second,
+					)
+					if sinkErr != nil {
+						t.Fatal(sinkErr)
+					}
+					engine.PublicationSinks[carrier.ID] = sink
+				}
+				inventory := InventorySourceFunc(func(context.Context) (InventorySnapshot, error) {
+					now := time.Now().UTC()
+					portfolioRevision, _, _ := authority.Snapshot()
+					return InventorySnapshot{
+						OwnerID:       entry.OwnerID,
+						AgentID:       entry.AgentID,
+						CreatedAtUnix: uint64(now.Add(-time.Second).Unix()),
+						ExpiresAtUnix: uint64(
+							now.Add(10 * time.Minute).Unix(),
+						),
+						SourceGeneration:  1,
+						PortfolioRevision: portfolioRevision,
+						PolicyRevision:    1,
+						ConsistencyToken: campaignDigest(
+							"inventory:" + entry.AgentID,
+						),
+						Available: ResourceCapacity{
+							CPUUnits: 64, MemoryBytes: 1 << 30, StorageBytes: 1 << 30,
+							ModelTokens: 128_000, APIAtomicBudget: entry.MaximumCost, Concurrency: 1,
+						},
+						Capabilities: []Capability{
+							{
+								Namespace:            "tos.skill",
+								Identifier:           entry.Capability,
+								Version:              "1.0.0",
+								State:                CapabilityReady,
+								Authority:            entry.AuthorityID,
+								EvidenceDigest:       campaignDigest("capability:" + entry.Capability),
+								RevocationGeneration: 1,
+								ExpiresAtUnix:        uint64(now.Add(10 * time.Minute).Unix()),
+							},
+						},
+						SupportedSettlementAdapters: []string{"tos.payment.direct.v1"},
+					}, nil
+				})
+				carriers := make([]Carrier, 0, len(cfg.Earning.Carriers))
+				for _, carrierConfig := range cfg.Earning.Carriers {
+					carrier, carrierErr := NewHTTPCarrier(
+						carrierConfig.ID,
+						carrierConfig.Endpoint,
+						carrierConfig.ReadToken.String(),
+						30*time.Second,
+					)
+					if carrierErr != nil {
+						t.Fatal(carrierErr)
+					}
+					carriers = append(carriers, carrier)
+				}
+				collector := Collector{
+					Carriers:  carriers,
+					Authority: trustedIntents,
+					Inventory: inventory,
+					Estimator: boundedCampaignEstimator{
+						AI:    LLMEconomicEstimator{Provider: provider, Model: model, AgentContext: agentContext},
+						Price: entry.Price,
+					},
+					Policy: EconomicPolicy{
+						MinimumExpectedProfitAtomic:     "1",
+						MinimumROIPPM:                   1,
+						MaximumLossAtomic:               strconv.FormatUint(entry.MaximumLoss, 10),
+						MinimumPaymentProbabilityPPM:    500_000,
+						MinimumCompletionProbabilityPPM: 500_000,
+					},
+					Shortlist: ShortlistPolicy{
+						Size:                16,
+						MaximumPerIssuer:    8,
+						MaximumPerSource:    16,
+						MaximumPerTaxonomy:  16,
+						MaximumPerValueBand: 16,
+					},
+				}
+				publisher, err := OpenPublicationManager(
+					filepath.Join(cfg.Earning.StateDir, "campaign-publications-v3"),
+					engine,
+					inventory,
+					identityKey,
+					PublicationPolicy{
+						MinimumTTL:                   time.Hour,
+						MaximumTTL:                   24 * time.Hour,
+						MinimumMarginPPM:             100_000,
+						MaximumPriceChangePPM:        1_000_000,
+						MaximumActive:                64,
+						MaximumRevisionsPerObject:    3,
+						MaximumPublicationsPerPeriod: 64,
+						Period:                       24 * time.Hour,
+						AllowedAudiences:             []string{"public:indexable"},
+						AllowDemand:                  true,
+					},
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				learning, err := NewEvolutionExecutionLearningRecorderWithAcquisition(
+					cfg.Evolution, cfg.WorkspacePath(), entry.OwnerID, entry.AgentID, provider, model,
+					campaignCapabilityAcquisitionFence{ownerID: entry.OwnerID, agentID: entry.AgentID}, entry.Capability,
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !round5 {
+					custodyDirectory := filepath.Join(root, "campaign", "custody", entry.Name)
+					if err := os.MkdirAll(custodyDirectory, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := bindCampaignPayer(t, entry, authorityKey, custodyDirectory, nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				payment := &TOSCTLPaymentSink{
+					Authority:         authority,
+					Executable:        mustEnv(t, "OPENFOX_TOSCTL"),
+					ConfigPath:        mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG"),
+					Wallet:            entry.Wallet,
+					SourceAccount:     entry.Target,
+					NetworkGlobalID:   pinnedNetwork.GlobalID,
+					FeeReserveNanoTOS: 50_000_000,
+					RelayNetworkDomain: liveTOSCustodyNetworkDomain(
+						t, "tos:local-three-node", pinnedNetwork.GlobalID,
+					),
+					QuorumConfigPaths: []string{
+						mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_2"),
+						mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_3"),
+					},
+					MaximumTransactions: 1000,
+					VaultURL:            mustEnv(t, "OPENFOX_TOS_VAULT_URL"),
+					EvidenceDirectory: filepath.Join(
+						root,
+						"campaign",
+						"payment-evidence",
+						entry.Name,
+					),
+					ResolveAttempts: 60,
+					ResolveInterval: time.Second,
+				}
+				preflightDirectory := filepath.Join(root, "campaign", "network-preflight", entry.Name)
+				if err := os.MkdirAll(preflightDirectory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				payment.RelayNetworkPreflight = campaignTOSCTLNetworkPreflight(payment, preflightDirectory)
+				negotiationRepairMode := campaignNegotiationRepairDisabled
+				if round5 {
+					negotiationRepairMode = campaignNegotiationRepairRound5
+				}
+				runtimes = append(runtimes, &campaignRuntime{
+					definition:            entry,
+					cfg:                   cfg,
+					provider:              provider,
+					providerUsage:         providerUsage,
+					model:                 model,
+					identity:              identityKey,
+					authority:             authority,
+					fence:                 fence,
+					publisher:             publisher,
+					payment:               payment,
+					learning:              learning,
+					collector:             collector,
+					agentContext:          agentContext,
+					negotiationRepairMode: negotiationRepairMode,
+				})
 			}
-			carriers = append(carriers, carrier)
-		}
-		collector := Collector{
-			Carriers:  carriers,
-			Authority: trustedIntents,
-			Inventory: inventory,
-			Estimator: boundedCampaignEstimator{
-				AI:    LLMEconomicEstimator{Provider: provider, Model: model, AgentContext: agentContext},
-				Price: entry.Price,
-			},
-			Policy: EconomicPolicy{
-				MinimumExpectedProfitAtomic:     "1",
-				MinimumROIPPM:                   1,
-				MaximumLossAtomic:               strconv.FormatUint(entry.MaximumLoss, 10),
-				MinimumPaymentProbabilityPPM:    500_000,
-				MinimumCompletionProbabilityPPM: 500_000,
-			},
-			Shortlist: ShortlistPolicy{
-				Size:                16,
-				MaximumPerIssuer:    8,
-				MaximumPerSource:    16,
-				MaximumPerTaxonomy:  16,
-				MaximumPerValueBand: 16,
-			},
-		}
-		publisher, err := OpenPublicationManager(
-			filepath.Join(cfg.Earning.StateDir, "campaign-publications-v3"),
-			engine,
-			inventory,
-			identityKey,
-			PublicationPolicy{
-				MinimumTTL:                   time.Hour,
-				MaximumTTL:                   24 * time.Hour,
-				MinimumMarginPPM:             100_000,
-				MaximumPriceChangePPM:        1_000_000,
-				MaximumActive:                64,
-				MaximumRevisionsPerObject:    3,
-				MaximumPublicationsPerPeriod: 64,
-				Period:                       24 * time.Hour,
-				AllowedAudiences:             []string{"public:indexable"},
-				AllowDemand:                  true,
-			},
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		learning, err := NewEvolutionExecutionLearningRecorderWithAcquisition(
-			cfg.Evolution, cfg.WorkspacePath(), entry.OwnerID, entry.AgentID, provider, model,
-			campaignCapabilityAcquisitionFence{ownerID: entry.OwnerID, agentID: entry.AgentID}, entry.Capability,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		custodyDirectory := filepath.Join(root, "campaign", "custody", entry.Name)
-		if err := os.MkdirAll(custodyDirectory, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		bindCampaignPayer(t, entry, authorityKey, custodyDirectory)
-		payment := &TOSCTLPaymentSink{
-			Authority:          authority,
-			Executable:         mustEnv(t, "OPENFOX_TOSCTL"),
-			ConfigPath:         mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG"),
-			Wallet:             entry.Wallet,
-			SourceAccount:      entry.Target,
-			NetworkGlobalID:    3,
-			FeeReserveNanoTOS:  50_000_000,
-			RelayNetworkDomain: liveTOSCustodyNetworkDomain(t, "tos:local-three-node", 3),
-			QuorumConfigPaths: []string{
-				mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_2"),
-				mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_3"),
-			},
-			MaximumTransactions: 1000,
-			VaultURL:            mustEnv(t, "OPENFOX_TOS_VAULT_URL"),
-			EvidenceDirectory: filepath.Join(
-				root,
-				"campaign",
-				"payment-evidence",
-				entry.Name,
-			),
-			ResolveAttempts: 60,
-			ResolveInterval: time.Second,
-		}
-		preflightDirectory := filepath.Join(root, "campaign", "network-preflight", entry.Name)
-		if err := os.MkdirAll(preflightDirectory, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		payment.RelayNetworkPreflight = campaignTOSCTLNetworkPreflight(payment, preflightDirectory)
-		runtimes = append(runtimes, &campaignRuntime{
-			definition:   entry,
-			cfg:          cfg,
-			provider:     provider,
-			model:        model,
-			identity:     identityKey,
-			authority:    authority,
-			fence:        fence,
-			publisher:    publisher,
-			payment:      payment,
-			learning:     learning,
-			collector:    collector,
-			agentContext: agentContext,
-		})
+			return nil
+		},
+	); err != nil {
+		t.Fatalf("bootstrap and bind Round 5 campaign payer runtimes before Provider construction: %v", err)
+	}
+	if err := preflightCampaignPaymentAdapters(round5, runtimes); err != nil {
+		t.Fatalf("preflight Round 5 TOS custody payment Adapters before any Provider turn: %v", err)
 	}
 	return runtimes
+}
+
+func withCampaignTOSCTLBootstrap(round5 bool, executable, vaultURL string,
+	use func(*TOSCTLPaymentSink) error,
+) (resultErr error) {
+	if use == nil {
+		return errors.New("campaign TOSCTL bootstrap continuation is unavailable")
+	}
+	if !round5 {
+		return use(nil)
+	}
+	bootstrap := &TOSCTLPaymentSink{Executable: executable, VaultURL: vaultURL}
+	if err := bootstrap.freezeVaultCapability(); err != nil {
+		return errors.New("Round 5 campaign bootstrap TOSCTL vault capability is invalid")
+	}
+	if err := bootstrap.pinTOSCTLExecutable(); err != nil {
+		return errors.New("Round 5 campaign bootstrap TOSCTL executable is untrusted")
+	}
+	defer func() {
+		if err := closeCampaignTOSCTLExecutableSnapshot(bootstrap); resultErr == nil && err != nil {
+			resultErr = err
+		}
+	}()
+	return use(bootstrap)
+}
+
+func preflightCampaignPaymentAdapters(round5 bool, runtimes []*campaignRuntime) error {
+	if !round5 {
+		return nil
+	}
+	for _, runtime := range runtimes {
+		if runtime == nil || runtime.payment == nil {
+			closeCampaignRuntimes(runtimes)
+			return errors.New("Round 5 campaign payment Adapter is unavailable")
+		}
+		if err := runtime.payment.validate(); err != nil {
+			closeCampaignRuntimes(runtimes)
+			return fmt.Errorf("Agent %s: %w", runtime.definition.Name, err)
+		}
+	}
+	return nil
 }
 
 func campaignTOSCTLNetworkPreflight(sink *TOSCTLPaymentSink, directory string) func(context.Context,
@@ -2565,10 +5487,11 @@ func campaignTOSCTLNetworkPreflight(sink *TOSCTLPaymentSink, directory string) f
 	}
 }
 
-func bindCampaignPayer(t *testing.T, entry eightAgentManifestEntry, key ed25519.PrivateKey, journal string) {
+func bindCampaignPayer(t *testing.T, entry eightAgentManifestEntry, key ed25519.PrivateKey, journal string,
+	bootstrap *TOSCTLPaymentSink,
+) error {
 	t.Helper()
-	command := exec.Command(
-		mustEnv(t, "OPENFOX_TOSCTL"),
+	args := []string{
 		"agent",
 		"wallet",
 		"bind-runtime",
@@ -2588,17 +5511,48 @@ func bindCampaignPayer(t *testing.T, entry eightAgentManifestEntry, key ed25519.
 		mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG"),
 		"--format",
 		"json",
-	)
+	}
+	if bootstrap != nil {
+		if _, err := bootstrap.run(t.Context(), args); err != nil {
+			return fmt.Errorf("bind %s through sealed Round 5 TOSCTL: %w", entry.Name, err)
+		}
+		return nil
+	}
+	command := exec.Command(mustEnv(t, "OPENFOX_TOSCTL"), args...)
 	command.Env = append(os.Environ(), "VAULT_URL="+mustEnv(t, "OPENFOX_TOS_VAULT_URL"))
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("bind %s: %v: %s", entry.Name, err, output)
+		return fmt.Errorf("bind %s: %v: %s", entry.Name, err, output)
 	}
+	return nil
+}
+
+func closeCampaignTOSCTLExecutableSnapshot(sink *TOSCTLPaymentSink) error {
+	if sink == nil {
+		return nil
+	}
+	sink.executableMu.Lock()
+	snapshot := sink.executableSnapshot
+	sink.executableSnapshot = nil
+	sink.executableIdentity = nil
+	sink.executableMu.Unlock()
+	if snapshot != nil {
+		if err := snapshot.Close(); err != nil {
+			return errors.New("close campaign TOSCTL executable snapshot")
+		}
+	}
+	return nil
 }
 
 func closeCampaignRuntimes(runtimes []*campaignRuntime) {
 	for _, runtime := range runtimes {
+		if runtime == nil {
+			continue
+		}
 		if runtime.publisher != nil {
 			_ = runtime.publisher.Close()
+		}
+		if runtime.payment != nil {
+			_ = closeCampaignTOSCTLExecutableSnapshot(runtime.payment)
 		}
 		if runtime.authority != nil {
 			_ = runtime.authority.Close()
@@ -2609,12 +5563,225 @@ func closeCampaignRuntimes(runtimes []*campaignRuntime) {
 	}
 }
 
+func repairRound5BuyerNegotiationDecision(decision campaignNegotiationDecision,
+	minimumPrice, askingPrice, buyerBudget, maximumLoss uint64,
+) (campaignNegotiationDecision, uint64, string) {
+	canonicalAmount := uint64(0)
+	choicePermitted := false
+	switch decision.Decision {
+	case "accept":
+		choicePermitted = buyerBudget == askingPrice && maximumLoss > 0 && askingPrice <= maximumLoss
+		canonicalAmount = askingPrice
+	case "counter":
+		choicePermitted = minimumPrice < askingPrice && buyerBudget >= minimumPrice &&
+			buyerBudget < askingPrice && maximumLoss > 0 && buyerBudget <= maximumLoss
+		canonicalAmount = buyerBudget
+	case "decline":
+		choicePermitted = true
+	}
+	if !choicePermitted {
+		decision.Decision = "decline"
+		decision.AmountNanoTOS = ""
+		return decision, 0, campaignNegotiationBuyerChoiceDeclineRepair
+	}
+	canonical := ""
+	if canonicalAmount > 0 {
+		canonical = strconv.FormatUint(canonicalAmount, 10)
+	}
+	repair := ""
+	if decision.AmountNanoTOS != canonical {
+		repair = campaignNegotiationBuyerAmountRepair
+	}
+	decision.AmountNanoTOS = canonical
+	return decision, canonicalAmount, repair
+}
+
+func repairRound5SellerNegotiationDecision(decision campaignNegotiationDecision,
+	counterAmount uint64,
+) (campaignNegotiationDecision, string) {
+	canonical := ""
+	if decision.Decision == "accept" {
+		canonical = strconv.FormatUint(counterAmount, 10)
+	}
+	repair := ""
+	if decision.AmountNanoTOS != canonical {
+		repair = campaignNegotiationSellerAmountRepair
+	}
+	decision.AmountNanoTOS = canonical
+	return decision, repair
+}
+
+func campaignNegotiationDecisionText(amount, repair, message string) string {
+	prefix := ""
+	if amount != "" {
+		prefix = "amount_nanotos=" + amount + "; "
+	}
+	if repair != "" {
+		prefix += "repair_disposition=" + repair + "; "
+	}
+	return prefix + message
+}
+
+func round5CampaignNegotiationDecisionText(amount, repair, originalDecision, originalAmount,
+	modelObjectDigest, message string,
+) string {
+	prefix := ""
+	if amount != "" {
+		prefix = "amount_nanotos=" + amount + "; "
+	}
+	if repair != "" {
+		prefix += "repair_disposition=" + repair + "; "
+	}
+	prefix += "original_decision=" + originalDecision + "; " +
+		"original_amount_nanotos=" + originalAmount + "; " +
+		"model_object_digest=" + modelObjectDigest + "; "
+	return prefix + message
+}
+
+func round5CampaignNegotiationModelObjectDigest(decision campaignNegotiationDecision) (string, error) {
+	canonical, err := json.Marshal(struct {
+		Decision      string `json:"decision"`
+		AmountNanoTOS string `json:"amount_nanotos"`
+		Message       string `json:"message"`
+	}{Decision: decision.Decision, AmountNanoTOS: decision.AmountNanoTOS, Message: decision.Message})
+	if err != nil {
+		return "", err
+	}
+	return campaignSHA256(canonical), nil
+}
+
+func validRound5CampaignNegotiationAmountSyntax(amount string) bool {
+	if len(amount) > 32 {
+		return false
+	}
+	for index := range amount {
+		if amount[index] < '0' || amount[index] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func decodeRound5CampaignNegotiationDecision(
+	object []byte,
+) (campaignNegotiationDecision, string, error) {
+	var decision campaignNegotiationDecision
+	if len(object) == 0 || rejectDuplicateJSONKeys(object) != nil {
+		return decision, "", errors.New("Round 5 negotiation decision JSON is ambiguous")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(object, &fields); err != nil || len(fields) != 3 {
+		return decision, "", errors.New("Round 5 negotiation decision must contain exactly three fields")
+	}
+	values := map[string]*string{
+		"decision": &decision.Decision, "amount_nanotos": &decision.AmountNanoTOS, "message": &decision.Message,
+	}
+	for name, destination := range values {
+		raw, found := fields[name]
+		if !found || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, destination) != nil {
+			return campaignNegotiationDecision{}, "", fmt.Errorf(
+				"Round 5 negotiation decision field %q must be a non-null string", name,
+			)
+		}
+	}
+	if len(decision.Decision) > 16 || len(decision.AmountNanoTOS) > 32 ||
+		len(decision.Message) == 0 || len(decision.Message) > 4096 || !utf8.ValidString(decision.Message) {
+		return campaignNegotiationDecision{}, "", errors.New("Round 5 negotiation decision fields exceed their bounds")
+	}
+	if !validRound5CampaignNegotiationAmountSyntax(decision.AmountNanoTOS) {
+		return campaignNegotiationDecision{}, "", errors.New(
+			"Round 5 negotiation amount must be empty or an ASCII unsigned decimal",
+		)
+	}
+	if strings.TrimSpace(decision.Message) != decision.Message {
+		return campaignNegotiationDecision{}, "", errors.New("Round 5 negotiation decision message is not canonical")
+	}
+	digest, err := round5CampaignNegotiationModelObjectDigest(decision)
+	return decision, digest, err
+}
+
+func campaignNegotiationMessageContainsReservedGrammar(message string) bool {
+	for _, reserved := range []string{
+		"amount_nanotos=", "repair_disposition=", "original_decision=", "original_amount_nanotos=",
+		"model_object_digest=",
+	} {
+		if strings.Contains(message, reserved) {
+			return true
+		}
+	}
+	return false
+}
+
+func campaignNegotiationConversationID(sequence int, buyerAgentID, sellerAgentID, task string,
+	options campaignNegotiationOptions,
+) string {
+	if options.RepairMode == campaignNegotiationRepairRound5 {
+		return campaignDigest(fmt.Sprintf(
+			"round5-conversation:%s:%d:%s:%s:%s",
+			options.CampaignRunID, sequence, buyerAgentID, sellerAgentID, task,
+		))
+	}
+	return campaignDigest(fmt.Sprintf(
+		"conversation:%d:%s:%s:%s", sequence, buyerAgentID, sellerAgentID, task,
+	))
+}
+
+func validateRound5CampaignNegotiationDecisionText(text, amount, repair, originalDecision,
+	originalAmount, modelObjectDigest string,
+) bool {
+	prefix := ""
+	if amount != "" {
+		prefix = "amount_nanotos=" + amount + "; "
+	}
+	if !strings.HasPrefix(text, prefix) {
+		return false
+	}
+	remainder := strings.TrimPrefix(text, prefix)
+	if repair != "" {
+		repairPrefix := "repair_disposition=" + repair + "; "
+		if !strings.HasPrefix(remainder, repairPrefix) {
+			return false
+		}
+		remainder = strings.TrimPrefix(remainder, repairPrefix)
+	} else if strings.HasPrefix(remainder, "repair_disposition=") {
+		return false
+	}
+	auditPrefix := "original_decision=" + originalDecision + "; " +
+		"original_amount_nanotos=" + originalAmount + "; " +
+		"model_object_digest=" + modelObjectDigest + "; "
+	if !strings.HasPrefix(remainder, auditPrefix) {
+		return false
+	}
+	remainder = strings.TrimPrefix(remainder, auditPrefix)
+	if strings.TrimSpace(remainder) == "" || strings.TrimSpace(remainder) != remainder {
+		return false
+	}
+	digest, err := round5CampaignNegotiationModelObjectDigest(campaignNegotiationDecision{
+		Decision: originalDecision, AmountNanoTOS: originalAmount, Message: remainder,
+	})
+	return err == nil && digest == modelObjectDigest
+}
+
 func runCampaignNegotiation(ctx context.Context, root string, sequence int, buyer, seller *campaignRuntime,
-	task string, now time.Time,
+	task string, now time.Time, negotiationOptions ...campaignNegotiationOptions,
 ) ([]campaignConversationMessage, string, bool, uint64, error) {
+	options, optionsErr := resolveCampaignNegotiationOptions(negotiationOptions)
+	if optionsErr != nil {
+		return nil, "", false, 0, optionsErr
+	}
+	repairMode := options.RepairMode
+	recordInvalid := func(stage string, failure error) error {
+		return recordCampaignNegotiationInvalidModelOutput(root, sequence, options, stage, failure)
+	}
 	if buyer == nil || seller == nil || buyer.provider == nil || seller.provider == nil ||
 		sequence < 0 || root == "" || now.IsZero() {
 		return nil, "", false, 0, errors.New("negotiation participants are incomplete")
+	}
+	if repairMode == campaignNegotiationRepairRound5 &&
+		campaignNegotiationMessageContainsReservedGrammar(task) {
+		return nil, "", false, 0, invalidCampaignNegotiationModelOutput(
+			"buyer-request-format", "buyer request contained reserved negotiation evidence grammar",
+		)
 	}
 	now = now.UTC()
 	minimumPrice := campaignMinimumPrice(seller.definition)
@@ -2634,19 +5801,25 @@ func runCampaignNegotiation(ctx context.Context, root string, sequence int, buye
 	checkpointPath := filepath.Join(directory, fmt.Sprintf("conversation-%03d.json", sequence))
 	if retained, found, err := loadCampaignNegotiationCheckpoint(
 		checkpointPath, sequence, buyer, seller, task, now, minimumPrice, askingPrice, buyerBudget,
+		options,
 	); err != nil {
 		return nil, "", false, 0, err
 	} else if found {
 		return append([]campaignConversationMessage(nil), retained.Messages...), retained.ConversationDigest,
 			retained.Accepted, retained.NegotiatedAmountNanoTOS, nil
 	}
-	conversationID := campaignDigest(fmt.Sprintf(
-		"conversation:%d:%s:%s:%s",
-		sequence,
-		buyer.definition.AgentID,
-		seller.definition.AgentID,
-		task,
-	))
+	if repairMode == campaignNegotiationRepairRound5 {
+		// Check before even requesting a fresh seller quote, so a restarted
+		// fourth buyer-decision attempt cannot invoke either Provider.
+		if err := ensureCampaignNegotiationModelAttemptAvailable(
+			root, sequence, options, campaignNegotiationBuyerDecisionStage,
+		); err != nil {
+			return nil, "", false, 0, err
+		}
+	}
+	conversationID := campaignNegotiationConversationID(
+		sequence, buyer.definition.AgentID, seller.definition.AgentID, task, options,
+	)
 	messages := make([]campaignConversationMessage, 0, 4)
 	appendSigned := func(sender, recipient *campaignRuntime, kind, text string) error {
 		text = strings.TrimSpace(text)
@@ -2686,6 +5859,13 @@ func runCampaignNegotiation(ctx context.Context, root string, sequence int, buye
 		askingPrice,
 		minimumPrice,
 	)
+	if repairMode == campaignNegotiationRepairRound5 {
+		if err := reserveCampaignNegotiationModelAttempt(
+			root, sequence, options, campaignNegotiationSellerQuoteStage,
+		); err != nil {
+			return nil, "", false, 0, err
+		}
+	}
 	sellerReply, err := campaignConversationReply(
 		ctx,
 		seller,
@@ -2694,7 +5874,14 @@ func runCampaignNegotiation(ctx context.Context, root string, sequence int, buye
 		4096,
 	)
 	if err != nil {
-		return nil, "", false, 0, err
+		return nil, "", false, 0, recordInvalid(campaignNegotiationSellerQuoteStage, err)
+	}
+	if repairMode == campaignNegotiationRepairRound5 &&
+		campaignNegotiationMessageContainsReservedGrammar(sellerReply) {
+		return nil, "", false, 0, recordInvalid(campaignNegotiationSellerQuoteStage,
+			invalidCampaignNegotiationModelOutput(
+				"seller-quote-format", "seller quote contained reserved negotiation evidence grammar",
+			))
 	}
 	if err = appendSigned(seller, buyer, "scope-and-quote", sellerReply); err != nil {
 		return nil, "", false, 0, err
@@ -2704,6 +5891,13 @@ Seller response: %s
 Signed seller range: %d through %d nanotos. Your signed demand budget and immutable maximum-loss bound for this negotiation is %d nanotos.
 Decide whether the response matches the requested capability and bounded scope. Return exactly one JSON object with string fields decision, amount_nanotos, and message. decision must be accept, counter, or decline. Use accept only with amount_nanotos="%d" and only when the ask equals the signed budget. Use counter only when the range is non-degenerate, with amount_nanotos="%d" exactly; never invent a different budget in chat. Use decline with amount_nanotos="" when that budget is below the seller minimum or the scope is unsafe. Do not call tools. Chat is advisory; only a later typed Agreement revision can authorize execution.`,
 		task, sellerReply, minimumPrice, askingPrice, buyerBudget, askingPrice, buyerBudget)
+	if repairMode == campaignNegotiationRepairRound5 {
+		if err = reserveCampaignNegotiationModelAttempt(
+			root, sequence, options, campaignNegotiationBuyerDecisionStage,
+		); err != nil {
+			return nil, "", false, 0, err
+		}
+	}
 	buyerReply, err := campaignConversationReply(
 		ctx,
 		buyer,
@@ -2712,86 +5906,162 @@ Decide whether the response matches the requested capability and bounded scope. 
 		4096,
 	)
 	if err != nil {
-		return nil, "", false, 0, err
+		return nil, "", false, 0, recordInvalid(campaignNegotiationBuyerDecisionStage, err)
 	}
 	object, err := strictModelJSONObject(buyerReply)
 	if err != nil {
-		return nil, "", false, 0, wrapInvalidCampaignNegotiationModelOutput("buyer-decision-format", err)
+		return nil, "", false, 0, recordInvalid(campaignNegotiationBuyerDecisionStage,
+			wrapInvalidCampaignNegotiationModelOutput("buyer-decision-format", err))
 	}
 	var decision campaignNegotiationDecision
-	decoder := json.NewDecoder(bytes.NewReader(object))
-	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(&decision); err == nil {
-		err = requireCampaignJSONEOF(decoder)
-	}
-	decision.Decision = strings.ToLower(strings.TrimSpace(decision.Decision))
-	decision.AmountNanoTOS = strings.TrimSpace(decision.AmountNanoTOS)
-	decision.Message = strings.TrimSpace(decision.Message)
-	if err != nil || (decision.Decision != "accept" && decision.Decision != "counter" && decision.Decision != "decline") ||
-		decision.Message == "" || len(decision.Message) > 4096 {
-		return nil, "", false, 0, invalidCampaignNegotiationModelOutput(
-			"buyer-decision-format", "buyer produced an invalid negotiation decision")
-	}
-	negotiatedAmount := uint64(0)
-	if decision.Decision == "decline" {
-		if decision.AmountNanoTOS != "" {
-			return nil, "", false, 0, invalidCampaignNegotiationModelOutput(
-				"buyer-decision-policy", "declined negotiation carried an amount")
+	buyerOriginalDecision, buyerOriginalAmount, buyerModelObjectDigest := "", "", ""
+	if repairMode == campaignNegotiationRepairRound5 {
+		decision, buyerModelObjectDigest, err = decodeRound5CampaignNegotiationDecision(object)
+		if err == nil {
+			buyerOriginalDecision, buyerOriginalAmount = decision.Decision, decision.AmountNanoTOS
 		}
 	} else {
-		negotiatedAmount, err = strconv.ParseUint(decision.AmountNanoTOS, 10, 64)
-		if err != nil || negotiatedAmount < minimumPrice || negotiatedAmount > askingPrice ||
-			negotiatedAmount != buyerBudget || negotiatedAmount > buyer.definition.MaximumLoss ||
-			(decision.Decision == "accept" && negotiatedAmount != askingPrice) ||
-			(decision.Decision == "counter" && (!ranged || negotiatedAmount >= askingPrice)) {
-			return nil, "", false, 0, invalidCampaignNegotiationModelOutput(
-				"buyer-decision-policy", "buyer negotiation amount escaped signed owner bounds")
+		decoder := json.NewDecoder(bytes.NewReader(object))
+		decoder.DisallowUnknownFields()
+		if err = decoder.Decode(&decision); err == nil {
+			err = requireCampaignJSONEOF(decoder)
+		}
+		decision.Decision = strings.ToLower(strings.TrimSpace(decision.Decision))
+		decision.AmountNanoTOS = strings.TrimSpace(decision.AmountNanoTOS)
+	}
+	decision.Message = strings.TrimSpace(decision.Message)
+	if err != nil || (decision.Decision != "accept" && decision.Decision != "counter" && decision.Decision != "decline") ||
+		decision.Message == "" || len(decision.Message) > 4096 ||
+		(repairMode == campaignNegotiationRepairRound5 &&
+			campaignNegotiationMessageContainsReservedGrammar(decision.Message)) {
+		return nil, "", false, 0, recordInvalid(campaignNegotiationBuyerDecisionStage,
+			invalidCampaignNegotiationModelOutput(
+				"buyer-decision-format", "buyer produced an invalid negotiation decision"))
+	}
+	negotiatedAmount := uint64(0)
+	repairDispositions := make([]string, 0, 2)
+	buyerRepair := ""
+	if repairMode == campaignNegotiationRepairRound5 {
+		decision, negotiatedAmount, buyerRepair = repairRound5BuyerNegotiationDecision(
+			decision, minimumPrice, askingPrice, buyerBudget, buyer.definition.MaximumLoss,
+		)
+		if buyerRepair != "" {
+			repairDispositions = append(repairDispositions, buyerRepair)
+		}
+	} else {
+		if decision.Decision == "decline" {
+			if decision.AmountNanoTOS != "" {
+				return nil, "", false, 0, invalidCampaignNegotiationModelOutput(
+					"buyer-decision-policy", "declined negotiation carried an amount")
+			}
+		} else {
+			negotiatedAmount, err = strconv.ParseUint(decision.AmountNanoTOS, 10, 64)
+			if err != nil || negotiatedAmount < minimumPrice || negotiatedAmount > askingPrice ||
+				negotiatedAmount != buyerBudget || negotiatedAmount > buyer.definition.MaximumLoss ||
+				(decision.Decision == "accept" && negotiatedAmount != askingPrice) ||
+				(decision.Decision == "counter" && (!ranged || negotiatedAmount >= askingPrice)) {
+				return nil, "", false, 0, invalidCampaignNegotiationModelOutput(
+					"buyer-decision-policy", "buyer negotiation amount escaped signed owner bounds")
+			}
 		}
 	}
-	decisionText := decision.Message
-	if decision.AmountNanoTOS != "" {
-		decisionText = fmt.Sprintf("amount_nanotos=%s; %s", decision.AmountNanoTOS, decision.Message)
+	decisionText := campaignNegotiationDecisionText(decision.AmountNanoTOS, buyerRepair, decision.Message)
+	if repairMode == campaignNegotiationRepairRound5 {
+		decisionText = round5CampaignNegotiationDecisionText(
+			decision.AmountNanoTOS, buyerRepair, buyerOriginalDecision, buyerOriginalAmount,
+			buyerModelObjectDigest, decision.Message,
+		)
+	}
+	if len(decisionText) > 4096 || !utf8.ValidString(decisionText) {
+		return nil, "", false, 0, recordInvalid(campaignNegotiationBuyerDecisionStage,
+			invalidCampaignNegotiationModelOutput(
+				"buyer-decision-format", "buyer decision exceeds the signed dialogue bound",
+			))
 	}
 	if err = appendSigned(buyer, seller, "decision:"+decision.Decision, decisionText); err != nil {
 		return nil, "", false, 0, err
 	}
 	accepted := decision.Decision == "accept"
 	sellerCounterDecision := ""
+	sellerOriginalDecision, sellerOriginalAmount, sellerModelObjectDigest := "", "", ""
 	if decision.Decision == "counter" {
 		sellerDecisionPrompt := fmt.Sprintf(`The buyer counter-offered exactly %d nanotos for the unchanged bounded task below:
 %s
 Your signed minimum is %d and asking price is %d nanotos. Return exactly one JSON object with string fields decision, amount_nanotos, and message. decision must be accept or decline. Accept only with amount_nanotos="%d" when the unchanged scope remains commercially worthwhile; decline with amount_nanotos="" otherwise. Do not call tools and do not imply that chat is Agreement authority.`,
 			negotiatedAmount, task, minimumPrice, askingPrice, negotiatedAmount)
+		if repairMode == campaignNegotiationRepairRound5 {
+			if err = reserveCampaignNegotiationModelAttempt(
+				root, sequence, options, campaignNegotiationSellerCounterDecisionStage,
+			); err != nil {
+				return nil, "", false, 0, err
+			}
+		}
 		sellerDecisionRaw, replyErr := campaignConversationReply(ctx, seller,
 			"You are an autonomous seller evaluating a bounded counter-offer inside immutable owner pricing and scope limits.",
 			sellerDecisionPrompt, 4096)
 		if replyErr != nil {
-			return nil, "", false, 0, replyErr
+			return nil, "", false, 0, recordInvalid(
+				campaignNegotiationSellerCounterDecisionStage, replyErr,
+			)
 		}
 		sellerObject, objectErr := strictModelJSONObject(sellerDecisionRaw)
 		if objectErr != nil {
-			return nil, "", false, 0, wrapInvalidCampaignNegotiationModelOutput(
-				"seller-counter-decision-format", objectErr)
+			return nil, "", false, 0, recordInvalid(campaignNegotiationSellerCounterDecisionStage,
+				wrapInvalidCampaignNegotiationModelOutput(
+					"seller-counter-decision-format", objectErr))
 		}
 		var sellerDecision campaignNegotiationDecision
-		sellerDecoder := json.NewDecoder(bytes.NewReader(sellerObject))
-		sellerDecoder.DisallowUnknownFields()
-		if objectErr = sellerDecoder.Decode(&sellerDecision); objectErr == nil {
-			objectErr = requireCampaignJSONEOF(sellerDecoder)
+		if repairMode == campaignNegotiationRepairRound5 {
+			sellerDecision, sellerModelObjectDigest, objectErr = decodeRound5CampaignNegotiationDecision(sellerObject)
+			if objectErr == nil {
+				sellerOriginalDecision, sellerOriginalAmount = sellerDecision.Decision, sellerDecision.AmountNanoTOS
+			}
+		} else {
+			sellerDecoder := json.NewDecoder(bytes.NewReader(sellerObject))
+			sellerDecoder.DisallowUnknownFields()
+			if objectErr = sellerDecoder.Decode(&sellerDecision); objectErr == nil {
+				objectErr = requireCampaignJSONEOF(sellerDecoder)
+			}
+			sellerDecision.Decision = strings.ToLower(strings.TrimSpace(sellerDecision.Decision))
+			sellerDecision.AmountNanoTOS = strings.TrimSpace(sellerDecision.AmountNanoTOS)
 		}
-		sellerDecision.Decision = strings.ToLower(strings.TrimSpace(sellerDecision.Decision))
-		sellerDecision.AmountNanoTOS = strings.TrimSpace(sellerDecision.AmountNanoTOS)
 		sellerDecision.Message = strings.TrimSpace(sellerDecision.Message)
 		if objectErr != nil || (sellerDecision.Decision != "accept" && sellerDecision.Decision != "decline") ||
 			sellerDecision.Message == "" || len(sellerDecision.Message) > 4096 ||
-			(sellerDecision.Decision == "accept" && sellerDecision.AmountNanoTOS != strconv.FormatUint(negotiatedAmount, 10)) ||
+			(repairMode == campaignNegotiationRepairRound5 &&
+				campaignNegotiationMessageContainsReservedGrammar(sellerDecision.Message)) {
+			return nil, "", false, 0, recordInvalid(campaignNegotiationSellerCounterDecisionStage,
+				invalidCampaignNegotiationModelOutput(
+					"seller-counter-decision-policy", "seller produced an invalid counter-offer decision"))
+		}
+		sellerRepair := ""
+		if repairMode == campaignNegotiationRepairRound5 {
+			sellerDecision, sellerRepair = repairRound5SellerNegotiationDecision(
+				sellerDecision, negotiatedAmount,
+			)
+			if sellerRepair != "" {
+				repairDispositions = append(repairDispositions, sellerRepair)
+			}
+		} else if (sellerDecision.Decision == "accept" &&
+			sellerDecision.AmountNanoTOS != strconv.FormatUint(negotiatedAmount, 10)) ||
 			(sellerDecision.Decision == "decline" && sellerDecision.AmountNanoTOS != "") {
 			return nil, "", false, 0, invalidCampaignNegotiationModelOutput(
 				"seller-counter-decision-policy", "seller produced an invalid counter-offer decision")
 		}
-		sellerDecisionText := sellerDecision.Message
-		if sellerDecision.AmountNanoTOS != "" {
-			sellerDecisionText = fmt.Sprintf("amount_nanotos=%s; %s", sellerDecision.AmountNanoTOS, sellerDecision.Message)
+		sellerDecisionText := campaignNegotiationDecisionText(
+			sellerDecision.AmountNanoTOS, sellerRepair, sellerDecision.Message,
+		)
+		if repairMode == campaignNegotiationRepairRound5 {
+			sellerDecisionText = round5CampaignNegotiationDecisionText(
+				sellerDecision.AmountNanoTOS, sellerRepair, sellerOriginalDecision, sellerOriginalAmount,
+				sellerModelObjectDigest, sellerDecision.Message,
+			)
+		}
+		if len(sellerDecisionText) > 4096 || !utf8.ValidString(sellerDecisionText) {
+			return nil, "", false, 0, recordInvalid(campaignNegotiationSellerCounterDecisionStage,
+				invalidCampaignNegotiationModelOutput(
+					"seller-counter-decision-format", "seller decision exceeds the signed dialogue bound",
+				))
 		}
 		if err = appendSigned(seller, buyer, "counter-decision:"+sellerDecision.Decision, sellerDecisionText); err != nil {
 			return nil, "", false, 0, err
@@ -2814,8 +6084,22 @@ Your signed minimum is %d and asking price is %d nanotos. Return exactly one JSO
 		ConversationDigest: conversationDigest,
 		Messages:           append([]campaignConversationMessage(nil), messages...), AgreementAuthority: false,
 	}
+	if repairMode == campaignNegotiationRepairRound5 {
+		checkpoint.CampaignRunID = options.CampaignRunID
+		checkpoint.RepairProfile = campaignNegotiationRound5RepairProfile
+		checkpoint.RepairDispositions = append([]string(nil), repairDispositions...)
+		checkpoint.BuyerOriginalDecision = &buyerOriginalDecision
+		checkpoint.BuyerOriginalAmount = &buyerOriginalAmount
+		checkpoint.BuyerModelObjectDigest = buyerModelObjectDigest
+		if decision.Decision == "counter" {
+			checkpoint.SellerOriginalDecision = &sellerOriginalDecision
+			checkpoint.SellerOriginalAmount = &sellerOriginalAmount
+			checkpoint.SellerModelObjectDigest = sellerModelObjectDigest
+		}
+	}
 	if err = validateCampaignNegotiationCheckpoint(
 		checkpoint, sequence, buyer, seller, task, now, minimumPrice, askingPrice, buyerBudget,
+		options,
 	); err != nil {
 		return nil, "", false, 0, err
 	}
@@ -2831,8 +6115,14 @@ Your signed minimum is %d and asking price is %d nanotos. Return exactly one JSO
 
 func loadCampaignNegotiationCheckpoint(path string, sequence int, buyer, seller *campaignRuntime,
 	task string, now time.Time, minimumPrice, askingPrice, buyerBudget uint64,
+	negotiationOptions ...campaignNegotiationOptions,
 ) (campaignNegotiationCheckpoint, bool, error) {
 	var checkpoint campaignNegotiationCheckpoint
+	options, optionsErr := resolveCampaignNegotiationOptions(negotiationOptions)
+	if optionsErr != nil {
+		return checkpoint, false, optionsErr
+	}
+	repairMode := options.RepairMode
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return checkpoint, false, nil
@@ -2848,6 +6138,9 @@ func loadCampaignNegotiationCheckpoint(path string, sequence int, buyer, seller 
 	if err != nil || int64(len(raw)) != info.Size() {
 		return checkpoint, false, errors.New("read retained negotiation checkpoint")
 	}
+	if rejectDuplicateJSONKeys(raw) != nil {
+		return checkpoint, false, errors.New("retained negotiation checkpoint is ambiguous")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err = decoder.Decode(&checkpoint); err == nil {
@@ -2856,8 +6149,15 @@ func loadCampaignNegotiationCheckpoint(path string, sequence int, buyer, seller 
 	if err != nil {
 		return checkpoint, false, errors.New("retained negotiation checkpoint is invalid")
 	}
+	if repairMode == campaignNegotiationRepairRound5 {
+		canonical, marshalErr := json.MarshalIndent(checkpoint, "", "  ")
+		if marshalErr != nil || !bytes.Equal(canonical, raw) {
+			return checkpoint, false, errors.New("retained Round 5 negotiation checkpoint is not canonical")
+		}
+	}
 	if err = validateCampaignNegotiationCheckpoint(
 		checkpoint, sequence, buyer, seller, task, now.UTC(), minimumPrice, askingPrice, buyerBudget,
+		options,
 	); err != nil {
 		return checkpoint, false, fmt.Errorf("retained negotiation checkpoint conflicts with this turn: %w", err)
 	}
@@ -2866,7 +6166,13 @@ func loadCampaignNegotiationCheckpoint(path string, sequence int, buyer, seller 
 
 func validateCampaignNegotiationCheckpoint(checkpoint campaignNegotiationCheckpoint, sequence int,
 	buyer, seller *campaignRuntime, task string, now time.Time, minimumPrice, askingPrice, buyerBudget uint64,
+	negotiationOptions ...campaignNegotiationOptions,
 ) error {
+	options, optionsErr := resolveCampaignNegotiationOptions(negotiationOptions)
+	if optionsErr != nil {
+		return optionsErr
+	}
+	repairMode := options.RepairMode
 	if buyer == nil || seller == nil || len(buyer.identity) != ed25519.PrivateKeySize ||
 		len(seller.identity) != ed25519.PrivateKeySize || buyer.definition.AgentID == seller.definition.AgentID ||
 		checkpoint.Schema != "tos.openfox.signed-negotiation.v2" || checkpoint.Sequence != sequence ||
@@ -2876,8 +6182,76 @@ func validateCampaignNegotiationCheckpoint(checkpoint campaignNegotiationCheckpo
 		checkpoint.AgreementAuthority || minimumPrice == 0 || askingPrice < minimumPrice || buyerBudget == 0 {
 		return errors.New("negotiation checkpoint identity or frozen bounds mismatch")
 	}
-	conversationID := campaignDigest(fmt.Sprintf("conversation:%d:%s:%s:%s", sequence,
-		buyer.definition.AgentID, seller.definition.AgentID, task))
+	buyerRepair, sellerRepair := "", ""
+	if repairMode == campaignNegotiationRepairRound5 {
+		if checkpoint.CampaignRunID != options.CampaignRunID ||
+			checkpoint.RepairProfile != campaignNegotiationRound5RepairProfile ||
+			checkpoint.BuyerOriginalDecision == nil || checkpoint.BuyerOriginalAmount == nil ||
+			len(*checkpoint.BuyerOriginalDecision) > 16 ||
+			!validRound5CampaignNegotiationAmountSyntax(*checkpoint.BuyerOriginalAmount) ||
+			!canonicalSHA256(checkpoint.BuyerModelObjectDigest) {
+			return errors.New("Round 5 negotiation checkpoint original buyer evidence is invalid")
+		}
+		originalBuyer := campaignNegotiationDecision{
+			Decision: *checkpoint.BuyerOriginalDecision, AmountNanoTOS: *checkpoint.BuyerOriginalAmount,
+		}
+		if originalBuyer.Decision != "accept" && originalBuyer.Decision != "counter" &&
+			originalBuyer.Decision != "decline" {
+			return errors.New("Round 5 negotiation checkpoint original buyer enum is invalid")
+		}
+		compiledBuyer, compiledAmount, expectedBuyerRepair := repairRound5BuyerNegotiationDecision(
+			originalBuyer, minimumPrice, askingPrice, buyerBudget, buyer.definition.MaximumLoss,
+		)
+		if checkpoint.BuyerDecision != compiledBuyer.Decision ||
+			checkpoint.NegotiatedAmountNanoTOS != compiledAmount {
+			return errors.New("Round 5 compiled buyer decision is not justified by its bounded original")
+		}
+		expectedRepairs := make([]string, 0, 2)
+		buyerRepair = expectedBuyerRepair
+		if buyerRepair != "" {
+			expectedRepairs = append(expectedRepairs, buyerRepair)
+		}
+		if checkpoint.BuyerDecision == "counter" {
+			if checkpoint.SellerOriginalDecision == nil || checkpoint.SellerOriginalAmount == nil ||
+				len(*checkpoint.SellerOriginalDecision) > 16 ||
+				!validRound5CampaignNegotiationAmountSyntax(*checkpoint.SellerOriginalAmount) ||
+				!canonicalSHA256(checkpoint.SellerModelObjectDigest) {
+				return errors.New("Round 5 negotiation checkpoint original seller evidence is invalid")
+			}
+			originalSeller := campaignNegotiationDecision{
+				Decision: *checkpoint.SellerOriginalDecision, AmountNanoTOS: *checkpoint.SellerOriginalAmount,
+			}
+			if originalSeller.Decision != "accept" && originalSeller.Decision != "decline" {
+				return errors.New("Round 5 negotiation checkpoint original seller enum is invalid")
+			}
+			compiledSeller, expectedSellerRepair := repairRound5SellerNegotiationDecision(
+				originalSeller, compiledAmount,
+			)
+			if checkpoint.SellerCounterDecision != compiledSeller.Decision ||
+				checkpoint.Accepted != (compiledSeller.Decision == "accept") {
+				return errors.New("Round 5 compiled seller decision is not justified by its bounded original")
+			}
+			sellerRepair = expectedSellerRepair
+			if sellerRepair != "" {
+				expectedRepairs = append(expectedRepairs, sellerRepair)
+			}
+		} else if checkpoint.SellerOriginalDecision != nil || checkpoint.SellerOriginalAmount != nil ||
+			checkpoint.SellerModelObjectDigest != "" {
+			return errors.New("Round 5 negotiation checkpoint has seller evidence without a counter")
+		}
+		if !slices.Equal(checkpoint.RepairDispositions, expectedRepairs) {
+			return errors.New("Round 5 negotiation repair dispositions are not justified by original fields")
+		}
+	} else if checkpoint.CampaignRunID != "" || checkpoint.RepairProfile != "" ||
+		len(checkpoint.RepairDispositions) != 0 || checkpoint.BuyerOriginalDecision != nil ||
+		checkpoint.BuyerOriginalAmount != nil || checkpoint.BuyerModelObjectDigest != "" ||
+		checkpoint.SellerOriginalDecision != nil || checkpoint.SellerOriginalAmount != nil ||
+		checkpoint.SellerModelObjectDigest != "" {
+		return errors.New("legacy negotiation checkpoint unexpectedly claims Round 5 evidence")
+	}
+	conversationID := campaignNegotiationConversationID(
+		sequence, buyer.definition.AgentID, seller.definition.AgentID, task, options,
+	)
 	if len(checkpoint.Messages) < 3 || len(checkpoint.Messages) > 4 {
 		return errors.New("negotiation checkpoint has an invalid message count")
 	}
@@ -2952,6 +6326,32 @@ func validateCampaignNegotiationCheckpoint(checkpoint campaignNegotiationCheckpo
 		}
 	default:
 		return errors.New("negotiation checkpoint buyer decision is invalid")
+	}
+	if repairMode == campaignNegotiationRepairRound5 {
+		buyerAmount := ""
+		if checkpoint.BuyerDecision != "decline" {
+			buyerAmount = strconv.FormatUint(checkpoint.NegotiatedAmountNanoTOS, 10)
+		}
+		if !validateRound5CampaignNegotiationDecisionText(
+			messages[2].Text, buyerAmount, buyerRepair, *checkpoint.BuyerOriginalDecision,
+			*checkpoint.BuyerOriginalAmount, checkpoint.BuyerModelObjectDigest,
+		) {
+			return errors.New("Round 5 buyer repair evidence is not bound to its signed dialogue")
+		}
+		if checkpoint.BuyerDecision == "counter" {
+			sellerAmount := ""
+			if checkpoint.SellerCounterDecision == "accept" {
+				sellerAmount = strconv.FormatUint(checkpoint.NegotiatedAmountNanoTOS, 10)
+			}
+			if !validateRound5CampaignNegotiationDecisionText(
+				messages[3].Text, sellerAmount, sellerRepair, *checkpoint.SellerOriginalDecision,
+				*checkpoint.SellerOriginalAmount, checkpoint.SellerModelObjectDigest,
+			) {
+				return errors.New("Round 5 seller repair evidence is not bound to its signed dialogue")
+			}
+		} else if sellerRepair != "" {
+			return errors.New("Round 5 seller repair exists without a counter decision")
+		}
 	}
 	if checkpoint.ConversationDigest != campaignDigest(strings.Join(digests, "\n")) {
 		return errors.New("negotiation checkpoint conversation digest mismatch")
@@ -3039,9 +6439,19 @@ func campaignConversationReply(
 const maximumCampaignAcceptedAgreementCheckpointBytes = 1 << 20
 
 func loadCampaignAcceptedAgreementCheckpoint(path string, sequence int, buyer, seller *campaignRuntime,
-	task string, now time.Time,
+	task string, now time.Time, campaignRunIDs ...string,
 ) (campaignAcceptedAgreementCheckpoint, bool, error) {
 	var checkpoint campaignAcceptedAgreementCheckpoint
+	if len(campaignRunIDs) > 1 {
+		return checkpoint, false, errors.New("campaign accepted-Agreement checkpoint received multiple run scopes")
+	}
+	campaignRunID := ""
+	if len(campaignRunIDs) == 1 {
+		campaignRunID = campaignRunIDs[0]
+		if campaignRunID != "" && validateCampaignRunID(campaignRunID) != nil {
+			return checkpoint, false, errors.New("campaign accepted-Agreement checkpoint run scope is invalid")
+		}
+	}
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || sequence < 0 || buyer == nil || seller == nil ||
 		now.IsZero() {
 		return checkpoint, false, errors.New("campaign accepted-Agreement checkpoint lookup is invalid")
@@ -3079,7 +6489,8 @@ func loadCampaignAcceptedAgreementCheckpoint(path string, sequence int, buyer, s
 	if err != nil || marshalErr != nil || !bytes.Equal(canonical, raw) {
 		return checkpoint, false, errors.New("campaign accepted-Agreement checkpoint is not canonical")
 	}
-	if checkpoint.Schema != "tos.openfox.campaign-accepted-agreement.v1" || checkpoint.Sequence != sequence ||
+	if checkpoint.Schema != "tos.openfox.campaign-accepted-agreement.v1" ||
+		checkpoint.CampaignRunID != campaignRunID || checkpoint.Sequence != sequence ||
 		checkpoint.BuyerAgentID != buyer.definition.AgentID || checkpoint.SellerAgentID != seller.definition.AgentID ||
 		checkpoint.EconomicAnalysisMode != "ai" || !canonicalLocalOutcomeDigest(checkpoint.DemandIntentDigest) ||
 		checkpoint.Assessment.IntentDigest != checkpoint.DemandIntentDigest || !checkpoint.Assessment.Decision.Eligible ||
@@ -3568,9 +6979,108 @@ func verifyCampaignRecoveredDeliverable(root, sellerName, digest string) error {
 	return nil
 }
 
+// campaignPreConversationPortfolioCapacity rejects work that cannot fit both
+// counterparties' current aggregate authority limits before publishing a
+// demand, running discovery/negotiation AI, or contacting the counterparty.
+// The later ReserveAgreement calls remain the authoritative, atomic checks.
+func campaignPreConversationPortfolioCapacity(sequence int, buyer, seller *campaignRuntime) (string, error) {
+	if sequence < 0 || buyer == nil || seller == nil || buyer == seller || buyer.authority == nil ||
+		seller.authority == nil {
+		return "", errors.New("campaign pre-conversation Portfolio check is incomplete")
+	}
+	amount := seller.definition.Price
+	if buyer.definition.MaximumLoss > 0 && buyer.definition.MaximumLoss < amount {
+		amount = buyer.definition.MaximumLoss
+	}
+	if amount == 0 {
+		return "", errors.New("campaign pre-conversation Portfolio check has no bounded amount")
+	}
+	agreementDigest := campaignDigest(fmt.Sprintf("pre-conversation-agreement:%d:%s:%s",
+		sequence, buyer.definition.AgentID, seller.definition.AgentID))
+	nativeAsset := commerce.AssetIdentityV1{
+		AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos",
+	}
+	checks := []struct {
+		role        string
+		authority   *PersonalAuthority
+		reservation ExposureReservation
+	}{
+		{
+			role: "buyer", authority: buyer.authority,
+			reservation: ExposureReservation{
+				ReservationID: campaignDigest(fmt.Sprintf("pre-conversation-buyer-reservation:%d:%s",
+					sequence, agreementDigest)),
+				AgreementDigest: agreementDigest, Asset: &nativeAsset,
+				SpendAtomic: amount, MaximumLossAtomic: amount,
+			},
+		},
+		{
+			role: "seller", authority: seller.authority,
+			reservation: ExposureReservation{
+				ReservationID: campaignDigest(fmt.Sprintf("pre-conversation-seller-reservation:%d:%s",
+					sequence, agreementDigest)),
+				AgreementDigest: agreementDigest, ComputeUnits: 1, ReceivableAtomic: amount,
+				MaximumLossAtomic: seller.definition.MaximumLoss,
+			},
+		},
+	}
+	for _, check := range checks {
+		if err := check.authority.CheckReservationCapacity(check.reservation); err != nil {
+			if errors.Is(err, errAggregatePortfolioLimit) {
+				return "skipped:" + check.role + "-portfolio-capacity", nil
+			}
+			return "", fmt.Errorf("%s pre-conversation Portfolio check: %w", check.role, err)
+		}
+	}
+	return "", nil
+}
+
+func campaignPortfolioCapacitySkipped(disposition string) bool {
+	return disposition == "skipped:buyer-portfolio-capacity" ||
+		disposition == "skipped:seller-portfolio-capacity" ||
+		disposition == "skipped:no-feasible-portfolio-capacity"
+}
+
+func campaignPortfolioCapacityResult(sequence, round int, buyer, seller *campaignRuntime,
+	disposition string,
+) eightAgentJobResult {
+	return eightAgentJobResult{
+		Sequence: sequence, Round: round, Disposition: disposition,
+		Buyer: buyer.definition.Name, Seller: seller.definition.Name,
+		Capability: seller.definition.Capability, EconomicAnalysisMode: "not-run",
+		CompletedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+}
+
+// campaignPreConversationContact performs the second advisory check after a
+// seller has been selected but immediately before the first contact side
+// effect. The job performs a third check before publishing its demand so a
+// capacity change between planning and execution still fails closed.
+func campaignPreConversationContact(sequence int, buyer, seller *campaignRuntime, contact func()) (string, error) {
+	if contact == nil {
+		return "", errors.New("campaign pre-conversation contact callback is unavailable")
+	}
+	disposition, err := campaignPreConversationPortfolioCapacity(sequence, buyer, seller)
+	if err != nil || disposition != "" {
+		return disposition, err
+	}
+	contact()
+	return "", nil
+}
+
 func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt int, buyer, seller *campaignRuntime,
-	task string, scheduledAt time.Time,
+	task string, scheduledAt time.Time, campaignRunIDs ...string,
 ) (result eightAgentJobResult, err error) {
+	if len(campaignRunIDs) > 1 {
+		return eightAgentJobResult{}, errors.New("campaign job received multiple run scopes")
+	}
+	campaignRunID := ""
+	if len(campaignRunIDs) == 1 {
+		campaignRunID = campaignRunIDs[0]
+		if campaignRunID != "" && validateCampaignRunID(campaignRunID) != nil {
+			return eightAgentJobResult{}, errors.New("campaign job run scope is invalid")
+		}
+	}
 	postAgreementSideEffects := false
 	defer func() {
 		if err != nil && !postAgreementSideEffects {
@@ -3580,6 +7090,27 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 	if buyer == nil || seller == nil || buyer == seller {
 		return eightAgentJobResult{}, errors.New("campaign counterparties are invalid")
 	}
+	negotiationRepairMode, repairModeErr := campaignNegotiationRepairModeForRuntimes(buyer, seller)
+	if repairModeErr != nil {
+		return eightAgentJobResult{}, repairModeErr
+	}
+	negotiationOptions := campaignNegotiationOptions{RepairMode: negotiationRepairMode}
+	if negotiationRepairMode == campaignNegotiationRepairRound5 {
+		negotiationOptions.CampaignRunID = campaignRunID
+		if _, optionsErr := resolveCampaignNegotiationOptions([]campaignNegotiationOptions{negotiationOptions}); optionsErr != nil {
+			return eightAgentJobResult{}, optionsErr
+		}
+	}
+	negotiationRepairApplied := false
+	negotiationRepairDispositions := []string(nil)
+	defer func() {
+		if err == nil && negotiationRepairApplied {
+			result.NegotiationRepairProfile = campaignNegotiationRound5RepairProfile
+			result.NegotiationRepairDispositions = append(
+				[]string(nil), negotiationRepairDispositions...,
+			)
+		}
+	}()
 	// scheduledAt is checkpoint-derived and is the sole Agreement clock. A
 	// process restart must rebuild the byte-identical body rather than letting
 	// wall clock or a successor attempt strand the first durable hold.
@@ -3590,10 +7121,19 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 	}
 	checkpointPath := filepath.Join(agreementDirectory, fmt.Sprintf("accepted-preflight-%03d.json", sequence))
 	checkpoint, resuming, checkpointErr := loadCampaignAcceptedAgreementCheckpoint(
-		checkpointPath, sequence, buyer, seller, task, now,
+		checkpointPath, sequence, buyer, seller, task, now, campaignRunID,
 	)
 	if checkpointErr != nil {
 		return eightAgentJobResult{}, checkpointErr
+	}
+	if !resuming {
+		disposition, capacityErr := campaignPreConversationPortfolioCapacity(sequence, buyer, seller)
+		if capacityErr != nil {
+			return eightAgentJobResult{}, capacityErr
+		}
+		if disposition != "" {
+			return campaignPortfolioCapacityResult(sequence, round, buyer, seller, disposition), nil
+		}
 	}
 	var demand, conversationDigest string
 	var selected CandidateAssessment
@@ -3612,8 +7152,10 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 		}
 		negotiationPath := filepath.Join(root, "campaign", "conversations",
 			fmt.Sprintf("conversation-%03d.json", sequence))
+		negotiationRepairApplied = negotiationRepairMode == campaignNegotiationRepairRound5
 		negotiation, found, negotiationErr := loadCampaignNegotiationCheckpoint(
 			negotiationPath, sequence, buyer, seller, task, now, minimumPrice, askingPrice, buyerBudget,
+			negotiationOptions,
 		)
 		if negotiationErr != nil || !found {
 			if negotiationErr == nil {
@@ -3621,6 +7163,9 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 			}
 			return eightAgentJobResult{}, negotiationErr
 		}
+		negotiationRepairDispositions = append(
+			[]string(nil), negotiation.RepairDispositions...,
+		)
 		body, err = validateCampaignAcceptedAgreementResume(
 			checkpoint, negotiation, sequence, buyer, seller, task, now,
 		)
@@ -3657,8 +7202,9 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 				EconomicStrategyRationale:   selected.Decision.StrategyRationale,
 				CompletedAt:                 time.Now().UTC().Format(time.RFC3339Nano), CarrierIDs: append([]string(nil), selected.CarrierIDs...)}, nil
 		}
+		negotiationRepairApplied = negotiationRepairMode == campaignNegotiationRepairRound5
 		conversation, negotiatedDigest, accepted, negotiatedAmount, negotiationErr := runCampaignNegotiation(
-			ctx, root, sequence, buyer, seller, task, now,
+			ctx, root, sequence, buyer, seller, task, now, negotiationOptions,
 		)
 		if negotiationErr != nil {
 			if terminalCampaignNegotiationModelDecline(attempt, negotiationErr) {
@@ -3675,6 +7221,29 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 					CarrierIDs:                  append([]string(nil), selected.CarrierIDs...)}, nil
 			}
 			return eightAgentJobResult{}, fmt.Errorf("signed negotiation: %w", negotiationErr)
+		}
+		if negotiationRepairApplied {
+			minimumPrice := campaignMinimumPrice(seller.definition)
+			askingPrice := seller.definition.Price
+			buyerBudget := askingPrice
+			if buyer.definition.MaximumLoss > 0 && buyer.definition.MaximumLoss < buyerBudget {
+				buyerBudget = buyer.definition.MaximumLoss
+			}
+			negotiationPath := filepath.Join(root, "campaign", "conversations",
+				fmt.Sprintf("conversation-%03d.json", sequence))
+			checkpoint, found, checkpointErr := loadCampaignNegotiationCheckpoint(
+				negotiationPath, sequence, buyer, seller, task, now, minimumPrice, askingPrice, buyerBudget,
+				negotiationOptions,
+			)
+			if checkpointErr != nil || !found {
+				if checkpointErr == nil {
+					checkpointErr = errors.New("successful Round 5 negotiation has no canonical checkpoint")
+				}
+				return eightAgentJobResult{}, checkpointErr
+			}
+			negotiationRepairDispositions = append(
+				[]string(nil), checkpoint.RepairDispositions...,
+			)
 		}
 		conversationDigest, conversationMessageCount = negotiatedDigest, len(conversation)
 		if !accepted {
@@ -3695,7 +7264,8 @@ func runEightAgentJob(ctx context.Context, root string, sequence, round, attempt
 			return eightAgentJobResult{}, err
 		}
 		checkpoint = campaignAcceptedAgreementCheckpoint{Schema: "tos.openfox.campaign-accepted-agreement.v1",
-			Sequence: sequence, BuyerAgentID: buyer.definition.AgentID, SellerAgentID: seller.definition.AgentID,
+			CampaignRunID: campaignRunID,
+			Sequence:      sequence, BuyerAgentID: buyer.definition.AgentID, SellerAgentID: seller.definition.AgentID,
 			Body: body, DemandIntentDigest: demand, Assessment: selected, EconomicAnalysisMode: analysisMode,
 			ConversationDigest: conversationDigest, ConversationMessageCount: conversationMessageCount}
 		raw, marshalErr := json.MarshalIndent(checkpoint, "", "  ")
@@ -4664,7 +8234,7 @@ func writeNamedCampaignSummaries(
 		averageExecution = executionMillis / int64(settledJobs)
 		averageSettlement = settlementMillis / int64(settledJobs)
 	}
-	writeCampaignJSON(t, filepath.Join(root, "reports", filename), map[string]any{
+	document := map[string]any{
 		"schema": schema, "generated_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"agents": ordered, "aggregate": map[string]any{
 			"decisions": len(
@@ -4683,11 +8253,209 @@ func writeNamedCampaignSummaries(
 			"average_execution_millis":  averageExecution,
 			"average_settlement_millis": averageSettlement,
 		},
-	})
+	}
+	if report.CampaignRunID != "" {
+		document["campaign_run_id"] = report.CampaignRunID
+	}
+	if report.ProviderUsage != nil {
+		document["provider_usage"] = report.ProviderUsage
+	}
+	if report.NegotiationRepair != nil {
+		aggregate := document["aggregate"].(map[string]any)
+		aggregate["negotiation_repair_profile"] = report.NegotiationRepair.Profile
+		aggregate["negotiation_repair_profiled_results"] = report.NegotiationRepair.ProfiledResults
+		aggregate["negotiation_repair_total"] = report.NegotiationRepair.TotalRepairs
+		aggregate["negotiation_repair_dispositions"] = report.NegotiationRepair.Dispositions
+	}
+	writeCampaignJSON(t, filepath.Join(root, "reports", filename), document)
 }
 
 func campaignResultSettled(result eightAgentJobResult) bool {
 	return result.Disposition == "" || result.Disposition == "settled"
+}
+
+func openCampaignCapacityTestAuthority(t *testing.T, now time.Time, definition eightAgentManifestEntry,
+	limits PortfolioLimits,
+) *PersonalAuthority {
+	t.Helper()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := OpenPersonalAuthority(privateTempDir(t), definition.OwnerID, definition.AgentID,
+		definition.AuthorityID, key, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.now = func() time.Time { return now }
+	t.Cleanup(func() { _ = authority.Close() })
+	return authority
+}
+
+func occupyCampaignCapacityForTest(t *testing.T, now time.Time, definition eightAgentManifestEntry,
+	authority *PersonalAuthority, label string, reservation ExposureReservation,
+) {
+	t.Helper()
+	fence, err := authority.AcquireWriter(t.Context(), "occupied-capacity:"+label,
+		[]string{"portfolio.reserve"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agreementDigest := campaignDigest("occupied-capacity-agreement:" + label)
+	request := []byte("retain an independent live reservation: " + label)
+	fields := map[string]commerce.SemanticValue{
+		"owner_id": commerce.ID(definition.OwnerID), "agent_id": commerce.ID(definition.AgentID),
+		"agreement_body_digest":    commerce.Digest32(agreementDigest),
+		"reservation_scope_digest": commerce.Digest32(campaignDigest("occupied-capacity-scope:" + label)),
+		"target_revision":          commerce.U64(1),
+	}
+	action, err := commerce.BuildAuthorizedAction(
+		definition.OwnerID, definition.AgentID, "portfolio.reserve", fields, request, fence, 1,
+		campaignDigest("occupied-capacity-mandate:"+label), "", "empty", uint64(now.Add(30*time.Minute).Unix()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action, err = authority.SignAction(action, fence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation.ReservationID = action.StableActionID
+	reservation.AgreementDigest = agreementDigest
+	if _, err = authority.Admit(action, fields, request, fence, &reservation); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCampaignOccupiedAggregatePortfolioSkipsBeforeConversation(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	buyerDefinition := eightAgentManifestEntry{
+		Name: "buyer", OwnerID: "owner:capacity-buyer", AgentID: "agent:capacity-buyer",
+		AuthorityID: "authority:capacity-buyer", MaximumLoss: 100,
+	}
+	sellerDefinition := eightAgentManifestEntry{
+		Name: "seller", OwnerID: "owner:capacity-seller", AgentID: "agent:capacity-seller",
+		AuthorityID: "authority:capacity-seller", Capability: "bounded-review", Price: 80, MaximumLoss: 20,
+	}
+	buyerAuthority := openCampaignCapacityTestAuthority(t, now, buyerDefinition,
+		PortfolioLimits{SpendAtomic: 100, MaximumLossAtomic: 100})
+	sellerAuthority := openCampaignCapacityTestAuthority(t, now, sellerDefinition, PortfolioLimits{
+		ComputeUnits: 1, ReceivableAtomic: 80, MaximumLossAtomic: 20,
+	})
+	nativeAsset := commerce.AssetIdentityV1{
+		AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos",
+	}
+	occupyCampaignCapacityForTest(t, now, buyerDefinition, buyerAuthority, "buyer",
+		ExposureReservation{Asset: &nativeAsset, SpendAtomic: 30, MaximumLossAtomic: 30})
+	beforeRevision, _, beforeReservations := buyerAuthority.Snapshot()
+	var plannerMessages []providers.Message
+	plannerCalls := 0
+	buyer := &campaignRuntime{
+		definition: buyerDefinition, authority: buyerAuthority,
+		provider: estimatorProvider{messages: &plannerMessages,
+			calls:    &plannerCalls,
+			response: `{"decision":"buy","seller_agent":"seller","capability":"bounded-review","task":"Review one bounded artifact without exceeding aggregate exposure.","rationale":"useful"}`},
+	}
+	seller := &campaignRuntime{definition: sellerDefinition, authority: sellerAuthority}
+	buyer.catalogOverride = []autonomousCampaignCatalogEntry{{
+		Agent: sellerDefinition.Name, Capability: sellerDefinition.Capability, Price: "80",
+		IntentDigest: campaignDigest("capacity-supply"), CarrierIDs: []string{"carrier:a", "carrier:b"},
+	}}
+	plan, err := planAutonomousCampaignDemand(t.Context(), 1, buyer, []*campaignRuntime{buyer, seller})
+	if err != nil || plan.Decision != "skip" ||
+		plan.CapacityDisposition != "skipped:no-feasible-portfolio-capacity" || plannerCalls != 0 ||
+		len(plannerMessages) != 0 {
+		t.Fatalf("capacity planner invoked AI or failed open: plan=%+v calls=%d messages=%d err=%v",
+			plan, plannerCalls, len(plannerMessages), err)
+	}
+	contacted := false
+	contactDisposition, err := campaignPreConversationContact(7, buyer, seller, func() { contacted = true })
+	if err != nil || contacted || contactDisposition != "skipped:buyer-portfolio-capacity" {
+		t.Fatalf("capacity contact gate disposition=%q contacted=%t err=%v",
+			contactDisposition, contacted, err)
+	}
+	root := filepath.Join(t.TempDir(), "campaign-root")
+	if err = os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	result, err := runEightAgentJob(t.Context(), root, 7, 1, 0,
+		buyer, seller,
+		"Review one bounded artifact without exceeding aggregate exposure.", now,
+	)
+	if err != nil || result.Disposition != "skipped:buyer-portfolio-capacity" ||
+		result.EconomicAnalysisMode != "not-run" || result.DemandIntentDigest != "" ||
+		result.ConversationDigest != "" || result.ConversationMessageCount != 0 || result.AgreementDigest != "" {
+		t.Fatalf("pre-conversation Portfolio result=%+v err=%v", result, err)
+	}
+	afterRevision, _, afterReservations := buyerAuthority.Snapshot()
+	if afterRevision != beforeRevision || !sameJSON(afterReservations, beforeReservations) {
+		t.Fatalf("read-only Portfolio check mutated authority: before=%d/%+v after=%d/%+v",
+			beforeRevision, beforeReservations, afterRevision, afterReservations)
+	}
+	if len(buyerAuthority.EngagementSnapshot()) != 0 || len(sellerAuthority.EngagementSnapshot()) != 0 {
+		t.Fatal("pre-conversation Portfolio rejection created an Agreement engagement")
+	}
+	for _, path := range []string{
+		filepath.Join(root, "campaign", "agreements", "accepted-preflight-007.json"),
+		filepath.Join(root, "campaign", "conversations"),
+	} {
+		if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("pre-conversation Portfolio rejection emitted %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestCampaignPlannerExcludesCapacityBlockedSellerFromAICatalog(t *testing.T) {
+	now := time.Unix(2_000_000_100, 0).UTC()
+	buyerDefinition := eightAgentManifestEntry{
+		Name: "buyer", OwnerID: "owner:mixed-buyer", AgentID: "agent:mixed-buyer",
+		AuthorityID: "authority:mixed-buyer", Capability: "buying", MaximumLoss: 100,
+	}
+	blockedDefinition := eightAgentManifestEntry{
+		Name: "blocked-seller", OwnerID: "owner:blocked-seller", AgentID: "agent:blocked-seller",
+		AuthorityID: "authority:blocked-seller", Capability: "blocked-review", Taxonomy: "security",
+		Price: 80, MaximumLoss: 20,
+	}
+	feasibleDefinition := eightAgentManifestEntry{
+		Name: "feasible-seller", OwnerID: "owner:feasible-seller", AgentID: "agent:feasible-seller",
+		AuthorityID: "authority:feasible-seller", Capability: "feasible-review", Taxonomy: "security",
+		Price: 70, MaximumLoss: 10,
+	}
+	buyerAuthority := openCampaignCapacityTestAuthority(t, now, buyerDefinition,
+		PortfolioLimits{SpendAtomic: 100, MaximumLossAtomic: 100})
+	blockedAuthority := openCampaignCapacityTestAuthority(t, now, blockedDefinition,
+		PortfolioLimits{ComputeUnits: 1, ReceivableAtomic: 80, MaximumLossAtomic: 20})
+	feasibleAuthority := openCampaignCapacityTestAuthority(t, now, feasibleDefinition,
+		PortfolioLimits{ComputeUnits: 1, ReceivableAtomic: 70, MaximumLossAtomic: 10})
+	occupyCampaignCapacityForTest(t, now, blockedDefinition, blockedAuthority, "blocked-seller",
+		ExposureReservation{ComputeUnits: 1, ReceivableAtomic: 1, MaximumLossAtomic: 1})
+	var plannerMessages []providers.Message
+	plannerCalls := 0
+	buyer := &campaignRuntime{
+		definition: buyerDefinition, authority: buyerAuthority,
+		provider: estimatorProvider{messages: &plannerMessages,
+			calls:    &plannerCalls,
+			response: `{"decision":"buy","seller_agent":"feasible-seller","capability":"feasible-review","task":"Review the bounded feasible artifact and return concise findings.","rationale":"The feasible review advances my current work."}`},
+	}
+	blocked := &campaignRuntime{definition: blockedDefinition, authority: blockedAuthority}
+	feasible := &campaignRuntime{definition: feasibleDefinition, authority: feasibleAuthority}
+	buyer.catalogOverride = []autonomousCampaignCatalogEntry{
+		{Agent: blockedDefinition.Name, Capability: blockedDefinition.Capability, Taxonomy: blockedDefinition.Taxonomy,
+			Price: "80", IntentDigest: campaignDigest("blocked-supply"), CarrierIDs: []string{"carrier:a", "carrier:b"}},
+		{Agent: feasibleDefinition.Name, Capability: feasibleDefinition.Capability, Taxonomy: feasibleDefinition.Taxonomy,
+			Price: "70", IntentDigest: campaignDigest("feasible-supply"), CarrierIDs: []string{"carrier:a", "carrier:b"}},
+	}
+	plan, err := planAutonomousCampaignDemand(t.Context(), 1, buyer,
+		[]*campaignRuntime{buyer, blocked, feasible})
+	if err != nil || plan.Decision != "buy" || plan.SellerAgent != feasibleDefinition.Name ||
+		plan.IntentDigest != campaignDigest("feasible-supply") || plannerCalls != 1 || len(plannerMessages) != 2 {
+		t.Fatalf("mixed-capacity plan=%+v calls=%d messages=%d err=%v",
+			plan, plannerCalls, len(plannerMessages), err)
+	}
+	if strings.Contains(plannerMessages[1].Content, blockedDefinition.Name) ||
+		!strings.Contains(plannerMessages[1].Content, feasibleDefinition.Name) {
+		t.Fatalf("capacity-filtered AI catalog leaked blocked seller: %s", plannerMessages[1].Content)
+	}
 }
 
 func TestCampaignDomainBoundWriterScopeAndImmutablePlanResume(t *testing.T) {
@@ -5102,27 +8870,26 @@ func TestCampaignEconomicEstimatorNeverSynthesizesFallback(t *testing.T) {
 }
 
 func TestAutonomousCampaignDemandPlannerPersistsExplicitSkip(t *testing.T) {
-	_, authorityKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:buyer", "agent:buyer", "authority:buyer",
-		authorityKey, PortfolioLimits{MaximumLossAtomic: 100})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer authority.Close()
+	now := time.Now().UTC().Truncate(time.Second)
+	buyerDefinition := eightAgentManifestEntry{Name: "buyer", OwnerID: "owner:buyer", AgentID: "agent:buyer",
+		AuthorityID: "authority:buyer", Capability: "buying", MaximumLoss: 100}
+	sellerDefinition := eightAgentManifestEntry{Name: "seller", OwnerID: "owner:seller", AgentID: "agent:seller",
+		AuthorityID: "authority:seller", Capability: "review", Taxonomy: "security",
+		Price: 100, MaximumLoss: 10, Tasks: []string{"Review a bounded component."}}
+	authority := openCampaignCapacityTestAuthority(t, now, buyerDefinition,
+		PortfolioLimits{SpendAtomic: 100, MaximumLossAtomic: 100})
+	sellerAuthority := openCampaignCapacityTestAuthority(t, now, sellerDefinition,
+		PortfolioLimits{ComputeUnits: 1, ReceivableAtomic: 100, MaximumLossAtomic: 10})
+	providerCalls := 0
 	buyer := &campaignRuntime{
-		definition: eightAgentManifestEntry{Name: "buyer", AgentID: "agent:buyer", Capability: "buying"},
+		definition: buyerDefinition,
 		provider: estimatorProvider{
 			response: `{"decision":"skip","seller_agent":"","capability":"","task":"","rationale":"none of the listed services advances my current strategy"}`,
+			calls:    &providerCalls,
 		},
 		model: "test-model", authority: authority,
 	}
-	seller := &campaignRuntime{definition: eightAgentManifestEntry{
-		Name: "seller", Capability: "review", Taxonomy: "security",
-		Price: 100, Tasks: []string{"Review a bounded component."},
-	}}
+	seller := &campaignRuntime{definition: sellerDefinition, authority: sellerAuthority}
 	buyer.catalogOverride = []autonomousCampaignCatalogEntry{{
 		Agent: seller.definition.Name, Capability: seller.definition.Capability,
 		Taxonomy: seller.definition.Taxonomy, Price: "100", ExampleScopes: seller.definition.Tasks,
@@ -5130,9 +8897,9 @@ func TestAutonomousCampaignDemandPlannerPersistsExplicitSkip(t *testing.T) {
 	}}
 	beforeRevision, _, beforeReservations := authority.Snapshot()
 	plan, err := planAutonomousCampaignDemand(context.Background(), 1, buyer, []*campaignRuntime{buyer, seller})
-	if err != nil || plan.Decision != "skip" || plan.SellerAgent != "" || plan.Capability != "" || plan.Task != "" ||
+	if err != nil || providerCalls != 1 || plan.Decision != "skip" || plan.SellerAgent != "" || plan.Capability != "" || plan.Task != "" ||
 		plan.IntentDigest != "" || len(plan.CarrierIDs) != 0 {
-		t.Fatalf("skip plan=%+v err=%v", plan, err)
+		t.Fatalf("skip plan=%+v provider_calls=%d err=%v", plan, providerCalls, err)
 	}
 	afterRevision, _, afterReservations := authority.Snapshot()
 	if beforeRevision != afterRevision || len(beforeReservations) != 0 || len(afterReservations) != 0 ||
@@ -5143,17 +8910,28 @@ func TestAutonomousCampaignDemandPlannerPersistsExplicitSkip(t *testing.T) {
 }
 
 func TestAutonomousCampaignDemandPlannerRejectsHiddenActionOnSkip(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	buyerDefinition := eightAgentManifestEntry{Name: "buyer", OwnerID: "owner:hidden-buyer",
+		AgentID: "agent:hidden-buyer", AuthorityID: "authority:hidden-buyer",
+		Capability: "buying", MaximumLoss: 100}
+	sellerDefinition := eightAgentManifestEntry{Name: "seller", OwnerID: "owner:hidden-seller",
+		AgentID: "agent:hidden-seller", AuthorityID: "authority:hidden-seller",
+		Capability: "review", Taxonomy: "security", Price: 100, MaximumLoss: 10,
+		Tasks: []string{"Review a bounded component."}}
+	buyerAuthority := openCampaignCapacityTestAuthority(t, now, buyerDefinition,
+		PortfolioLimits{SpendAtomic: 100, MaximumLossAtomic: 100})
+	sellerAuthority := openCampaignCapacityTestAuthority(t, now, sellerDefinition,
+		PortfolioLimits{ComputeUnits: 1, ReceivableAtomic: 100, MaximumLossAtomic: 10})
+	providerCalls := 0
 	buyer := &campaignRuntime{
-		definition: eightAgentManifestEntry{Name: "buyer", Capability: "buying"},
+		definition: buyerDefinition, authority: buyerAuthority,
 		provider: estimatorProvider{
 			response: `{"decision":"skip","seller_agent":"seller","capability":"review","task":"perform a hidden review despite skip","rationale":"skip"}`,
+			calls:    &providerCalls,
 		},
 		model: "test-model",
 	}
-	seller := &campaignRuntime{definition: eightAgentManifestEntry{
-		Name: "seller", Capability: "review", Taxonomy: "security",
-		Price: 100, Tasks: []string{"Review a bounded component."},
-	}}
+	seller := &campaignRuntime{definition: sellerDefinition, authority: sellerAuthority}
 	buyer.catalogOverride = []autonomousCampaignCatalogEntry{{
 		Agent: seller.definition.Name, Capability: seller.definition.Capability,
 		Taxonomy: seller.definition.Taxonomy, Price: "100", ExampleScopes: seller.definition.Tasks,
@@ -5164,8 +8942,8 @@ func TestAutonomousCampaignDemandPlannerRejectsHiddenActionOnSkip(t *testing.T) 
 		1,
 		buyer,
 		[]*campaignRuntime{buyer, seller},
-	); err == nil {
-		t.Fatal("skip decision carrying a hidden trade action was accepted")
+	); err == nil || providerCalls != 2 || !strings.Contains(err.Error(), "buyer AI did not produce a valid bounded demand") {
+		t.Fatalf("hidden skip action parser calls=%d err=%v", providerCalls, err)
 	}
 }
 
@@ -5204,14 +8982,22 @@ func TestRealNativeStrategyCanSkipAndDecline(t *testing.T) {
 		return provider, model
 	}
 
+	now := time.Now().UTC().Truncate(time.Second)
+	buyerDefinition := byName["software-builder"]
+	sellerDefinition := byName["security-auditor"]
+	buyerAuthority := openCampaignCapacityTestAuthority(t, now, buyerDefinition,
+		PortfolioLimits{SpendAtomic: 50_000_000_000, MaximumLossAtomic: buyerDefinition.MaximumLoss})
+	sellerAuthority := openCampaignCapacityTestAuthority(t, now, sellerDefinition, PortfolioLimits{
+		ComputeUnits: 64, ReceivableAtomic: 50_000_000_000, MaximumLossAtomic: sellerDefinition.MaximumLoss,
+	})
 	codexProvider, codexModel := openProvider("software-builder")
 	buyer := &campaignRuntime{
-		definition: byName["software-builder"], provider: codexProvider, model: codexModel,
+		definition: buyerDefinition, provider: codexProvider, model: codexModel, authority: buyerAuthority,
 		agentContext: func() string {
 			return "# Owner strategy\nBuy no services in this verification turn. Return a normal no-action decision."
 		},
 	}
-	seller := &campaignRuntime{definition: byName["security-auditor"]}
+	seller := &campaignRuntime{definition: sellerDefinition, authority: sellerAuthority}
 	buyer.catalogOverride = []autonomousCampaignCatalogEntry{{
 		Agent: seller.definition.Name, Capability: seller.definition.Capability,
 		Taxonomy: seller.definition.Taxonomy, Price: strconv.FormatUint(seller.definition.Price, 10),
@@ -5224,7 +9010,6 @@ func TestRealNativeStrategyCanSkipAndDecline(t *testing.T) {
 	}
 
 	claudeProvider, claudeModel := openProvider("security-auditor")
-	now := time.Now().UTC().Truncate(time.Second)
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)

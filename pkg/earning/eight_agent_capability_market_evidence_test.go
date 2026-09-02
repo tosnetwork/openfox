@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,6 +65,14 @@ func persistCapabilityMarketResultEvidence(root string, result *eightAgentJobRes
 	if root == "" || result == nil || buyer == nil || result.Sequence < 0 ||
 		result.Buyer != buyer.definition.Name {
 		return nil, errors.New("capability-market result evidence context is incomplete")
+	}
+	if result.CampaignRunID != "" {
+		if err := validateCampaignRunID(result.CampaignRunID); err != nil {
+			return nil, fmt.Errorf("capability-market result run scope: %w", err)
+		}
+	}
+	if err := validateCampaignResultNegotiationRepairEvidence(*result); err != nil {
+		return nil, err
 	}
 	if result.CampaignResultSourceDigest != "" || result.OutcomeEvidenceDigest != "" ||
 		result.OutcomeEvidenceState != "" || result.CostEvidenceDigest != "" || result.CostEvidenceState != "" {
@@ -229,6 +238,37 @@ func persistCapabilityMarketResultEvidence(root string, result *eightAgentJobRes
 		PolicyEffect: index.PolicyEffect}, nil
 }
 
+func validateCampaignResultNegotiationRepairEvidence(result eightAgentJobResult) error {
+	if result.NegotiationRepairProfile == "" {
+		if len(result.NegotiationRepairDispositions) != 0 {
+			return errors.New("capability-market result repair dispositions have no profile")
+		}
+		return nil
+	}
+	if result.NegotiationRepairProfile != campaignNegotiationRound5RepairProfile ||
+		validateCampaignRunID(result.CampaignRunID) != nil || len(result.NegotiationRepairDispositions) > 2 {
+		return errors.New("capability-market result negotiation repair evidence is invalid")
+	}
+	previousRank := -1
+	seen := map[string]bool{}
+	for _, disposition := range result.NegotiationRepairDispositions {
+		rank := -1
+		switch disposition {
+		case campaignNegotiationBuyerAmountRepair, campaignNegotiationBuyerChoiceDeclineRepair:
+			rank = 0
+		case campaignNegotiationSellerAmountRepair:
+			rank = 1
+		default:
+			return errors.New("capability-market result has an unknown negotiation repair disposition")
+		}
+		if seen[disposition] || rank < previousRank {
+			return errors.New("capability-market result negotiation repairs are duplicated or out of order")
+		}
+		seen[disposition], previousRank = true, rank
+	}
+	return nil
+}
+
 func buildAndVerifyCapabilityMarketTerminalArtifact(result eightAgentJobResult, raw []byte, buyer,
 	seller *campaignRuntime, scope string, operationSequence uint64, completedAt, verificationTime time.Time,
 	projection *OutcomeProjection) (campaignCapabilityMarketTerminalArtifact, VerifiedOutcomeAssertion, error) {
@@ -370,9 +410,15 @@ func projectCampaignCapabilityMarketRisk(result eightAgentJobResult, buyer, sell
 // ambiguous and must never trigger replanning or execution.
 func adoptCapabilityMarketResultJournals(root string, report *eightAgentCampaignReport,
 	runtimes []*campaignRuntime, maximumSequences int) (bool, error) {
-	if root == "" || report == nil || report.Schema != capabilityMarketCampaignSchema ||
+	if root == "" || report == nil || !isCapabilityMarketCampaignSchema(report.Schema) ||
 		maximumSequences < 1 {
 		return false, errors.New("capability-market result-journal recovery context is invalid")
+	}
+	expectedRunID := report.CampaignRunID
+	if expectedRunID != "" {
+		if err := validateCampaignRunID(expectedRunID); err != nil {
+			return false, fmt.Errorf("capability-market checkpoint run scope: %w", err)
+		}
 	}
 	byName := make(map[string]*campaignRuntime, len(runtimes))
 	for _, runtime := range runtimes {
@@ -410,6 +456,9 @@ func adoptCapabilityMarketResultJournals(root string, report *eightAgentCampaign
 	sort.Slice(journals, func(i, j int) bool { return journals[i].sequence < journals[j].sequence })
 	reported := make(map[int]eightAgentJobResult, len(report.Results))
 	for _, result := range report.Results {
+		if result.CampaignRunID != expectedRunID {
+			return false, fmt.Errorf("capability-market checkpoint sequence %d belongs to a different run", result.Sequence)
+		}
 		if result.Sequence < 0 || result.Sequence >= maximumSequences {
 			return false, fmt.Errorf("capability-market checkpoint sequence %d is outside the campaign domain", result.Sequence)
 		}
@@ -436,6 +485,9 @@ func adoptCapabilityMarketResultJournals(root string, report *eightAgentCampaign
 		if result.Sequence != retained.sequence {
 			return false, fmt.Errorf("capability-market sequence %d source claims sequence %d",
 				retained.sequence, result.Sequence)
+		}
+		if result.CampaignRunID != expectedRunID {
+			return false, fmt.Errorf("capability-market sequence %d source belongs to a different run", retained.sequence)
 		}
 		buyer := byName[result.Buyer]
 		if buyer == nil {
@@ -499,6 +551,9 @@ func decodeCapabilityMarketSourceResult(raw []byte) (eightAgentJobResult, error)
 		result.OutcomeEvidenceState != "" || result.CostEvidenceDigest != "" || result.CostEvidenceState != "" {
 		return result, errors.New("capability-market source result already contains derived evidence fields")
 	}
+	if err := validateCampaignResultNegotiationRepairEvidence(result); err != nil {
+		return result, err
+	}
 	canonical, err := json.Marshal(result)
 	if err != nil || !bytes.Equal(canonical, raw) {
 		return result, errors.New("capability-market source result is not the exact canonical campaign object")
@@ -552,6 +607,11 @@ func enrichCapabilityMarketResultFromIndex(directory string, result *eightAgentJ
 
 func restoreCapabilityMarketHistories(root string, report eightAgentCampaignReport,
 	runtimes []*campaignRuntime) error {
+	if report.CampaignRunID != "" {
+		if err := validateCampaignRunID(report.CampaignRunID); err != nil {
+			return fmt.Errorf("capability-market history run scope: %w", err)
+		}
+	}
 	byName := make(map[string]*campaignRuntime, len(runtimes))
 	for _, runtime := range runtimes {
 		if runtime == nil || runtime.definition.Name == "" {
@@ -564,6 +624,9 @@ func restoreCapabilityMarketHistories(root string, report eightAgentCampaignRepo
 	sort.Slice(results, func(i, j int) bool { return results[i].Sequence < results[j].Sequence })
 	seen := make(map[int]bool, len(results))
 	for _, result := range results {
+		if result.CampaignRunID != report.CampaignRunID {
+			return fmt.Errorf("capability-market checkpoint sequence %d belongs to a different run", result.Sequence)
+		}
 		if seen[result.Sequence] {
 			return fmt.Errorf("capability-market checkpoint repeats sequence %d", result.Sequence)
 		}
@@ -902,6 +965,63 @@ func TestCapabilityMarketCampaignRejectsRewrittenRetainedResult(t *testing.T) {
 	}
 }
 
+func TestRound5NegotiationRepairEvidenceIsSourceDigestBoundAndStrict(t *testing.T) {
+	_, buyerKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buyer := &campaignRuntime{definition: eightAgentManifestEntry{
+		Name: "buyer", OwnerID: "owner:buyer", AgentID: "agent:buyer", AuthorityID: "authority:buyer",
+	}, identity: buyerKey}
+	seller := &campaignRuntime{definition: eightAgentManifestEntry{
+		Name: "seller", OwnerID: "owner:seller", AgentID: "agent:seller", Capability: "bounded-review",
+	}}
+	result := eightAgentJobResult{
+		CampaignRunID: "round5-result-repair-binding", Sequence: 44, Round: 1,
+		Disposition: "declined:negotiation", Buyer: "buyer", Seller: "seller", Capability: "bounded-review",
+		DemandIntentDigest: campaignDigest("declined-demand"), EconomicAnalysisMode: "bounded",
+		ExpectedNetNanoTOS: "unknown", CompletedAt: time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano),
+		CarrierIDs: []string{"carrier:a"}, NegotiationRepairProfile: campaignNegotiationRound5RepairProfile,
+		NegotiationRepairDispositions: []string{campaignNegotiationBuyerAmountRepair},
+	}
+	root := t.TempDir()
+	if _, err = persistCapabilityMarketResultEvidence(root, &result, buyer, seller); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(capabilityMarketResultEvidenceDirectory(root, result.Sequence), "result-source.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := CapabilityMarketCampaignResultDigest(raw)
+	if err != nil || digest != result.CampaignResultSourceDigest {
+		t.Fatalf("repair fields are not source-digest bound: digest=%q result=%q err=%v",
+			digest, result.CampaignResultSourceDigest, err)
+	}
+	decoded, err := decodeCapabilityMarketSourceResult(raw)
+	if err != nil || decoded.NegotiationRepairProfile != campaignNegotiationRound5RepairProfile ||
+		!reflect.DeepEqual(decoded.NegotiationRepairDispositions,
+			[]string{campaignNegotiationBuyerAmountRepair}) {
+		t.Fatalf("strict source decode lost repair evidence: %+v err=%v", decoded, err)
+	}
+	var object map[string]any
+	if err = json.Unmarshal(raw, &object); err != nil {
+		t.Fatal(err)
+	}
+	object["negotiation_repair_dispositions"] = []string{"forged_repair"}
+	tampered, err := json.Marshal(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedDigest, digestErr := CapabilityMarketCampaignResultDigest(tampered)
+	if digestErr != nil || tamperedDigest == digest {
+		t.Fatalf("rewritten repair evidence retained its digest: %q err=%v", tamperedDigest, digestErr)
+	}
+	if _, err = decodeCapabilityMarketSourceResult(tampered); err == nil {
+		t.Fatal("strict source decoder accepted a forged repair disposition")
+	}
+}
+
 func TestCapabilityMarketCampaignAdoptsCommittedOrphanWithoutReexecution(t *testing.T) {
 	buyer, seller, result := capabilityMarketCrashGapFixture(t, 5)
 	root := t.TempDir()
@@ -934,6 +1054,37 @@ func TestCapabilityMarketCampaignAdoptsCommittedOrphanWithoutReexecution(t *test
 		len(buyer.marketHistory) != 1 || buyer.marketHistory[0].Sequence != result.Sequence {
 		t.Fatalf("adopted orphan did not restore owner-local history: history=%+v err=%v",
 			buyer.marketHistory, err)
+	}
+}
+
+func TestCapabilityMarketCampaignRecoveryAcceptsRoundScopedSchemas(t *testing.T) {
+	runtimes := []*campaignRuntime{{definition: eightAgentManifestEntry{Name: "buyer"}}}
+	for _, schema := range []string{capabilityMarketRound4CampaignSchema, capabilityMarketRound5CampaignSchema} {
+		report := eightAgentCampaignReport{Schema: schema}
+		adopted, err := adoptCapabilityMarketResultJournals(privateTempDir(t), &report, runtimes, 16)
+		if err != nil || adopted {
+			t.Fatalf("empty round-scoped recovery schema=%s adopted=%t err=%v", schema, adopted, err)
+		}
+	}
+	report := eightAgentCampaignReport{Schema: "tos.openfox.not-a-capability-market.v1"}
+	if _, err := adoptCapabilityMarketResultJournals(privateTempDir(t), &report, runtimes, 16); err == nil {
+		t.Fatal("capability-market recovery accepted an unrelated report schema")
+	}
+}
+
+func TestCapabilityMarketCampaignRejectsResultJournalFromDifferentRun(t *testing.T) {
+	buyer, seller, result := capabilityMarketCrashGapFixture(t, 8)
+	result.CampaignRunID = "round4:stale-result-journal"
+	root := t.TempDir()
+	if _, err := persistCapabilityMarketResultEvidence(root, &result, buyer, seller); err != nil {
+		t.Fatal(err)
+	}
+	report := eightAgentCampaignReport{
+		Schema: capabilityMarketRound4CampaignSchema, CampaignRunID: "round4:current-result-journal",
+	}
+	if adopted, err := adoptCapabilityMarketResultJournals(root, &report,
+		[]*campaignRuntime{buyer, seller}, 16); err == nil || adopted || len(report.Results) != 0 {
+		t.Fatalf("stale result journal was accepted: adopted=%t results=%+v err=%v", adopted, report.Results, err)
 	}
 }
 

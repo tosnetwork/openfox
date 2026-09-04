@@ -17,10 +17,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -1742,6 +1744,9 @@ func TestPrepareEightOpenFoxCampaign(t *testing.T) {
 	if os.Getenv("OPENFOX_CAMPAIGN_CAPABILITY_MARKET") == "1" {
 		definitions = capabilityMarketCampaignDefinitions(definitions)
 	}
+	if os.Getenv("OPENFOX_CAMPAIGN_GENERIC_MARKETPLACE") == "1" {
+		definitions = genericMarketplaceCampaignDefinitions(definitions)
+	}
 	entries := make([]eightAgentManifestEntry, 0, len(definitions))
 	identityPins := map[string]string{}
 	for _, definition := range definitions {
@@ -2201,11 +2206,361 @@ func capabilityMarketCampaignDefinitions(definitions []eightAgentDefinition) []e
 	return updated
 }
 
+// genericMarketplaceCampaignDefinitions is the open-bulletin profile. Its
+// premise is that one signed Intent envelope carries an asset-exchange
+// interest and a professional service equally well, so a marketplace does not
+// grow an interface per trade type. The roles below deliberately straddle
+// both: two desks whose subject is an asset swap, two whose subject is expert
+// review, and four market functions that only exist because the first four
+// need discovery, trust, routing, and evidence.
+//
+// The asset desks quote, screen counterparties, and plan settlement. They do
+// not move BTC or USDT: neither asset exists on this local chain, so a claim
+// of having executed such a trade would be false. What clears here is the
+// information service around the swap, settled in native TOS.
+//
+// Prices are set so a buyer's maximum loss is above the sellers' floors.
+// A round where nothing can clear inside Owner limits measures the limits,
+// not the market.
+func genericMarketplaceCampaignDefinitions(definitions []eightAgentDefinition) []eightAgentDefinition {
+	updated := append([]eightAgentDefinition(nil), definitions...)
+	// The Agent Account contract template changed between tosctl builds, so
+	// this round settles through accounts deployed by the current one. The
+	// wallet suffix keeps them distinct from the earlier accounts, which stay
+	// on chain and are refused for payment as a template mismatch.
+	for index := range updated {
+		updated[index].Wallet += "-v2"
+	}
+	type profile struct {
+		tosName, capability, taxonomy string
+		minimum, asking, cost, loss   uint64
+		tasks                         []string
+	}
+	profiles := map[string]profile{
+		"security-auditor": {
+			tosName: "cyberfox.tos", capability: "institutional-source-audit", taxonomy: "security-review",
+			minimum: 900_000_000, asking: 2_400_000_000, cost: 300_000_000, loss: 2_200_000_000,
+			tasks: []string{
+				"Perform a bounded institutional-grade source review of one mock contract module: authorization, replay, arithmetic, upgrade safety, and key handling. Return ranked findings, severity with stated reasoning, and the evidence each finding rests on. State plainly what a bounded review cannot establish.",
+				"Produce a reusable acceptance-criteria annex a buyer can hold an auditor to, separating what was examined, what was assumed, and what remains unverified.",
+				"Given one prior review of yours and one finding a buyer disputes, produce the smallest additional evidence that would settle the dispute either way, and say which side that evidence would favour if it came back inconclusive.",
+			},
+		},
+		"software-builder": {
+			tosName: "reviewfox.tos", capability: "per-contract-review-piecework", taxonomy: "code-review",
+			minimum: 800_000_000, asking: 2_200_000_000, cost: 250_000_000, loss: 2_000_000_000,
+			tasks: []string{
+				"Quote and deliver one unit of per-contract review priced by the piece rather than by the hour. Return the finding list, the fixed scope the price covers, and the explicit boundary where a second unit would be required.",
+				"Turn one review finding into pseudocode, an invariant, and a regression test a buyer can run without trusting the reviewer's prose.",
+				"Price a repeat order from a buyer you have already delivered to once. State what changes versus the first unit and what does not, and whether the second unit should cost less.",
+			},
+		},
+		"evidence-verifier": {
+			tosName: "clearfox.tos", capability: "settlement-evidence-clerking", taxonomy: "evidence",
+			minimum: 700_000_000, asking: 2_000_000_000, cost: 200_000_000, loss: 1_800_000_000,
+			tasks: []string{
+				"Verify one mock settlement bundle for a swap that was agreed off-chain and paid on-chain: quote binding, expiry, amounts, payer and payee, payment evidence, and double-spend of the same evidence. Return PASS, FAIL, or UNKNOWN per field and never treat a counterparty assertion as proof.",
+				"Design the minimum evidence set that distinguishes an informal settlement between trusting parties from one that must survive a dispute.",
+				"Reconcile one settlement where the payer says it paid and the payee says nothing arrived. List the checks in the order that resolves it fastest, and state the point at which the evidence cannot decide.",
+			},
+		},
+		"storage-provider": {
+			tosName: "btcfox.tos", capability: "otc-btc-listing-and-settlement-plan", taxonomy: "asset-exchange",
+			minimum: 900_000_000, asking: 2_200_000_000, cost: 300_000_000, loss: 2_000_000_000,
+			tasks: []string{
+				"Draft a sell-side listing for a BTC-for-stablecoin swap as an ordinary signed Intent: amount, price basis, expiry, acceptable settlement rails, and what evidence the seller will produce. Do not move, custody, or promise delivery of any BTC; this chain holds none.",
+				"Plan the settlement path for such a swap under two trust assumptions -- counterparties who already trust each other, and counterparties who do not -- and state which observable facts decide between them.",
+				"Respond to a buy-side interest that is below your floor. Either state the smallest change to scope that would make it clear, or decline with the reason, and do not move your floor to manufacture a trade.",
+			},
+		},
+		"data-curator": {
+			tosName: "usdtfox.tos", capability: "otc-usdt-quote-and-diligence", taxonomy: "asset-exchange",
+			minimum: 700_000_000, asking: 2_100_000_000, cost: 250_000_000, loss: 1_900_000_000,
+			tasks: []string{
+				"Publish a buy-side interest in acquiring stablecoin against TOS as an ordinary signed Intent, then screen the responding listings for stale prices, unverifiable claims, and counterparties whose stated evidence cannot be checked. Return a ranked shortlist with the reason each candidate survived or was dropped.",
+				"Given a mixed bulletin of asset swaps, review offers, and writing work, normalize every entry through the same envelope fields and show which business-specific detail had to stay opaque content rather than becoming a new field.",
+				"Take two listings that quote the same swap at different prices and determine whether the difference is a real spread, a stale quote, or an unverifiable claim. Say which evidence decided it.",
+			},
+		},
+		"localization-writer": {
+			tosName: "scoutfox.tos", capability: "bulletin-intent-scouting", taxonomy: "discovery",
+			minimum: 600_000_000, asking: 1_900_000_000, cost: 200_000_000, loss: 1_700_000_000,
+			tasks: []string{
+				"Scout one heterogeneous bulletin and return the listings worth a second look for a named business, with the cheap first-stage filter and the deeper screen stated separately. Justify each rejection by an envelope field, not by prose familiarity.",
+				"Report what a scout cannot tell from the envelope alone, and what a buyer would have to ask the counterparty directly.",
+				"Re-scout a bulletin you have already screened once and report only what changed: new listings, expired ones, and revisions. Justify why an unchanged listing is still worth or no longer worth a look.",
+			},
+		},
+		"transaction-operator": {
+			tosName: "escrowfox.tos", capability: "trust-tier-and-settlement-routing", taxonomy: "settlement",
+			minimum: 800_000_000, asking: 2_200_000_000, cost: 250_000_000, loss: 2_000_000_000,
+			tasks: []string{
+				"Decide, for one bounded job between two Agents, whether to settle informally on mutual trust or to require an on-chain contract, and state the observable facts that decide it: amount at risk, reversibility, prior dealings, evidence available, and the cost of a dispute. Recommend the cheaper rail when the facts support it.",
+				"Diagnose one ambiguous payment and return a query-before-retry procedure with stable action identity and multi-node finality evidence.",
+				"Route one job where the two sides disagree about trust: the seller wants informal settlement, the buyer wants a contract. Recommend one rail and state who bears the residual risk under it.",
+			},
+		},
+		"guarantor-analyst": {
+			tosName: "trustfox.tos", capability: "counterparty-history-assessment", taxonomy: "risk",
+			minimum: 800_000_000, asking: 2_300_000_000, cost: 300_000_000, loss: 2_100_000_000,
+			tasks: []string{
+				"Assess one counterparty from observable history alone: prior settled dealings, delivered-versus-promised record, evidence quality, and what remains unknown. Say explicitly where a first-time counterparty leaves nothing to assess, and what a buyer should require instead of history.",
+				"Score a mock asset-swap Intent for counterparty and settlement hazard without endorsing the trade or implying the underlying asset can be delivered here.",
+				"Assess a counterparty that has exactly one prior dealing with you, and state whether one settled job is evidence of anything. Recommend what a buyer should require in its place.",
+			},
+		},
+	}
+	for index := range updated {
+		selected, ok := profiles[updated[index].Name]
+		if !ok {
+			continue
+		}
+		updated[index].TOSName = selected.tosName
+		updated[index].Capability = selected.capability
+		updated[index].Taxonomy = selected.taxonomy
+		updated[index].MinimumPrice = selected.minimum
+		updated[index].Price = selected.asking
+		updated[index].MaximumCost = selected.cost
+		updated[index].MaximumLoss = selected.loss
+		updated[index].Tasks = append([]string(nil), selected.tasks...)
+	}
+	return updated
+}
+
 func campaignMinimumPrice(entry eightAgentManifestEntry) uint64 {
 	if entry.MinimumPrice == 0 {
 		return entry.Price
 	}
 	return entry.MinimumPrice
+}
+
+// eightAgentCampaignManifestFromDefinitions builds the manifest shape the
+// pairing rules read, without the chain and key material a real prepare needs.
+func eightAgentCampaignManifestFromDefinitions(definitions []eightAgentDefinition) eightAgentManifest {
+	manifest := eightAgentManifest{Schema: eightAgentCampaignSchema}
+	for _, definition := range definitions {
+		manifest.Agents = append(manifest.Agents, eightAgentManifestEntry{
+			Name: definition.Name, TOSName: definition.TOSName, Capability: definition.Capability,
+			Taxonomy: definition.Taxonomy, MinimumPrice: definition.MinimumPrice, Price: definition.Price,
+			MaximumCost: definition.MaximumCost, MaximumLoss: definition.MaximumLoss,
+			Tasks: append([]string(nil), definition.Tasks...),
+		})
+	}
+	return manifest
+}
+
+// A turn that dies inside the job must not strand the two Agents' locks. The
+// campaign helpers fail the test with t.Fatal, which unwinds through
+// runtime.Goexit: defers run, the statements after the call do not. Releasing
+// a lock inline therefore leaves it held forever and every other buyer that
+// needs either Agent blocks behind it, which is exactly the stall this
+// reproduces.
+func TestConcurrentTurnReleasesLocksWhenTheJobGoexits(t *testing.T) {
+	var locks [2]sync.Mutex
+	runTurn := func(fail bool) (ran bool) {
+		if !locks[0].TryLock() {
+			return false
+		}
+		defer locks[0].Unlock()
+		if !locks[1].TryLock() {
+			return false
+		}
+		defer locks[1].Unlock()
+		if fail {
+			runtime.Goexit()
+		}
+		return true
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runTurn(true)
+	}()
+	<-done
+
+	// Both locks must be free for the next turn. Before the fix this call
+	// returned false forever.
+	if !runTurn(false) {
+		t.Fatal("locks were stranded by a job that exited through Goexit")
+	}
+}
+
+// The concurrent driver is selected by an environment flag inside one of two
+// similarly named campaign tests. Putting it in the other one costs a full run
+// to discover, because the symptom is a campaign that starts, completes one
+// turn, and then sits in the paced loop's timer doing nothing. This pins the
+// flag to the test that actually reads it.
+// A market where nobody can buy must go quiet, not spin. Removing the paced
+// schedule removed the only thing that limited how often a buyer was asked,
+// and an Agent whose portfolio is full answers "no" in milliseconds: one run
+// produced 11,516 refusals and 8 trades, at 212% CPU, with the trades buried
+// in a 9.5 MB report. The loop has to treat a refusal as an answer.
+func TestRefusalsConvergeInsteadOfSpinning(t *testing.T) {
+	// Model the loop's decision, not its plumbing: how many turns does one
+	// buyer take when every turn is refused?
+	turns := 0
+	idle := 0
+	for round := 1; round < 100000; round++ {
+		turns++
+		idle++
+		if idle >= maximumConsecutiveCampaignRefusals {
+			break
+		}
+	}
+	if turns > maximumConsecutiveCampaignRefusals {
+		t.Fatalf("a buyer refused every turn took %d turns, want at most %d",
+			turns, maximumConsecutiveCampaignRefusals)
+	}
+	// Eight buyers behaving that way must not be able to produce the flood
+	// that was observed.
+	if total := turns * 8; total > 100 {
+		t.Fatalf("eight buyers would produce %d refusals before going quiet", total)
+	}
+}
+
+func TestConcurrentMarketFlagIsReadByTheAutonomousCampaign(t *testing.T) {
+	raw, err := os.ReadFile("eight_agent_campaign_e2e_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	// The last occurrence is the real read; the first is this test naming it.
+	flag := strings.LastIndex(source, `if os.Getenv("OPENFOX_CAMPAIGN_CONCURRENT_MARKET") == "1" {`)
+	if flag < 0 {
+		t.Fatal("the concurrent market flag is not read anywhere")
+	}
+	owner := strings.LastIndex(source[:flag], "\nfunc ")
+	if owner < 0 {
+		t.Fatal("could not locate the function containing the flag")
+	}
+	signature := source[owner+1 : owner+1+strings.Index(source[owner+1:], "(")]
+	if signature != "func TestEightOpenFoxAutonomousMarketCampaign" {
+		t.Fatalf("the concurrent market flag is read by %q, but the campaign that runs is "+
+			"TestEightOpenFoxAutonomousMarketCampaign", signature)
+	}
+}
+
+func TestConcurrentPairingSpreadsOrdersAndRespectsLossCeilings(t *testing.T) {
+	definitions := genericMarketplaceCampaignDefinitions(eightAgentDefinitions())
+	manifest := eightAgentCampaignManifestFromDefinitions(definitions)
+
+	// A buyer must never be paired with a seller whose floor it cannot pay.
+	// The schedule this replaces could produce such a pairing and rely on the
+	// Agent to decline it; choosing the counterparty makes it avoidable.
+	dealt := map[[2]int]int{}
+	for buyer := range manifest.Agents {
+		seller, ok := selectMarketplaceCounterparty(manifest, buyer, dealt)
+		if !ok {
+			t.Fatalf("buyer %s could reach no seller", manifest.Agents[buyer].Name)
+		}
+		if campaignMinimumPrice(manifest.Agents[seller]) > manifest.Agents[buyer].MaximumLoss {
+			t.Fatalf("buyer %s was paired with seller %s above its loss ceiling",
+				manifest.Agents[buyer].Name, manifest.Agents[seller].Name)
+		}
+		if seller == buyer {
+			t.Fatalf("buyer %s was paired with itself", manifest.Agents[buyer].Name)
+		}
+	}
+
+	// Repeated turns must spread across sellers rather than resending every
+	// order to the same one. Without this a "market" is one popular seller and
+	// seven spectators.
+	dealt = map[[2]int]int{}
+	chosen := map[int]int{}
+	for turn := 0; turn < 24; turn++ {
+		seller, ok := selectMarketplaceCounterparty(manifest, 0, dealt)
+		if !ok {
+			t.Fatal("buyer 0 ran out of reachable sellers")
+		}
+		dealt[[2]int{0, seller}]++
+		chosen[seller]++
+	}
+	if len(chosen) < 7 {
+		t.Fatalf("24 turns reached only %d distinct sellers, want all 7", len(chosen))
+	}
+	for seller, count := range chosen {
+		if count > 4 {
+			t.Fatalf("seller %d absorbed %d of 24 orders", seller, count)
+		}
+	}
+}
+
+func TestGenericMarketplaceDefinitionsSpanAssetAndServiceTrades(t *testing.T) {
+	definitions := genericMarketplaceCampaignDefinitions(eightAgentDefinitions())
+	if len(definitions) != 8 {
+		t.Fatalf("got %d marketplace roles, want 8", len(definitions))
+	}
+	names := map[string]bool{}
+	capabilities := map[string]bool{}
+	taxonomies := map[string]int{}
+	for _, definition := range definitions {
+		if definition.TOSName == "" {
+			t.Fatalf("%s has no .tos name", definition.Name)
+		}
+		if names[definition.TOSName] {
+			t.Fatalf("duplicate .tos name %s", definition.TOSName)
+		}
+		names[definition.TOSName] = true
+		if capabilities[definition.Capability] {
+			t.Fatalf("duplicate capability %s", definition.Capability)
+		}
+		capabilities[definition.Capability] = true
+		taxonomies[definition.Taxonomy]++
+		// The campaign queue runs three rounds and indexes Tasks[round],
+		// so a profile with fewer than three tasks panics at run time
+		// rather than failing here.
+		if len(definition.Tasks) < 3 {
+			t.Fatalf("%s has %d tasks, want at least 3", definition.Name, len(definition.Tasks))
+		}
+		if definition.MaximumLoss > definition.Price {
+			t.Fatalf("%s maximum loss %d exceeds its own price %d, which the manifest check rejects",
+				definition.Name, definition.MaximumLoss, definition.Price)
+		}
+		if definition.MaximumCost > definition.Price {
+			t.Fatalf("%s cost %d exceeds its price %d", definition.Name, definition.MaximumCost, definition.Price)
+		}
+	}
+	// The point of the round is that one envelope carries both. A profile
+	// with only services would not test that.
+	if taxonomies["asset-exchange"] < 2 {
+		t.Fatalf("want at least two asset-exchange roles, got %d", taxonomies["asset-exchange"])
+	}
+	if len(taxonomies) < 5 {
+		t.Fatalf("want trades spread across at least five taxonomies, got %d", len(taxonomies))
+	}
+}
+
+func TestGenericMarketplacePricesCanClearInsideOwnerLimits(t *testing.T) {
+	definitions := genericMarketplaceCampaignDefinitions(eightAgentDefinitions())
+	// A buyer may not pay more than its maximum loss on an unsecured direct
+	// payment. If every seller's floor sat above every buyer's ceiling, the
+	// campaign would measure the limits rather than the market, and would
+	// report a market failure that is really a configuration one.
+	for _, buyer := range definitions {
+		reachable := 0
+		for _, seller := range definitions {
+			if seller.Name == buyer.Name {
+				continue
+			}
+			if campaignMinimumPrice(eightAgentManifestEntry{
+				MinimumPrice: seller.MinimumPrice, Price: seller.Price,
+			}) <= buyer.MaximumLoss {
+				reachable++
+			}
+		}
+		if reachable < 5 {
+			t.Fatalf("buyer %s can only reach %d of 7 sellers inside its %d nanotOS loss ceiling",
+				buyer.Name, reachable, buyer.MaximumLoss)
+		}
+	}
+	// A seller that cannot cover its own declared delivery cost at its floor
+	// is selling at a loss by construction.
+	for _, seller := range definitions {
+		if seller.MinimumPrice <= seller.MaximumCost {
+			t.Fatalf("seller %s floor %d does not cover its declared cost %d",
+				seller.Name, seller.MinimumPrice, seller.MaximumCost)
+		}
+	}
 }
 
 func TestSocialIntentCampaignDefinitionsAssignDistinctNamesAndSkills(t *testing.T) {
@@ -4010,6 +4365,18 @@ func TestEightOpenFoxAutonomousMarketCampaign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A concurrent market and a paced schedule answer different questions, so
+	// the run picks one. The schedule below fixes the buyer of every turn by
+	// its sequence number and spaces turns by a constant, which measures
+	// behaviour in an assigned slot. The concurrent market lets each Agent
+	// take its own turns and choose among whoever is offering, which is the
+	// only arrangement in which a seller can be picked by several buyers or
+	// by none.
+	if os.Getenv("OPENFOX_CAMPAIGN_CONCURRENT_MARKET") == "1" {
+		runConcurrentMarketplace(t, root, manifest, runtimes, start.Add(duration), &report, reportPath)
+		t.Logf("concurrent marketplace completed results=%d report=%s", len(report.Results), reportPath)
+		return
+	}
 	for sequence := 0; sequence < turns; sequence++ {
 		if completed[sequence] {
 			continue
@@ -4781,6 +5148,206 @@ func terminalCampaignNegotiationModelDecline(attempt int, err error) bool {
 	}
 	var invalidOutput campaignNegotiationModelOutputError
 	return attempt+1 >= maximumCampaignJobAttempts && errors.As(err, &invalidOutput)
+}
+
+// runConcurrentMarketplace drives every Agent's own buying loop until the
+// window closes, and returns the results in completion order.
+//
+// Each Agent buys on its own goroutine, so eight decisions are in flight at
+// once instead of one. Two constraints shape the concurrency and neither is
+// incidental:
+//
+//   - An Agent's authority journal is a single writer. The same Agent may not
+//     run two trades at once even in different roles, so each runtime is held
+//     under its own lock and a buyer that cannot take its seller's lock skips
+//     the turn rather than waiting behind it.
+//   - Settlement is a real chain write. Concurrency raises the rate of those
+//     writes, which is the point of the change, so the per-Agent maximum loss
+//     and the seller floors still bound every individual trade.
+//
+// A turn that finds no reachable counterparty, or whose counterparty is busy,
+// is not an error. It is the market being thin at that instant, which is a
+// result worth recording rather than a condition to retry around.
+// maximumConsecutiveCampaignRefusals is how many times in a row an Agent may
+// decline or skip before it stops taking turns. An Agent whose portfolio is
+// full or whose policy rejects every listing is not going to change its mind
+// by being asked again a moment later.
+const maximumConsecutiveCampaignRefusals = 6
+
+// campaignBackoff waits, and reports whether the run should continue.
+func campaignBackoff(t *testing.T, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-t.Context().Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func runConcurrentMarketplace(t *testing.T, root string, manifest eightAgentManifest,
+	runtimes []*campaignRuntime, deadline time.Time, report *eightAgentCampaignReport, reportPath string,
+) {
+	t.Helper()
+	var (
+		mu       sync.Mutex
+		locks    = make([]sync.Mutex, len(runtimes))
+		dealt    = map[[2]int]int{}
+		sequence = len(report.Results)
+		wg       sync.WaitGroup
+	)
+	// One Agent's turn, in its own function so every lock is released by defer.
+	// A job that ends in t.Fatal unwinds through runtime.Goexit, which runs
+	// defers but not the code after the call: releasing inline would strand
+	// both Agents' locks and stall every other buyer behind them.
+	runTurn := func(buyer, seller, seq, round int) (eightAgentJobResult, bool, error) {
+		first, second := buyer, seller
+		if second < first {
+			first, second = second, first
+		}
+		if !locks[first].TryLock() {
+			return eightAgentJobResult{}, false, nil
+		}
+		defer locks[first].Unlock()
+		if !locks[second].TryLock() {
+			return eightAgentJobResult{}, false, nil
+		}
+		defer locks[second].Unlock()
+		task := manifest.Agents[seller].Tasks[(round-1)%len(manifest.Agents[seller].Tasks)]
+		result, err := runEightAgentJob(t.Context(), root, seq, round, 0,
+			runtimes[buyer], runtimes[seller], task, time.Now().UTC())
+		return result, true, err
+	}
+	for buyer := range runtimes {
+		wg.Add(1)
+		go func(buyer int) {
+			defer wg.Done()
+			idle := 0
+			for round := 1; ; round++ {
+				if time.Now().After(deadline) || t.Context().Err() != nil {
+					return
+				}
+				mu.Lock()
+				seller, ok := selectMarketplaceCounterparty(manifest, buyer, dealt)
+				if ok {
+					dealt[[2]int{buyer, seller}]++
+				}
+				seq := sequence
+				sequence++
+				mu.Unlock()
+				if !ok {
+					t.Logf("turn=%d buyer=%s disposition=skipped:no-reachable-seller", seq,
+						manifest.Agents[buyer].Name)
+					return
+				}
+				result, ran, err := runTurn(buyer, seller, seq, round)
+				if !ran {
+					// The counterparty is mid-trade. Back off rather than spin:
+					// a bare retry loop burns a core and starves the very Agent
+					// it is waiting for.
+					round--
+					if !campaignBackoff(t, 2*time.Second) {
+						return
+					}
+					continue
+				}
+				if err != nil {
+					t.Logf("turn=%d buyer=%s seller=%s failed: %v", seq,
+						manifest.Agents[buyer].Name, manifest.Agents[seller].Name, err)
+					if !campaignBackoff(t, 5*time.Second) {
+						return
+					}
+					continue
+				}
+				// A turn that declines or skips is a real answer, not a signal
+				// to try again immediately. Without a pause here the loop
+				// re-asks a buyer that has just said it cannot buy, thousands
+				// of times a minute: it burns cores, floods the report, and
+				// buries the trades that did happen. An Agent that keeps
+				// saying no has finished trading for this run, so after a few
+				// consecutive refusals it stops rather than idling louder.
+				if !campaignResultSettled(result) {
+					idle++
+					if idle >= maximumConsecutiveCampaignRefusals {
+						t.Logf("buyer=%s stopped after %d consecutive refusals (%s)",
+							manifest.Agents[buyer].Name, idle, result.Disposition)
+						return
+					}
+					if !campaignBackoff(t, time.Duration(idle)*15*time.Second) {
+						return
+					}
+				} else {
+					idle = 0
+				}
+				mu.Lock()
+				report.Results = append(report.Results, result)
+				report.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+				snapshot := *report
+				mu.Unlock()
+				// Written outside the lock: this helper fails the test on a
+				// write error, and holding the shared lock through that would
+				// leave every other Agent blocked on a dead mutex.
+				writeCampaignJSON(t, reportPath, snapshot)
+				if campaignResultSettled(result) {
+					t.Logf("turn=%d buyer=%s seller=%s disposition=settled tx=%s", seq,
+						result.Buyer, result.Seller, result.PaymentTransaction)
+				} else {
+					t.Logf("turn=%d buyer=%s seller=%s disposition=%s", seq,
+						result.Buyer, result.Seller, result.Disposition)
+				}
+			}
+		}(buyer)
+	}
+	wg.Wait()
+}
+
+// concurrentMarketplacePairing is what a bulletin-board market looks like when
+// nobody hands out a fixture list: every Agent runs its own loop, and the
+// counterparty of each trade is whoever it picks off the board.
+//
+// The paced queue this replaces is a round-robin schedule. It fixes who trades
+// with whom before the run starts, spaces turns by a fixed interval, and
+// executes them one at a time, so a three-hour window buys about
+// twenty-four turns and every pairing in it was predetermined. That measures
+// how an Agent behaves in an assigned trade. It cannot measure whether a
+// market forms, because there is no moment at which an Agent chooses among
+// counterparties competing for the same order.
+//
+// Here each Agent instead takes its own turn as buyer whenever it is free,
+// selects a seller from those currently offering, and trades. Two properties
+// follow that the schedule cannot produce: a seller can be chosen by several
+// buyers, or by none, and the number of trades in a window is set by how fast
+// Agents actually decide rather than by an interval constant.
+type concurrentMarketplacePairing struct {
+	buyer  int
+	seller int
+	round  int
+	task   string
+}
+
+// selectMarketplaceCounterparty picks the seller for one buyer's turn.
+//
+// Selection is deliberate rather than random: the buyer takes the seller whose
+// floor its own loss ceiling can actually cover, preferring one it has not
+// already bought from this run so a single popular seller cannot absorb every
+// order. A buyer that can reach nobody returns no pairing and simply does not
+// trade this turn, which is the honest outcome and not an error.
+func selectMarketplaceCounterparty(manifest eightAgentManifest, buyer int, dealt map[[2]int]int) (int, bool) {
+	best, bestDeals := -1, 0
+	for seller := range manifest.Agents {
+		if seller == buyer {
+			continue
+		}
+		if campaignMinimumPrice(manifest.Agents[seller]) > manifest.Agents[buyer].MaximumLoss {
+			continue
+		}
+		deals := dealt[[2]int{buyer, seller}]
+		if best == -1 || deals < bestDeals {
+			best, bestDeals = seller, deals
+		}
+	}
+	return best, best != -1
 }
 
 func campaignQueue(manifest eightAgentManifest) []queuedCampaignJob {

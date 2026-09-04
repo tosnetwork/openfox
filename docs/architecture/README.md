@@ -11,6 +11,7 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Agent Self-Evolution](agent-self-evolution.md): learning records, draft generation, application modes, and state layout.
 - [Agentic Internet Constitution Applicability and Compliance Record](agentic-internet-constitution-compliance.md): provisional `PARTIAL` mapping, authority boundaries, interim controls, and blocked gates for PR #16.
 - [Hook System Guide](hooks/README.md): current hook architecture and protocol details.
+- [Capability Boundary and Core Decomposition](capability-boundary.md): which subsystems stay in the binary, which move to Skills, MCP or separate components, and how PredictionMarket should be split across them.
 - [Trusted Capabilities and Mobile Owner Control Plane](../design/trusted-capabilities-and-mobile-control-plane.md): reuse-first Skills/MCP sourcing, maintained finance and market-insight Skills, and authority-aware Web/iOS/Android controls.
 
 For proposal-style or exploratory docs, also see [`../design/`](../design/).

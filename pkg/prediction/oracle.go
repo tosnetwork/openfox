@@ -84,11 +84,25 @@ type oracleVoteRecord struct {
 	ArchiveReceiptDigests []string         `json:"archive_receipt_digests"`
 }
 
+type oracleChallengeRecord struct {
+	ProposedStatementHash string           `json:"proposed_statement_hash"`
+	ProposedOutcome       protocol.Outcome `json:"proposed_outcome"`
+	CounterOutcome        protocol.Outcome `json:"counter_outcome"`
+	CounterEvidenceRoot   string           `json:"counter_evidence_root"`
+	EvidenceManifestBOC   string           `json:"evidence_manifest_boc_base64"`
+	ChallengeDeadline     uint64           `json:"challenge_deadline"`
+	FinalityViewID        string           `json:"finality_view_id"`
+	WatcherProfileDigest  string           `json:"watcher_profile_digest"`
+	RequiredMessageValue  uint64           `json:"required_message_value"`
+	ArchiveReceiptDigests []string         `json:"archive_receipt_digests"`
+}
+
 type oracleDocument struct {
-	SchemaVersion uint16                      `json:"schema_version"`
-	Revision      uint64                      `json:"revision"`
-	Profile       OracleProfile               `json:"profile"`
-	Votes         map[string]oracleVoteRecord `json:"votes"`
+	SchemaVersion uint16                           `json:"schema_version"`
+	Revision      uint64                           `json:"revision"`
+	Profile       OracleProfile                    `json:"profile"`
+	Votes         map[string]oracleVoteRecord      `json:"votes"`
+	Challenges    map[string]oracleChallengeRecord `json:"challenges"`
 }
 
 type OracleJournal struct {
@@ -138,7 +152,12 @@ func OpenOracleJournal(directory string, profile OracleProfile) (*OracleJournal,
 	}
 	journal := &OracleJournal{
 		directory: directory, lock: lock,
-		doc: oracleDocument{SchemaVersion: 1, Profile: profile, Votes: map[string]oracleVoteRecord{}},
+		doc: oracleDocument{
+			SchemaVersion: 1,
+			Profile:       profile,
+			Votes:         map[string]oracleVoteRecord{},
+			Challenges:    map[string]oracleChallengeRecord{},
+		},
 	}
 	if err := journal.loadOrInitialize(); err != nil {
 		_ = releaseBookLock(lock)
@@ -425,7 +444,8 @@ func (journal *OracleJournal) loadOrInitialize() error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&loaded) != nil || decoder.Decode(&struct{}{}) != io.EOF || loaded.SchemaVersion != 1 ||
-		loaded.Votes == nil || len(loaded.Votes) > 1 || !reflect.DeepEqual(loaded.Profile, journal.doc.Profile) {
+		loaded.Votes == nil || len(loaded.Votes) > 1 || loaded.Challenges == nil || len(loaded.Challenges) > 1 ||
+		!reflect.DeepEqual(loaded.Profile, journal.doc.Profile) {
 		return errors.New("prediction oracle journal identity or shape is invalid")
 	}
 	marketID, _ := protocol.ParseHash32(loaded.Profile.MarketID)
@@ -468,6 +488,31 @@ func (journal *OracleJournal) loadOrInitialize() error {
 			previous = digest
 		}
 	}
+	for key, record := range loaded.Challenges {
+		manifestRaw, manifestErr := base64.StdEncoding.DecodeString(record.EvidenceManifestBOC)
+		manifest, manifestCellErr := canonicalCell(manifestRaw, 64<<10)
+		decoded, decodeErr := protocol.DecodePredictionChallengeEvidenceManifestV1(manifest)
+		if key != record.ProposedStatementHash || !canonicalDigest(key, "tvm-cell-sha256:") ||
+			manifestErr != nil || manifestCellErr != nil || decodeErr != nil ||
+			decoded.MarketID != marketID || decoded.RulesHash != rulesHash ||
+			decoded.ProposedStatementHash.CellHashString() != record.ProposedStatementHash ||
+			decoded.CounterOutcome != record.CounterOutcome ||
+			hash32(manifest.Hash()).CellHashString() != record.CounterEvidenceRoot ||
+			record.ProposedOutcome > protocol.OutcomeInvalid || record.CounterOutcome > protocol.OutcomeInvalid ||
+			record.ProposedOutcome == record.CounterOutcome || record.ChallengeDeadline == 0 ||
+			record.RequiredMessageValue == 0 || !canonicalDigest(record.WatcherProfileDigest, "sha256:") ||
+			!canonicalDigest(record.FinalityViewID, "sha256:") ||
+			len(record.ArchiveReceiptDigests) < 2*len(decoded.Entries) {
+			return errors.New("prediction oracle journal contains a corrupted challenge")
+		}
+		previous := ""
+		for _, digest := range record.ArchiveReceiptDigests {
+			if !canonicalDigest(digest, "sha256:") || previous != "" && digest <= previous {
+				return errors.New("prediction oracle challenge receipt digests are invalid")
+			}
+			previous = digest
+		}
+	}
 	journal.doc = loaded
 	return nil
 }
@@ -488,6 +533,11 @@ func cloneOracleDocument(value oracleDocument) oracleDocument {
 	for key, record := range value.Votes {
 		record.ArchiveReceiptDigests = append([]string(nil), record.ArchiveReceiptDigests...)
 		next.Votes[key] = record
+	}
+	next.Challenges = make(map[string]oracleChallengeRecord, len(value.Challenges))
+	for key, record := range value.Challenges {
+		record.ArchiveReceiptDigests = append([]string(nil), record.ArchiveReceiptDigests...)
+		next.Challenges[key] = record
 	}
 	return next
 }

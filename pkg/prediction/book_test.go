@@ -29,6 +29,7 @@ func rawAddress(value byte) string {
 func profile() MarketProfile {
 	return MarketProfile{
 		GlobalID: 42, WorkchainID: -1, MarketAddress: rawAddress(0x11),
+		NetworkDomainHash: testHash(0x20).SHA256String(), MarketID: testHash(0x21).SHA256String(),
 		MarketConfigHash: testHash(0x22).CellHashString(), ContractCodeHash: testHash(0x33).CellHashString(),
 		TradeClose: 20_000, LotPayout: testTOS, MarketMinFillLots: 1,
 		MaxOrders: 8, MaxOrdersPerOwner: 4, MaxSnapshotAge: 30,

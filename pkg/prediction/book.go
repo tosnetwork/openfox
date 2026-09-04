@@ -30,6 +30,8 @@ const stateFile = "book.json"
 type MarketProfile struct {
 	GlobalID          int32  `json:"global_id"`
 	WorkchainID       int8   `json:"workchain_id"`
+	NetworkDomainHash string `json:"network_domain_hash"`
+	MarketID          string `json:"market_id"`
 	MarketAddress     string `json:"market_address"`
 	MarketConfigHash  string `json:"market_config_hash"`
 	ContractCodeHash  string `json:"contract_code_hash"`
@@ -167,6 +169,18 @@ func (book *Book) Admit(signedBOC []byte, snapshot ChainAccountSnapshot, now uin
 	}
 	book.mu.Lock()
 	defer book.mu.Unlock()
+	return book.admitVerifiedLocked(signedBOC, *verified, snapshot, now)
+}
+
+// admitVerifiedLocked commits one already-verified signed order. The caller
+// must hold book.mu; custody uses this to keep capacity validation, signing,
+// and persistence in one local single-writer critical section.
+func (book *Book) admitVerifiedLocked(
+	signedBOC []byte,
+	verified protocol.SignedPredictionOrderV1,
+	snapshot ChainAccountSnapshot,
+	now uint64,
+) (OrderRecord, error) {
 	if book.lock == nil {
 		return OrderRecord{}, errors.New("prediction order book is closed")
 	}
@@ -179,7 +193,7 @@ func (book *Book) Admit(signedBOC []byte, snapshot ChainAccountSnapshot, now uin
 		}
 		return prior, nil
 	}
-	if err := book.validateAdmission(*verified, snapshot, now); err != nil {
+	if err := book.validateAdmission(verified, snapshot, now); err != nil {
 		return OrderRecord{}, err
 	}
 	for _, prior := range book.doc.Orders {
@@ -453,7 +467,9 @@ func buyReservation(lot uint64, price uint16, quantity uint64) (uint64, bool) {
 func validateProfile(profile MarketProfile) error {
 	config, err := protocol.ParseHash32(profile.MarketConfigHash)
 	market, addressErr := address.ParseRawAddr(profile.MarketAddress)
-	if err != nil || config.IsZero() || !canonicalDigest(profile.MarketConfigHash, "tvm-cell-sha256:") ||
+	if err != nil || config.IsZero() || !canonicalDigest(profile.NetworkDomainHash, "sha256:") ||
+		!canonicalDigest(profile.MarketID, "sha256:") ||
+		!canonicalDigest(profile.MarketConfigHash, "tvm-cell-sha256:") ||
 		!canonicalDigest(profile.ContractCodeHash, "tvm-cell-sha256:") ||
 		addressErr != nil || market == nil || market.Type() != address.StdAddress || market.BitsLen() != 256 ||
 		market.StringRaw() != profile.MarketAddress || int8(market.Workchain()) != profile.WorkchainID ||

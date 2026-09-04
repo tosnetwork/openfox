@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -209,18 +208,9 @@ func (sink *TOSCTLPaymentSink) runPinnedTOSCTL(ctx context.Context, args, enviro
 		return nil, errors.New("tosctl command did not complete before its deadline")
 	}
 	if runErr != nil {
-		// Carry a bounded prefix of what the adapter said. Without it the
-		// caller cannot tell a rejected authorization from an unreachable
-		// node, and every failure costs a manual re-run of the same command.
-		if detail := output.diagnostic(); detail != "" {
-			return nil, fmt.Errorf("tosctl command failed: %s", detail)
-		}
 		return nil, errors.New("tosctl command failed")
 	}
 	if stderrSeen {
-		if detail := output.diagnostic(); detail != "" {
-			return nil, fmt.Errorf("tosctl emitted unexpected stderr: %s", detail)
-		}
 		return nil, errors.New("tosctl emitted unexpected stderr")
 	}
 	return stdout, nil

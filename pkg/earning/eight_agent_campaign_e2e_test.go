@@ -782,28 +782,34 @@ func loadCampaignValidatorDelegation(path string, manifestPath string, campaignR
 type eightAgentDefinition struct {
 	Name, TOSName, OwnerID, AgentID, AuthorityID, Wallet, Capability, Taxonomy, ModelKind, Template string
 	MinimumPrice, Price, MaximumCost, MaximumLoss                                                   uint64
-	Tasks                                                                                           []string
+	// MaximumSpendPerTrade bounds one engagement, where MaximumLoss bounds the
+	// sum of every live engagement. A profile that leaves this zero budgets up
+	// to the aggregate ceiling, so its first settled purchase saturates it.
+	MaximumSpendPerTrade uint64
+	Tasks                []string
 }
 
 type eightAgentManifestEntry struct {
-	Name            string   `json:"name"`
-	TOSName         string   `json:"tos_name,omitempty"`
-	OwnerID         string   `json:"owner_id"`
-	AgentID         string   `json:"agent_id"`
-	AuthorityID     string   `json:"authority_id"`
-	Wallet          string   `json:"wallet"`
-	Target          string   `json:"target"`
-	Capability      string   `json:"capability"`
-	Taxonomy        string   `json:"taxonomy"`
-	ModelKind       string   `json:"model_kind"`
-	ConfigDirectory string   `json:"config_directory"`
-	AuthorityPin    string   `json:"authority_pin"`
-	IdentityPin     string   `json:"identity_pin"`
-	MinimumPrice    uint64   `json:"minimum_price_nanotos,omitempty"`
-	Price           uint64   `json:"price_nanotos"`
-	MaximumCost     uint64   `json:"maximum_internal_cost_nanotos"`
-	MaximumLoss     uint64   `json:"maximum_loss_nanotos"`
-	Tasks           []string `json:"tasks"`
+	Name            string `json:"name"`
+	TOSName         string `json:"tos_name,omitempty"`
+	OwnerID         string `json:"owner_id"`
+	AgentID         string `json:"agent_id"`
+	AuthorityID     string `json:"authority_id"`
+	Wallet          string `json:"wallet"`
+	Target          string `json:"target"`
+	Capability      string `json:"capability"`
+	Taxonomy        string `json:"taxonomy"`
+	ModelKind       string `json:"model_kind"`
+	ConfigDirectory string `json:"config_directory"`
+	AuthorityPin    string `json:"authority_pin"`
+	IdentityPin     string `json:"identity_pin"`
+	MinimumPrice    uint64 `json:"minimum_price_nanotos,omitempty"`
+	Price           uint64 `json:"price_nanotos"`
+	MaximumCost     uint64 `json:"maximum_internal_cost_nanotos"`
+	MaximumLoss     uint64 `json:"maximum_loss_nanotos"`
+	// MaximumSpendPerTrade bounds one engagement; MaximumLoss bounds their sum.
+	MaximumSpendPerTrade uint64   `json:"maximum_spend_per_trade_nanotos,omitempty"`
+	Tasks                []string `json:"tasks"`
 }
 
 type eightAgentManifest struct {
@@ -2322,6 +2328,13 @@ func genericMarketplaceCampaignDefinitions(definitions []eightAgentDefinition) [
 		updated[index].Price = selected.asking
 		updated[index].MaximumCost = selected.cost
 		updated[index].MaximumLoss = selected.loss
+		// One engagement may commit at most a third of the aggregate ceiling,
+		// so a buyer can hold three at once. Budgeting each engagement up to
+		// the ceiling made the first settled purchase consume all of it, and
+		// the hold persists until the payment obligation's own horizon passes:
+		// 40 of 49 opportunities in the first concurrent run ended as
+		// skipped:buyer-portfolio-capacity for exactly that reason.
+		updated[index].MaximumSpendPerTrade = selected.loss / 3
 		updated[index].Tasks = append([]string(nil), selected.tasks...)
 	}
 	return updated
@@ -2343,7 +2356,8 @@ func eightAgentCampaignManifestFromDefinitions(definitions []eightAgentDefinitio
 			Name: definition.Name, TOSName: definition.TOSName, Capability: definition.Capability,
 			Taxonomy: definition.Taxonomy, MinimumPrice: definition.MinimumPrice, Price: definition.Price,
 			MaximumCost: definition.MaximumCost, MaximumLoss: definition.MaximumLoss,
-			Tasks: append([]string(nil), definition.Tasks...),
+			MaximumSpendPerTrade: definition.MaximumSpendPerTrade,
+			Tasks:                append([]string(nil), definition.Tasks...),
 		})
 	}
 	return manifest
@@ -6357,10 +6371,9 @@ func runCampaignNegotiation(ctx context.Context, root string, sequence int, buye
 		return nil, "", false, 0, errors.New("seller price range is invalid")
 	}
 	ranged := minimumPrice < askingPrice
-	buyerBudget := askingPrice
-	if buyer.definition.MaximumLoss > 0 && buyer.definition.MaximumLoss < buyerBudget {
-		buyerBudget = buyer.definition.MaximumLoss
-	}
+	buyerBudget := campaignBuyerBudget(
+		buyer.definition.MaximumLoss, buyer.definition.MaximumSpendPerTrade, askingPrice,
+	)
 	directory := filepath.Join(root, "campaign", "conversations")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, "", false, 0, err
@@ -9598,4 +9611,63 @@ func TestRealNativeStrategyCanSkipAndDecline(t *testing.T) {
 	if err != nil || estimate.StrategyDisposition != EconomicStrategyDecline || estimate.EvidenceDigest == "" {
 		t.Fatalf("real Claude strategy estimate=%+v err=%v", estimate, err)
 	}
+}
+
+// TestGenericMarketplaceBuyersCanHoldConcurrentEngagements pins the property
+// that stalled the first concurrent run: 40 of 49 opportunities ended as
+// skipped:buyer-portfolio-capacity because a single settled purchase consumed
+// the buyer's whole aggregate ceiling.
+//
+// The cause is that MaximumLoss served two roles at once. It bounded what a
+// buyer would pay for one engagement and it bounded the sum of every live
+// engagement. With every seller asking at or above every buyer's ceiling, the
+// per-trade budget collapsed onto the ceiling and one trade saturated it.
+//
+// Parameters alone cannot fix that. The budget is min(seller ask, buyer cap)
+// and the manifest requires a buyer's cap to stay at or below its own asking
+// price, so holding k engagements needs own_ask >= own_cap >= k * peer_ask.
+// In a closed set the cheapest agent can never be k times cheaper than itself.
+// The two roles have to be separate numbers.
+func TestGenericMarketplaceBuyersCanHoldConcurrentEngagements(t *testing.T) {
+	const wantConcurrent = 3
+	definitions := genericMarketplaceCampaignDefinitions(eightAgentDefinitions())
+	for _, buyer := range definitions {
+		worst := uint64(0)
+		for _, seller := range definitions {
+			if seller.Name == buyer.Name {
+				continue
+			}
+			budget := campaignBuyerBudget(buyer.MaximumLoss, buyer.MaximumSpendPerTrade, seller.Price)
+			if budget > worst {
+				worst = budget
+			}
+		}
+		if worst == 0 {
+			t.Fatalf("buyer %s would commit nothing to any seller", buyer.Name)
+		}
+		// Integer division: how many engagements of the most expensive size
+		// this buyer would agree to still fit under its aggregate ceiling.
+		concurrent := buyer.MaximumLoss / worst
+		if concurrent < wantConcurrent {
+			t.Errorf("buyer %s can hold %d concurrent engagements (cap %d / worst commitment %d), want at least %d",
+				buyer.Name, concurrent, buyer.MaximumLoss, worst, wantConcurrent)
+		}
+	}
+}
+
+// campaignBuyerBudget is what a buyer will commit to one engagement with a
+// seller asking askingPrice. MaximumLoss is the aggregate ceiling across every
+// live engagement, so using it as the per-engagement budget makes the first
+// settled purchase consume the whole ceiling. MaximumSpendPerTrade is the
+// per-engagement bound; when a profile leaves it at zero the older behaviour
+// of budgeting up to the aggregate ceiling is kept.
+func campaignBuyerBudget(maximumLoss, maximumSpendPerTrade, askingPrice uint64) uint64 {
+	budget := askingPrice
+	if maximumLoss > 0 && maximumLoss < budget {
+		budget = maximumLoss
+	}
+	if maximumSpendPerTrade > 0 && maximumSpendPerTrade < budget {
+		budget = maximumSpendPerTrade
+	}
+	return budget
 }

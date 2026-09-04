@@ -1088,52 +1088,6 @@ type tosctlSharedOutput struct {
 	total      int
 	exceeded   bool
 	stderrSeen bool
-	// A bounded prefix of what the adapter wrote to stderr. The custody path
-	// deliberately discards adapter output from its result, but discarding it
-	// from the failure message too leaves an operator with "tosctl command
-	// failed" and no way to tell a misconfigured network pin from an expired
-	// authorization. Bounded so a chatty or hostile adapter cannot grow the
-	// error, and only ever read on the failure path.
-	stderrPrefix []byte
-}
-
-// maximumTOSCTLDiagnosticBytes bounds the adapter stderr kept for diagnosis.
-const maximumTOSCTLDiagnosticBytes = 512
-
-func (output *tosctlSharedOutput) diagnostic() string {
-	if output == nil {
-		return ""
-	}
-	output.mu.Lock()
-	defer output.mu.Unlock()
-	return redactTOSCTLDiagnostic(strings.TrimSpace(string(output.stderrPrefix)))
-}
-
-// redactTOSCTLDiagnostic removes vault material from adapter output before it
-// reaches an error string. The adapter is handed VAULT_URL, whose query carries
-// the master key, so any adapter path that echoes its own configuration would
-// copy that key into an error the caller is free to log. No tosctl failure
-// observed today echoes it; this holds regardless of which paths the adapter
-// grows later, which the caller cannot audit.
-func redactTOSCTLDiagnostic(value string) string {
-	const marker = "master_key="
-	for searched := 0; ; {
-		found := strings.Index(value[searched:], marker)
-		if found < 0 {
-			return value
-		}
-		secret := searched + found + len(marker)
-		end := secret
-		for end < len(value) && !strings.ContainsRune("&\"' \t\r\n", rune(value[end])) {
-			end++
-		}
-		if end == secret {
-			searched = secret
-			continue
-		}
-		value = value[:secret] + "[redacted]" + value[end:]
-		searched = secret + len("[redacted]")
-	}
 }
 
 type tosctlOutputWriter struct {
@@ -1149,9 +1103,6 @@ func (writer tosctlOutputWriter) Write(value []byte) (int, error) {
 	defer writer.output.mu.Unlock()
 	if writer.stderr {
 		writer.output.stderrSeen = writer.output.stderrSeen || len(value) != 0
-		if room := maximumTOSCTLDiagnosticBytes - len(writer.output.stderrPrefix); room > 0 {
-			writer.output.stderrPrefix = append(writer.output.stderrPrefix, value[:min(room, len(value))]...)
-		}
 	}
 	remaining := maximumTOSCTLCommandOutputBytes - writer.output.total
 	if remaining <= 0 {

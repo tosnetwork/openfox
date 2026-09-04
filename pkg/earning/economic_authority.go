@@ -67,8 +67,8 @@ type EconomicAuthority interface {
 // enabled Prediction cannot accidentally gain this signing capability merely
 // by implementing the general EconomicAuthority surface.
 type PredictionCustodyEffectAuthority interface {
-	AuthorizePredictionCustodyEffect(commerce.AuthorizedAction, map[string]commerce.SemanticValue,
-		[]byte, commerce.WriterFence, commerce.PredictionCustodyEffectAuthorizationV1) (
+	AuthorizePredictionCustodyEffect(action commerce.AuthorizedAction, fields map[string]commerce.SemanticValue,
+		request []byte, fence commerce.WriterFence, template commerce.PredictionCustodyEffectAuthorizationV1) (
 		commerce.PredictionCustodyEffectAuthorizationV1, error)
 }
 

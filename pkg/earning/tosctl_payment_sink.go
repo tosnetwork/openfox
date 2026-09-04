@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tosnetwork/openfox/pkg/prediction"
+
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"

@@ -1185,6 +1185,7 @@ func (client *SharedAuthorityClient) AuthorizePredictionCustodyEffect(
 	}{action, wireFields, request, fence, template}, &output)
 	return output, err
 }
+
 func (client *SharedAuthorityClient) RecordAgreementProposal(body commerce.AgentAgreementBody, proposer, event, action string) (EngagementRecord, error) {
 	var out EngagementRecord
 	err := client.call(context.Background(), "record-proposal", struct {

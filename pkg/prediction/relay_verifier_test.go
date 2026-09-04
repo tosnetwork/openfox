@@ -67,7 +67,7 @@ func TestCanonicalRelayVerifierParsesSourceAndDestinationTransactions(t *testing
 	}
 	outbound := &tlb.Message{MsgType: tlb.MsgTypeInternal, Msg: &tlb.InternalMessage{
 		IHRDisabled: true, Bounce: true, SrcAddr: source, DstAddr: market,
-		Amount: tlb.FromNanoTONU(fixture.expected.ValueNanoTOS), IHRFee: tlb.ZeroCoins,
+		Amount: tlb.FromNanoTONU(fixture.expected.ValueNanoTOS), IHRFee: tlb.FromNanoTONU(3),
 		FwdFee: tlb.FromNanoTONU(1), CreatedLT: 101, CreatedAt: 1_800_000_000, Body: callBody,
 	}}
 	declaredOutbound := declaredVerifierMessage(t, outbound, 3)
@@ -100,6 +100,24 @@ func TestCanonicalRelayVerifierParsesSourceAndDestinationTransactions(t *testing
 	mutatedSource.OutboundMessages[0].ValueNanoTOS++
 	if err := verifier.VerifyPredictionSource(t.Context(), record, mutatedSource); err == nil {
 		t.Fatal("source verifier accepted JSON fields that contradict the message BOC")
+	}
+	wrongFlagsOutbound := &tlb.Message{MsgType: tlb.MsgTypeInternal, Msg: &tlb.InternalMessage{
+		IHRDisabled: true, Bounce: true, SrcAddr: source, DstAddr: market,
+		Amount: tlb.FromNanoTONU(fixture.expected.ValueNanoTOS), IHRFee: tlb.FromNanoTONU(2),
+		FwdFee: tlb.FromNanoTONU(1), CreatedLT: 102, CreatedAt: 1_800_000_000, Body: callBody,
+	}}
+	wrongFlagsDeclared := declaredVerifierMessage(t, wrongFlagsOutbound, 3)
+	wrongFlagsTx := verifierTransaction(t, source, 111, external, []*tlb.Message{wrongFlagsOutbound}, true, 0)
+	wrongFlagsEvidence := sourceEvidence
+	wrongFlagsEvidence.TransactionHash = "sha256:" + hex.EncodeToString(wrongFlagsTx.Hash())
+	wrongFlagsEvidence.TransactionBOCBase64 = base64.StdEncoding.EncodeToString(
+		wrongFlagsTx.ToBOCWithFlags(false),
+	)
+	wrongFlagsEvidence.NextSourceCursor.LastLogicalTime = 111
+	wrongFlagsEvidence.NextSourceCursor.LastTransactionHash = wrongFlagsEvidence.TransactionHash
+	wrongFlagsEvidence.OutboundMessages = []ChainObservedMessage{wrongFlagsDeclared}
+	if err := verifier.VerifyPredictionSource(t.Context(), record, wrongFlagsEvidence); err == nil {
+		t.Fatal("source verifier accepted JSON extra_flags=3 for a message carrying extra_flags=2")
 	}
 
 	destinationTx := verifierTransaction(t, market, 120, outbound, nil, true, 0)
@@ -136,17 +154,17 @@ func TestCanonicalRelayVerifierParsesBounceAndCredit(t *testing.T) {
 	callBody, _ := decodeCanonicalCell(fixture.expected.BodyBOCBase64, maximumChainBOCBytes)
 	outbound := &tlb.Message{MsgType: tlb.MsgTypeInternal, Msg: &tlb.InternalMessage{
 		IHRDisabled: true, Bounce: true, SrcAddr: source, DstAddr: market,
-		Amount: tlb.FromNanoTONU(fixture.expected.ValueNanoTOS), IHRFee: tlb.ZeroCoins,
+		Amount: tlb.FromNanoTONU(fixture.expected.ValueNanoTOS), IHRFee: tlb.FromNanoTONU(3),
 		FwdFee: tlb.FromNanoTONU(1), CreatedLT: 201, CreatedAt: 1_800_000_000, Body: callBody,
 	}}
 	declaredOutbound := declaredVerifierMessage(t, outbound, 3)
-	bounceBody := cell.BeginCell().MustStoreUInt(0xffffffff, 32).MustStoreUInt(0x504d000f, 32).EndCell()
+	bounceBody := verifierRichBounceBody(t, outbound.AsInternal(), 1, 0, true, 1, 1)
 	bounce := &tlb.Message{MsgType: tlb.MsgTypeInternal, Msg: &tlb.InternalMessage{
 		IHRDisabled: true, Bounced: true, SrcAddr: market, DstAddr: source,
-		Amount: tlb.FromNanoTONU(fixture.expected.ValueNanoTOS - 100), IHRFee: tlb.ZeroCoins,
+		Amount: tlb.FromNanoTONU(fixture.expected.ValueNanoTOS - 100), IHRFee: tlb.FromNanoTONU(3),
 		FwdFee: tlb.FromNanoTONU(1), CreatedLT: 202, CreatedAt: 1_800_000_001, Body: bounceBody,
 	}}
-	declaredBounce := declaredVerifierMessage(t, bounce, 0)
+	declaredBounce := declaredVerifierMessage(t, bounce, 3)
 	record := PredictionRelayRecord{Profile: fixture.profile, Expected: fixture.expected,
 		ActualOutbound: &declaredOutbound}
 	block, finality := verifierBlockAndFinality(fixture.profile)
@@ -160,13 +178,33 @@ func TestCanonicalRelayVerifierParsesBounceAndCredit(t *testing.T) {
 		Block: block, Finality: finality,
 		NextDestinationCursor: AccountCursor{AccountAddress: fixture.profile.MarketAddress,
 			LastLogicalTime: 210, LastTransactionHash: "sha256:" + hex.EncodeToString(destinationTx.Hash())},
-		Ordinary: true, BounceMessage: &declaredBounce,
+		Ordinary: true, Aborted: true, BounceMessage: &declaredBounce,
 		MarketCodeHash: fixture.profile.MarketCodeHash, MarketConfigHash: fixture.profile.MarketConfigHash,
+		RichBounceEnvelopeHash: declaredBounce.BodyHash, RichBounceOriginalBodyHash: fixture.expected.BodyHash,
 	}
 	attestor := &relayVerifierAttestor{}
 	verifier := CanonicalPredictionRelayEvidenceVerifier{Attestor: attestor}
 	if err := verifier.VerifyPredictionDestination(t.Context(), record, destinationEvidence); err != nil {
 		t.Fatalf("valid failed destination/bounce rejected: %v", err)
+	}
+	legacyBounce := *bounce
+	legacyBounce.Msg = &tlb.InternalMessage{
+		IHRDisabled: true, Bounced: true, SrcAddr: market, DstAddr: source,
+		Amount: tlb.FromNanoTONU(fixture.expected.ValueNanoTOS - 100), IHRFee: tlb.FromNanoTONU(3),
+		FwdFee: tlb.FromNanoTONU(1), CreatedLT: 202, CreatedAt: 1_800_000_001,
+		Body: cell.BeginCell().MustStoreUInt(0xffffffff, 32).MustStoreUInt(0x504d000f, 32).EndCell(),
+	}
+	legacyDeclared := declaredVerifierMessage(t, &legacyBounce, 3)
+	legacyTx := verifierTransaction(t, market, 211, outbound, []*tlb.Message{&legacyBounce}, false, 0)
+	legacyEvidence := destinationEvidence
+	legacyEvidence.TransactionHash = "sha256:" + hex.EncodeToString(legacyTx.Hash())
+	legacyEvidence.TransactionBOCBase64 = base64.StdEncoding.EncodeToString(legacyTx.ToBOCWithFlags(false))
+	legacyEvidence.NextDestinationCursor.LastLogicalTime = 211
+	legacyEvidence.NextDestinationCursor.LastTransactionHash = legacyEvidence.TransactionHash
+	legacyEvidence.BounceMessage = &legacyDeclared
+	legacyEvidence.RichBounceEnvelopeHash = legacyDeclared.BodyHash
+	if err := verifier.VerifyPredictionDestination(t.Context(), record, legacyEvidence); err == nil {
+		t.Fatal("destination verifier accepted a legacy/truncated bounce as a full rich bounce")
 	}
 	noBounceTx := verifierTransaction(t, market, 215, outbound, nil, false, 0)
 	noBounce := destinationEvidence
@@ -241,6 +279,14 @@ func verifierTransaction(t *testing.T, account *address.Address, logicalTime uin
 			},
 		}}, ActionPhase: action,
 	}
+	ordinary.Aborted = !success
+	if !success && len(outputs) != 0 {
+		fees := tlb.FromNanoTONU(1)
+		ordinary.BouncePhase = &tlb.BouncePhase{Phase: tlb.BouncePhaseOk{
+			MsgSize: tlb.StorageUsedShort{Cells: big.NewInt(1), Bits: big.NewInt(1)},
+			MsgFees: fees, FwdFees: fees,
+		}}
+	}
 	if creditAmount != 0 {
 		ordinary.CreditFirst = true
 		ordinary.CreditPhase = &tlb.CreditPhase{
@@ -277,6 +323,27 @@ func declaredVerifierMessage(t *testing.T, message *tlb.Message, extraFlags uint
 		BodyHash:      cellDigest(internal.Body), Bounce: internal.Bounce, Bounced: internal.Bounced,
 		ExtraFlags: extraFlags,
 	}
+}
+
+func verifierRichBounceBody(t *testing.T, original *tlb.InternalMessage, bouncedBy uint8,
+	exitCode int32, hasCompute bool, gasUsed, vmSteps uint32,
+) *cell.Cell {
+	t.Helper()
+	value, err := tlb.ToCell(&tlb.CurrencyCollection{
+		Coins: original.Amount, ExtraCurrencies: original.ExtraCurrencies,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := cell.BeginCell().MustStoreBuilder(value.ToBuilder()).
+		MustStoreUInt(original.CreatedLT, 64).MustStoreUInt(uint64(original.CreatedAt), 32).EndCell()
+	builder := cell.BeginCell().MustStoreUInt(0xfffffffe, 32).MustStoreRef(original.Body).
+		MustStoreRef(info).MustStoreUInt(uint64(bouncedBy), 8).MustStoreInt(int64(exitCode), 32).
+		MustStoreBoolBit(hasCompute)
+	if hasCompute {
+		builder.MustStoreUInt(uint64(gasUsed), 32).MustStoreUInt(uint64(vmSteps), 32)
+	}
+	return builder.EndCell()
 }
 
 func verifierBlockAndFinality(profile PredictionRelayProfile) (BlockIdentity, QuorumFinality) {

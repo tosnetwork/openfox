@@ -211,6 +211,80 @@ func TestBookRejectsTamperedDurableSignedBytes(t *testing.T) {
 	}
 }
 
+func TestBookSearchIndexRebuildsAndDropsTerminalOrders(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "orders")
+	book, openErr := OpenBook(directory, profile())
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	keyA := ed25519.NewKeyFromSeed(bytesOf(0x71, ed25519.SeedSize))
+	keyB := ed25519.NewKeyFromSeed(bytesOf(0x72, ed25519.SeedSize))
+	ownerA, ownerB := rawAddress(0x73), rawAddress(0x74)
+	bocA, digestA := signedOrder(
+		t, keyA, ownerA, 1, protocol.ActionBuy, protocol.OutcomeYes, protocol.RoleMaker, 6_000, 10,
+	)
+	bocB, digestB := signedOrder(
+		t, keyB, ownerB, 1, protocol.ActionBuy, protocol.OutcomeYes, protocol.RoleMaker, 5_500, 4,
+	)
+	if _, err := book.Admit(bocA, snapshot(ownerA, keyA, 20*testTOS, 0, 0), 10_001); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := book.Admit(bocB, snapshot(ownerB, keyB, 20*testTOS, 0, 0), 10_001); err != nil {
+		t.Fatal(err)
+	}
+	if closeErr := book.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	book, openErr = OpenBook(directory, profile())
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	defer book.Close()
+	query := OrderSearchQuery{
+		MarketID: profile().MarketID, Outcome: protocol.OutcomeYes,
+		Action: protocol.ActionBuy, MinimumRemainingLots: 1, ValidAt: 10_001,
+		PriceDescending: true, Limit: 10,
+	}
+	results, searchErr := book.SearchOrders(query)
+	if searchErr != nil || len(results) != 2 || results[0].Record.Digest != digestA.CellHashString() ||
+		results[1].Record.Digest != digestB.CellHashString() || results[0].RemainingLots != 10 {
+		t.Fatalf("rebuilt search index returned the wrong price order: %#v %v", results, searchErr)
+	}
+	query.MinimumRemainingLots = 5
+	results, searchErr = book.SearchOrders(query)
+	if searchErr != nil || len(results) != 1 || results[0].Record.Digest != digestA.CellHashString() {
+		t.Fatalf("remaining-lots index filter failed: %#v %v", results, searchErr)
+	}
+	if err := book.ApplyFinalizedFill(
+		digestA.CellHashString(),
+		10,
+		testHash(0x81).SHA256String(),
+		testHash(0x82).SHA256String(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	query.MinimumRemainingLots = 1
+	results, searchErr = book.SearchOrders(query)
+	if searchErr != nil || len(results) != 1 || results[0].Record.Digest != digestB.CellHashString() {
+		t.Fatal("fully filled order remained in the search index")
+	}
+	if err := book.SuppressFinalizedCancellation(
+		digestB.CellHashString(),
+		testHash(0x83).SHA256String(),
+		testHash(0x84).SHA256String(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	results, searchErr = book.SearchOrders(query)
+	if searchErr != nil || len(results) != 0 {
+		t.Fatal("canceled order remained in the search index")
+	}
+	query.MarketID = testHash(0x85).SHA256String()
+	if _, err := book.SearchOrders(query); err == nil {
+		t.Fatal("search crossed the immutable market identity")
+	}
+}
+
 func bytesOf(value byte, length int) []byte {
 	result := make([]byte, length)
 	for index := range result {

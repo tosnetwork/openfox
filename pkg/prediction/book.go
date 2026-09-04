@@ -104,6 +104,31 @@ type Book struct {
 	directory string
 	lock      *os.File
 	doc       document
+	search    map[orderSearchKey]map[uint16][]string
+}
+
+type orderSearchKey struct {
+	Outcome protocol.Outcome
+	Action  protocol.Action
+}
+
+type OrderSearchQuery struct {
+	MarketID             string
+	Outcome              protocol.Outcome
+	Action               protocol.Action
+	MinimumPriceTick     uint16
+	MaximumPriceTick     uint16
+	MinimumRemainingLots uint64
+	ValidAt              uint64
+	ExpiresAfter         uint64
+	ExpiresAtOrBefore    uint64
+	PriceDescending      bool
+	Limit                uint32
+}
+
+type OrderSearchResult struct {
+	Record        OrderRecord
+	RemainingLots uint64
 }
 
 type MatchPlan struct {
@@ -134,6 +159,7 @@ func OpenBook(directory string, profile MarketProfile) (*Book, error) {
 		directory: directory,
 		lock:      lock,
 		doc:       document{SchemaVersion: 1, Profile: profile, Orders: map[string]OrderRecord{}},
+		search:    make(map[orderSearchKey]map[uint16][]string),
 	}
 	if err := book.loadOrInitialize(); err != nil {
 		_ = releaseBookLock(lock)
@@ -215,6 +241,7 @@ func (book *Book) admitVerifiedLocked(
 		return OrderRecord{}, err
 	}
 	book.doc = next
+	book.indexOrder(record)
 	return record, nil
 }
 
@@ -252,6 +279,9 @@ func (book *Book) ApplyFinalizedFill(digest string, cumulative uint64, txHash, f
 		return err
 	}
 	book.doc = next
+	if record.Status == OrderFilled {
+		book.removeIndexedOrder(record)
+	}
 	return nil
 }
 
@@ -283,6 +313,7 @@ func (book *Book) SuppressFinalizedCancellation(digest, txHash, finalityViewID s
 		return err
 	}
 	book.doc = next
+	book.removeIndexedOrder(record)
 	return nil
 }
 
@@ -377,6 +408,69 @@ func (book *Book) LiveOrders() []OrderRecord {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Digest < result[j].Digest })
 	return result
+}
+
+// SearchOrders uses a derived, non-authoritative index. Every returned record
+// still comes from the canonical durable map and is rechecked for liveness,
+// remaining quantity and exact validity interval.
+func (book *Book) SearchOrders(query OrderSearchQuery) ([]OrderSearchResult, error) {
+	if book == nil || query.MarketID == "" || query.ValidAt == 0 || query.MinimumRemainingLots == 0 ||
+		query.Limit == 0 || query.Limit > 1_000 ||
+		(query.Outcome != protocol.OutcomeYes && query.Outcome != protocol.OutcomeNo) ||
+		(query.Action != protocol.ActionBuy && query.Action != protocol.ActionSell) {
+		return nil, errors.New("prediction order search query is invalid")
+	}
+	book.mu.Lock()
+	defer book.mu.Unlock()
+	if book.lock == nil || query.MarketID != book.doc.Profile.MarketID || query.ValidAt >= book.doc.Profile.TradeClose {
+		return nil, errors.New("prediction order search is outside the active market")
+	}
+	minimumPrice := query.MinimumPriceTick
+	if minimumPrice == 0 {
+		minimumPrice = 1
+	}
+	maximumPrice := query.MaximumPriceTick
+	if maximumPrice == 0 {
+		maximumPrice = protocol.PriceScale - 1
+	}
+	if minimumPrice > maximumPrice || maximumPrice >= protocol.PriceScale ||
+		(query.ExpiresAtOrBefore != 0 && query.ExpiresAfter >= query.ExpiresAtOrBefore) {
+		return nil, errors.New("prediction order search range is invalid")
+	}
+	prices := make([]uint16, 0)
+	byPrice := book.search[orderSearchKey{Outcome: query.Outcome, Action: query.Action}]
+	for price := range byPrice {
+		if price >= minimumPrice && price <= maximumPrice {
+			prices = append(prices, price)
+		}
+	}
+	sort.Slice(prices, func(left, right int) bool {
+		if query.PriceDescending {
+			return prices[left] > prices[right]
+		}
+		return prices[left] < prices[right]
+	})
+	results := make([]OrderSearchResult, 0, query.Limit)
+	for _, price := range prices {
+		for _, digest := range byPrice[price] {
+			record, ok := book.doc.Orders[digest]
+			if !ok || record.Status != OrderLive || record.Order.ValidAfter > query.ValidAt ||
+				record.Order.ValidUntil <= query.ValidAt ||
+				(query.ExpiresAfter != 0 && record.Order.ValidUntil <= query.ExpiresAfter) ||
+				(query.ExpiresAtOrBefore != 0 && record.Order.ValidUntil > query.ExpiresAtOrBefore) {
+				continue
+			}
+			remaining := record.Order.QuantityLots - record.CumulativeFilled
+			if remaining < query.MinimumRemainingLots {
+				continue
+			}
+			results = append(results, OrderSearchResult{Record: record, RemainingLots: remaining})
+			if uint32(len(results)) == query.Limit {
+				return results, nil
+			}
+		}
+	}
+	return results, nil
 }
 
 func (book *Book) validateAdmission(
@@ -540,7 +634,57 @@ func (book *Book) loadOrInitialize() error {
 		}
 	}
 	book.doc = loaded
+	book.rebuildSearchIndex()
 	return nil
+}
+
+func (book *Book) rebuildSearchIndex() {
+	book.search = make(map[orderSearchKey]map[uint16][]string)
+	for _, record := range book.doc.Orders {
+		if record.Status == OrderLive {
+			book.indexOrder(record)
+		}
+	}
+}
+
+func (book *Book) indexOrder(record OrderRecord) {
+	key := orderSearchKey{Outcome: record.Order.Outcome, Action: record.Order.Action}
+	if book.search[key] == nil {
+		book.search[key] = make(map[uint16][]string)
+	}
+	price := record.Order.LimitPriceTick
+	digests := book.search[key][price]
+	position := sort.SearchStrings(digests, record.Digest)
+	if position < len(digests) && digests[position] == record.Digest {
+		return
+	}
+	digests = append(digests, "")
+	copy(digests[position+1:], digests[position:])
+	digests[position] = record.Digest
+	book.search[key][price] = digests
+}
+
+func (book *Book) removeIndexedOrder(record OrderRecord) {
+	key := orderSearchKey{Outcome: record.Order.Outcome, Action: record.Order.Action}
+	byPrice := book.search[key]
+	if byPrice == nil {
+		return
+	}
+	price := record.Order.LimitPriceTick
+	digests := byPrice[price]
+	position := sort.SearchStrings(digests, record.Digest)
+	if position >= len(digests) || digests[position] != record.Digest {
+		return
+	}
+	digests = append(digests[:position], digests[position+1:]...)
+	if len(digests) == 0 {
+		delete(byPrice, price)
+	} else {
+		byPrice[price] = digests
+	}
+	if len(byPrice) == 0 {
+		delete(book.search, key)
+	}
 }
 
 func (book *Book) persist(next document) error {

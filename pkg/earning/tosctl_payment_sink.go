@@ -58,11 +58,14 @@ type TOSCTLPaymentSink struct {
 	// RelayTerminalFinalityProfiles is the exact owner-selected subset this
 	// adapter may prove. The bundled tosctl RPC terminal adapter currently
 	// supports confirmation depth one only.
-	RelayTerminalFinalityProfiles   []agentrelay.FinalityProfile
-	PredictionRelayJournal          *prediction.PredictionRelayJournal
-	FeeReserveNanoTOS               uint64
-	QuorumConfigPaths               []string
-	MaximumTransactions             uint32
+	RelayTerminalFinalityProfiles []agentrelay.FinalityProfile
+	PredictionRelayJournal        *prediction.PredictionRelayJournal
+	FeeReserveNanoTOS             uint64
+	QuorumConfigPaths             []string
+	MaximumTransactions           uint32
+	// PredictionMaximumTransactions is separate because Prediction recovery
+	// must survive more than the legacy 10,000-payment-history ceiling.
+	PredictionMaximumTransactions   uint32
 	VaultURL                        string
 	EvidenceDirectory               string
 	ResolveAttempts                 uint32

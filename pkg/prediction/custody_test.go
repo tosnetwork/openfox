@@ -52,13 +52,29 @@ func (signer *custodyTestSigner) SignAuthorizedPredictionOrder(
 ) (PredictionOrderSignatureV1, error) {
 	signer.calls++
 	if request.SchemaVersion != 1 || request.Risk.SchemaVersion != 1 || len(request.OrderCellBOC) == 0 ||
-		request.Authorization.ActionKind != authorizeOrderAction || len(request.SemanticFields) != 7 {
+		request.Authorization.ActionKind != authorizeOrderAction || len(request.SemanticFields) != 7 ||
+		validatePortfolioReservationProof(request.PortfolioProof, request.Risk.OrderDigest) != nil {
 		return PredictionOrderSignatureV1{}, errors.New("incomplete custody request")
 	}
 	var result PredictionOrderSignatureV1
 	copy(result.PublicKey[:], signer.key.Public().(ed25519.PublicKey))
 	copy(result.Signature[:], ed25519.Sign(signer.key, request.OrderDigest[:]))
 	return result, nil
+}
+
+func custodyPortfolio(t *testing.T, owner string) *OwnerPortfolioLedger {
+	t.Helper()
+	ledger, err := OpenOwnerPortfolioLedger(filepath.Join(t.TempDir(), "portfolio-root"), OwnerPortfolioProfile{
+		OwnerID: "owner:test", OwnerAddress: owner, NetworkDomainHash: profile().NetworkDomainHash,
+		SourceAgentAccount: rawAddress(0x99), CollateralAssetID: testHash(0x98).SHA256String(),
+		MaximumAtRiskAtomic: 100 * testTOS, MaximumPositionLots: 1_000,
+		MaximumOrderReservations: 100, MaximumMarkets: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	return ledger
 }
 
 func authorizedOrderFixture(
@@ -144,7 +160,9 @@ func TestAuthorizedOrderCoordinatorKeepsOwnerAuthorityInFrontOfCustody(t *testin
 	authorityKey := ed25519.NewKeyFromSeed(bytesOf(0x61, ed25519.SeedSize))
 	action, fence, resolver := authorizedOrderFixture(t, book, order, authorityKey, now)
 	signer := &custodyTestSigner{key: tradingKey}
-	coordinator := AuthorizedOrderCoordinator{Book: book, Signer: signer, FenceResolver: resolver}
+	coordinator := AuthorizedOrderCoordinator{
+		Book: book, Portfolio: custodyPortfolio(t, owner), Signer: signer, FenceResolver: resolver,
+	}
 	record, signedBOC, err := coordinator.AuthorizeSignAndAdmit(
 		t.Context(), order, action, fence, snapshot(owner, tradingKey, 10*testTOS, 0, 0), now,
 	)
@@ -181,7 +199,9 @@ func TestAuthorizedOrderCoordinatorRejectsSupersededFenceAndWrongTradingKey(t *t
 	authorityKey := ed25519.NewKeyFromSeed(bytesOf(0x61, ed25519.SeedSize))
 	action, fence, resolver := authorizedOrderFixture(t, book, order, authorityKey, now)
 	signer := &custodyTestSigner{key: currentTradingKey}
-	coordinator := AuthorizedOrderCoordinator{Book: book, Signer: signer, FenceResolver: resolver}
+	coordinator := AuthorizedOrderCoordinator{
+		Book: book, Portfolio: custodyPortfolio(t, owner), Signer: signer, FenceResolver: resolver,
+	}
 
 	resolver.current = false
 	if _, leaked, err := coordinator.AuthorizeSignAndAdmit(
@@ -197,5 +217,9 @@ func TestAuthorizedOrderCoordinatorRejectsSupersededFenceAndWrongTradingKey(t *t
 		t.Context(), order, action, fence, snapshot(owner, currentTradingKey, 10*testTOS, 0, 0), now,
 	); err == nil || len(leaked) != 0 || signer.calls != 1 || len(book.LiveOrders()) != 0 {
 		t.Fatal("a non-current custody key produced an admitted or returned order")
+	}
+	reservations, _ := coordinator.Portfolio.Snapshot()
+	if len(reservations) != 1 || reservations[0].Status != PortfolioOrderReserved {
+		t.Fatal("ambiguous custody failure released the owner-wide risk reservation")
 	}
 }

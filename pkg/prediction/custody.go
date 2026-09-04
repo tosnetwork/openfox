@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -44,6 +45,7 @@ type PredictionOrderSigningRequestV1 struct {
 	Authorization  commerce.AuthorizedAction     `json:"authorization"`
 	WriterFence    commerce.WriterFence          `json:"writer_fence"`
 	SemanticFields []commerce.SemanticFieldValue `json:"semantic_fields"`
+	PortfolioProof PortfolioReservationProofV1   `json:"portfolio_proof"`
 }
 
 type PredictionOrderSignatureV1 struct {
@@ -63,6 +65,7 @@ type PredictionOrderCustodySigner interface {
 
 type AuthorizedOrderCoordinator struct {
 	Book          *Book
+	Portfolio     *OwnerPortfolioLedger
 	Signer        PredictionOrderCustodySigner
 	FenceResolver commerce.CurrentWriterFenceResolver
 }
@@ -78,7 +81,8 @@ func (coordinator AuthorizedOrderCoordinator) AuthorizeSignAndAdmit(
 	snapshot ChainAccountSnapshot,
 	now uint64,
 ) (OrderRecord, []byte, error) {
-	if ctx == nil || coordinator.Book == nil || coordinator.Signer == nil || coordinator.FenceResolver == nil ||
+	if ctx == nil || coordinator.Book == nil || coordinator.Portfolio == nil || coordinator.Signer == nil ||
+		coordinator.FenceResolver == nil ||
 		now == 0 || now > math.MaxInt64 {
 		return OrderRecord{}, nil, errors.New("prediction order custody is unavailable")
 	}
@@ -128,6 +132,25 @@ func (coordinator AuthorizedOrderCoordinator) AuthorizeSignAndAdmit(
 			prior.TradingPublicKey != hex.EncodeToString(snapshot.TradingPublicKey[:]) {
 			return OrderRecord{}, nil, errors.New("durable prediction order is no longer executable")
 		}
+		_, portfolioProof, reserveErr := coordinator.Portfolio.ReserveOrder(
+			authorization.OwnerID,
+			authorization.AgentID,
+			profile.NetworkDomainHash,
+			profile.MarketID,
+			profile.ContractCodeHash,
+			order,
+			risk,
+			portfolioSnapshot(profile, snapshot),
+		)
+		if reserveErr != nil {
+			return OrderRecord{}, nil, fmt.Errorf(
+				"durable prediction order lost its owner-wide risk reservation: %w",
+				reserveErr,
+			)
+		}
+		if validatePortfolioReservationProof(portfolioProof, risk.OrderDigest) != nil {
+			return OrderRecord{}, nil, errors.New("durable prediction order has an invalid owner-wide risk proof")
+		}
 		recovered, decodeErr := base64.StdEncoding.DecodeString(prior.SignedOrderBOC)
 		if decodeErr != nil {
 			return OrderRecord{}, nil, errors.New("durable prediction order bytes are unavailable")
@@ -150,6 +173,22 @@ func (coordinator AuthorizedOrderCoordinator) AuthorizeSignAndAdmit(
 			return OrderRecord{}, nil, errors.New("owner epoch/nonce is already bound to another order digest")
 		}
 	}
+	_, portfolioProof, err := coordinator.Portfolio.ReserveOrder(
+		authorization.OwnerID,
+		authorization.AgentID,
+		profile.NetworkDomainHash,
+		profile.MarketID,
+		profile.ContractCodeHash,
+		order,
+		risk,
+		portfolioSnapshot(profile, snapshot),
+	)
+	if err != nil {
+		return OrderRecord{}, nil, fmt.Errorf("prediction order exceeds the owner-wide portfolio boundary: %w", err)
+	}
+	if validatePortfolioReservationProof(portfolioProof, risk.OrderDigest) != nil {
+		return OrderRecord{}, nil, errors.New("prediction order has an invalid owner-wide risk proof")
+	}
 	wireFields, err := commerce.ExportSemanticFields(authorizeOrderAction, fields)
 	if err != nil {
 		return OrderRecord{}, nil, err
@@ -165,6 +204,7 @@ func (coordinator AuthorizedOrderCoordinator) AuthorizeSignAndAdmit(
 		Authorization:  authorization,
 		WriterFence:    fence,
 		SemanticFields: wireFields,
+		PortfolioProof: portfolioProof,
 	})
 	if err != nil {
 		return OrderRecord{}, nil, err
@@ -190,6 +230,24 @@ func (coordinator AuthorizedOrderCoordinator) AuthorizeSignAndAdmit(
 		return OrderRecord{}, nil, err
 	}
 	return record, append([]byte(nil), signedBOC...), nil
+}
+
+func portfolioSnapshot(profile MarketProfile, snapshot ChainAccountSnapshot) PortfolioMarketSnapshot {
+	return PortfolioMarketSnapshot{
+		OwnerAddress: snapshot.OwnerAddress, MarketID: profile.MarketID, MarketAddress: profile.MarketAddress,
+		MarketConfigHash: profile.MarketConfigHash, ContractCodeHash: profile.ContractCodeHash,
+		LotPayout: profile.LotPayout, FreeBalance: snapshot.FreeBalance, YesLots: snapshot.YesLots,
+		NoLots: snapshot.NoLots, MasterchainSeqno: snapshot.MasterchainSeqno, ObservedAt: snapshot.ObservedAt,
+		FinalityViewID: snapshot.FinalityViewID, QuorumFinalized: snapshot.Finalized,
+	}
+}
+
+func validatePortfolioReservationProof(proof PortfolioReservationProofV1, orderDigest string) error {
+	if proof.SchemaVersion != portfolioSchemaVersion || proof.Revision == 0 || proof.OrderDigest != orderDigest ||
+		!canonicalDigest(proof.PortfolioKey, "sha256:") || !canonicalDigest(proof.ReservationDigest, "sha256:") {
+		return errors.New("invalid owner portfolio reservation proof")
+	}
+	return nil
 }
 
 func worstCaseRisk(

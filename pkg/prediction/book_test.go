@@ -61,7 +61,7 @@ func snapshot(owner string, private ed25519.PrivateKey, free, yes, no uint64) Ch
 	return ChainAccountSnapshot{
 		OwnerAddress: owner, TradingPublicKey: public, KeyEpoch: 3,
 		NonceFloor: 0, FreeBalance: free, YesLots: yes, NoLots: no, ObservedAt: 10_000,
-		Finalized:        true,
+		Finalized: true, MasterchainSeqno: 100,
 		MarketConfigHash: testHash(0x22).CellHashString(), FinalityViewID: testHash(0x90).SHA256String(),
 	}
 }

@@ -52,6 +52,7 @@ type ChainAccountSnapshot struct {
 	YesLots          uint64
 	NoLots           uint64
 	ObservedAt       uint64
+	MasterchainSeqno uint64
 	Finalized        bool
 	MarketConfigHash string
 	FinalityViewID   string

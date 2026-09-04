@@ -3,6 +3,7 @@ package prediction
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 
+	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tosutils-go/address"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 
@@ -47,16 +49,18 @@ const (
 // evidence. ObserverIDs are independent RPC/config identities, not URLs that
 // may silently change ownership after an action has been signed.
 type PredictionRelayProfile struct {
-	NetworkDomainHash       string   `json:"network_domain_hash"`
-	SourceAgentAccount      string   `json:"source_agent_account"`
-	MarketAddress           string   `json:"market_address"`
-	MarketCodeHash          string   `json:"market_code_hash"`
-	MarketConfigHash        string   `json:"market_config_hash"`
-	ObserverIDs             []string `json:"observer_ids"`
-	QuorumThreshold         uint32   `json:"quorum_threshold"`
-	MaximumOutstanding      uint32   `json:"maximum_outstanding"`
-	MaximumSignedBOCBytes   uint32   `json:"maximum_signed_boc_bytes"`
-	MinimumNoBounceMCBlocks uint32   `json:"minimum_no_bounce_masterchain_blocks"`
+	NetworkDomainHash          string   `json:"network_domain_hash"`
+	SourceAgentAccount         string   `json:"source_agent_account"`
+	SourceAgentAccountCodeHash string   `json:"source_agent_account_code_hash"`
+	MarketAddress              string   `json:"market_address"`
+	MarketID                   string   `json:"market_id"`
+	MarketCodeHash             string   `json:"market_code_hash"`
+	MarketConfigHash           string   `json:"market_config_hash"`
+	ObserverIDs                []string `json:"observer_ids"`
+	QuorumThreshold            uint32   `json:"quorum_threshold"`
+	MaximumOutstanding         uint32   `json:"maximum_outstanding"`
+	MaximumSignedBOCBytes      uint32   `json:"maximum_signed_boc_bytes"`
+	MinimumNoBounceMCBlocks    uint32   `json:"minimum_no_bounce_masterchain_blocks"`
 }
 
 type AccountCursor struct {
@@ -84,6 +88,8 @@ type QuorumFinality struct {
 }
 
 type ExpectedContractCall struct {
+	ActionKind             string `json:"action_kind"`
+	StableActionID         string `json:"stable_action_id"`
 	TargetAddress          string `json:"target_address"`
 	ValueNanoTOS           uint64 `json:"value_nanotos"`
 	BodyBOCBase64          string `json:"body_boc_base64"`
@@ -250,6 +256,21 @@ func (journal *PredictionRelayJournal) Close() error {
 	return err
 }
 
+// Profile returns the immutable relay trust domain selected when the journal
+// was opened. Callers use it to reject a builder artifact before asking Owner
+// authority to sign.
+func (journal *PredictionRelayJournal) Profile() (PredictionRelayProfile, bool) {
+	if journal == nil {
+		return PredictionRelayProfile{}, false
+	}
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if journal.lock == nil {
+		return PredictionRelayProfile{}, false
+	}
+	return cloneRelayProfile(journal.profile), true
+}
+
 func (journal *PredictionRelayJournal) Prepare(actionID string, exactSignedBOC []byte, expected ExpectedContractCall,
 	sourceCursor AccountCursor, masterchainCheckpoint BlockIdentity,
 ) (PredictionRelayRecord, error) {
@@ -262,7 +283,7 @@ func (journal *PredictionRelayJournal) Prepare(actionID string, exactSignedBOC [
 		return PredictionRelayRecord{}, errors.New("prediction relay journal is closed")
 	}
 	digest, err := canonicalCellDigest(exactSignedBOC, int(journal.profile.MaximumSignedBOCBytes))
-	if err != nil || validateExpectedCall(expected, journal.profile) != nil ||
+	if err != nil || validateExpectedCall(expected, journal.profile, actionID) != nil ||
 		validateAccountCursor(sourceCursor, journal.profile.SourceAgentAccount) != nil ||
 		validateCheckpoint(masterchainCheckpoint) != nil || masterchainCheckpoint.WorkchainID != -1 ||
 		masterchainCheckpoint.SequenceNumber != masterchainCheckpoint.MasterchainSequence {
@@ -481,7 +502,9 @@ func (record PredictionRelayRecord) ReservationDisposition() PredictionReservati
 
 func validateRelayProfile(profile PredictionRelayProfile) error {
 	if !canonicalDigest(profile.NetworkDomainHash, "sha256:") || !validRawAddress(profile.SourceAgentAccount) ||
+		!canonicalDigest(profile.SourceAgentAccountCodeHash, "tvm-cell-sha256:") ||
 		!validRawAddress(profile.MarketAddress) || profile.SourceAgentAccount == profile.MarketAddress ||
+		!canonicalDigest(profile.MarketID, "sha256:") ||
 		!canonicalDigest(profile.MarketCodeHash, "tvm-cell-sha256:") ||
 		!canonicalDigest(profile.MarketConfigHash, "tvm-cell-sha256:") || len(profile.ObserverIDs) < 3 ||
 		profile.QuorumThreshold < 2 || profile.QuorumThreshold <= uint32(len(profile.ObserverIDs)/2) ||
@@ -497,8 +520,9 @@ func validateRelayProfile(profile PredictionRelayProfile) error {
 	return nil
 }
 
-func validateExpectedCall(call ExpectedContractCall, profile PredictionRelayProfile) error {
-	if call.TargetAddress != profile.MarketAddress || call.ValueNanoTOS == 0 || !call.Bounce || call.ExtraFlags != 3 ||
+func validateExpectedCall(call ExpectedContractCall, profile PredictionRelayProfile, actionID string) error {
+	if !commerce.IsPredictionCustodyEffectKind(call.ActionKind) || call.StableActionID != actionID ||
+		call.TargetAddress != profile.MarketAddress || call.ValueNanoTOS == 0 || !call.Bounce || call.ExtraFlags != 3 ||
 		call.Opcode == 0 || !canonicalDigest(call.SuccessPredicateDigest, "sha256:") {
 		return errors.New("prediction expected contract call is invalid")
 	}
@@ -514,6 +538,10 @@ func validateExpectedCall(call ExpectedContractCall, profile PredictionRelayProf
 	if parseErr != nil || opcodeErr != nil || opcode != uint64(call.Opcode) {
 		return errors.New("prediction expected opcode is not the body opcode")
 	}
+	wantedPredicate, predicateErr := contractCallSuccessPredicateDigest(call)
+	if predicateErr != nil || call.SuccessPredicateDigest != wantedPredicate {
+		return errors.New("prediction expected success predicate is not canonical")
+	}
 	if call.StateInitBOCBase64 == "" {
 		if call.StateInitHash != "" {
 			return errors.New("prediction expected StateInit hash has no bytes")
@@ -525,6 +553,55 @@ func validateExpectedCall(call ExpectedContractCall, profile PredictionRelayProf
 		}
 	}
 	return nil
+}
+
+// NewExpectedContractCall freezes the exact Agent Account V2 outbound before
+// it can enter the relay journal. The success predicate is derived rather than
+// caller-selected, so a resolver cannot reinterpret a successful transaction
+// under a weaker business action.
+func NewExpectedContractCall(actionKind, stableActionID, target string, value uint64,
+	bodyBOC []byte,
+) (ExpectedContractCall, error) {
+	root, err := cell.FromBOC(bodyBOC)
+	if err != nil || root == nil || len(bodyBOC) == 0 || len(bodyBOC) > maximumChainBOCBytes ||
+		!bytes.Equal(bodyBOC, root.ToBOCWithFlags(false)) {
+		return ExpectedContractCall{}, errors.New("prediction operation body is not one canonical cell")
+	}
+	slice, err := root.BeginParse()
+	if err != nil {
+		return ExpectedContractCall{}, errors.New("prediction operation body cannot be parsed")
+	}
+	opcode, err := slice.LoadUInt(32)
+	if err != nil || opcode == 0 {
+		return ExpectedContractCall{}, errors.New("prediction operation body has no opcode")
+	}
+	call := ExpectedContractCall{
+		ActionKind: actionKind, StableActionID: stableActionID, TargetAddress: target,
+		ValueNanoTOS: value, BodyBOCBase64: base64.StdEncoding.EncodeToString(bodyBOC),
+		BodyHash: cellDigest(root), Bounce: true, ExtraFlags: 3, Opcode: uint32(opcode),
+	}
+	call.SuccessPredicateDigest, err = contractCallSuccessPredicateDigest(call)
+	if err != nil {
+		return ExpectedContractCall{}, err
+	}
+	return call, nil
+}
+
+func contractCallSuccessPredicateDigest(call ExpectedContractCall) (string, error) {
+	if !commerce.IsPredictionCustodyEffectKind(call.ActionKind) || !canonicalDigest(call.StableActionID, "sha256:") ||
+		!validRawAddress(call.TargetAddress) || call.ValueNanoTOS == 0 ||
+		!canonicalDigest(
+			call.BodyHash,
+			"tvm-cell-sha256:",
+		) || call.Opcode == 0 || !call.Bounce || call.ExtraFlags != 3 ||
+		call.StateInitBOCBase64 != "" || call.StateInitHash != "" {
+		return "", errors.New("prediction contract-call success predicate is invalid")
+	}
+	preimage := fmt.Sprintf("TOS-PREDICTION-CALL-SUCCESS\x00%s\x00%s\x00%s\x00%d\x00%s\x00%d\x00%d",
+		call.ActionKind, call.StableActionID, call.TargetAddress, call.ValueNanoTOS, call.BodyHash,
+		call.ExtraFlags, call.Opcode)
+	digest := sha256.Sum256([]byte(preimage))
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
 func validateSourceEvidence(record PredictionRelayRecord, evidence SourceTransactionEvidence) error {
@@ -763,7 +840,7 @@ func validateRelayRecord(record PredictionRelayRecord, profile PredictionRelayPr
 	if record.SchemaVersion != relaySchemaVersion || record.Revision == 0 ||
 		!canonicalDigest(record.ActionID, "sha256:") ||
 		!reflect.DeepEqual(record.Profile, profile) ||
-		validateExpectedCall(record.Expected, profile) != nil ||
+		validateExpectedCall(record.Expected, profile, record.ActionID) != nil ||
 		validateAccountCursor(record.PreBroadcastSourceCursor, profile.SourceAgentAccount) != nil ||
 		validateCheckpoint(record.PreBroadcastMasterchainCheckpoint) != nil ||
 		record.PreBroadcastMasterchainCheckpoint.WorkchainID != -1 ||
@@ -888,7 +965,7 @@ func canonicalCellDigest(raw []byte, maximum int) (string, error) {
 		return "", errors.New("cell BOC exceeds bound")
 	}
 	root, err := cell.FromBOC(raw)
-	if err != nil || root == nil || !bytes.Equal(raw, root.ToBOC()) {
+	if err != nil || root == nil || !bytes.Equal(raw, root.ToBOCWithFlags(false)) {
 		return "", errors.New("cell BOC is not canonical")
 	}
 	return cellDigest(root), nil
@@ -900,7 +977,7 @@ func decodeCanonicalCell(encoded string, maximum int) (*cell.Cell, error) {
 		return nil, err
 	}
 	root, cellErr := cell.FromBOC(raw)
-	if cellErr != nil || root == nil || !bytes.Equal(raw, root.ToBOC()) {
+	if cellErr != nil || root == nil || !bytes.Equal(raw, root.ToBOCWithFlags(false)) {
 		return nil, errors.New("cell BOC is not canonical")
 	}
 	return root, nil

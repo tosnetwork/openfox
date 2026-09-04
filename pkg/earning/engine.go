@@ -21,6 +21,7 @@ type FeatureGates struct {
 	ExternalSettlement bool `json:"external_settlement"`
 	TOSEscrow          bool `json:"tos_escrow"`
 	AgentGuarantor     bool `json:"agent_guarantor"`
+	Prediction         bool `json:"prediction"`
 }
 
 // AuthorizeAgreement signs every body-bound Agent-signature predicate for this

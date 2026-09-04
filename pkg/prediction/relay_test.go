@@ -83,22 +83,23 @@ func newRelayFixture(t *testing.T) relayFixture {
 	sourceAddress := "0:" + strings.Repeat("1", 64)
 	marketAddress := "0:" + strings.Repeat("2", 64)
 	body := cell.BeginCell().MustStoreUInt(0x504d0001, 32).MustStoreUInt(7, 64).EndCell()
-	stateInit := cell.BeginCell().MustStoreUInt(0x51, 8).EndCell()
 	signed := cell.BeginCell().MustStoreUInt(0xeeee, 16).MustStoreRef(body).EndCell()
 	profile := PredictionRelayProfile{
 		NetworkDomainHash: digest("sha256:", "a"), SourceAgentAccount: sourceAddress,
-		MarketAddress: marketAddress, MarketCodeHash: digest("tvm-cell-sha256:", "b"),
+		SourceAgentAccountCodeHash: digest("tvm-cell-sha256:", "7"),
+		MarketAddress:              marketAddress, MarketID: digest("sha256:", "8"),
+		MarketCodeHash:   digest("tvm-cell-sha256:", "b"),
 		MarketConfigHash: digest("tvm-cell-sha256:", "c"),
 		ObserverIDs:      []string{digest("sha256:", "1"), digest("sha256:", "2"), digest("sha256:", "3")},
 		QuorumThreshold:  2, MaximumOutstanding: 16, MaximumSignedBOCBytes: 8192,
 		MinimumNoBounceMCBlocks: 8,
 	}
-	expected := ExpectedContractCall{
-		TargetAddress: marketAddress, ValueNanoTOS: 10_000_000,
-		BodyBOCBase64: base64.StdEncoding.EncodeToString(body.ToBOC()), BodyHash: cellDigest(body),
-		StateInitBOCBase64: base64.StdEncoding.EncodeToString(stateInit.ToBOC()), StateInitHash: cellDigest(stateInit),
-		Bounce: true, ExtraFlags: 3, Opcode: 0x504d0001,
-		SuccessPredicateDigest: digest("sha256:", "d"),
+	actionID := digest("sha256:", "e")
+	expected, err := NewExpectedContractCall(
+		"prediction.match.submit", actionID, marketAddress, 10_000_000, body.ToBOCWithFlags(false),
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
 	checkpoint := BlockIdentity{
 		WorkchainID: -1, Shard: -1, SequenceNumber: 100,
@@ -119,7 +120,7 @@ func newRelayFixture(t *testing.T) relayFixture {
 	outboundCell := cell.BeginCell().MustStoreUInt(0x702, 12).MustStoreRef(body).EndCell()
 	outbound := ChainObservedMessage{
 		MessageHash:     cellDigest(outboundCell),
-		ExactMessageBOC: base64.StdEncoding.EncodeToString(outboundCell.ToBOC()),
+		ExactMessageBOC: base64.StdEncoding.EncodeToString(outboundCell.ToBOCWithFlags(false)),
 		SourceAddress:   sourceAddress, DestinationAddress: marketAddress, ValueNanoTOS: expected.ValueNanoTOS,
 		BodyBOCBase64: expected.BodyBOCBase64, BodyHash: expected.BodyHash,
 		StateInitBOCBase64: expected.StateInitBOCBase64, StateInitHash: expected.StateInitHash,
@@ -128,7 +129,7 @@ func newRelayFixture(t *testing.T) relayFixture {
 	source := SourceTransactionEvidence{
 		SubmittedExternalMessageHash: cellDigest(signed),
 		TransactionHash:              "sha256:" + hex.EncodeToString(transactionCell.Hash()),
-		TransactionBOCBase64:         base64.StdEncoding.EncodeToString(transactionCell.ToBOC()),
+		TransactionBOCBase64:         base64.StdEncoding.EncodeToString(transactionCell.ToBOCWithFlags(false)),
 		Block: BlockIdentity{
 			WorkchainID: 0, Shard: 1, SequenceNumber: 50,
 			RootHash: digest("sha256:", "7"), FileHash: digest("sha256:", "8"), MasterchainSequence: 101,
@@ -143,7 +144,7 @@ func newRelayFixture(t *testing.T) relayFixture {
 	destination := DestinationTransactionEvidence{
 		InboundMessageHash:   outbound.MessageHash,
 		TransactionHash:      "sha256:" + hex.EncodeToString(destinationCell.Hash()),
-		TransactionBOCBase64: base64.StdEncoding.EncodeToString(destinationCell.ToBOC()),
+		TransactionBOCBase64: base64.StdEncoding.EncodeToString(destinationCell.ToBOCWithFlags(false)),
 		Block: BlockIdentity{
 			WorkchainID: 0, Shard: 1, SequenceNumber: 51,
 			RootHash: digest("sha256:", "8"), FileHash: digest("sha256:", "9"), MasterchainSequence: 102,
@@ -157,7 +158,7 @@ func newRelayFixture(t *testing.T) relayFixture {
 		SuccessPredicateDigest: expected.SuccessPredicateDigest,
 	}
 	return relayFixture{
-		profile: profile, actionID: digest("sha256:", "e"), signedBOC: signed.ToBOC(),
+		profile: profile, actionID: actionID, signedBOC: signed.ToBOCWithFlags(false),
 		expected: expected, cursor: cursor, checkpoint: checkpoint, source: source, destination: destination,
 	}
 }
@@ -325,10 +326,12 @@ func TestPredictionRelayRichBounceRequiresExactAgentCredit(t *testing.T) {
 	richBody := cell.BeginCell().MustStoreUInt(0xfffffffe, 32).MustStoreUInt(0x504d0001, 32).EndCell()
 	bounceCell := cell.BeginCell().MustStoreUInt(0x704, 12).MustStoreRef(richBody).EndCell()
 	bounce := ChainObservedMessage{
-		MessageHash: cellDigest(bounceCell), ExactMessageBOC: base64.StdEncoding.EncodeToString(bounceCell.ToBOC()),
+		MessageHash: cellDigest(
+			bounceCell,
+		), ExactMessageBOC: base64.StdEncoding.EncodeToString(bounceCell.ToBOCWithFlags(false)),
 		SourceAddress: fixture.profile.MarketAddress, DestinationAddress: fixture.profile.SourceAgentAccount,
 		ValueNanoTOS:  fixture.expected.ValueNanoTOS - 1000,
-		BodyBOCBase64: base64.StdEncoding.EncodeToString(richBody.ToBOC()),
+		BodyBOCBase64: base64.StdEncoding.EncodeToString(richBody.ToBOCWithFlags(false)),
 		BodyHash:      cellDigest(richBody), Bounced: true,
 	}
 	failure := fixture.destination
@@ -349,7 +352,7 @@ func TestPredictionRelayRichBounceRequiresExactAgentCredit(t *testing.T) {
 	credit := BounceCreditEvidence{
 		InboundBounceMessageHash: bounce.MessageHash,
 		TransactionHash:          "sha256:" + hex.EncodeToString(creditCell.Hash()),
-		TransactionBOCBase64:     base64.StdEncoding.EncodeToString(creditCell.ToBOC()),
+		TransactionBOCBase64:     base64.StdEncoding.EncodeToString(creditCell.ToBOCWithFlags(false)),
 		Block: BlockIdentity{
 			WorkchainID: 0, Shard: 1, SequenceNumber: 53,
 			RootHash: "sha256:" + strings.Repeat(
@@ -411,7 +414,13 @@ func TestPredictionRelayRejectsMutatedOrWeakEvidenceBeforeVerifier(t *testing.T)
 		{"wrong body", func(f *relayFixture) {
 			f.source.OutboundMessages[0].BodyHash = "tvm-cell-sha256:" + strings.Repeat("0", 64)
 		}},
-		{"wrong state init", func(f *relayFixture) { f.source.OutboundMessages[0].StateInitBOCBase64 = "" }},
+		{"wrong state init", func(f *relayFixture) {
+			stateInit := cell.BeginCell().MustStoreUInt(0x51, 8).EndCell()
+			f.source.OutboundMessages[0].StateInitBOCBase64 = base64.StdEncoding.EncodeToString(
+				stateInit.ToBOCWithFlags(false),
+			)
+			f.source.OutboundMessages[0].StateInitHash = cellDigest(stateInit)
+		}},
 		{"wrong extra flags", func(f *relayFixture) { f.source.OutboundMessages[0].ExtraFlags = 0 }},
 		{"unadmitted quorum member", func(f *relayFixture) {
 			f.source.Finality.AgreeingIDs[0] = "sha256:" + strings.Repeat("0", 64)

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tosnetwork/openfox/pkg/prediction"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
@@ -57,6 +58,7 @@ type TOSCTLPaymentSink struct {
 	// adapter may prove. The bundled tosctl RPC terminal adapter currently
 	// supports confirmation depth one only.
 	RelayTerminalFinalityProfiles   []agentrelay.FinalityProfile
+	PredictionRelayJournal          *prediction.PredictionRelayJournal
 	FeeReserveNanoTOS               uint64
 	QuorumConfigPaths               []string
 	MaximumTransactions             uint32

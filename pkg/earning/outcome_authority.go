@@ -75,6 +75,22 @@ func (authority *OutcomeRecordingAuthority) AdmitRelaySponsorshipPayment(action 
 	return resolution, binding, captureErr
 }
 
+func (authority *OutcomeRecordingAuthority) AuthorizePredictionCustodyEffect(
+	action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue,
+	request []byte,
+	fence commerce.WriterFence,
+	template commerce.PredictionCustodyEffectAuthorizationV1,
+) (commerce.PredictionCustodyEffectAuthorizationV1, error) {
+	delegate, ok := authority.EconomicAuthority.(PredictionCustodyEffectAuthority)
+	if !ok {
+		return commerce.PredictionCustodyEffectAuthorizationV1{}, errors.New(
+			"prediction custody authority is unavailable",
+		)
+	}
+	return delegate.AuthorizePredictionCustodyEffect(action, fields, request, fence, template)
+}
+
 func (authority *OutcomeRecordingAuthority) Transition(stableActionID, requestDigest string,
 	state commerce.ActionResolutionState, sinkReference string, evidence []string) (commerce.ActionResolution, error) {
 	resolution, err := authority.EconomicAuthority.Transition(stableActionID, requestDigest, state, sinkReference, evidence)

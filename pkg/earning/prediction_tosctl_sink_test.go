@@ -125,6 +125,19 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 		if argumentValue(args, "build-operation") != "" {
 			return json.Marshal(artifact)
 		}
+		if argumentValue(args, "economic-effect-broadcast") != "" {
+			if argumentValue(args, "--stable-action-id") == "" ||
+				argumentValue(args, "--wallet") != "prediction-agent" {
+				return nil, errors.New("incomplete Prediction broadcast command")
+			}
+			return json.Marshal(tosctlPredictionEffectBroadcast{
+				Schema:         "tosctl.agent-account.economic-effect-broadcast.v1",
+				StableActionID: argumentValue(args, "--stable-action-id"),
+				ActionKind:     actionKind, Account: source,
+				ExactSignedBOCDigest: "sha256:" + hex.EncodeToString(externalDigest[:]),
+				State:                "broadcasting",
+			})
+		}
 		if argumentValue(args, "prepare-agent") == "" {
 			return nil, errors.New("unexpected tosctl command")
 		}
@@ -217,6 +230,16 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 	if err != nil || retried.RelayRecord.ExactSignedBOCDigest != prepared.RelayRecord.ExactSignedBOCDigest ||
 		calls != 5 {
 		t.Fatalf("submitted retry did not recover exact relay material: calls=%d err=%v", calls, err)
+	}
+	broadcasting, err := engine.ResumePredictionEffectBroadcast(t.Context(), sink, prepared)
+	if err != nil || broadcasting.State != prediction.RelayBroadcasting ||
+		broadcasting.BroadcastAttempts != 1 || calls != 6 {
+		t.Fatalf("Prediction exact broadcast failed: calls=%d record=%+v err=%v", calls, broadcasting, err)
+	}
+	rebroadcast, err := engine.ResumePredictionEffectBroadcast(t.Context(), sink, prepared)
+	if err != nil || rebroadcast.State != prediction.RelayBroadcasting ||
+		rebroadcast.BroadcastAttempts != 2 || calls != 7 {
+		t.Fatalf("Prediction exact rebroadcast was not crash-safe: calls=%d record=%+v err=%v", calls, rebroadcast, err)
 	}
 }
 

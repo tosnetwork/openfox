@@ -3,6 +3,7 @@ package prediction
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -213,6 +214,12 @@ func TestPredictionRelayBroadcastCrashWindowAndSourceFinalBoundary(t *testing.T)
 	)
 	if err != nil || prepared.State != RelaySigned {
 		t.Fatalf("prepare: state=%s err=%v", prepared.State, err)
+	}
+	rawDigest := sha256.Sum256(fixture.signedBOC)
+	if prepared.ExactSignedBOCDigest != "sha256:"+hex.EncodeToString(rawDigest[:]) ||
+		prepared.SubmittedExternalMessageHash != fixture.source.SubmittedExternalMessageHash ||
+		prepared.ExactSignedBOCDigest == prepared.SubmittedExternalMessageHash {
+		t.Fatalf("relay conflated exact BOC bytes with the submitted TVM message: %#v", prepared)
 	}
 
 	failed := &relayTestBroadcaster{err: errors.New("socket failed")}

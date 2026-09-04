@@ -25,6 +25,7 @@ of what was learned.
 | Two-sided stakes | PASS | Both parties fund the pot and the winner takes it; the round aborts if the pot is not fully funded. |
 | Fair subject | PASS | Block-hash parity resolves near 50/50 where the block-count subject could not. |
 | Verifier-less `timeout` auto-payout | PASS | Rejected inside the challenge window, paid the agent after expiry. |
+| Agent's stake under an idle verifier | **FAIL** | With a verifier set and a correct result submitted, an idle adjudicator lets the creator take the whole pot at timeout. Measured. |
 | Attestor signature gate | PASS | Unsigned, wrongly-signed, and rotate-then-settle attempts were all rejected; only the true attestor signature settled. |
 | Agent protection without an attestor | **FAIL** | The creator settled `payout=0` on delivered work, and the agent's `dispute` was rejected — `dispute` is creator-only. |
 | Validator memory | PASS | 388–540 MB per node over 9,058 s. Oscillating, no monotonic growth. |
@@ -78,17 +79,25 @@ recorded here as evidence that the decision layer is live.
 40 of 49 opportunities ended as `skipped:buyer-portfolio-capacity`. The cause is
 mechanical and is visible in the persisted authority documents.
 
-The pre-conversation capacity check sizes the buyer's reservation as:
+`MaximumLoss` serves two roles at once. It bounds what a buyer will commit to a
+single engagement, and it bounds the sum across every live engagement. The
+per-engagement budget is:
 
-    amount = seller price
-    if buyer.MaximumLoss > 0 && buyer.MaximumLoss < amount { amount = buyer.MaximumLoss }
+    buyerBudget = seller asking price
+    if buyer.MaximumLoss > 0 && buyer.MaximumLoss < buyerBudget { buyerBudget = buyer.MaximumLoss }
 
-and then reserves that same value as `MaximumLossAtomic`. Whenever the seller's
-price is at or above the buyer's ceiling — which it is, in every round observed —
-`amount` collapses to exactly the ceiling. **The first trade therefore consumes
-100% of the loss budget by construction, not by accident.**
+Every seller in this profile asks at or above every buyer's ceiling, so the
+budget collapses onto the ceiling, the settled amount equals the budget, and the
+reservation equals the settled amount. **The first settled purchase therefore
+consumes 100% of the aggregate ceiling** — not because the reservation is
+mis-sized, but because one number is doing two jobs.
 
-The reservation is then never released on the buy side. Observed state:
+Parameters alone cannot fix it. A buyer's cap may not exceed its own asking
+price, so holding *k* engagements requires `own_ask >= own_cap >= k * peer_ask`;
+in a closed set of agents the cheapest one can never be *k* times cheaper than
+itself. The two roles need separate numbers.
+
+Observed state after one purchase each:
 
 | Agent | Loss limit | Buy reservation | Sell reservation |
 |---|---|---|---|
@@ -96,38 +105,45 @@ The reservation is then never released on the buy side. Observed state:
 | software-builder | 2.0 TOS | 2.0 TOS, `released: false` | 1.9 TOS, `released: true` |
 | data-curator | 1.9 TOS | 1.9 TOS, `released: false` | 2.0 TOS, `released: true` |
 
-Both reservations are created at the same place, by the same `ReserveAgreement`
-call pair. The asymmetry is not incidental — the campaign's own post-delivery
-invariant encodes it:
+### The hold is held on purpose — do not "fix" it by releasing early
 
-    allowReleased := party.name == "seller" && party.record.State == EngagementSettled
+An earlier draft of this report claimed the buy side had no release step. That
+is wrong, and the correction matters more than the original claim.
 
-A released reservation is tolerated **only** for the seller, and only once the
-engagement has settled. A released buyer reservation would fail that check. So
-the harness does not merely omit a buy-side release; it asserts that one has not
-happened. With usage pinned at the limit and nothing permitted to release it,
-every subsequent candidate fails the aggregate check for the rest of the run.
+`ReconcileApply` does release buyer reservations once an engagement is terminal.
+It refuses while the payment authorisation is live, and says why:
 
-Whether the underlying runtime *could* release the buyer's hold on payment
-finality was not established here; what is established is that this campaign
-never does, and would fail its own invariant if it did.
+    // Settlement may be recorded, but caller-provided terminal evidence
+    // cannot release an offline bearer. Authority time-based cleanup will
+    // free the exact hold only after the signed payment validity ends.
 
-This is a compounding failure rather than two independent ones — see Finding 2.
+and the expiry path states the rule outright: *"caller-provided settlement
+outcomes cannot accelerate it."* A signed payment is an **offline bearer
+instrument**. Observing one on-chain settlement does not prove the instrument
+cannot be presented again, so the exposure is held for the full signed horizon —
+`max(payment expiry, authorisation expiry, every local outgoing obligation's
+expiry) + finality grace`. In this profile the pay obligation runs 50 minutes,
+which is the hour-long hold that was measured.
 
-### Suggested fixes, in order of leverage
+Releasing on settlement evidence would therefore be a security regression, not a
+fix. The hold duration is correct; what was wrong was committing the entire
+ceiling to one engagement.
 
-1. Release the buyer's reservation when the payment reaches finality, and widen
-   the post-delivery invariant to permit it — the assertion above has to change
-   with the behaviour, or the fix fails the test that encodes the bug. Without
-   this, no amount of budget tuning helps: capacity is consumed once and never
-   returns.
-2. Do not size the reservation at the ceiling. Reserving `min(price, cap)` as
-   the *loss* figure conflates "the most this agent may ever lose" with "what
-   this one trade risks". A per-trade risk figure below the aggregate ceiling
-   would let an agent hold several positions at once.
-3. Fail loudly at configuration time when a single admissible trade can consume
-   the entire loss budget. The current behaviour is a silent skip, which reads
-   as "no counterparty wanted this" rather than "this agent is out of capacity".
+### The fix that was applied
+
+`MaximumSpendPerTrade` now bounds a single engagement, separately from
+`MaximumLoss` bounding their sum. It defaults to zero, which preserves the old
+behaviour for every profile that does not set it; the marketplace profile sets
+it to a third of the ceiling, so a buyer can hold three engagements at once.
+
+A regression test pins the property and fails on the old parameters for all
+eight agents (`can hold 1 concurrent engagements`).
+
+One thing remains worth doing and was not done: the capacity refusal is still a
+silent `skipped:buyer-portfolio-capacity`, which reads as "no counterparty
+wanted this" rather than "this agent is out of capacity". A configuration in
+which one admissible trade can consume the whole ceiling should fail loudly at
+setup instead.
 
 ## Finding 2 — the settlement price is always the buyer's budget ceiling
 
@@ -352,6 +368,19 @@ Two consequences for anyone using this construction:
    wager that relies on a third-party adjudicator therefore depends on that
    adjudicator actually acting — non-action is not neutral, it favours the
    creator.
+
+   Measured, not inferred. A symmetric wager with a verifier set, pot 2.1499
+   TOS, where the agent submitted a correct result and the verifier then did
+   nothing for the full 3,600-second review period:
+
+       timeout by creator -> status expired
+       creator            +2.1596 TOS
+       agent               −1.05 TOS (its stake)
+
+   The agent delivered correctly and lost its entire stake. This is the more
+   dangerous of the two timeout cases, because nothing went wrong that either
+   party could point to: the result was right, the escrow behaved as written,
+   and the adjudicator simply stayed silent.
 
 A wager built on this escrow should treat the creator's role as privileged and
 price it, or the construction needs a contract whose default on non-resolution

@@ -509,6 +509,7 @@ func validateRelayProfile(profile PredictionRelayProfile) error {
 		!canonicalDigest(profile.MarketID, "sha256:") ||
 		!canonicalDigest(profile.MarketCodeHash, "tvm-cell-sha256:") ||
 		!canonicalDigest(profile.MarketConfigHash, "tvm-cell-sha256:") || len(profile.ObserverIDs) < 3 ||
+		len(profile.ObserverIDs) > 64 ||
 		profile.QuorumThreshold < 2 || profile.QuorumThreshold <= uint32(len(profile.ObserverIDs)/2) ||
 		profile.QuorumThreshold > uint32(len(profile.ObserverIDs)) || profile.MaximumOutstanding == 0 ||
 		profile.MaximumOutstanding > 100_000 || profile.MaximumSignedBOCBytes == 0 ||

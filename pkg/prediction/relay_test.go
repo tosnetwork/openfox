@@ -176,6 +176,20 @@ func openRelayFixture(t *testing.T, fixture relayFixture, directory string) *Pre
 	return journal
 }
 
+func TestPredictionRelayProfileCapsObserverMemory(t *testing.T) {
+	fixture := newRelayFixture(t)
+	fixture.profile.ObserverIDs = make([]string, 65)
+	for index := range fixture.profile.ObserverIDs {
+		value := sha256.Sum256([]byte{byte(index)})
+		fixture.profile.ObserverIDs[index] = "sha256:" + hex.EncodeToString(value[:])
+	}
+	// Sorting would make every identity canonical, but the explicit count cap
+	// must reject the profile before it can amplify every durable record.
+	if _, err := OpenPredictionRelayJournal(filepath.Join(t.TempDir(), "relay"), fixture.profile); err == nil {
+		t.Fatal("Prediction relay accepted more than 64 observer identities")
+	}
+}
+
 func prepareAndResolveSource(
 	t *testing.T,
 	journal *PredictionRelayJournal,

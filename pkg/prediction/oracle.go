@@ -16,10 +16,11 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/tosnetwork/openfox/pkg/fileutil"
 	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
 	"github.com/tosnetwork/tosutils-go/address"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
+
+	"github.com/tosnetwork/openfox/pkg/fileutil"
 )
 
 const oracleStateFile = "oracle-votes.json"
@@ -106,7 +107,8 @@ func ArchiveOperatorID(publicKey ed25519.PublicKey) (string, error) {
 }
 
 func SignArchiveReceipt(privateKey ed25519.PrivateKey, contentDigest protocol.Hash32,
-	locator string, storedAt, retainUntil uint64) (ArchiveReceipt, error) {
+	locator string, storedAt, retainUntil uint64,
+) (ArchiveReceipt, error) {
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return ArchiveReceipt{}, errors.New("archive receipt key is invalid")
 	}
@@ -114,8 +116,10 @@ func SignArchiveReceipt(privateKey ed25519.PrivateKey, contentDigest protocol.Ha
 	if err != nil {
 		return ArchiveReceipt{}, err
 	}
-	receipt := ArchiveReceipt{OperatorID: operator, ContentDigest: contentDigest,
-		ArchiveLocator: locator, StoredAt: storedAt, RetainUntil: retainUntil}
+	receipt := ArchiveReceipt{
+		OperatorID: operator, ContentDigest: contentDigest,
+		ArchiveLocator: locator, StoredAt: storedAt, RetainUntil: retainUntil,
+	}
 	digest, err := archiveReceiptDigest(receipt)
 	if err != nil {
 		return ArchiveReceipt{}, err
@@ -125,22 +129,17 @@ func SignArchiveReceipt(privateKey ed25519.PrivateKey, contentDigest protocol.Ha
 }
 
 func OpenOracleJournal(directory string, profile OracleProfile) (*OracleJournal, error) {
-	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || validateOracleProfile(profile) != nil {
+	if validateOracleProfile(profile) != nil {
 		return nil, errors.New("prediction oracle journal configuration is invalid")
 	}
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(directory)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-		return nil, errors.New("prediction oracle journal directory must be owner-private")
-	}
-	lock, err := acquireBookLock(directory)
+	lock, err := openPrivateLockedDirectory(directory)
 	if err != nil {
 		return nil, err
 	}
-	journal := &OracleJournal{directory: directory, lock: lock,
-		doc: oracleDocument{SchemaVersion: 1, Profile: profile, Votes: map[string]oracleVoteRecord{}}}
+	journal := &OracleJournal{
+		directory: directory, lock: lock,
+		doc: oracleDocument{SchemaVersion: 1, Profile: profile, Votes: map[string]oracleVoteRecord{}},
+	}
 	if err := journal.loadOrInitialize(); err != nil {
 		_ = releaseBookLock(lock)
 		return nil, err
@@ -166,7 +165,8 @@ func (journal *OracleJournal) Close() error {
 // plan. A crash after return can therefore only replay the same statement; a
 // different outcome or evidence root for the same round context is rejected.
 func (journal *OracleJournal) PrepareVote(roundContextBOC, reviewBaseBOC []byte,
-	outcome protocol.Outcome, evidence []ArchivedEvidence, now uint64) (OracleVotePlan, error) {
+	outcome protocol.Outcome, evidence []ArchivedEvidence, now uint64,
+) (OracleVotePlan, error) {
 	if journal == nil || now == 0 || len(roundContextBOC) == 0 || len(roundContextBOC) > 8192 || len(evidence) == 0 {
 		return OracleVotePlan{}, errors.New("prediction oracle vote input is invalid")
 	}
@@ -184,7 +184,7 @@ func (journal *OracleJournal) PrepareVote(roundContextBOC, reviewBaseBOC []byte,
 	rulesHash, _ := protocol.ParseHash32(profile.RulesHash)
 	policyHash, _ := protocol.ParseHash32(profile.RoundPolicyHash)
 	contextHash := hash32(context.Hash())
-	expiry := uint64(0)
+	var expiry uint64
 	if profile.Round == protocol.RoundNormal {
 		if len(reviewBaseBOC) != 0 {
 			return OracleVotePlan{}, errors.New("normal oracle vote must not carry a review base")
@@ -214,7 +214,8 @@ func (journal *OracleJournal) PrepareVote(roundContextBOC, reviewBaseBOC []byte,
 		return OracleVotePlan{}, err
 	}
 	manifest, err := protocol.BuildPredictionEvidenceManifestCell(protocol.PredictionEvidenceManifestV1{
-		MarketID: marketID, RulesHash: rulesHash, RoundContextHash: contextHash, Outcome: outcome, Entries: entries})
+		MarketID: marketID, RulesHash: rulesHash, RoundContextHash: contextHash, Outcome: outcome, Entries: entries,
+	})
 	if err != nil {
 		return OracleVotePlan{}, err
 	}
@@ -223,7 +224,9 @@ func (journal *OracleJournal) PrepareVote(roundContextBOC, reviewBaseBOC []byte,
 	if prior, ok := journal.doc.Votes[key]; ok {
 		if prior.Round != profile.Round || prior.Outcome != outcome ||
 			prior.EvidenceRoot != evidenceRoot.CellHashString() {
-			return OracleVotePlan{}, errors.New("oracle equivocation: round context already committed to another statement")
+			return OracleVotePlan{}, errors.New(
+				"oracle equivocation: round context already committed to another statement",
+			)
 		}
 		return votePlan(prior), nil
 	}
@@ -231,16 +234,19 @@ func (journal *OracleJournal) PrepareVote(roundContextBOC, reviewBaseBOC []byte,
 		GlobalID: profile.GlobalID, MarketAddress: profile.MarketAddress, MarketID: marketID,
 		RulesHash: rulesHash, RoundPolicyHash: policyHash, RoundContextHash: contextHash,
 		Round: profile.Round, Outcome: outcome, EvidenceRoot: evidenceRoot,
-		StatementCreatedAt: now, StatementExpiry: expiry})
+		StatementCreatedAt: now, StatementExpiry: expiry,
+	})
 	if err != nil {
 		return OracleVotePlan{}, err
 	}
-	record := oracleVoteRecord{Round: profile.Round, Outcome: outcome,
+	record := oracleVoteRecord{
+		Round: profile.Round, Outcome: outcome,
 		RoundContextHash: contextHash.CellHashString(), EvidenceRoot: evidenceRoot.CellHashString(),
 		StatementHash:       hash32(statement.Hash()).CellHashString(),
 		EvidenceManifestBOC: base64.StdEncoding.EncodeToString(manifest.ToBOC()),
 		StatementBOC:        base64.StdEncoding.EncodeToString(statement.ToBOC()), StatementCreatedAt: now,
-		StatementExpiry: expiry, ArchiveReceiptDigests: receiptDigests}
+		StatementExpiry: expiry, ArchiveReceiptDigests: receiptDigests,
+	}
 	next := cloneOracleDocument(journal.doc)
 	next.Revision++
 	next.Votes[key] = record
@@ -251,7 +257,10 @@ func (journal *OracleJournal) PrepareVote(roundContextBOC, reviewBaseBOC []byte,
 	return votePlan(record), nil
 }
 
-func (journal *OracleJournal) verifyArchivedEvidence(values []ArchivedEvidence, now uint64) ([]protocol.EvidenceEntryV1, []string, error) {
+func (journal *OracleJournal) verifyArchivedEvidence(
+	values []ArchivedEvidence,
+	now uint64,
+) ([]protocol.EvidenceEntryV1, []string, error) {
 	if len(values) > protocol.MaxEvidenceEntries {
 		return nil, nil, errors.New("oracle evidence entry capacity exceeded")
 	}
@@ -330,15 +339,22 @@ func validateOracleProfile(profile OracleProfile) error {
 	rules, rulesErr := protocol.ParseHash32(profile.RulesHash)
 	policy, policyErr := protocol.ParseHash32(profile.RoundPolicyHash)
 	reporter, reporterErr := address.ParseRawAddr(profile.ReporterAddress)
-	if marketErr != nil || reporterErr != nil || market == nil || reporter == nil || market.Type() != address.StdAddress ||
-		reporter.Type() != address.StdAddress || market.StringRaw() != profile.MarketAddress ||
-		reporter.StringRaw() != profile.ReporterAddress || marketIDErr != nil || rulesErr != nil || policyErr != nil ||
-		marketID.IsZero() || rules.IsZero() || policy.IsZero() ||
-		!canonicalDigest(profile.MarketID, "tvm-cell-sha256:") || !canonicalDigest(profile.RulesHash, "sha256:") ||
-		!canonicalDigest(profile.RoundPolicyHash, "tvm-cell-sha256:") ||
-		(profile.Round != protocol.RoundNormal && profile.Round != protocol.RoundAppeal) ||
-		profile.ClaimDeadline == 0 || profile.AuditRetention == 0 || profile.AuditRetention > 31_536_000 ||
-		len(profile.ArchiveAuthorities) < 2 || len(profile.ArchiveAuthorities) > 16 {
+	invalidAddresses := marketErr != nil || reporterErr != nil || market == nil || reporter == nil
+	if !invalidAddresses {
+		invalidAddresses = market.Type() != address.StdAddress || reporter.Type() != address.StdAddress ||
+			market.StringRaw() != profile.MarketAddress || reporter.StringRaw() != profile.ReporterAddress
+	}
+	invalidHashes := marketIDErr != nil || rulesErr != nil || policyErr != nil ||
+		marketID.IsZero() || rules.IsZero() || policy.IsZero()
+	invalidDigests := !canonicalDigest(profile.MarketID, "tvm-cell-sha256:") ||
+		!canonicalDigest(profile.RulesHash, "sha256:") ||
+		!canonicalDigest(profile.RoundPolicyHash, "tvm-cell-sha256:")
+	invalidRound := profile.Round != protocol.RoundNormal && profile.Round != protocol.RoundAppeal
+	invalidRetention := profile.ClaimDeadline == 0 || profile.AuditRetention == 0 ||
+		profile.AuditRetention > 31_536_000
+	invalidAuthorityCount := len(profile.ArchiveAuthorities) < 2 || len(profile.ArchiveAuthorities) > 16
+	if invalidAddresses || invalidHashes || invalidDigests || invalidRound || invalidRetention ||
+		invalidAuthorityCount {
 		return errors.New("invalid immutable oracle profile")
 	}
 	seen := make(map[string]struct{}, len(profile.ArchiveAuthorities))
@@ -387,11 +403,13 @@ func add64(left, right uint64) (uint64, bool) {
 func votePlan(record oracleVoteRecord) OracleVotePlan {
 	manifest, _ := base64.StdEncoding.DecodeString(record.EvidenceManifestBOC)
 	statement, _ := base64.StdEncoding.DecodeString(record.StatementBOC)
-	return OracleVotePlan{Round: record.Round, Outcome: record.Outcome,
+	return OracleVotePlan{
+		Round: record.Round, Outcome: record.Outcome,
 		RoundContextHash: record.RoundContextHash, EvidenceRoot: record.EvidenceRoot,
 		StatementHash: record.StatementHash, EvidenceManifestBOC: manifest, StatementBOC: statement,
 		StatementCreatedAt: record.StatementCreatedAt, StatementExpiry: record.StatementExpiry,
-		ArchiveReceiptDigests: append([]string(nil), record.ArchiveReceiptDigests...)}
+		ArchiveReceiptDigests: append([]string(nil), record.ArchiveReceiptDigests...),
+	}
 }
 
 func (journal *OracleJournal) loadOrInitialize() error {

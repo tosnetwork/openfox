@@ -46,6 +46,8 @@ type relayTestVerifier struct {
 	err              error
 }
 
+func (*relayTestVerifier) predictionRelayEvidenceVerifier() {}
+
 func (verifier *relayTestVerifier) VerifyPredictionSource(_ context.Context, _ PredictionRelayRecord,
 	_ SourceTransactionEvidence,
 ) error {

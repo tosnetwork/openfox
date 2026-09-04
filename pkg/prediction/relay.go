@@ -195,6 +195,7 @@ type PredictionExactBroadcaster interface {
 // all structural and identity checks so an implementation cannot weaken the
 // state machine by returning a convenient boolean.
 type PredictionRelayEvidenceVerifier interface {
+	predictionRelayEvidenceVerifier()
 	VerifyPredictionSource(ctx context.Context, record PredictionRelayRecord, evidence SourceTransactionEvidence) error
 	VerifyPredictionDestination(
 		ctx context.Context,

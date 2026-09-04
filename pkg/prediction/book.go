@@ -18,10 +18,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tosnetwork/openfox/pkg/fileutil"
 	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
 	"github.com/tosnetwork/tosutils-go/address"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
+
+	"github.com/tosnetwork/openfox/pkg/fileutil"
 )
 
 const stateFile = "book.json"
@@ -71,9 +72,9 @@ type ChainMarketSnapshot struct {
 type OrderStatus string
 
 const (
-	OrderLive      OrderStatus = "live"
-	OrderFilled    OrderStatus = "filled"
-	OrderCancelled OrderStatus = "cancelled"
+	OrderLive     OrderStatus = "live"
+	OrderFilled   OrderStatus = "filled"
+	OrderCanceled OrderStatus = "canceled"
 )
 
 type OrderRecord struct {
@@ -126,7 +127,11 @@ func OpenBook(directory string, profile MarketProfile) (*Book, error) {
 	if err != nil {
 		return nil, err
 	}
-	book := &Book{directory: directory, lock: lock, doc: document{SchemaVersion: 1, Profile: profile, Orders: map[string]OrderRecord{}}}
+	book := &Book{
+		directory: directory,
+		lock:      lock,
+		doc:       document{SchemaVersion: 1, Profile: profile, Orders: map[string]OrderRecord{}},
+	}
 	if err := book.loadOrInitialize(); err != nil {
 		_ = releaseBookLock(lock)
 		return nil, err
@@ -183,9 +188,11 @@ func (book *Book) Admit(signedBOC []byte, snapshot ChainAccountSnapshot, now uin
 			return OrderRecord{}, errors.New("owner epoch/nonce is already bound to another order digest")
 		}
 	}
-	record := OrderRecord{Digest: digest, OrderCellHash: cellHash,
+	record := OrderRecord{
+		Digest: digest, OrderCellHash: cellHash,
 		TradingPublicKey: hex.EncodeToString(verified.PublicKey[:]), SignedOrderBOC: canonicalBOC,
-		Order: verified.Order, Status: OrderLive}
+		Order: verified.Order, Status: OrderLive,
+	}
 	next := cloneDocument(book.doc)
 	next.Revision++
 	next.Orders[digest] = record
@@ -207,7 +214,8 @@ func (book *Book) ApplyFinalizedFill(digest string, cumulative uint64, txHash, f
 		return errors.New("prediction order book is closed")
 	}
 	record, ok := book.doc.Orders[digest]
-	if !ok || record.Status == OrderCancelled || cumulative < record.CumulativeFilled || cumulative > record.Order.QuantityLots {
+	if !ok || record.Status == OrderCanceled || cumulative < record.CumulativeFilled ||
+		cumulative > record.Order.QuantityLots {
 		return errors.New("finalized fill conflicts with the durable order state")
 	}
 	if cumulative == record.CumulativeFilled {
@@ -246,13 +254,13 @@ func (book *Book) SuppressFinalizedCancellation(digest, txHash, finalityViewID s
 	if !ok || record.Status == OrderFilled {
 		return errors.New("finalized cancellation conflicts with the durable order state")
 	}
-	if record.Status == OrderCancelled {
+	if record.Status == OrderCanceled {
 		if record.LastFinalizedTxHash != txHash || record.FinalityViewID != finalityViewID {
 			return errors.New("cancellation has conflicting finality evidence")
 		}
 		return nil
 	}
-	record.Status, record.LastFinalizedTxHash, record.FinalityViewID = OrderCancelled, txHash, finalityViewID
+	record.Status, record.LastFinalizedTxHash, record.FinalityViewID = OrderCanceled, txHash, finalityViewID
 	next := cloneDocument(book.doc)
 	next.Revision++
 	next.Orders[digest] = record
@@ -264,7 +272,8 @@ func (book *Book) SuppressFinalizedCancellation(digest, txHash, finalityViewID s
 }
 
 func (book *Book) PlanMatch(leftDigest, rightDigest string, quantity, now uint64,
-	marketSnapshot ChainMarketSnapshot, leftAccount, rightAccount ChainAccountSnapshot) (MatchPlan, error) {
+	marketSnapshot ChainMarketSnapshot, leftAccount, rightAccount ChainAccountSnapshot,
+) (MatchPlan, error) {
 	book.mu.Lock()
 	defer book.mu.Unlock()
 	if book.lock == nil {
@@ -305,11 +314,12 @@ func (book *Book) PlanMatch(leftDigest, rightDigest string, quantity, now uint64
 	}
 	for _, snapshot := range []ChainAccountSnapshot{leftAccount, rightAccount} {
 		balance, ok := model.Accounts[snapshot.OwnerAddress]
-		if !ok || balance != (protocol.AccountBalance{Free: snapshot.FreeBalance, YesLots: snapshot.YesLots, NoLots: snapshot.NoLots}) {
+		if !ok ||
+			balance != (protocol.AccountBalance{Free: snapshot.FreeBalance, YesLots: snapshot.YesLots, NoLots: snapshot.NoLots}) {
 			return MatchPlan{}, errors.New("owner snapshot conflicts with the complete market account view")
 		}
 	}
-	if err := model.CheckInvariants(); err != nil {
+	if invariantErr := model.CheckInvariants(); invariantErr != nil {
 		return MatchPlan{}, errors.New("finalized market snapshot violates collateral invariants")
 	}
 	amounts, err := model.Match(left.Order, right.Order, quantity)
@@ -318,8 +328,10 @@ func (book *Book) PlanMatch(leftDigest, rightDigest string, quantity, now uint64
 	}
 	leftBOC, _ := base64.StdEncoding.DecodeString(left.SignedOrderBOC)
 	rightBOC, _ := base64.StdEncoding.DecodeString(right.SignedOrderBOC)
-	return MatchPlan{LeftDigest: leftDigest, RightDigest: rightDigest, Quantity: quantity,
-		LeftBOC: leftBOC, RightBOC: rightBOC, Amounts: amounts}, nil
+	return MatchPlan{
+		LeftDigest: leftDigest, RightDigest: rightDigest, Quantity: quantity,
+		LeftBOC: leftBOC, RightBOC: rightBOC, Amounts: amounts,
+	}, nil
 }
 
 func (book *Book) validateMarketSnapshot(snapshot ChainMarketSnapshot, now uint64) error {
@@ -352,7 +364,11 @@ func (book *Book) LiveOrders() []OrderRecord {
 	return result
 }
 
-func (book *Book) validateAdmission(order protocol.SignedPredictionOrderV1, snapshot ChainAccountSnapshot, now uint64) error {
+func (book *Book) validateAdmission(
+	order protocol.SignedPredictionOrderV1,
+	snapshot ChainAccountSnapshot,
+	now uint64,
+) error {
 	profile := book.doc.Profile
 	if order.Order.GlobalID != profile.GlobalID || order.Order.WorkchainID != profile.WorkchainID ||
 		order.Order.MarketAddress != profile.MarketAddress || order.Order.MarketConfigHash.CellHashString() != profile.MarketConfigHash ||
@@ -470,13 +486,15 @@ func (book *Book) loadOrInitialize() error {
 	var loaded document
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&loaded) != nil || decoder.Decode(&struct{}{}) != io.EOF || loaded.SchemaVersion != 1 || loaded.Orders == nil ||
-		!reflect.DeepEqual(loaded.Profile, book.doc.Profile) || uint32(len(loaded.Orders)) > loaded.Profile.MaxOrders {
+	if decoder.Decode(&loaded) != nil || decoder.Decode(&struct{}{}) != io.EOF || loaded.SchemaVersion != 1 ||
+		loaded.Orders == nil ||
+		!reflect.DeepEqual(loaded.Profile, book.doc.Profile) ||
+		uint32(len(loaded.Orders)) > loaded.Profile.MaxOrders {
 		return errors.New("prediction order-book state identity or shape is invalid")
 	}
 	for digest, record := range loaded.Orders {
 		if digest != record.Digest || !canonicalDigest(digest, "tvm-cell-sha256:") ||
-			(record.Status != OrderLive && record.Status != OrderFilled && record.Status != OrderCancelled) ||
+			(record.Status != OrderLive && record.Status != OrderFilled && record.Status != OrderCanceled) ||
 			record.CumulativeFilled > record.Order.QuantityLots ||
 			(record.Status == OrderLive && record.CumulativeFilled == record.Order.QuantityLots) ||
 			(record.Status == OrderFilled && record.CumulativeFilled != record.Order.QuantityLots) ||
@@ -492,7 +510,8 @@ func (book *Book) loadOrInitialize() error {
 		}
 		rawBOC, decodeErr := base64.StdEncoding.DecodeString(record.SignedOrderBOC)
 		root, cellErr := cell.FromBOC(rawBOC)
-		if decodeErr != nil || len(rawBOC) > 8192 || cellErr != nil || root == nil || !bytes.Equal(rawBOC, root.ToBOC()) {
+		if decodeErr != nil || len(rawBOC) > 8192 || cellErr != nil || root == nil ||
+			!bytes.Equal(rawBOC, root.ToBOC()) {
 			return errors.New("prediction order-book record has an invalid exact BOC")
 		}
 		verified, verifyErr := protocol.DecodeAndVerifySignedPredictionOrder(root)

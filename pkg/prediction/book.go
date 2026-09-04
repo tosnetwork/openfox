@@ -349,7 +349,7 @@ func (book *Book) PlanMatch(leftDigest, rightDigest string, quantity, now uint64
 }
 
 func (book *Book) validateMarketSnapshot(snapshot ChainMarketSnapshot, now uint64) error {
-	if snapshot.Finalized || snapshot.Accounts == nil || len(snapshot.Accounts) > 4096 ||
+	if !snapshot.Finalized || snapshot.Accounts == nil || len(snapshot.Accounts) > 4096 ||
 		snapshot.MarketConfigHash != book.doc.Profile.MarketConfigHash ||
 		snapshot.ContractCodeHash != book.doc.Profile.ContractCodeHash ||
 		!canonicalDigest(snapshot.FinalityViewID, "sha256:") || snapshot.ObservedAt == 0 ||
@@ -444,7 +444,7 @@ func (book *Book) validateAdmission(
 
 func (book *Book) validateAuthority(order protocol.PredictionOrderV1, snapshot ChainAccountSnapshot, now uint64) error {
 	if snapshot.OwnerAddress != order.OwnerAddress || snapshot.KeyEpoch != order.KeyEpoch ||
-		order.Nonce < snapshot.NonceFloor || snapshot.Finalized || snapshot.MarketConfigHash != book.doc.Profile.MarketConfigHash ||
+		order.Nonce < snapshot.NonceFloor || !snapshot.Finalized || snapshot.MarketConfigHash != book.doc.Profile.MarketConfigHash ||
 		!canonicalDigest(snapshot.FinalityViewID, "sha256:") ||
 		snapshot.ObservedAt == 0 || snapshot.ObservedAt > now || now-snapshot.ObservedAt > book.doc.Profile.MaxSnapshotAge {
 		return errors.New("order is not executable under the finalized chain account snapshot")

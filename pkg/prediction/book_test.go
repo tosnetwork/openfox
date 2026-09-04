@@ -61,6 +61,7 @@ func snapshot(owner string, private ed25519.PrivateKey, free, yes, no uint64) Ch
 	return ChainAccountSnapshot{
 		OwnerAddress: owner, TradingPublicKey: public, KeyEpoch: 3,
 		NonceFloor: 0, FreeBalance: free, YesLots: yes, NoLots: no, ObservedAt: 10_000,
+		Finalized:        true,
 		MarketConfigHash: testHash(0x22).CellHashString(), FinalityViewID: testHash(0x90).SHA256String(),
 	}
 }
@@ -122,7 +123,7 @@ func TestBookAdmissionPlanningAndCrashRecovery(t *testing.T) {
 	marketSnapshot := ChainMarketSnapshot{
 		Accounts: map[string]protocol.AccountBalance{
 			ownerA: {Free: 6 * testTOS}, ownerB: {Free: 4 * testTOS},
-		}, ObservedAt: 10_000,
+		}, ObservedAt: 10_000, Finalized: true,
 		MarketConfigHash: profile().MarketConfigHash, ContractCodeHash: profile().ContractCodeHash,
 		FinalityViewID: leftSnapshot.FinalityViewID,
 	}
@@ -137,6 +138,18 @@ func TestBookAdmissionPlanningAndCrashRecovery(t *testing.T) {
 	if _, err := book.PlanMatch(left.Digest, rightDigest.CellHashString(), 1, 10_001,
 		marketSnapshot, rotated, rightSnapshot); err == nil {
 		t.Fatal("planned a fill after the owner's trading key changed")
+	}
+	unfinalizedAccount := leftSnapshot
+	unfinalizedAccount.Finalized = false
+	if _, err := book.PlanMatch(left.Digest, rightDigest.CellHashString(), 1, 10_001,
+		marketSnapshot, unfinalizedAccount, rightSnapshot); err == nil {
+		t.Fatal("planned a fill from an unfinalized account snapshot")
+	}
+	unfinalizedMarket := marketSnapshot
+	unfinalizedMarket.Finalized = false
+	if _, err := book.PlanMatch(left.Digest, rightDigest.CellHashString(), 1, 10_001,
+		unfinalizedMarket, leftSnapshot, rightSnapshot); err == nil {
+		t.Fatal("planned a fill from an unfinalized market snapshot")
 	}
 
 	txHash, view := testHash(0xa1).SHA256String(), testHash(0xa2).SHA256String()

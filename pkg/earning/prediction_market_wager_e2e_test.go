@@ -36,6 +36,14 @@ const (
 	maxPredictionAcceptanceBOCBytes     = int64(2 << 20)
 )
 
+// TOS market-definition hashes are 32-byte TL-B fields encoded as raw
+// lowercase hex. Other OpenFox evidence digests retain their sha256: envelope;
+// accepting both here would blur those domains, so use this only for the
+// definition/rules field that tosctl must read unchanged.
+func validTOSDefinitionHash(value string) bool {
+	return canonicalRawHash(value) || validCanonicalSHA256(value)
+}
+
 const (
 	predictionDirectWalletSubmissionProfile     = "direct-wallet-contract-probe"
 	predictionAgentCheckedCallSubmissionProfile = "agent-account-checked-call-v2"
@@ -235,7 +243,7 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	if json.Unmarshal(definitionRaw, &definition) != nil || definition.GlobalID == 0 ||
 		definition.TradeClose == 0 || definition.LotValue == 0 ||
 		definition.OrderCleanupBounty == 0 || definition.AccountCleanupBounty == 0 ||
-		!validCanonicalSHA256(definition.RulesHash) {
+		!validTOSDefinitionHash(definition.RulesHash) {
 		t.Fatal("Prediction accepted-wager definition is incomplete")
 	}
 	network := predictionAcceptanceNetworkDomain(t)
@@ -1094,7 +1102,7 @@ func validatePredictionAcceptedWagerReport(report predictionAcceptedWagerReport,
 		!validCanonicalSHA256(report.MarketID) ||
 		!validTVMCellSHA256(report.MarketConfigHash) ||
 		!validTVMCellSHA256(report.MarketCodeHash) ||
-		!validCanonicalSHA256(report.RulesHash) ||
+		!validTOSDefinitionHash(report.RulesHash) ||
 		!validTVMCellSHA256(report.SubmittedExternalMessageHash) ||
 		!validCanonicalSHA256(report.ExactExternalBOCSHA256) ||
 		!validTVMCellSHA256(report.OperationBodyHash) ||

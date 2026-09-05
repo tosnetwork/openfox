@@ -125,7 +125,11 @@ func TestVerifyTOSCTLPredictionDestinationEnvelopeBindsReceiptsAndPredicate(t *t
 		value := sha256.Sum256([]byte(label))
 		return "tvm-cell-sha256:" + hex.EncodeToString(value[:])
 	}
-	observers := []string{digest("destination-observer-a"), digest("destination-observer-b"), digest("destination-observer-c")}
+	observers := []string{
+		digest("destination-observer-a"),
+		digest("destination-observer-b"),
+		digest("destination-observer-c"),
+	}
 	for i := 0; i < len(observers); i++ {
 		for j := i + 1; j < len(observers); j++ {
 			if observers[j] < observers[i] {

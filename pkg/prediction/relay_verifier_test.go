@@ -83,8 +83,10 @@ func TestCanonicalRelayVerifierParsesSourceAndDestinationTransactions(t *testing
 		TransactionHash:              "sha256:" + hex.EncodeToString(sourceTx.Hash()),
 		TransactionBOCBase64:         base64.StdEncoding.EncodeToString(sourceTx.ToBOCWithFlags(false)),
 		Block:                        block, Finality: finality,
-		NextSourceCursor: AccountCursor{AccountAddress: fixture.profile.SourceAgentAccount,
-			LastLogicalTime: 110, LastTransactionHash: "sha256:" + hex.EncodeToString(sourceTx.Hash())},
+		NextSourceCursor: AccountCursor{
+			AccountAddress:  fixture.profile.SourceAgentAccount,
+			LastLogicalTime: 110, LastTransactionHash: "sha256:" + hex.EncodeToString(sourceTx.Hash()),
+		},
 		OutboundMessages: []ChainObservedMessage{declaredOutbound},
 	}
 	attestor := &relayVerifierAttestor{}
@@ -128,8 +130,10 @@ func TestCanonicalRelayVerifierParsesSourceAndDestinationTransactions(t *testing
 			destinationTx.ToBOCWithFlags(false),
 		),
 		Block: block, Finality: finality,
-		NextDestinationCursor: AccountCursor{AccountAddress: fixture.profile.MarketAddress,
-			LastLogicalTime: 120, LastTransactionHash: "sha256:" + hex.EncodeToString(destinationTx.Hash())},
+		NextDestinationCursor: AccountCursor{
+			AccountAddress:  fixture.profile.MarketAddress,
+			LastLogicalTime: 120, LastTransactionHash: "sha256:" + hex.EncodeToString(destinationTx.Hash()),
+		},
 		Ordinary: true, ComputeSuccess: true, ActionSuccess: true, OpcodeSuccess: true,
 		MarketCodeHash: fixture.profile.MarketCodeHash, MarketConfigHash: fixture.profile.MarketConfigHash,
 		SuccessPredicateDigest: fixture.expected.SuccessPredicateDigest,
@@ -165,8 +169,10 @@ func TestCanonicalRelayVerifierParsesBounceAndCredit(t *testing.T) {
 		FwdFee: tlb.FromNanoTONU(1), CreatedLT: 202, CreatedAt: 1_800_000_001, Body: bounceBody,
 	}}
 	declaredBounce := declaredVerifierMessage(t, bounce, 3)
-	record := PredictionRelayRecord{Profile: fixture.profile, Expected: fixture.expected,
-		ActualOutbound: &declaredOutbound}
+	record := PredictionRelayRecord{
+		Profile: fixture.profile, Expected: fixture.expected,
+		ActualOutbound: &declaredOutbound,
+	}
 	block, finality := verifierBlockAndFinality(fixture.profile)
 	destinationTx := verifierTransaction(t, market, 210, outbound, []*tlb.Message{bounce}, false, 0)
 	destinationEvidence := DestinationTransactionEvidence{
@@ -176,8 +182,10 @@ func TestCanonicalRelayVerifierParsesBounceAndCredit(t *testing.T) {
 			destinationTx.ToBOCWithFlags(false),
 		),
 		Block: block, Finality: finality,
-		NextDestinationCursor: AccountCursor{AccountAddress: fixture.profile.MarketAddress,
-			LastLogicalTime: 210, LastTransactionHash: "sha256:" + hex.EncodeToString(destinationTx.Hash())},
+		NextDestinationCursor: AccountCursor{
+			AccountAddress:  fixture.profile.MarketAddress,
+			LastLogicalTime: 210, LastTransactionHash: "sha256:" + hex.EncodeToString(destinationTx.Hash()),
+		},
 		Ordinary: true, Aborted: true, BounceMessage: &declaredBounce,
 		MarketCodeHash: fixture.profile.MarketCodeHash, MarketConfigHash: fixture.profile.MarketConfigHash,
 		RichBounceEnvelopeHash: declaredBounce.BodyHash, RichBounceOriginalBodyHash: fixture.expected.BodyHash,
@@ -235,8 +243,10 @@ func TestCanonicalRelayVerifierParsesBounceAndCredit(t *testing.T) {
 			creditTx.ToBOCWithFlags(false),
 		),
 		Block: block, Finality: finality,
-		NextSourceCursor: AccountCursor{AccountAddress: fixture.profile.SourceAgentAccount,
-			LastLogicalTime: 220, LastTransactionHash: "sha256:" + hex.EncodeToString(creditTx.Hash())},
+		NextSourceCursor: AccountCursor{
+			AccountAddress:  fixture.profile.SourceAgentAccount,
+			LastLogicalTime: 220, LastTransactionHash: "sha256:" + hex.EncodeToString(creditTx.Hash()),
+		},
 		CreditedValueNanoTOS: declaredBounce.ValueNanoTOS,
 	}
 	if err := verifier.VerifyPredictionBounceCredit(t.Context(), record, creditEvidence); err != nil {
@@ -257,7 +267,8 @@ func verifierTransaction(t *testing.T, account *address.Address, logicalTime uin
 		dict := cell.NewDict(15)
 		for index, message := range outputs {
 			messageCell, err := message.ToCell()
-			if err != nil || dict.SetIntKey(big.NewInt(int64(index)), cell.BeginCell().MustStoreRef(messageCell).EndCell()) != nil {
+			if err != nil ||
+				dict.SetIntKey(big.NewInt(int64(index)), cell.BeginCell().MustStoreRef(messageCell).EndCell()) != nil {
 				t.Fatal("build transaction output dictionary")
 			}
 		}
@@ -348,12 +359,16 @@ func verifierRichBounceBody(t *testing.T, original *tlb.InternalMessage, bounced
 
 func verifierBlockAndFinality(profile PredictionRelayProfile) (BlockIdentity, QuorumFinality) {
 	digest := func(value string) string { return "sha256:" + strings.Repeat(value, 64) }
-	block := BlockIdentity{WorkchainID: 0, Shard: 1, SequenceNumber: 10,
-		RootHash: digest("a"), FileHash: digest("b"), MasterchainSequence: 11}
-	return block, QuorumFinality{NetworkDomainHash: profile.NetworkDomainHash,
-		FinalityViewID: digest("c"), ObserverIDs: append([]string(nil), profile.ObserverIDs...),
+	block := BlockIdentity{
+		WorkchainID: 0, Shard: 1, SequenceNumber: 10,
+		RootHash: digest("a"), FileHash: digest("b"), MasterchainSequence: 11,
+	}
+	return block, QuorumFinality{
+		NetworkDomainHash: profile.NetworkDomainHash,
+		FinalityViewID:    digest("c"), ObserverIDs: append([]string(nil), profile.ObserverIDs...),
 		AgreeingIDs: append([]string(nil), profile.ObserverIDs[:profile.QuorumThreshold]...),
-		Threshold:   profile.QuorumThreshold, MasterchainSeqno: 12}
+		Threshold:   profile.QuorumThreshold, MasterchainSeqno: 12,
+	}
 }
 
 func relayVerifierBytes(value byte, count int) []byte {

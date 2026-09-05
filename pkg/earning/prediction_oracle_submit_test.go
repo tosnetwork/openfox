@@ -119,12 +119,12 @@ func TestOracleVoteSubmissionRevalidatesCanonicalStatementAndAccountBinding(t *t
 	}
 	mutated := plan
 	mutated.RoundContextHash = oracleSubmitHash(0x99).CellHashString()
-	if _, _, _, _, err := validateOracleVoteSubmission(sink, mutated, config); err == nil {
+	if _, _, _, _, validationErr := validateOracleVoteSubmission(sink, mutated, config); validationErr == nil {
 		t.Fatal("vote submission accepted a context that differs from the statement")
 	}
 	wrongReporter := config
 	wrongReporter.OracleProfile.ReporterAddress = "0:" + strings.Repeat("3", 64)
-	if _, _, _, _, err := validateOracleVoteSubmission(sink, plan, wrongReporter); err == nil {
+	if _, _, _, _, validationErr := validateOracleVoteSubmission(sink, plan, wrongReporter); validationErr == nil {
 		t.Fatal("vote submission accepted another reporter account")
 	}
 	request, err := oracleVoteEffectRequest(
@@ -186,11 +186,11 @@ func TestOracleChallengeSubmissionRevalidatesManifestBindings(t *testing.T) {
 			"sha256:" + strings.Repeat("81", 32), "sha256:" + strings.Repeat("82", 32),
 		},
 	}
-	if _, _, _, err := validateOracleChallengeSubmission(sink, plan, config); err != nil {
-		t.Fatalf("valid durable challenge was rejected: %v", err)
+	if _, _, _, validationErr := validateOracleChallengeSubmission(sink, plan, config); validationErr != nil {
+		t.Fatalf("valid durable challenge was rejected: %v", validationErr)
 	}
 	plan.CounterEvidenceRoot = oracleSubmitHash(0x73).CellHashString()
-	if _, _, _, err := validateOracleChallengeSubmission(sink, plan, config); err == nil {
+	if _, _, _, validationErr := validateOracleChallengeSubmission(sink, plan, config); validationErr == nil {
 		t.Fatal("challenge submission accepted a different evidence root")
 	}
 	plan.CounterEvidenceRoot = root.CellHashString()

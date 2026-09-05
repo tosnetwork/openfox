@@ -255,12 +255,13 @@ func (engine *Engine) ResolvePredictionEffectSource(ctx context.Context, sink *T
 		return prediction.PredictionRelayRecord{}, err
 	}
 	defer cleanup()
-	args := []string{
+	args := make([]string, 0, 13+len(sink.QuorumConfigPaths))
+	args = append(args,
 		"agent", "account", "prediction-relay-source-resolve", "--wallet", sink.Wallet,
 		"--stable-action-id", actionID, "--relay-request", requestPath,
 		"--max-transactions", strconv.FormatUint(uint64(sink.maximumPredictionTransactions()), 10),
 		"--quorum-config",
-	}
+	)
 	args = append(args, sink.QuorumConfigPaths...)
 	args = append(args, "-c", sink.ConfigPath)
 
@@ -350,13 +351,14 @@ func (engine *Engine) ResolvePredictionEffectDestination(ctx context.Context, si
 		return prediction.PredictionRelayRecord{}, err
 	}
 	defer cleanup()
-	args := []string{
+	args := make([]string, 0, 15+len(sink.QuorumConfigPaths))
+	args = append(args,
 		"agent", "account", "prediction-relay-destination-resolve", "--wallet", sink.Wallet,
 		"--stable-action-id", actionID, "--relay-request", requestPath,
 		"--max-masterchain-blocks", strconv.FormatUint(uint64(sink.maximumPredictionMasterchainBlocks()), 10),
 		"--max-transactions", strconv.FormatUint(uint64(sink.maximumPredictionTransactions()), 10),
 		"--quorum-config",
-	}
+	)
 	args = append(args, sink.QuorumConfigPaths...)
 	args = append(args, "-c", sink.ConfigPath)
 
@@ -444,13 +446,14 @@ func (engine *Engine) ResolvePredictionEffectBounceCredit(ctx context.Context, s
 		return prediction.PredictionRelayRecord{}, err
 	}
 	defer cleanup()
-	args := []string{
+	args := make([]string, 0, 15+len(sink.QuorumConfigPaths))
+	args = append(args,
 		"agent", "account", "prediction-relay-bounce-credit-resolve", "--wallet", sink.Wallet,
 		"--stable-action-id", actionID, "--relay-request", requestPath,
 		"--max-masterchain-blocks", strconv.FormatUint(uint64(sink.maximumPredictionMasterchainBlocks()), 10),
 		"--max-transactions", strconv.FormatUint(uint64(sink.maximumPredictionTransactions()), 10),
 		"--quorum-config",
-	}
+	)
 	args = append(args, sink.QuorumConfigPaths...)
 	args = append(args, "-c", sink.ConfigPath)
 	attempts := sink.ResolveAttempts
@@ -917,8 +920,8 @@ func predictionTOSCTLJSONDigest(domain []byte, value any) (string, error) {
 	var canonical any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	if err := decoder.Decode(&canonical); err != nil {
-		return "", err
+	if decodeErr := decoder.Decode(&canonical); decodeErr != nil {
+		return "", decodeErr
 	}
 	canonicalRaw, err := json.Marshal(canonical)
 	if err != nil {

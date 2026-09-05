@@ -19,16 +19,16 @@ import (
 // postcondition, and (when needed) the bounded no-bounce scan.
 type PredictionRelayChainAttestor interface {
 	VerifyPredictionBlockFinality(
-		context.Context, PredictionRelayProfile, BlockIdentity, QuorumFinality,
+		ctx context.Context, profile PredictionRelayProfile, block BlockIdentity, finality QuorumFinality,
 	) error
 	VerifyPredictionMarketIdentity(
-		context.Context, PredictionRelayProfile, BlockIdentity,
+		ctx context.Context, profile PredictionRelayProfile, block BlockIdentity,
 	) error
 	VerifyPredictionSuccessPredicate(
-		context.Context, PredictionRelayRecord, DestinationTransactionEvidence,
+		ctx context.Context, record PredictionRelayRecord, evidence DestinationTransactionEvidence,
 	) error
 	VerifyPredictionNoBounce(
-		context.Context, PredictionRelayRecord, DestinationTransactionEvidence,
+		ctx context.Context, record PredictionRelayRecord, evidence DestinationTransactionEvidence,
 	) error
 }
 
@@ -92,8 +92,8 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionDestina
 		evidence.NextDestinationCursor.LastTransactionHash != evidence.TransactionHash {
 		return errors.New("prediction destination transaction identity is invalid")
 	}
-	if err := verifyDeclaredPredictionMessage(tx.IO.In, *record.ActualOutbound); err != nil {
-		return fmt.Errorf("verify prediction destination inbound: %w", err)
+	if messageErr := verifyDeclaredPredictionMessage(tx.IO.In, *record.ActualOutbound); messageErr != nil {
+		return fmt.Errorf("verify prediction destination inbound: %w", messageErr)
 	}
 	ordinary, ok := predictionOrdinary(tx)
 	computeSuccess := ok && predictionComputeSucceeded(ordinary)
@@ -105,13 +105,15 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionDestina
 		evidence.OpcodeSuccess != opcodeSuccess {
 		return errors.New("prediction destination execution flags contradict the transaction BOC")
 	}
-	if err := verifier.Attestor.VerifyPredictionBlockFinality(
+	if finalityErr := verifier.Attestor.VerifyPredictionBlockFinality(
 		ctx, record.Profile, evidence.Block, evidence.Finality,
-	); err != nil {
-		return err
+	); finalityErr != nil {
+		return finalityErr
 	}
-	if err := verifier.Attestor.VerifyPredictionMarketIdentity(ctx, record.Profile, evidence.Block); err != nil {
-		return err
+	if identityErr := verifier.Attestor.VerifyPredictionMarketIdentity(
+		ctx, record.Profile, evidence.Block,
+	); identityErr != nil {
+		return identityErr
 	}
 	if opcodeSuccess {
 		return verifier.Attestor.VerifyPredictionSuccessPredicate(ctx, record, evidence)
@@ -188,7 +190,7 @@ func decodePredictionTransaction(encoded, digest string) (*tlb.Transaction, *cel
 		return nil, nil, errors.New("prediction transaction BOC is not canonical or hash-bound")
 	}
 	var tx tlb.Transaction
-	if err := tlb.LoadFromCell(&tx, root.MustBeginParse()); err != nil {
+	if loadErr := tlb.LoadFromCell(&tx, root.MustBeginParse()); loadErr != nil {
 		return nil, nil, errors.New("prediction transaction TL-B is invalid")
 	}
 	rebuilt, err := tx.ToCell()
@@ -346,7 +348,7 @@ func verifyPredictionRichBounce(ordinary tlb.TransactionDescriptionOrdinary, ori
 	}
 	info := originalInfo.MustBeginParse()
 	var originalValue tlb.CurrencyCollection
-	if err := tlb.LoadFromCell(&originalValue, info); err != nil ||
+	if loadErr := tlb.LoadFromCell(&originalValue, info); loadErr != nil ||
 		!originalValue.Coins.Nano().IsUint64() || !original.Amount.Nano().IsUint64() ||
 		originalValue.Coins.Nano().Uint64() != original.Amount.Nano().Uint64() ||
 		(originalValue.ExtraCurrencies != nil && !originalValue.ExtraCurrencies.IsEmpty()) ||
@@ -426,8 +428,10 @@ func predictionBounceFailureMatches(ordinary tlb.TransactionDescriptionOrdinary,
 			exitCode == ordinary.ActionPhase.ResultCode
 	case *tlb.ComputePhaseVM:
 		return phase != nil && predictionBounceFailureMatches(
-			tlb.TransactionDescriptionOrdinary{ComputePhase: tlb.ComputePhase{Phase: *phase},
-				ActionPhase: ordinary.ActionPhase},
+			tlb.TransactionDescriptionOrdinary{
+				ComputePhase: tlb.ComputePhase{Phase: *phase},
+				ActionPhase:  ordinary.ActionPhase,
+			},
 			bouncedBy, exitCode, hasCompute, gasUsed, vmSteps,
 		)
 	default:

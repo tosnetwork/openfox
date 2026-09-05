@@ -8,11 +8,10 @@ import (
 	"errors"
 	"math"
 
-	"github.com/tosnetwork/tosutils-go/tvm/cell"
-
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	"github.com/tosnetwork/tosutils-go/tvm/cell"
 
 	"github.com/tosnetwork/openfox/pkg/prediction"
 )
@@ -201,7 +200,8 @@ func validateOracleVoteSubmission(sink *TOSCTLPaymentSink, plan prediction.Oracl
 	marketID, marketErr := protocol.ParseHash32(profile.MarketID)
 	rulesHash, rulesErr := protocol.ParseHash32(profile.RulesHash)
 	policyHash, policyErr := protocol.ParseHash32(profile.RoundPolicyHash)
-	if err != nil || manifestCellErr != nil || contextErr != nil || evidenceErr != nil || hashErr != nil || marketErr != nil ||
+	if err != nil || manifestCellErr != nil || contextErr != nil || evidenceErr != nil || hashErr != nil ||
+		marketErr != nil ||
 		rulesErr != nil || policyErr != nil || statementHash != planStatementHash ||
 		statement.GlobalID != profile.GlobalID || statement.MarketAddress != profile.MarketAddress ||
 		statement.MarketID != marketID || statement.RulesHash != rulesHash ||
@@ -209,8 +209,10 @@ func validateOracleVoteSubmission(sink *TOSCTLPaymentSink, plan prediction.Oracl
 		statement.Round != profile.Round || statement.Round != plan.Round || statement.Outcome != plan.Outcome ||
 		statement.EvidenceRoot != evidenceRoot || statement.StatementCreatedAt != plan.StatementCreatedAt ||
 		statement.StatementExpiry != plan.StatementExpiry || oracleCellHash(manifestCell) != evidenceRoot ||
-		manifest.MarketID != marketID || manifest.RulesHash != rulesHash ||
-		manifest.RoundContextHash != contextHash || manifest.Outcome != plan.Outcome {
+		manifest.MarketID != marketID ||
+		manifest.RulesHash != rulesHash ||
+		manifest.RoundContextHash != contextHash ||
+		manifest.Outcome != plan.Outcome {
 		return prediction.OracleProfile{}, protocol.Hash32{}, protocol.Hash32{}, protocol.Hash32{},
 			errors.New("prediction Oracle statement conflicts with its durable plan")
 	}

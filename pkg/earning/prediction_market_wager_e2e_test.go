@@ -526,7 +526,10 @@ func predictionAcceptedWagerSubmission(t *testing.T, externalRaw, bodyRaw []byte
 			checkedCall:   &checkedCall,
 		}
 	default:
-		t.Fatal("OPENFOX_PREDICTION_SUBMISSION_PROFILE must be direct-wallet-contract-probe or agent-account-checked-call-v2")
+		t.Fatal(
+			"OPENFOX_PREDICTION_SUBMISSION_PROFILE must be direct-wallet-contract-probe " +
+				"or agent-account-checked-call-v2",
+		)
 		return predictionAcceptanceSubmission{}
 	}
 }

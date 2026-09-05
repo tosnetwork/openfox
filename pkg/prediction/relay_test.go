@@ -388,9 +388,9 @@ func TestPredictionRelayRichBounceRequiresExactAgentCredit(t *testing.T) {
 		recovered.ReservationDisposition().ReleaseSourceLiquidity {
 		t.Fatalf("restart lost the unresolved rich-bounce boundary: %#v", recovered)
 	}
-	if _, err := journal.BeginOrResumeExactBroadcast(
+	if _, resumeErr := journal.BeginOrResumeExactBroadcast(
 		t.Context(), fixture.actionID, &relayTestBroadcaster{},
-	); err == nil {
+	); resumeErr == nil {
 		t.Fatal("restart rebroadcast an action whose destination already created a rich bounce")
 	}
 	creditCell := cell.BeginCell().MustStoreUInt(0x705, 12).EndCell()

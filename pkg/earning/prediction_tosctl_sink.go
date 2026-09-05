@@ -342,6 +342,7 @@ func (sink *TOSCTLPaymentSink) prepareAuthorizedPredictionEffect(ctx context.Con
 			SourceAccount: sink.SourceAccount, SourceAgentAccountCodeHash: artifact.SourceAgentAccountCodeHash,
 			NetworkDomain: domain, ActionKind: request.ActionKind, EffectKind: request.ActionKind,
 			MarketID: artifact.MarketID, MarketAddress: artifact.MarketAddress,
+			Destination:      artifact.MarketAddress,
 			MarketConfigHash: artifact.MarketConfigHash, MarketCodeHash: artifact.MarketCodeHash,
 			AmountNanoTOS: request.AmountNanoTOS, BodyHash: artifact.BodyHash,
 			ExpiresAtUnix: uint64(request.ValidUntil),

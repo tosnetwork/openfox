@@ -551,9 +551,15 @@ func TestPredictionAcceptedWagerCheckedCallV2SubmissionBindsExactBody(t *testing
 		body,
 	)
 	t.Setenv("OPENFOX_PREDICTION_SUBMISSION_PROFILE", predictionAgentCheckedCallSubmissionProfile)
-	submission := predictionAcceptedWagerSubmission(t, external, bodyRaw, predictionAcceptanceCellHash(body), agentrelay.NetworkDomain{
-		NetworkID: "tos:local", GlobalID: 42, WorkchainID: 0,
-	})
+	submission := predictionAcceptedWagerSubmission(
+		t,
+		external,
+		bodyRaw,
+		predictionAcceptanceCellHash(body),
+		agentrelay.NetworkDomain{
+			NetworkID: "tos:local", GlobalID: 42, WorkchainID: 0,
+		},
+	)
 	if submission.profile != predictionAgentCheckedCallSubmissionProfile ||
 		submission.checkedCall == nil || submission.checkedCall.SenderAgentAccount != source ||
 		submission.checkedCall.DestinationAddress != destination || submission.checkedCall.ControllerEpoch != 9 ||
@@ -566,7 +572,10 @@ func predictionAcceptanceVerifyAgentAccount(t *testing.T, ctx context.Context, s
 	configPath, source string, checkedCall agentgift.ParsedCheckedContractCallV2,
 ) string {
 	t.Helper()
-	raw, err := sink.run(ctx, []string{"agent", "account", "show", "--address", source, "--format", "json", "-c", configPath})
+	raw, err := sink.run(
+		ctx,
+		[]string{"agent", "account", "show", "--address", source, "--format", "json", "-c", configPath},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -997,15 +1006,22 @@ func validatePredictionAcceptedWagerReport(report predictionAcceptedWagerReport,
 		report.SelectionRule == "agent-account-checked-call-v2-exact-external-to-audited-agent-transaction-to-single-flagged-outbound-to-successful-market-transaction" &&
 		validTVMCellSHA256(report.SourceAgentAccountCodeHash) && report.SourceValidUntil > 0 &&
 		report.OutboundMessage.ExtraFlags == agentgift.AgentCheckedContractCallV2Flags
-	if report.Schema != "tos.openfox.prediction-accepted-wager-three-node.v1" || report.Verdict != "PASS" || (!direct && !checked) ||
-		!validCanonicalSHA256(expectedDefinitionDigest) || report.DefinitionSHA256 != expectedDefinitionDigest ||
+	if report.Schema != "tos.openfox.prediction-accepted-wager-three-node.v1" || report.Verdict != "PASS" ||
+		(!direct && !checked) ||
+		!validCanonicalSHA256(expectedDefinitionDigest) ||
+		report.DefinitionSHA256 != expectedDefinitionDigest ||
 		!validCanonicalSHA256(report.NetworkDomainHash) ||
-		!validCanonicalSHA256(report.MarketID) || !validTVMCellSHA256(report.MarketConfigHash) ||
-		!validTVMCellSHA256(report.MarketCodeHash) || !validCanonicalSHA256(report.RulesHash) ||
+		!validCanonicalSHA256(report.MarketID) ||
+		!validTVMCellSHA256(report.MarketConfigHash) ||
+		!validTVMCellSHA256(report.MarketCodeHash) ||
+		!validCanonicalSHA256(report.RulesHash) ||
 		!validTVMCellSHA256(report.SubmittedExternalMessageHash) ||
-		!validCanonicalSHA256(report.ExactExternalBOCSHA256) || !validTVMCellSHA256(report.OperationBodyHash) ||
-		len(report.Orders) != 2 || len(report.ParticipantTradingPublicKeys) != 2 ||
-		len(report.ObserverReceipts) != 3 || report.MatchQuantityLots != 1 ||
+		!validCanonicalSHA256(report.ExactExternalBOCSHA256) ||
+		!validTVMCellSHA256(report.OperationBodyHash) ||
+		len(report.Orders) != 2 ||
+		len(report.ParticipantTradingPublicKeys) != 2 ||
+		len(report.ObserverReceipts) != 3 ||
+		report.MatchQuantityLots != 1 ||
 		report.ScanStartMasterchainBlock.Seqno == 0 ||
 		!canonicalRawHash(report.ScanStartMasterchainBlock.RootHash) ||
 		!canonicalRawHash(report.ScanStartMasterchainBlock.FileHash) ||

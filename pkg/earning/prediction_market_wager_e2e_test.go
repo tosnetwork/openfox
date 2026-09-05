@@ -44,6 +44,37 @@ func validTOSDefinitionHash(value string) bool {
 	return canonicalRawHash(value) || validCanonicalSHA256(value)
 }
 
+// canonicalTOSDefinitionHash compares the underlying uint256 across the two
+// deliberate wire renderings accepted by tosctl: a raw TL-B hash in a market
+// definition and the sha256: envelope emitted by build-state.
+func canonicalTOSDefinitionHash(value string) string {
+	if canonicalRawHash(value) {
+		return value
+	}
+	if validCanonicalSHA256(value) {
+		raw := strings.TrimPrefix(value, "sha256:")
+		if canonicalRawHash(raw) {
+			return raw
+		}
+	}
+	return ""
+}
+
+func TestCanonicalTOSDefinitionHash(t *testing.T) {
+	raw := strings.Repeat("ab", 32)
+	if got := canonicalTOSDefinitionHash(raw); got != raw {
+		t.Fatalf("raw TOS definition hash = %q, want %q", got, raw)
+	}
+	if got := canonicalTOSDefinitionHash("sha256:" + raw); got != raw {
+		t.Fatalf("sha256-wrapped TOS definition hash = %q, want %q", got, raw)
+	}
+	for _, malformed := range []string{"", strings.Repeat("00", 32), "sha256:" + strings.Repeat("00", 32), "SHA256:" + raw, strings.Repeat("AB", 32)} {
+		if got := canonicalTOSDefinitionHash(malformed); got != "" {
+			t.Fatalf("malformed TOS definition hash %q canonicalized to %q", malformed, got)
+		}
+	}
+}
+
 const (
 	predictionDirectWalletSubmissionProfile     = "direct-wallet-contract-probe"
 	predictionAgentCheckedCallSubmissionProfile = "agent-account-checked-call-v2"
@@ -290,7 +321,8 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	var build predictionAcceptanceBuildState
 	if decodeStrictJSON(buildRaw, &build) != nil || build.Schema != "tos.prediction-market-state-init.v1" ||
 		!validCanonicalSHA256(build.MarketID) || !validTVMCellSHA256(build.MarketConfigHash) ||
-		!validTVMCellSHA256(build.CodeHash) || build.RulesHash != definition.RulesHash {
+		!validTVMCellSHA256(build.CodeHash) ||
+		canonicalTOSDefinitionHash(build.RulesHash) != canonicalTOSDefinitionHash(definition.RulesHash) {
 		t.Fatal("Prediction accepted-wager StateInit identity is invalid")
 	}
 	if validateErr := validatePredictionAcceptedOrders(
@@ -1120,7 +1152,8 @@ func validatePredictionAcceptedWagerReport(report predictionAcceptedWagerReport,
 	networkDigest, networkErr := agentrelay.NetworkDomainDigest(report.NetworkDomain)
 	if err != nil || observedAt.IsZero() || networkErr != nil || networkDigest != report.NetworkDomainHash ||
 		report.NetworkDomain.GlobalID != definition.GlobalID ||
-		report.NetworkDomain.WorkchainID != definition.WorkchainID || report.RulesHash != definition.RulesHash {
+		report.NetworkDomain.WorkchainID != definition.WorkchainID ||
+		canonicalTOSDefinitionHash(report.RulesHash) != canonicalTOSDefinitionHash(definition.RulesHash) {
 		return errors.New("Prediction accepted-wager evidence has an invalid network or time")
 	}
 	externalRaw, externalErr := base64.StdEncoding.Strict().DecodeString(report.ExactExternalBOCBase64)

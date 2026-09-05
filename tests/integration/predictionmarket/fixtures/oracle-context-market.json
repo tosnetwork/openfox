@@ -1,0 +1,46 @@
+{
+  "global_id": 3,
+  "workchain_id": 0,
+  "deployment_salt": "4f70656e466f7850726564696374696f6e416363657074616e63654620202020",
+  "rules_hash": "sha256:0cc0a2a7208aa7e8c8009884d1f8bb24341dbd65bfc71b3d067d0ad680b49243",
+  "metadata_hash": "sha256:086d3e349fafd50958c54982194660c2d56dfb5fb3366389781d17259ab3123f",
+  "reserve_recipient": "0:b3a492265ceaf88ba3ae98fa8dc91e816f6cc697944c406ddfbe29dcac6fc0ee",
+  "trade_close": 1788574600,
+  "resolve_not_before": 1788574600,
+  "oracle_vote_deadline": 1788575200,
+  "challenge_period": 80,
+  "appeal_review_delay": 60,
+  "appeal_period": 240,
+  "claim_deadline": 1788576520,
+  "lot_value": 1000000000,
+  "min_price_tick": 100,
+  "min_fill_lots": 1,
+  "max_order_lots": 5,
+  "max_locked_collateral": 5000000000,
+  "max_account_free_balance": 5000000000,
+  "max_total_free_balance": 10000000000,
+  "max_total_liability": 20000000000,
+  "max_participants": 8,
+  "max_orders_per_participant": 8,
+  "max_live_order_records": 16,
+  "participant_entry_fee": 1000000,
+  "account_cleanup_bounty": 1000000,
+  "order_entry_fee": 1000000,
+  "order_cleanup_bounty": 1000000,
+  "operating_reserve_floor": 1000000000,
+  "terminal_tombstone_reserve": 100000000,
+  "challenge_bond": 10000000,
+  "challenge_processing_fee": 1000000,
+  "normal_oracle_policy": {
+    "threshold": 1,
+    "reporters": [
+      "0:5c352017eab8bb5bdc8891c88886f564730095e7bcfea9328ec0e52ddc83099a"
+    ]
+  },
+  "appellate_oracle_policy": {
+    "threshold": 1,
+    "reporters": [
+      "0:3fcd1df334f89e44efb767b6751aecbd45230ed01216d13d6e2c96ae43d8214a"
+    ]
+  }
+}

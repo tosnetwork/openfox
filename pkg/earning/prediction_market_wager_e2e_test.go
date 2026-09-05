@@ -539,7 +539,17 @@ func TestPredictionAcceptedWagerCheckedCallV2SubmissionBindsExactBody(t *testing
 	destination := "0:" + strings.Repeat("2", 64)
 	body := cell.BeginCell().MustStoreUInt(predictionMatchPairOpcode, 32).MustStoreUInt(7, 64).EndCell()
 	bodyRaw := body.ToBOCWithFlags(false)
-	external := predictionCheckedCallTestBOC(t, source, destination, 42, 9, 11, uint32(time.Now().Add(time.Minute).Unix()), 2_000_000, body)
+	external := predictionCheckedCallTestBOC(
+		t,
+		source,
+		destination,
+		42,
+		9,
+		11,
+		uint32(time.Now().Add(time.Minute).Unix()),
+		2_000_000,
+		body,
+	)
 	t.Setenv("OPENFOX_PREDICTION_SUBMISSION_PROFILE", predictionAgentCheckedCallSubmissionProfile)
 	submission := predictionAcceptedWagerSubmission(t, external, bodyRaw, predictionAcceptanceCellHash(body), agentrelay.NetworkDomain{
 		NetworkID: "tos:local", GlobalID: 42, WorkchainID: 0,

@@ -215,7 +215,7 @@ GOWORK=off go test ./pkg/earning \
 The default source profile is deliberately named `direct-wallet-contract-probe`
 in the accepted report. The source wallet directly submitted the match call, so
 that default proves contract execution, transaction provenance, accounting, and
-one post-acceptance future NO reveal, but not the production relay path. Only
+one post-acceptance future-block reveal, but not the production relay path. Only
 the explicit `agent-account-checked-call-v2` profile can claim the Agent Account
 source boundary; it still requires separate durable-journal crash evidence.
 

@@ -60,7 +60,9 @@ func normalPredictionContextView(t *testing.T, profile prediction.OracleProfile,
 		GlobalVersion: 14, CodeHashVerified: true, ConfigHashVerified: true,
 		Activated: true, ActivatedAt: 1_799_999_000, Status: "reporting",
 		MarketID: hex.EncodeToString(marketID[:]), MarketConfigHash: trimCellHash(relay.MarketConfigHash),
-		CurrentContextHash: hex.EncodeToString(contextHash[:]), CurrentContextBOCBase64: &encoded,
+		NormalOraclePolicyHash:    trimCellHash(profile.RoundPolicyHash),
+		AppellateOraclePolicyHash: strings.Repeat("24", 32),
+		CurrentContextHash:        hex.EncodeToString(contextHash[:]), CurrentContextBOCBase64: &encoded,
 		ReviewBaseContextHash: strings.Repeat("0", 64), NextDeadline: 1_800_000_300,
 		ProposedStatementHash: strings.Repeat("0", 64),
 	}
@@ -196,6 +198,23 @@ func TestPredictionOracleContextFailsClosedWithoutAValidMajority(t *testing.T) {
 		context.Background(), []byte(`{"global_id":42}`), profile,
 	); err == nil {
 		t.Fatal("accepted a quorum whose claimed context hash did not match its BOC")
+	}
+}
+
+func TestPredictionOracleContextRejectsMismatchedRoundPolicy(t *testing.T) {
+	_, profile, raw, closeFixture := predictionContextObserverFixture(t)
+	defer closeFixture()
+	var relay prediction.PredictionRelayProfile
+	relay.MarketAddress = profile.MarketAddress
+	relay.MarketConfigHash = predictionContextDigest("tvm-cell-sha256:", 0x33)
+	var wire tosctlPredictionMarketChainView
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	wire.NormalOraclePolicyHash = strings.Repeat("9", 64)
+	raw, _ = json.Marshal(wire)
+	if _, err := verifyPredictionOracleChainView(raw, profile, relay); err == nil {
+		t.Fatal("accepted a chain view bound to a different normal Oracle policy")
 	}
 }
 

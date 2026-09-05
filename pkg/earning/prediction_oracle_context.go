@@ -57,6 +57,8 @@ type tosctlPredictionMarketChainView struct {
 	FinalOutcome               *string `json:"final_outcome"`
 	MarketID                   string  `json:"market_id"`
 	MarketConfigHash           string  `json:"market_config_hash"`
+	NormalOraclePolicyHash     string  `json:"normal_oracle_policy_hash"`
+	AppellateOraclePolicyHash  string  `json:"appellate_oracle_policy_hash"`
 	Participants               uint32  `json:"participants"`
 	LiveOrders                 uint32  `json:"live_orders"`
 	FillCount                  uint64  `json:"fill_count"`
@@ -178,11 +180,23 @@ func verifyPredictionOracleChainView(raw []byte, profile prediction.OracleProfil
 	}
 	marketID, marketErr := protocol.ParseHash32(profile.MarketID)
 	rulesHash, rulesErr := protocol.ParseHash32(profile.RulesHash)
+	var roundPolicyHash string
+	switch profile.Round {
+	case protocol.RoundNormal:
+		roundPolicyHash = wire.NormalOraclePolicyHash
+	case protocol.RoundAppeal:
+		roundPolicyHash = wire.AppellateOraclePolicyHash
+	default:
+		return verifiedPredictionOracleView{}, errors.New("unsupported Prediction Oracle round")
+	}
 	if marketErr != nil || rulesErr != nil || marketID.IsZero() || rulesHash.IsZero() ||
 		wire.Schema != predictionMarketChainViewSchema || wire.Address != profile.MarketAddress ||
 		wire.Address != relay.MarketAddress || !wire.Activated || !wire.CodeHashVerified ||
 		!wire.ConfigHashVerified || wire.GlobalVersion < 14 || wire.MarketID != hex.EncodeToString(marketID[:]) ||
 		wire.MarketConfigHash != trimCellHash(relay.MarketConfigHash) || wire.Checkpoint.Seqno == 0 ||
+		!canonicalRawHash(wire.NormalOraclePolicyHash) ||
+		!canonicalRawHash(wire.AppellateOraclePolicyHash) ||
+		roundPolicyHash != trimCellHash(profile.RoundPolicyHash) ||
 		!canonicalRawHash(wire.Checkpoint.RootHash) || !canonicalRawHash(wire.Checkpoint.FileHash) {
 		return verifiedPredictionOracleView{}, errors.New(
 			"Prediction market chain view conflicts with its immutable profile",

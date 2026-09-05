@@ -50,6 +50,22 @@ OPENFOX_PREDICTION_EVIDENCE_DIRECTORY=/absolute/owner-private/evidence
 OPENFOX_PREDICTION_VAULT_URL=<operator-provided vault capability, when tosctl requires it>
 ```
 
+For the production relay profile, additionally set:
+
+```text
+OPENFOX_PREDICTION_SUBMISSION_PROFILE=agent-account-checked-call-v2
+```
+
+In that mode `OPENFOX_PREDICTION_MATCH_EXTERNAL_BOC` must be the exact,
+already-submitted `agent_checked_contract_call_v2` external BOC, and
+`OPENFOX_PREDICTION_MATCH_SOURCE_ADDRESS` must be its Agent Account destination.
+The gate rejects a body mismatch, network mismatch, unconsumed controller
+epoch/seqno, inactive source, or a source whose code is not the audited Agent
+Account template on every observer. It also requires the V2 internal transport
+flags on the unique source outbound. A valid report records the source template
+hash and checked-call epoch, seqno, and expiry; these values are bound again
+when the report is read.
+
 Run:
 
 ```sh
@@ -191,12 +207,12 @@ GOWORK=off go test ./pkg/earning \
   -count=1 -v
 ```
 
-The source profile is deliberately named `direct-wallet-contract-probe` in the
-accepted report. The source wallet directly submitted the match call, so this
-gate proves contract execution, transaction provenance, accounting, and one
-post-acceptance future NO reveal. It does **not** prove the production OpenFox
-Intent to Agent Account checked-call v2 relay path, its durable exact-BOC journal, or its
-crash recovery. It therefore cannot be relabeled as the full release gate.
+The default source profile is deliberately named `direct-wallet-contract-probe`
+in the accepted report. The source wallet directly submitted the match call, so
+that default proves contract execution, transaction provenance, accounting, and
+one post-acceptance future NO reveal, but not the production relay path. Only
+the explicit `agent-account-checked-call-v2` profile can claim the Agent Account
+source boundary; it still requires separate durable-journal crash evidence.
 
 ## Evidence archive replicas
 

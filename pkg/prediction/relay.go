@@ -558,8 +558,8 @@ func validateExpectedCall(call ExpectedContractCall, profile PredictionRelayProf
 	return nil
 }
 
-// NewExpectedContractCall freezes the exact Agent Account V2 outbound before
-// it can enter the relay journal. The success predicate is derived rather than
+// NewExpectedContractCall freezes the exact Agent Account checked-call v2
+// outbound before it can enter the relay journal. The success predicate is derived rather than
 // caller-selected, so a resolver cannot reinterpret a successful transaction
 // under a weaker business action.
 func NewExpectedContractCall(actionKind, stableActionID, target string, value uint64,

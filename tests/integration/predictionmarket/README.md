@@ -22,5 +22,5 @@ transaction BOCs, the unique outbound message, three-node accounting and
 masterchain inclusion, the pre-reveal validator set, and the subsequently
 finalized block used for the outcome. The accepted report's
 `submission_profile` remains `direct-wallet-contract-probe`; these artifacts
-must not be used as evidence that the production Intent, Agent Account V2,
-relay journal, or crash-recovery path passed.
+must not be used as evidence that the production Intent, Agent Account
+checked-call v2, relay journal, or crash-recovery path passed.

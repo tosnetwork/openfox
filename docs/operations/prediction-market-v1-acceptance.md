@@ -1,7 +1,7 @@
 # PredictionMarket V1 acceptance
 
 This runbook owns the release evidence that crosses the OpenFox, protocol,
-tosctl, Agent Account V2, and PredictionMarket contract boundaries. Unit and
+tosctl, Agent Account, and PredictionMarket contract boundaries. Unit and
 sandbox suites remain mandatory, but they do not replace these live gates.
 
 ## Oracle context three-node gate
@@ -45,7 +45,7 @@ OPENFOX_PREDICTION_ZERO_STATE_FILE_HASH=<32-byte Base64 or sha256: lowercase hex
 OPENFOX_PREDICTION_ROUND=normal|appeal
 OPENFOX_PREDICTION_ROUND_POLICY_HASH=tvm-cell-sha256:<lowercase hex>
 OPENFOX_PREDICTION_REPORTER_ADDRESS=<raw admitted reporter address>
-OPENFOX_PREDICTION_SOURCE_AGENT_CODE_HASH=tvm-cell-sha256:<Agent Account V2 code hash>
+OPENFOX_PREDICTION_SOURCE_AGENT_CODE_HASH=tvm-cell-sha256:<Agent Account code hash>
 OPENFOX_PREDICTION_EVIDENCE_DIRECTORY=/absolute/owner-private/evidence
 OPENFOX_PREDICTION_VAULT_URL=<operator-provided vault capability, when tosctl requires it>
 ```
@@ -195,7 +195,7 @@ The source profile is deliberately named `direct-wallet-contract-probe` in the
 accepted report. The source wallet directly submitted the match call, so this
 gate proves contract execution, transaction provenance, accounting, and one
 post-acceptance future NO reveal. It does **not** prove the production OpenFox
-Intent to Agent Account V2 relay path, its durable exact-BOC journal, or its
+Intent to Agent Account checked-call v2 relay path, its durable exact-BOC journal, or its
 crash recovery. It therefore cannot be relabeled as the full release gate.
 
 ## Evidence archive replicas
@@ -219,12 +219,12 @@ The context gate is one component of system acceptance, not a substitute for
 the complete lifecycle. Release remains blocked until separate machine-readable
 reports cover:
 
-- a production Agent Account V2 wager path with its own post-acceptance future
+- a production Agent Account checked-call v2 wager path with its own post-acceptance future
   lock and real reveal, plus a real YES case (the direct-wallet contract probe
   has produced one real NO case and the distribution preflight is complete);
 - factual INVALID, no-proposal Oracle timeout, challenge uphold, challenge
   overturn, and challenged-proposal appellate timeout;
-- Agent Account V2 signed, durable, broadcasting, source-finalized,
+- Agent Account checked-call v2 signed, durable, broadcasting, source-finalized,
   destination/bounce-resolving crash points;
 - cursor recovery after more than 10,000 later source and destination
   transactions;

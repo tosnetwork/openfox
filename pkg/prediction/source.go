@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path"
 	"sort"
@@ -238,8 +239,66 @@ func canonicalASCIIHostname(host string) bool {
 }
 
 func publicOracleIP(ip net.IP) bool {
-	return ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() &&
-		!ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsUnspecified()
+	if ip == nil {
+		return false
+	}
+	// net.IP.IsGlobalUnicast deliberately includes several non-public ranges
+	// (for example RFC 6598 CGNAT and RFC 2544 benchmarking addresses).  They
+	// are unacceptable for an external-fact Oracle: allowing them turns DNS
+	// resolution into an SSRF path into an operator or provider network.
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return publicOracleIPv4(ipv4)
+	}
+	address, ok := netip.AddrFromSlice(ip)
+	if !ok || !address.Is6() || !address.IsGlobalUnicast() || address.IsPrivate() ||
+		address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsUnspecified() {
+		return false
+	}
+	return !oracleIPv6SpecialUse(address)
+}
+
+func publicOracleIPv4(ip net.IP) bool {
+	if len(ip) != net.IPv4len || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	value := uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+	return !oracleIPv4SpecialUse(value)
+}
+
+func oracleIPv4SpecialUse(value uint32) bool {
+	for _, prefix := range []struct {
+		network uint32
+		mask    uint32
+	}{
+		{0x00000000, 0xff000000}, // 0.0.0.0/8: "this" network
+		{0x64400000, 0xffc00000}, // 100.64.0.0/10: shared CGNAT
+		{0xc0000000, 0xffffff00}, // 192.0.0.0/24: IETF protocol assignments
+		{0xc0000200, 0xffffff00}, // 192.0.2.0/24: documentation
+		{0xc0586300, 0xffffff00}, // 192.88.99.0/24: deprecated 6to4 relay
+		{0xc6120000, 0xfffe0000}, // 198.18.0.0/15: benchmarking
+		{0xc6336400, 0xffffff00}, // 198.51.100.0/24: documentation
+		{0xcb007100, 0xffffff00}, // 203.0.113.0/24: documentation
+		{0xf0000000, 0xf0000000}, // 240.0.0.0/4: reserved
+	} {
+		if value&prefix.mask == prefix.network {
+			return true
+		}
+	}
+	return false
+}
+
+func oracleIPv6SpecialUse(address netip.Addr) bool {
+	for _, prefix := range []netip.Prefix{
+		netip.MustParsePrefix("100::/64"),      // discard-only
+		netip.MustParsePrefix("2001:2::/48"),   // benchmarking
+		netip.MustParsePrefix("2001:db8::/32"), // documentation
+	} {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsSortedString(values []string, candidate string) bool {

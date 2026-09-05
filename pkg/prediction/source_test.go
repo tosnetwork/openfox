@@ -94,6 +94,33 @@ func TestHTTPSOracleSourceRejectsSSRFRedirectEncodingAndOversize(t *testing.T) {
 	if _, err := privateSource.Fetch(t.Context(), time.Now().UTC()); err == nil || clientCalls != 0 {
 		t.Fatal("mixed public/private DNS answer reached the network")
 	}
+	for name, ip := range map[string]string{
+		"CGNAT":              "100.64.0.1",
+		"benchmark IPv4":     "198.18.0.1",
+		"documentation IPv4": "203.0.113.1",
+		"reserved IPv4":      "240.0.0.1",
+		"benchmark IPv6":     "2001:2::1",
+		"documentation IPv6": "2001:db8::1",
+		"IPv4 mapped CGNAT":  "::ffff:100.64.0.1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			source, sourceErr := newHTTPSOracleSource(
+				profile,
+				fixedSourceResolver{ips: []net.IP{net.ParseIP(ip)}},
+				sourceClient(func(*http.Request) (*http.Response, error) {
+					calls++
+					return nil, errors.New("must not fetch a special-use address")
+				}),
+			)
+			if sourceErr != nil {
+				t.Fatal(sourceErr)
+			}
+			if _, fetchErr := source.Fetch(t.Context(), time.Now().UTC()); fetchErr == nil || calls != 0 {
+				t.Fatal("special-use DNS answer reached the network")
+			}
+		})
+	}
 
 	for name, mutate := range map[string]func(*http.Response){
 		"redirect":          func(response *http.Response) { response.StatusCode = http.StatusFound },

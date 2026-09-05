@@ -399,6 +399,83 @@ func TestPredictionRelayRichBounceRequiresExactAgentCredit(t *testing.T) {
 	}
 }
 
+func TestPredictionRelayRecoversAcrossSourceAndBounceResolutionCrashes(t *testing.T) {
+	fixture := newRelayFixture(t)
+	directory := filepath.Join(t.TempDir(), "relay")
+	journal := openRelayFixture(t, fixture, directory)
+	if record := prepareAndResolveSource(t, journal, fixture); record.State != RelaySourceFinalized {
+		t.Fatalf("source was not finalized before simulated crash: %#v", record)
+	}
+	if closeErr := journal.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	restarted, err := OpenPredictionRelayJournal(directory, fixture.profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal = restarted
+	recovered, found := journal.Get(fixture.actionID)
+	if !found || recovered.State != RelaySourceFinalized || recovered.ActualOutbound == nil {
+		t.Fatalf("source-finalized recovery lost the destination resolution boundary: %#v", recovered)
+	}
+
+	richBody := cell.BeginCell().MustStoreUInt(0xfffffffe, 32).MustStoreUInt(0x504d0001, 32).EndCell()
+	bounceCell := cell.BeginCell().MustStoreUInt(0x704, 12).MustStoreRef(richBody).EndCell()
+	bounce := ChainObservedMessage{
+		MessageHash:     cellDigest(bounceCell),
+		ExactMessageBOC: base64.StdEncoding.EncodeToString(bounceCell.ToBOCWithFlags(false)),
+		SourceAddress:   fixture.profile.MarketAddress, DestinationAddress: fixture.profile.SourceAgentAccount,
+		ValueNanoTOS:  fixture.expected.ValueNanoTOS - 1000,
+		BodyBOCBase64: base64.StdEncoding.EncodeToString(richBody.ToBOCWithFlags(false)),
+		BodyHash:      cellDigest(richBody), Bounced: true,
+	}
+	failure := fixture.destination
+	failure.Aborted, failure.ComputeSuccess, failure.ActionSuccess, failure.OpcodeSuccess = true, false, false, false
+	failure.SuccessPredicateDigest = ""
+	failure.BounceMessage = &bounce
+	failure.RichBounceEnvelopeHash = bounce.BodyHash
+	failure.RichBounceOriginalBodyHash = fixture.expected.BodyHash
+	created, err := journal.ResolveDestination(t.Context(), fixture.actionID, failure, &relayTestVerifier{})
+	if err != nil || created.State != RelayDestinationFailedBounceCreated {
+		t.Fatalf("bounce creation: %#v %v", created, err)
+	}
+	if closeErr := journal.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	journal, err = OpenPredictionRelayJournal(directory, fixture.profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = journal.Close() }()
+	recovered, found = journal.Get(fixture.actionID)
+	if !found || recovered.State != RelayDestinationFailedBounceCreated || recovered.DestinationEvidence == nil {
+		t.Fatalf("bounce-resolving recovery lost exact destination evidence: %#v", recovered)
+	}
+
+	creditCell := cell.BeginCell().MustStoreUInt(0x705, 12).EndCell()
+	credit := BounceCreditEvidence{
+		InboundBounceMessageHash: bounce.MessageHash,
+		TransactionHash:          "sha256:" + hex.EncodeToString(creditCell.Hash()),
+		TransactionBOCBase64:     base64.StdEncoding.EncodeToString(creditCell.ToBOCWithFlags(false)),
+		Block: BlockIdentity{
+			WorkchainID: -1, Shard: -1, SequenceNumber: 53,
+			RootHash:            "sha256:" + strings.Repeat("a", 64),
+			FileHash:            "sha256:" + strings.Repeat("b", 64),
+			MasterchainSequence: 104,
+		},
+		Finality: fixture.destination.Finality,
+		NextSourceCursor: AccountCursor{
+			AccountAddress: fixture.profile.SourceAgentAccount, LastLogicalTime: 140,
+			LastTransactionHash: "sha256:" + strings.Repeat("c", 64),
+		},
+		CreditedValueNanoTOS: bounce.ValueNanoTOS,
+	}
+	credited, err := journal.ResolveBounceCredit(t.Context(), fixture.actionID, credit, &relayTestVerifier{})
+	if err != nil || credited.State != RelayBounceCreditedAtAgent {
+		t.Fatalf("bounce credit after recovery: %#v %v", credited, err)
+	}
+}
+
 func TestPredictionRelayNoBounceNeedsBoundedFinalProof(t *testing.T) {
 	fixture := newRelayFixture(t)
 	journal := openRelayFixture(t, fixture, filepath.Join(t.TempDir(), "relay"))

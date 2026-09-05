@@ -25,16 +25,14 @@ import (
 const maximumPredictionBuilderInputBytes = 256 << 10
 
 type PredictionEffectRequest struct {
-	ActionKind            string
-	SemanticFields        map[string]commerce.SemanticValue
-	MarketDefinitionJSON  []byte
-	OperationJSON         []byte
-	AmountNanoTOS         uint64
-	ValidUntil            uint32
-	PolicyRevision        uint64
-	ApprovalDigest        string
-	SourceCursor          prediction.AccountCursor
-	MasterchainCheckpoint prediction.BlockIdentity
+	ActionKind           string
+	SemanticFields       map[string]commerce.SemanticValue
+	MarketDefinitionJSON []byte
+	OperationJSON        []byte
+	AmountNanoTOS        uint64
+	ValidUntil           uint32
+	PolicyRevision       uint64
+	ApprovalDigest       string
 }
 
 type PreparedPredictionEffect struct {
@@ -63,25 +61,27 @@ type tosctlPredictionOperationArtifact struct {
 }
 
 type tosctlPredictionAgentPrepared struct {
-	Schema                     string                   `json:"schema"`
-	StableActionID             string                   `json:"stable_action_id"`
-	ActionKind                 string                   `json:"action_kind"`
-	Source                     string                   `json:"source"`
-	SourceAgentAccountCodeHash string                   `json:"source_agent_account_code_hash"`
-	Destination                string                   `json:"destination"`
-	MarketID                   string                   `json:"market_id"`
-	MarketConfigHash           string                   `json:"market_config_hash"`
-	MarketCodeHash             string                   `json:"market_code_hash"`
-	AmountNanoTOS              uint64                   `json:"amount_nanotos"`
-	BodyHash                   string                   `json:"body_hash"`
-	ControllerEpoch            uint64                   `json:"controller_epoch"`
-	Seqno                      uint32                   `json:"seqno"`
-	ValidUntil                 uint32                   `json:"valid_until"`
-	NetworkDomain              agentrelay.NetworkDomain `json:"network_domain"`
-	ExactSignedBOC             string                   `json:"exact_signed_boc"`
-	ExactSignedBOCDigest       string                   `json:"exact_signed_boc_digest"`
-	OutputBOC                  string                   `json:"output_boc"`
-	Broadcast                  bool                     `json:"broadcast"`
+	Schema                            string                   `json:"schema"`
+	StableActionID                    string                   `json:"stable_action_id"`
+	ActionKind                        string                   `json:"action_kind"`
+	Source                            string                   `json:"source"`
+	SourceAgentAccountCodeHash        string                   `json:"source_agent_account_code_hash"`
+	Destination                       string                   `json:"destination"`
+	MarketID                          string                   `json:"market_id"`
+	MarketConfigHash                  string                   `json:"market_config_hash"`
+	MarketCodeHash                    string                   `json:"market_code_hash"`
+	AmountNanoTOS                     uint64                   `json:"amount_nanotos"`
+	BodyHash                          string                   `json:"body_hash"`
+	ControllerEpoch                   uint64                   `json:"controller_epoch"`
+	Seqno                             uint32                   `json:"seqno"`
+	ValidUntil                        uint32                   `json:"valid_until"`
+	NetworkDomain                     agentrelay.NetworkDomain `json:"network_domain"`
+	PreBroadcastSourceCursor          prediction.AccountCursor `json:"pre_broadcast_source_cursor"`
+	PreBroadcastMasterchainCheckpoint prediction.BlockIdentity `json:"pre_broadcast_masterchain_checkpoint"`
+	ExactSignedBOC                    string                   `json:"exact_signed_boc"`
+	ExactSignedBOCDigest              string                   `json:"exact_signed_boc_digest"`
+	OutputBOC                         string                   `json:"output_boc"`
+	Broadcast                         bool                     `json:"broadcast"`
 }
 
 type tosctlPredictionEffectBroadcast struct {
@@ -403,7 +403,8 @@ func (sink *TOSCTLPaymentSink) prepareAuthorizedPredictionEffect(ctx context.Con
 		return prediction.PredictionRelayRecord{}, err
 	}
 	record, err := sink.PredictionRelayJournal.Prepare(
-		action.StableActionID, exactBOC, expected, request.SourceCursor, request.MasterchainCheckpoint,
+		action.StableActionID, exactBOC, expected,
+		prepared.PreBroadcastSourceCursor, prepared.PreBroadcastMasterchainCheckpoint,
 	)
 	if err != nil {
 		return prediction.PredictionRelayRecord{}, err

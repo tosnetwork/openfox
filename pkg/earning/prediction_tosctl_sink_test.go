@@ -108,6 +108,15 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 		BodyBOCBase64: base64.StdEncoding.EncodeToString(bodyBOC),
 	}
 	calls := 0
+	emitBadRelayBoundary := true
+	goodSourceCursor := prediction.AccountCursor{
+		AccountAddress: source, LastLogicalTime: 90,
+		LastTransactionHash: digest("sha256:", 0x71),
+	}
+	goodCheckpoint := prediction.BlockIdentity{
+		WorkchainID: -1, Shard: -1, SequenceNumber: 100,
+		RootHash: digest("sha256:", 0x72), FileHash: digest("sha256:", 0x73), MasterchainSequence: 100,
+	}
 	sink := &TOSCTLPaymentSink{
 		Authority: authority, Executable: "/trusted/tosctl", ConfigPath: configPath,
 		Wallet: "prediction-agent", SourceAccount: source, NetworkGlobalID: 42,
@@ -163,6 +172,12 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 		if writeErr := os.WriteFile(outputPath, external, 0o600); writeErr != nil {
 			return nil, writeErr
 		}
+		preparedCursor := goodSourceCursor
+		if emitBadRelayBoundary {
+			// The relay boundary has to be produced by the pinned CLI and must
+			// still be rejected when that CLI returns an unrelated source.
+			preparedCursor.AccountAddress = market
+		}
 		return json.Marshal(tosctlPredictionAgentPrepared{
 			Schema:         "tosctl.prediction-agent-effect-prepared.v1",
 			StableActionID: authorization.StableActionID, ActionKind: actionKind,
@@ -171,8 +186,10 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 			MarketConfigHash: profile.MarketConfigHash, MarketCodeHash: profile.MarketCodeHash,
 			AmountNanoTOS: 2_000_000, BodyHash: bodyHash, ValidUntil: 1_800_000_600,
 			NetworkDomain: network, ExactSignedBOC: base64.StdEncoding.EncodeToString(external),
-			ExactSignedBOCDigest: "sha256:" + hex.EncodeToString(externalDigest[:]),
-			OutputBOC:            outputPath,
+			PreBroadcastSourceCursor:          preparedCursor,
+			PreBroadcastMasterchainCheckpoint: goodCheckpoint,
+			ExactSignedBOCDigest:              "sha256:" + hex.EncodeToString(externalDigest[:]),
+			OutputBOC:                         outputPath,
 		})
 	}
 	engine := &Engine{
@@ -190,20 +207,14 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 		MarketDefinitionJSON: []byte(`{"global_id":42}`),
 		OperationJSON:        []byte(`{"operation":"advance_phase","query_id":7}`),
 		AmountNanoTOS:        2_000_000, ValidUntil: 1_800_000_600, PolicyRevision: 1,
-		SourceCursor: prediction.AccountCursor{
-			AccountAddress: source, LastLogicalTime: 90,
-			LastTransactionHash: digest("sha256:", 0x71),
-		},
-		MasterchainCheckpoint: prediction.BlockIdentity{
-			WorkchainID: -1, Shard: -1, SequenceNumber: 100,
-			RootHash: digest("sha256:", 0x72), FileHash: digest("sha256:", 0x73), MasterchainSequence: 100,
-		},
 	}
-	badCursor := request
-	badCursor.SourceCursor.AccountAddress = market
-	if _, prepareErr := engine.PreparePredictionEffect(t.Context(), sink, badCursor, fence); prepareErr == nil ||
+	if _, prepareErr := engine.PreparePredictionEffect(t.Context(), sink, request, fence); prepareErr == nil ||
 		calls != 2 {
-		t.Fatalf("invalid pre-broadcast cursor crossed the relay journal: calls=%d err=%v", calls, prepareErr)
+		t.Fatalf(
+			"unrelated tosctl pre-broadcast boundary crossed the relay journal: calls=%d err=%v",
+			calls,
+			prepareErr,
+		)
 	}
 	stableActionID, _, err := commerce.DeriveStableActionID(actionKind, request.SemanticFields)
 	if err != nil {
@@ -217,9 +228,14 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 	if resolution.State != commerce.ActionPrepared {
 		t.Fatalf("failed relay durability step advanced authority prematurely: %+v", resolution)
 	}
+	emitBadRelayBoundary = false
 	prepared, err := engine.PreparePredictionEffect(t.Context(), sink, request, fence)
 	if err != nil || prepared.RelayRecord.State != prediction.RelaySigned || calls != 4 {
 		t.Fatalf("Prediction custody preparation failed: calls=%d record=%+v err=%v", calls, prepared.RelayRecord, err)
+	}
+	if prepared.RelayRecord.PreBroadcastSourceCursor != goodSourceCursor ||
+		prepared.RelayRecord.PreBroadcastMasterchainCheckpoint != goodCheckpoint {
+		t.Fatalf("relay journal did not preserve the pinned tosctl pre-broadcast boundary: %+v", prepared.RelayRecord)
 	}
 	if resolution := authority.Resolve(
 		prepared.AuthorizedAction.StableActionID, prepared.AuthorizedAction.ExactRequestDigest,

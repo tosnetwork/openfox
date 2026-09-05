@@ -50,6 +50,11 @@ OPENFOX_PREDICTION_EVIDENCE_DIRECTORY=/absolute/owner-private/evidence
 OPENFOX_PREDICTION_VAULT_URL=<operator-provided vault capability, when tosctl requires it>
 ```
 
+`OPENFOX_PREDICTION_TEST_MAX_CLOCK_SKEW_SECONDS` is deliberately absent from
+the release configuration. It is a test-only, 120–3600 second override for an
+accelerated localnet whose virtual block timestamps run ahead of wall time;
+the default release freshness bound remains 120 seconds.
+
 For the production relay profile, additionally set:
 
 ```text

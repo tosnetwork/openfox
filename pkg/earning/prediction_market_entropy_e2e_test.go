@@ -35,6 +35,7 @@ const (
 	predictionEntropyFutureOffset     = uint64(60)
 	maxPredictionEntropyEvidenceBytes = int64(2 << 20)
 	predictionEntropyPrelockMaxAge    = 5 * time.Second
+	predictionEntropyDefaultClockSkew = int64(120)
 )
 
 type predictionEntropyRPC interface {
@@ -510,10 +511,11 @@ func readPredictionEntropyNodeState(ctx context.Context, node predictionEntropyN
 		return result, callErr
 	}
 	now := time.Now().UTC().Unix()
+	clockSkew, skewErr := predictionEntropyClockSkew()
 	if consensus.Type != "ext.blocks.consensusBlock" || consensus.ConsensusBlock == 0 ||
 		consensus.ConsensusBlock > master.Last.Seqno || consensus.LastBlockUtime <= 0 ||
-		consensus.Timestamp <= 0 || consensus.LastBlockUtime > consensus.Timestamp+120 ||
-		consensus.LastBlockUtime < now-120 || consensus.LastBlockUtime > now+120 {
+		consensus.Timestamp <= 0 || skewErr != nil || consensus.LastBlockUtime > consensus.Timestamp+clockSkew ||
+		consensus.LastBlockUtime < now-clockSkew || consensus.LastBlockUtime > now+clockSkew {
 		return result, errors.New("stale or malformed Prediction consensus response")
 	}
 	validators, err := readPredictionEntropyValidatorSet(ctx, node.client)
@@ -531,6 +533,39 @@ func readPredictionEntropyNodeState(ctx context.Context, node predictionEntropyN
 	}
 	result.validators = validators
 	return result, nil
+}
+
+// predictionEntropyClockSkew keeps the release gate's 120-second freshness
+// bound by default.  A localnet may intentionally accelerate virtual block
+// time; its test-only override is bounded and cannot affect production code.
+func predictionEntropyClockSkew() (int64, error) {
+	value := strings.TrimSpace(os.Getenv("OPENFOX_PREDICTION_TEST_MAX_CLOCK_SKEW_SECONDS"))
+	if value == "" {
+		return predictionEntropyDefaultClockSkew, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < predictionEntropyDefaultClockSkew || parsed > 3600 ||
+		strconv.FormatInt(parsed, 10) != value {
+		return 0, errors.New("Prediction test clock-skew override is invalid")
+	}
+	return parsed, nil
+}
+
+func TestPredictionEntropyClockSkewOverrideIsBoundedAndOptIn(t *testing.T) {
+	t.Setenv("OPENFOX_PREDICTION_TEST_MAX_CLOCK_SKEW_SECONDS", "")
+	if value, err := predictionEntropyClockSkew(); err != nil || value != predictionEntropyDefaultClockSkew {
+		t.Fatalf("default clock skew = %d, %v", value, err)
+	}
+	for _, value := range []string{"119", "0360", "3601", "invalid"} {
+		t.Setenv("OPENFOX_PREDICTION_TEST_MAX_CLOCK_SKEW_SECONDS", value)
+		if _, err := predictionEntropyClockSkew(); err == nil {
+			t.Fatalf("clock-skew override %q was accepted", value)
+		}
+	}
+	t.Setenv("OPENFOX_PREDICTION_TEST_MAX_CLOCK_SKEW_SECONDS", "3600")
+	if value, err := predictionEntropyClockSkew(); err != nil || value != 3600 {
+		t.Fatalf("bounded clock-skew override = %d, %v", value, err)
+	}
 }
 
 func readPredictionEntropyValidatorSet(

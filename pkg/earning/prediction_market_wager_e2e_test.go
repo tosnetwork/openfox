@@ -792,7 +792,9 @@ func findPredictionAcceptanceMasterchainInclusion(ctx context.Context, rpc predi
 		file, fileErr := predictionRPCDigest(exact.FileHash)
 		if rootErr != nil || fileErr != nil || !validPredictionMasterchainBlockID(exact, false) ||
 			exact.Seqno != wanted.Seqno || root != wanted.RootHash || file != wanted.FileHash {
-			return 0, errors.New("Prediction accepted-wager masterchain transaction has no exact finalized block identity")
+			return 0, errors.New(
+				"Prediction accepted-wager masterchain transaction has no exact finalized block identity",
+			)
 		}
 		return wanted.Seqno, nil
 	}
@@ -831,40 +833,8 @@ func findPredictionAcceptanceMasterchainInclusion(ctx context.Context, rpc predi
 	return 0, errors.New("Prediction accepted-wager transaction block is absent from the finalized masterchain range")
 }
 
-type predictionAcceptedMasterchainRPC struct {
-	root byte
-	file byte
-}
-
-func (rpc predictionAcceptedMasterchainRPC) Call(_ context.Context, method string, params, result any) error {
-	if method != "lookupBlock" {
-		return errors.New("unexpected Prediction acceptance RPC method")
-	}
-	raw, err := json.Marshal(params)
-	if err != nil {
-		return err
-	}
-	var request struct {
-		Workchain int32  `json:"workchain"`
-		Shard     string `json:"shard"`
-		Seqno     uint64 `json:"seqno"`
-	}
-	if decodeStrictJSON(raw, &request) != nil || request.Workchain != -1 ||
-		request.Shard != predictionMasterchainShard || request.Seqno != 91 {
-		return errors.New("Prediction acceptance RPC received the wrong masterchain request")
-	}
-	wire, ok := result.(*predictionEntropyBlockID)
-	if !ok {
-		return errors.New("Prediction acceptance RPC received the wrong result type")
-	}
-	wire.Type, wire.Workchain, wire.Shard, wire.Seqno = "tos.blockIdExt", -1, predictionMasterchainShard, request.Seqno
-	wire.RootHash = base64.StdEncoding.EncodeToString(bytesOf(rpc.root, sha256.Size))
-	wire.FileHash = base64.StdEncoding.EncodeToString(bytesOf(rpc.file, sha256.Size))
-	return nil
-}
-
 func TestPredictionAcceptedWagerMasterchainInclusionUsesExactBlockIdentity(t *testing.T) {
-	rpc := predictionAcceptedMasterchainRPC{root: 0x31, file: 0x32}
+	rpc := fixedPredictionEntropyBlockRPC{rootByte: 0x31, fileByte: 0x32}
 	wanted := predictionAcceptedBlock{
 		Workchain: -1, Shard: predictionMasterchainShard, Seqno: 91,
 		RootHash: "sha256:" + strings.Repeat("31", sha256.Size),

@@ -344,8 +344,8 @@ func (authority *PersonalAuthority) AuthorizeCustodyEffect(action commerce.Autho
 }
 
 // AuthorizePredictionCustodyEffect turns one already prepared Prediction
-// semantic action into a capability for one exact Agent Account V2 checked
-// call. It has a separate wire domain from escrow and never invents Agreement
+// semantic action into a capability for one exact Agent Account checked-call
+// v2 action. It has a separate wire domain from escrow and never invents Agreement
 // or obligation fields to cross that boundary.
 func (authority *PersonalAuthority) AuthorizePredictionCustodyEffect(
 	action commerce.AuthorizedAction,

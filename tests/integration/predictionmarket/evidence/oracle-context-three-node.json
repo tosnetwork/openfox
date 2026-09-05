@@ -1,0 +1,51 @@
+{
+  "schema": "tos.openfox.prediction-oracle-context-three-node.v1",
+  "verdict": "PASS",
+  "observed_at": "2026-09-05T02:52:00Z",
+  "definition_sha256": "sha256:b85bc4699fcfb529622360c27a983835f638b99b499d8b0626ca9eb3a948336c",
+  "network_domain": {
+    "network_id": "tos:local-three-node",
+    "global_id": 3,
+    "zero_state_root_hash": "sha256:05ebea2b5a84a569bc4ee8f6cbc92fe4eb1443b43d14bae02a79ca27075eb17f",
+    "zero_state_file_hash": "sha256:815fee13902b8f4a50ad42d13a4e2e3be41bfc61d35179ffb3a843397dea1c65",
+    "workchain_id": 0
+  },
+  "network_domain_hash": "sha256:9e6bdab18ffdb6802e1e0c5258a4f94972e60d1cc944c60b9ed4d1431ed4de57",
+  "market_address": "0:061e0c329f735849047bf75653f233f089a29524161fae29f247976cbc7281ef",
+  "market_id": "sha256:977f177abcdbf8511f8b70dd2fd8dbbc6434ce1eedeb40c8d00ecd448cc4ad17",
+  "market_config_hash": "tvm-cell-sha256:010eb03a1d3bf069c385aa022d0d38c9a81f3e8323b82a92465f9e8df9cbfac8",
+  "market_code_hash": "tvm-cell-sha256:4df40200c8fbb847fc327529e9fc2052174367ae4c79d88ade7b2ee37028fff9",
+  "rules_hash": "sha256:0cc0a2a7208aa7e8c8009884d1f8bb24341dbd65bfc71b3d067d0ad680b49243",
+  "round": 0,
+  "round_policy_hash": "tvm-cell-sha256:d51d4f09d64be5dc1c471fa8f02c26b370daade6c9388481005b71e6d7e82cc5",
+  "status": "reporting",
+  "review_reason": 0,
+  "next_deadline": 1788575200,
+  "round_context_hash": "tvm-cell-sha256:a31df7d4e894618a8190660e490ad020cb0493ae8d123690c48f5254f7f5b14d",
+  "round_context_boc_base64": "te6ccgEBAgEAowABfFBOQzEAAYRk+In9etVl01M1WX0E18di8cUCxdEXy7wwuGcUfRMKAAAAAGqbe5sAAAAAapt7iAAAAABqm33gAQDAl38Xerzb+FEfi3DdL9jbvGQ0zh7t60DI0A7NRIzErRcMwKKnIIqn6MgAmITR+LskNB29Zb/HGz0GfQrWgLSSQ0nZUPpT5pNDcU7fm8oHoKgbIFmEML3ortFbHH0aACXn",
+  "agreeing_observer_ids": [
+    "sha256:70619ae86b0439e6d1de017a1956c41e16685ac3c07f29e056cc8e5e0112e7a3",
+    "sha256:8ef3c8afe03637163619b0bfad2436f389b992b2e2a71a0b187626c613abe1b6",
+    "sha256:a26f43e179a7738af229f4ee6cba5cf44b63867bc465c5c5b49dd610495f7aec"
+  ],
+  "observer_checkpoints": [
+    {
+      "observer_id": "sha256:70619ae86b0439e6d1de017a1956c41e16685ac3c07f29e056cc8e5e0112e7a3",
+      "seqno": 126740,
+      "root_hash": "a4aeefc9772278f39c25a835344834e02bac4e0b3c520e300b8957aba5b0f9a6",
+      "file_hash": "1f61b3a07cdf5f1702d63c67788e825dba0a2e6e4472141f1a118f0910064daf"
+    },
+    {
+      "observer_id": "sha256:8ef3c8afe03637163619b0bfad2436f389b992b2e2a71a0b187626c613abe1b6",
+      "seqno": 126741,
+      "root_hash": "1727871618dd38f22508a0fc50519a1c4b09df995b90516bc463bcde4bec37b0",
+      "file_hash": "122221bc43a4defb9d7307c4145ea7fbc06461016bdee23e4c3bfe6eb5e10172"
+    },
+    {
+      "observer_id": "sha256:a26f43e179a7738af229f4ee6cba5cf44b63867bc465c5c5b49dd610495f7aec",
+      "seqno": 126743,
+      "root_hash": "474cc615c61afc630fc7f449cae8bb6a3029441cb2a0283013b8056f0daf1e37",
+      "file_hash": "c6ff9ec06ebc8f0562fe2cd73281acf53dc1ba36a40f68b439aa2461d2767d92"
+    }
+  ]
+}

@@ -184,7 +184,9 @@ func verifyPredictionOracleChainView(raw []byte, profile prediction.OracleProfil
 		!wire.ConfigHashVerified || wire.GlobalVersion < 14 || wire.MarketID != hex.EncodeToString(marketID[:]) ||
 		wire.MarketConfigHash != trimCellHash(relay.MarketConfigHash) || wire.Checkpoint.Seqno == 0 ||
 		!canonicalRawHash(wire.Checkpoint.RootHash) || !canonicalRawHash(wire.Checkpoint.FileHash) {
-		return verifiedPredictionOracleView{}, errors.New("Prediction market chain view conflicts with its immutable profile")
+		return verifiedPredictionOracleView{}, errors.New(
+			"Prediction market chain view conflicts with its immutable profile",
+		)
 	}
 	roundBOC, contextHash, err := decodeChainViewCell(wire.CurrentContextBOCBase64, wire.CurrentContextHash, true)
 	if err != nil {

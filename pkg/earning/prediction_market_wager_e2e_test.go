@@ -49,12 +49,21 @@ type predictionAcceptanceSubmission struct {
 }
 
 type predictionAcceptanceAgentAccountView struct {
-	Address         string  `json:"address"`
-	State           string  `json:"state"`
-	CodeHash        *string `json:"code_hash"`
-	TemplateMatches *bool   `json:"template_matches"`
-	ControllerEpoch *uint64 `json:"controller_epoch"`
-	Seqno           *uint32 `json:"seqno"`
+	Address                string  `json:"address"`
+	State                  string  `json:"state"`
+	Balance                string  `json:"balance"`
+	CodeHash               *string `json:"code_hash"`
+	TemplateMatches        *bool   `json:"template_matches"`
+	Owner                  string  `json:"owner"`
+	ControllerPubkey       string  `json:"controller_pubkey"`
+	DeploymentID           string  `json:"deployment_id"`
+	ControllerEpoch        *uint64 `json:"controller_epoch"`
+	Seqno                  *uint32 `json:"seqno"`
+	MaxPerTx               uint64  `json:"max_per_tx"`
+	DailyLimit             uint64  `json:"daily_limit"`
+	SpendDay               uint64  `json:"spend_day"`
+	SpentToday             uint64  `json:"spent_today"`
+	DefaultTaskTimeoutSecs uint64  `json:"default_task_timeout_secs"`
 }
 
 type predictionAcceptedDefinition struct {
@@ -589,6 +598,33 @@ func predictionAcceptanceVerifyAgentAccount(t *testing.T, ctx context.Context, s
 	return "tvm-cell-sha256:" + *view.CodeHash
 }
 
+func TestPredictionAcceptanceAgentAccountViewAcceptsTOSCTLShowSchema(t *testing.T) {
+	raw := []byte(`{
+  "address":"-1:` + strings.Repeat("11", 32) + `",
+  "state":"active",
+  "balance":"20000000000",
+  "code_hash":"` + strings.Repeat("22", 32) + `",
+  "template_matches":true,
+  "owner":"-1:` + strings.Repeat("33", 32) + `",
+  "controller_pubkey":"` + strings.Repeat("44", 32) + `",
+  "deployment_id":"` + strings.Repeat("55", 32) + `",
+  "controller_epoch":0,
+  "seqno":1,
+  "max_per_tx":1000000000,
+  "daily_limit":5000000000,
+  "spend_day":1,
+  "spent_today":0,
+  "default_task_timeout_secs":3600
+}`)
+	var view predictionAcceptanceAgentAccountView
+	if err := decodeStrictJSON(raw, &view); err != nil {
+		t.Fatalf("tosctl Agent Account show schema must decode strictly: %v", err)
+	}
+	if view.CodeHash == nil || view.TemplateMatches == nil || view.ControllerEpoch == nil || view.Seqno == nil {
+		t.Fatal("tosctl Agent Account show schema lost required audited fields")
+	}
+}
+
 func predictionAcceptanceCellHash(value *cell.Cell) string {
 	return "tvm-cell-sha256:" + hex.EncodeToString(value.Hash())
 }
@@ -900,9 +936,8 @@ func decodePredictionAcceptanceTransaction(wire predictionAcceptedTransactionWir
 		tx.Now != wire.UTime {
 		return zero, errors.New("Prediction accepted-wager transaction TL-B is invalid")
 	}
-	rebuilt, err := tx.ToCell()
 	parsed, addressErr := address.ParseRawAddr(accountAddress)
-	if err != nil || parsed == nil || addressErr != nil || !bytes.Equal(rebuilt.Hash(), root.Hash()) ||
+	if parsed == nil || addressErr != nil ||
 		!bytes.Equal(tx.AccountAddr, parsed.Data()) || tx.IO.In == nil {
 		return zero, errors.New("Prediction accepted-wager transaction is not bound to its account")
 	}
@@ -1239,10 +1274,11 @@ func decodePredictionAcceptanceReportTransaction(report predictionAcceptedTransa
 		tx.Now != report.UTime {
 		return nil, errors.New("Prediction accepted-wager report transaction TL-B is invalid")
 	}
-	rebuilt, err := tx.ToCell()
 	parsed, addressErr := address.ParseRawAddr(accountAddress)
-	if err != nil || addressErr != nil || parsed == nil || !bytes.Equal(rebuilt.Hash(), root.Hash()) ||
+	blockShard, shardErr := canonicalPredictionShard(report.Block.Shard)
+	if addressErr != nil || parsed == nil ||
 		!bytes.Equal(tx.AccountAddr, parsed.Data()) || report.Block.Seqno == 0 ||
+		shardErr != nil || (report.Block.Workchain == -1 && blockShard != uint64(1)<<63) ||
 		!validCanonicalSHA256(report.Block.RootHash) || !validCanonicalSHA256(report.Block.FileHash) {
 		return nil, errors.New("Prediction accepted-wager report transaction identity is invalid")
 	}

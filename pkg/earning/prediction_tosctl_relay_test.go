@@ -16,7 +16,8 @@ func TestPredictionRecoveryHistoryLimitCannotDropBelowLongHorizonGate(t *testing
 		}
 	}
 	configured := uint32(75_000)
-	if got := (&TOSCTLPaymentSink{PredictionMaximumTransactions: configured}).maximumPredictionTransactions(); got != configured {
+	sink := &TOSCTLPaymentSink{PredictionMaximumTransactions: configured}
+	if got := sink.maximumPredictionTransactions(); got != configured {
 		t.Fatalf("safe explicit history limit changed: got %d want %d", got, configured)
 	}
 }

@@ -3,6 +3,7 @@ package prediction
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -44,6 +45,8 @@ type relayTestVerifier struct {
 	bounceCalls      int
 	err              error
 }
+
+func (*relayTestVerifier) predictionRelayEvidenceVerifier() {}
 
 func (verifier *relayTestVerifier) VerifyPredictionSource(_ context.Context, _ PredictionRelayRecord,
 	_ SourceTransactionEvidence,
@@ -173,6 +176,20 @@ func openRelayFixture(t *testing.T, fixture relayFixture, directory string) *Pre
 	return journal
 }
 
+func TestPredictionRelayProfileCapsObserverMemory(t *testing.T) {
+	fixture := newRelayFixture(t)
+	fixture.profile.ObserverIDs = make([]string, 65)
+	for index := range fixture.profile.ObserverIDs {
+		value := sha256.Sum256([]byte{byte(index)})
+		fixture.profile.ObserverIDs[index] = "sha256:" + hex.EncodeToString(value[:])
+	}
+	// Sorting would make every identity canonical, but the explicit count cap
+	// must reject the profile before it can amplify every durable record.
+	if _, err := OpenPredictionRelayJournal(filepath.Join(t.TempDir(), "relay"), fixture.profile); err == nil {
+		t.Fatal("Prediction relay accepted more than 64 observer identities")
+	}
+}
+
 func prepareAndResolveSource(
 	t *testing.T,
 	journal *PredictionRelayJournal,
@@ -213,6 +230,12 @@ func TestPredictionRelayBroadcastCrashWindowAndSourceFinalBoundary(t *testing.T)
 	)
 	if err != nil || prepared.State != RelaySigned {
 		t.Fatalf("prepare: state=%s err=%v", prepared.State, err)
+	}
+	rawDigest := sha256.Sum256(fixture.signedBOC)
+	if prepared.ExactSignedBOCDigest != "sha256:"+hex.EncodeToString(rawDigest[:]) ||
+		prepared.SubmittedExternalMessageHash != fixture.source.SubmittedExternalMessageHash ||
+		prepared.ExactSignedBOCDigest == prepared.SubmittedExternalMessageHash {
+		t.Fatalf("relay conflated exact BOC bytes with the submitted TVM message: %#v", prepared)
 	}
 
 	failed := &relayTestBroadcaster{err: errors.New("socket failed")}

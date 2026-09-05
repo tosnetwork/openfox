@@ -141,17 +141,10 @@ type MatchPlan struct {
 }
 
 func OpenBook(directory string, profile MarketProfile) (*Book, error) {
-	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || validateProfile(profile) != nil {
+	if validateProfile(profile) != nil {
 		return nil, errors.New("prediction order-book configuration is invalid")
 	}
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(directory)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-		return nil, errors.New("prediction order-book directory must be owner-private")
-	}
-	lock, err := acquireBookLock(directory)
+	lock, err := openPrivateLockedDirectory(directory)
 	if err != nil {
 		return nil, err
 	}
@@ -166,6 +159,20 @@ func OpenBook(directory string, profile MarketProfile) (*Book, error) {
 		return nil, err
 	}
 	return book, nil
+}
+
+func openPrivateLockedDirectory(directory string) (*os.File, error) {
+	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
+		return nil, errors.New("prediction state directory path is invalid")
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(directory)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		return nil, errors.New("prediction state directory must be owner-private")
+	}
+	return acquireBookLock(directory)
 }
 
 func (book *Book) Close() error {

@@ -195,6 +195,7 @@ type PredictionExactBroadcaster interface {
 // all structural and identity checks so an implementation cannot weaken the
 // state machine by returning a convenient boolean.
 type PredictionRelayEvidenceVerifier interface {
+	predictionRelayEvidenceVerifier()
 	VerifyPredictionSource(ctx context.Context, record PredictionRelayRecord, evidence SourceTransactionEvidence) error
 	VerifyPredictionDestination(
 		ctx context.Context,
@@ -282,7 +283,8 @@ func (journal *PredictionRelayJournal) Prepare(actionID string, exactSignedBOC [
 	if journal.lock == nil {
 		return PredictionRelayRecord{}, errors.New("prediction relay journal is closed")
 	}
-	digest, err := canonicalCellDigest(exactSignedBOC, int(journal.profile.MaximumSignedBOCBytes))
+	messageHash, err := canonicalCellDigest(exactSignedBOC, int(journal.profile.MaximumSignedBOCBytes))
+	exactDigest := sha256Digest(exactSignedBOC)
 	if err != nil || validateExpectedCall(expected, journal.profile, actionID) != nil ||
 		validateAccountCursor(sourceCursor, journal.profile.SourceAgentAccount) != nil ||
 		validateCheckpoint(masterchainCheckpoint) != nil || masterchainCheckpoint.WorkchainID != -1 ||
@@ -290,7 +292,7 @@ func (journal *PredictionRelayJournal) Prepare(actionID string, exactSignedBOC [
 		return PredictionRelayRecord{}, errors.New("prediction relay preparation material is invalid")
 	}
 	if prior, ok := journal.records[actionID]; ok {
-		if prior.ExactSignedBOCDigest != digest ||
+		if prior.ExactSignedBOCDigest != exactDigest ||
 			prior.ExactSignedBOCBase64 != base64.StdEncoding.EncodeToString(exactSignedBOC) ||
 			!reflect.DeepEqual(prior.Expected, expected) ||
 			!reflect.DeepEqual(prior.PreBroadcastSourceCursor, sourceCursor) ||
@@ -305,8 +307,8 @@ func (journal *PredictionRelayJournal) Prepare(actionID string, exactSignedBOC [
 	record := PredictionRelayRecord{
 		SchemaVersion: relaySchemaVersion, Revision: 1, ActionID: actionID,
 		Profile: cloneRelayProfile(journal.profile), Expected: expected,
-		ExactSignedBOCBase64: base64.StdEncoding.EncodeToString(exactSignedBOC), ExactSignedBOCDigest: digest,
-		SubmittedExternalMessageHash: digest, PreBroadcastSourceCursor: sourceCursor,
+		ExactSignedBOCBase64: base64.StdEncoding.EncodeToString(exactSignedBOC), ExactSignedBOCDigest: exactDigest,
+		SubmittedExternalMessageHash: messageHash, PreBroadcastSourceCursor: sourceCursor,
 		PreBroadcastMasterchainCheckpoint: masterchainCheckpoint, State: RelaySigned,
 	}
 	if err := journal.persist(record); err != nil {
@@ -507,6 +509,7 @@ func validateRelayProfile(profile PredictionRelayProfile) error {
 		!canonicalDigest(profile.MarketID, "sha256:") ||
 		!canonicalDigest(profile.MarketCodeHash, "tvm-cell-sha256:") ||
 		!canonicalDigest(profile.MarketConfigHash, "tvm-cell-sha256:") || len(profile.ObserverIDs) < 3 ||
+		len(profile.ObserverIDs) > 64 ||
 		profile.QuorumThreshold < 2 || profile.QuorumThreshold <= uint32(len(profile.ObserverIDs)/2) ||
 		profile.QuorumThreshold > uint32(len(profile.ObserverIDs)) || profile.MaximumOutstanding == 0 ||
 		profile.MaximumOutstanding > 100_000 || profile.MaximumSignedBOCBytes == 0 ||
@@ -852,8 +855,9 @@ func validateRelayRecord(record PredictionRelayRecord, profile PredictionRelayPr
 	if err != nil {
 		return err
 	}
-	digest, err := canonicalCellDigest(raw, int(profile.MaximumSignedBOCBytes))
-	if err != nil || digest != record.ExactSignedBOCDigest || record.SubmittedExternalMessageHash != digest {
+	messageHash, err := canonicalCellDigest(raw, int(profile.MaximumSignedBOCBytes))
+	if err != nil || sha256Digest(raw) != record.ExactSignedBOCDigest ||
+		record.SubmittedExternalMessageHash != messageHash {
 		return errors.New("prediction relay exact BOC changed")
 	}
 	switch record.State {
@@ -969,6 +973,11 @@ func canonicalCellDigest(raw []byte, maximum int) (string, error) {
 		return "", errors.New("cell BOC is not canonical")
 	}
 	return cellDigest(root), nil
+}
+
+func sha256Digest(raw []byte) string {
+	digest := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 func decodeCanonicalCell(encoded string, maximum int) (*cell.Cell, error) {

@@ -58,27 +58,33 @@ type TOSCTLPaymentSink struct {
 	// RelayTerminalFinalityProfiles is the exact owner-selected subset this
 	// adapter may prove. The bundled tosctl RPC terminal adapter currently
 	// supports confirmation depth one only.
-	RelayTerminalFinalityProfiles   []agentrelay.FinalityProfile
-	PredictionRelayJournal          *prediction.PredictionRelayJournal
-	FeeReserveNanoTOS               uint64
-	QuorumConfigPaths               []string
-	MaximumTransactions             uint32
-	VaultURL                        string
-	EvidenceDirectory               string
-	ResolveAttempts                 uint32
-	ResolveInterval                 time.Duration
-	Now                             func() time.Time
-	Run                             func(context.Context, []string, []string) ([]byte, error)
-	executableMu                    sync.Mutex
-	executableIdentity              *tosctlExecutableIdentity
-	executableSnapshot              *os.File
-	executableLaunches              chan struct{}
-	vaultCapabilityPinned           bool
-	vaultCapabilityDigest           [sha256.Size]byte
-	verifiedSponsorshipMu           sync.Mutex
-	verifiedSponsorshipObservations map[string]uint64
-	verifiedSponsorshipTransactions map[string]uint64
-	sponsorshipSnapshotMu           sync.Mutex
+	RelayTerminalFinalityProfiles []agentrelay.FinalityProfile
+	PredictionRelayJournal        *prediction.PredictionRelayJournal
+	FeeReserveNanoTOS             uint64
+	QuorumConfigPaths             []string
+	MaximumTransactions           uint32
+	// PredictionMaximumTransactions is separate because Prediction recovery
+	// must survive more than the legacy 10,000-payment-history ceiling.
+	PredictionMaximumTransactions uint32
+	// PredictionMaximumMasterchainBlocks bounds the durable checkpoint-to-head
+	// destination scan independently from the number of shard transactions.
+	PredictionMaximumMasterchainBlocks uint32
+	VaultURL                           string
+	EvidenceDirectory                  string
+	ResolveAttempts                    uint32
+	ResolveInterval                    time.Duration
+	Now                                func() time.Time
+	Run                                func(context.Context, []string, []string) ([]byte, error)
+	executableMu                       sync.Mutex
+	executableIdentity                 *tosctlExecutableIdentity
+	executableSnapshot                 *os.File
+	executableLaunches                 chan struct{}
+	vaultCapabilityPinned              bool
+	vaultCapabilityDigest              [sha256.Size]byte
+	verifiedSponsorshipMu              sync.Mutex
+	verifiedSponsorshipObservations    map[string]uint64
+	verifiedSponsorshipTransactions    map[string]uint64
+	sponsorshipSnapshotMu              sync.Mutex
 }
 
 func (sink *TOSCTLPaymentSink) verifyRelayNetworkDomain(ctx context.Context,

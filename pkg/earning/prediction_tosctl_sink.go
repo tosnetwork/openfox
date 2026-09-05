@@ -84,6 +84,22 @@ type tosctlPredictionAgentPrepared struct {
 	Broadcast                  bool                     `json:"broadcast"`
 }
 
+type tosctlPredictionEffectBroadcast struct {
+	Schema               string `json:"schema"`
+	StableActionID       string `json:"stable_action_id"`
+	ActionKind           string `json:"action_kind"`
+	Account              string `json:"account"`
+	ExactSignedBOCDigest string `json:"exact_signed_boc_digest"`
+	State                string `json:"state"`
+}
+
+type tosctlPredictionBroadcaster struct {
+	sink           *TOSCTLPaymentSink
+	stableActionID string
+	actionKind     string
+	exactBOCDigest string
+}
+
 // PreparePredictionEffect is the production Owner-authority-to-Agent-Account
 // boundary. It first asks the pinned tosctl binary for a pure canonical body,
 // admits that exact body as an AuthorizedAction, obtains a dedicated Prediction
@@ -92,14 +108,12 @@ type tosctlPredictionAgentPrepared struct {
 func (engine *Engine) PreparePredictionEffect(ctx context.Context, sink *TOSCTLPaymentSink,
 	request PredictionEffectRequest, fence commerce.WriterFence,
 ) (PreparedPredictionEffect, error) {
+	now := predictionEffectNow(engine)
 	if engine == nil || engine.Authority == nil || sink == nil || ctx == nil ||
 		!engine.permits("prediction", engine.Gates.Prediction, true) ||
 		!commerce.IsPredictionCustodyEffectKind(request.ActionKind) || request.PolicyRevision == 0 ||
 		request.ValidUntil == 0 || uint64(request.ValidUntil) > fence.Body.ExpiresAtUnix ||
-		predictionEffectNow(
-			engine,
-		).Unix() <
-			0 || uint64(predictionEffectNow(engine).Unix()) >= uint64(request.ValidUntil) {
+		now.Unix() < 0 || uint64(now.Unix()) >= uint64(request.ValidUntil) {
 		return PreparedPredictionEffect{}, errors.New("prediction effect execution is disabled or incomplete")
 	}
 	artifact, bodyBOC, err := sink.buildPredictionOperation(ctx, request)
@@ -146,6 +160,73 @@ func (engine *Engine) PreparePredictionEffect(ctx context.Context, sink *TOSCTLP
 		return PreparedPredictionEffect{}, err
 	}
 	return PreparedPredictionEffect{AuthorizedAction: action, RelayRecord: record}, nil
+}
+
+// ResumePredictionEffectBroadcast crosses the first network-write boundary.
+// Both journals enter Broadcasting before tosctl writes to the pinned RPC, and
+// retries can therefore submit only the byte-identical Agent Account message.
+func (engine *Engine) ResumePredictionEffectBroadcast(ctx context.Context, sink *TOSCTLPaymentSink,
+	prepared PreparedPredictionEffect,
+) (prediction.PredictionRelayRecord, error) {
+	if engine == nil || engine.Authority == nil || sink == nil || ctx == nil ||
+		!engine.permits("prediction", engine.Gates.Prediction, true) {
+		return prediction.PredictionRelayRecord{}, errors.New("prediction broadcast is disabled")
+	}
+	action := prepared.AuthorizedAction
+	record, found := sink.PredictionRelayJournal.Get(action.StableActionID)
+	resolution := engine.Authority.Resolve(action.StableActionID, action.ExactRequestDigest)
+	if !found || !commerce.IsPredictionCustodyEffectKind(action.ActionKind) ||
+		record.ActionID != action.StableActionID || record.Expected.ActionKind != action.ActionKind ||
+		record.ExactSignedBOCDigest == "" ||
+		prepared.RelayRecord.ExactSignedBOCDigest != record.ExactSignedBOCDigest ||
+		resolution.State != commerce.ActionSubmitted ||
+		resolution.ExactRequestDigest != action.ExactRequestDigest {
+		return prediction.PredictionRelayRecord{}, errors.New(
+			"prediction broadcast lacks its exact submitted authority boundary",
+		)
+	}
+	broadcaster := &tosctlPredictionBroadcaster{
+		sink: sink, stableActionID: action.StableActionID, actionKind: action.ActionKind,
+		exactBOCDigest: record.ExactSignedBOCDigest,
+	}
+	return sink.PredictionRelayJournal.BeginOrResumeExactBroadcast(
+		ctx, action.StableActionID, broadcaster,
+	)
+}
+
+func (broadcaster *tosctlPredictionBroadcaster) BroadcastExactPredictionBOC(
+	ctx context.Context, boc []byte,
+) error {
+	if broadcaster == nil || broadcaster.sink == nil || ctx == nil || len(boc) == 0 {
+		return errors.New("prediction tosctl broadcaster is unavailable")
+	}
+	digest := sha256.Sum256(boc)
+	exactDigest := "sha256:" + hex.EncodeToString(digest[:])
+	if exactDigest != broadcaster.exactBOCDigest {
+		return errors.New("prediction broadcaster received different exact BOC bytes")
+	}
+	if err := broadcaster.sink.validatePredictionAdapter(ctx); err != nil {
+		return err
+	}
+	raw, err := broadcaster.sink.run(ctx, []string{
+		"agent", "account", "economic-effect-broadcast",
+		"--wallet", broadcaster.sink.Wallet,
+		"--stable-action-id", broadcaster.stableActionID,
+		"--yes", "-c", broadcaster.sink.ConfigPath,
+	})
+	if err != nil {
+		return errors.New("prediction exact BOC submission outcome is ambiguous")
+	}
+	var result tosctlPredictionEffectBroadcast
+	if decodeStrictJSON(raw, &result) != nil ||
+		result.Schema != "tosctl.agent-account.economic-effect-broadcast.v1" ||
+		result.StableActionID != broadcaster.stableActionID ||
+		result.ActionKind != broadcaster.actionKind ||
+		result.Account != broadcaster.sink.SourceAccount ||
+		result.ExactSignedBOCDigest != exactDigest || result.State != "broadcasting" {
+		return errors.New("tosctl returned an unrelated Prediction broadcast result")
+	}
+	return nil
 }
 
 func (sink *TOSCTLPaymentSink) buildPredictionOperation(ctx context.Context,
@@ -316,7 +397,7 @@ func (sink *TOSCTLPaymentSink) prepareAuthorizedPredictionEffect(ctx context.Con
 		return prediction.PredictionRelayRecord{}, fmt.Errorf("decode prepared Prediction effect: %w", decodeErr)
 	}
 	exactBOC, err := validatePreparedPredictionEffect(
-		prepared, action, request, artifact, outputPath, sink.SourceAccount, *sink.RelayNetworkDomain,
+		prepared, action, request, artifact, bodyBOC, outputPath, sink.SourceAccount, *sink.RelayNetworkDomain,
 	)
 	if err != nil {
 		return prediction.PredictionRelayRecord{}, err
@@ -337,7 +418,8 @@ func (sink *TOSCTLPaymentSink) prepareAuthorizedPredictionEffect(ctx context.Con
 
 func validatePreparedPredictionEffect(prepared tosctlPredictionAgentPrepared,
 	action commerce.AuthorizedAction, request PredictionEffectRequest,
-	artifact tosctlPredictionOperationArtifact, outputPath, sourceAccount string, network agentrelay.NetworkDomain,
+	artifact tosctlPredictionOperationArtifact, bodyBOC []byte, outputPath, sourceAccount string,
+	network agentrelay.NetworkDomain,
 ) ([]byte, error) {
 	exactBOC, decodeErr := base64.StdEncoding.Strict().DecodeString(prepared.ExactSignedBOC)
 	digest := sha256.Sum256(exactBOC)
@@ -367,18 +449,13 @@ func validatePreparedPredictionEffect(prepared tosctlPredictionAgentPrepared,
 			SenderAgentAccount: sourceAccount, GlobalID: network.GlobalID,
 			ControllerEpoch: prepared.ControllerEpoch, Seqno: prepared.Seqno,
 			ValidUntil: prepared.ValidUntil, DestinationAddress: artifact.MarketAddress,
-			AmountAtomic: request.AmountNanoTOS, BodyBOC: base64Body(artifact.BodyBOCBase64),
+			AmountAtomic: request.AmountNanoTOS, BodyBOC: append([]byte(nil), bodyBOC...),
 		},
 	)
 	if err != nil || parsed.BodyHash != artifact.BodyHash {
 		return nil, errors.New("prepared Prediction BOC differs from its authorized checked call")
 	}
 	return append([]byte(nil), exactBOC...), nil
-}
-
-func base64Body(encoded string) []byte {
-	raw, _ := base64.StdEncoding.Strict().DecodeString(encoded)
-	return raw
 }
 
 func (sink *TOSCTLPaymentSink) validatePredictionAdapter(ctx context.Context) error {

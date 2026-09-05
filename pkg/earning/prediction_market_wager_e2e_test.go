@@ -522,7 +522,8 @@ func predictionAcceptedWagerSubmission(t *testing.T, externalRaw, bodyRaw []byte
 		return predictionAcceptanceSubmission{
 			profile:       profile,
 			selectionRule: "agent-account-checked-call-v2-exact-external-to-audited-agent-transaction-to-single-flagged-outbound-to-successful-market-transaction",
-			extraFlags:    agentgift.AgentCheckedContractCallV2Flags, checkedCall: &checkedCall,
+			extraFlags:    agentgift.AgentCheckedContractCallV2Flags,
+			checkedCall:   &checkedCall,
 		}
 	default:
 		t.Fatal("OPENFOX_PREDICTION_SUBMISSION_PROFILE must be direct-wallet-contract-probe or agent-account-checked-call-v2")

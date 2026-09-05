@@ -497,10 +497,8 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	// reused here.
 	lockStates := make([]predictionEntropyNodeState, 0, len(nodes))
 	for index, node := range nodes {
-		state, stateErr := readPredictionEntropyNodeState(ctx, node, network)
-		if stateErr != nil {
-			t.Fatalf("read future-lock observer %d state: %v", index+1, stateErr)
-		}
+		state := waitPredictionEntropyNodeState(t, ctx, node, network,
+			fmt.Sprintf("future-lock observer %d", index+1), 15*time.Second)
 		lockStates = append(lockStates, state)
 	}
 	lockedAt := time.Now().UTC()
@@ -1405,7 +1403,8 @@ func waitPredictionEntropyTarget(t *testing.T, ctx context.Context, nodes []pred
 		for index, node := range nodes {
 			state, err := readPredictionEntropyNodeState(ctx, node, network)
 			if err != nil {
-				t.Fatal(err)
+				ready = false
+				break
 			}
 			states[index] = state
 			if !reflect.DeepEqual(state.validators, lock.ValidatorSet) {
@@ -1423,6 +1422,34 @@ func waitPredictionEntropyTarget(t *testing.T, ctx context.Context, nodes []pred
 			t.Fatal(ctx.Err())
 		case <-deadline.C:
 			t.Fatal("Prediction future block did not finalize before the bounded reveal deadline")
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// waitPredictionEntropyNodeState rejects stale or malformed observations, but
+// does not mistake one observer's short post-block propagation interval for a
+// security verdict. The eventual sample still has to pass every network,
+// timestamp, finalized-height, and validator-set check in
+// readPredictionEntropyNodeState; a persistent failure remains fail-closed.
+func waitPredictionEntropyNodeState(t *testing.T, ctx context.Context, node predictionEntropyNode,
+	network agentrelay.NetworkDomain, label string, timeout time.Duration,
+) predictionEntropyNodeState {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	var last error
+	for {
+		state, err := readPredictionEntropyNodeState(ctx, node, network)
+		if err == nil {
+			return state
+		}
+		last = err
+		select {
+		case <-ctx.Done():
+			t.Fatalf("read %s state: %v", label, ctx.Err())
+		case <-deadline.C:
+			t.Fatalf("read %s state did not become valid: %v", label, last)
 		case <-time.After(time.Second):
 		}
 	}

@@ -109,6 +109,7 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 	}
 	calls := 0
 	emitBadRelayBoundary := true
+	preparedJournalState := "broadcasting"
 	goodSourceCursor := prediction.AccountCursor{
 		AccountAddress: source, LastLogicalTime: 90,
 		LastTransactionHash: digest("sha256:", 0x71),
@@ -193,6 +194,7 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 			PreBroadcastMasterchainCheckpoint: goodCheckpoint,
 			ExactSignedBOCDigest:              "sha256:" + hex.EncodeToString(externalDigest[:]),
 			OutputBOC:                         outputPath,
+			JournalState:                      preparedJournalState,
 		})
 	}
 	engine := &Engine{
@@ -232,8 +234,17 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 		t.Fatalf("failed relay durability step advanced authority prematurely: %+v", resolution)
 	}
 	emitBadRelayBoundary = false
+	preparedJournalState = "signed"
+	if _, prepareErr := engine.PreparePredictionEffect(t.Context(), sink, request, fence); prepareErr == nil ||
+		calls != 4 {
+		t.Fatalf("signed tosctl Prediction record crossed the relay journal: calls=%d err=%v", calls, prepareErr)
+	}
+	if resolution := authority.Resolve(stableActionID, exactRequestDigest); resolution.State != commerce.ActionPrepared {
+		t.Fatalf("signed tosctl record advanced authority prematurely: %+v", resolution)
+	}
+	preparedJournalState = "broadcasting"
 	prepared, err := engine.PreparePredictionEffect(t.Context(), sink, request, fence)
-	if err != nil || prepared.RelayRecord.State != prediction.RelaySigned || calls != 4 {
+	if err != nil || prepared.RelayRecord.State != prediction.RelaySigned || calls != 6 {
 		t.Fatalf("Prediction custody preparation failed: calls=%d record=%+v err=%v", calls, prepared.RelayRecord, err)
 	}
 	if prepared.RelayRecord.PreBroadcastSourceCursor != goodSourceCursor ||
@@ -247,17 +258,17 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 	}
 	retried, err := engine.PreparePredictionEffect(t.Context(), sink, request, fence)
 	if err != nil || retried.RelayRecord.ExactSignedBOCDigest != prepared.RelayRecord.ExactSignedBOCDigest ||
-		calls != 5 {
+		calls != 7 {
 		t.Fatalf("submitted retry did not recover exact relay material: calls=%d err=%v", calls, err)
 	}
 	broadcasting, err := engine.ResumePredictionEffectBroadcast(t.Context(), sink, prepared)
 	if err != nil || broadcasting.State != prediction.RelayBroadcasting ||
-		broadcasting.BroadcastAttempts != 1 || calls != 6 {
+		broadcasting.BroadcastAttempts != 1 || calls != 8 {
 		t.Fatalf("Prediction exact broadcast failed: calls=%d record=%+v err=%v", calls, broadcasting, err)
 	}
 	rebroadcast, err := engine.ResumePredictionEffectBroadcast(t.Context(), sink, prepared)
 	if err != nil || rebroadcast.State != prediction.RelayBroadcasting ||
-		rebroadcast.BroadcastAttempts != 2 || calls != 7 {
+		rebroadcast.BroadcastAttempts != 2 || calls != 9 {
 		t.Fatalf("Prediction exact rebroadcast was not crash-safe: calls=%d record=%+v err=%v", calls, rebroadcast, err)
 	}
 }

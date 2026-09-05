@@ -8,8 +8,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
 )
@@ -132,5 +134,73 @@ func TestOracleEvidenceAcquisitionFailsClosedOnReplicaOrReceiptFailure(t *testin
 		11_000,
 	); err == nil {
 		t.Fatal("receipt from an unadmitted archive key was accepted")
+	}
+}
+
+func TestOracleEvidenceAcquisitionUsesTwoDurableFileReplicas(t *testing.T) {
+	profile, keys := oracleFixture(t, protocol.RoundNormal)
+	journal, err := OpenOracleJournal(filepath.Join(t.TempDir(), "oracle"), profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = journal.Close() }()
+	content := []byte(`{"winner":"NO","certified":true}`)
+	source, err := newHTTPSOracleSource(
+		sourceProfile(),
+		fixedSourceResolver{ips: []net.IP{net.ParseIP("8.8.8.8")}},
+		sourceClient(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader(content)), ContentLength: int64(len(content)), Request: request,
+			}, nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directories := []string{t.TempDir(), t.TempDir()}
+	replicas := make([]*FileEvidenceArchiveReplica, 0, len(directories))
+	for index, directory := range directories {
+		if err := os.Chmod(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		replica, openErr := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
+			Directory: directory, SigningKey: keys[index], MaximumObjects: 8,
+			MaximumObjectBytes: 4096, MaximumContentBytes: 32 << 10,
+			Now: func() time.Time { return time.Unix(10_950, 0).UTC() },
+		})
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		replicas = append(replicas, replica)
+	}
+	evidence, err := journal.FetchAndArchiveEvidence(
+		t.Context(), source,
+		EvidenceMetadataV1{
+			PublicationTimeSeconds: 10_900, EventTimeSeconds: 10_800,
+			ParserProfileVersion: "election-json/v1",
+		},
+		[]EvidenceArchiveReplica{replicas[0], replicas[1]}, 11_000,
+	)
+	if err != nil || len(evidence.Receipts) != 2 {
+		t.Fatalf("durable evidence acquisition failed: %+v err=%v", evidence, err)
+	}
+	for index, replica := range replicas {
+		if err := replica.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened, openErr := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
+			Directory: directories[index], SigningKey: keys[index], MaximumObjects: 8,
+			MaximumObjectBytes: 4096, MaximumContentBytes: 32 << 10,
+		})
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		loaded, loadErr := reopened.LoadPredictionEvidence(t.Context(), evidence.Entry.ArchiveLocator)
+		closeErr := reopened.Close()
+		if loadErr != nil || closeErr != nil || !bytes.Equal(loaded.Content, content) ||
+			loaded.RetainUntil != profile.ClaimDeadline+profile.AuditRetention {
+			t.Fatalf("file replica %d did not retain exact evidence: %+v load=%v close=%v", index, loaded, loadErr, closeErr)
+		}
 	}
 }

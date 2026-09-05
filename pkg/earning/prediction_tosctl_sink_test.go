@@ -239,7 +239,8 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 		calls != 4 {
 		t.Fatalf("signed tosctl Prediction record crossed the relay journal: calls=%d err=%v", calls, prepareErr)
 	}
-	if resolution := authority.Resolve(stableActionID, exactRequestDigest); resolution.State != commerce.ActionPrepared {
+	resolution = authority.Resolve(stableActionID, exactRequestDigest)
+	if resolution.State != commerce.ActionPrepared {
 		t.Fatalf("signed tosctl record advanced authority prematurely: %+v", resolution)
 	}
 	preparedJournalState = "broadcasting"

@@ -16,11 +16,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tosnetwork/openfox/pkg/prediction"
-
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+
+	"github.com/tosnetwork/openfox/pkg/prediction"
 )
 
 const (

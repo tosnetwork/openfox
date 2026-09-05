@@ -397,9 +397,22 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The future target must be selected from a fresh observation made after
+	// the accepted-wager evidence becomes durable. The source/destination
+	// proof above may take longer than the pre-lock freshness window, so the
+	// snapshots collected while proving that historical transaction cannot be
+	// reused here.
+	lockStates := make([]predictionEntropyNodeState, 0, len(nodes))
+	for index, node := range nodes {
+		state, stateErr := readPredictionEntropyNodeState(ctx, node, network)
+		if stateErr != nil {
+			t.Fatalf("read future-lock observer %d state: %v", index+1, stateErr)
+		}
+		lockStates = append(lockStates, state)
+	}
 	lockedAt := time.Now().UTC()
 	lock, lockDigest, err := persistPredictionEntropyFutureLock(
-		evidenceDirectory, acceptedRaw, network, build.MarketID, participantKeys, states, lockedAt,
+		evidenceDirectory, acceptedRaw, network, build.MarketID, participantKeys, lockStates, lockedAt,
 	)
 	if err != nil {
 		t.Fatal(err)

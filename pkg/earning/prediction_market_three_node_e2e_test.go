@@ -184,8 +184,8 @@ func TestPredictionOracleContextThreeNodeReleaseGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		if err := relayJournal.Close(); err != nil {
-			t.Errorf("close Prediction relay journal: %v", err)
+		if closeErr := relayJournal.Close(); closeErr != nil {
+			t.Errorf("close Prediction relay journal: %v", closeErr)
 		}
 	}()
 	sink.PredictionRelayJournal = relayJournal
@@ -321,7 +321,9 @@ func acceptancePinRPCConfigs(t *testing.T, sourcePaths []string) []predictionAcc
 			t.Fatal("Prediction acceptance RPC endpoints are not distinct")
 		}
 		seenEndpoints[endpoint] = struct{}{}
-		digest := sha256.Sum256([]byte(fmt.Sprintf("tos.prediction.acceptance.rpc-operator.v1\x00%d\x00%s", index, endpoint)))
+		digest := sha256.Sum256([]byte(fmt.Sprintf(
+			"tos.prediction.acceptance.rpc-operator.v1\x00%d\x00%s", index, endpoint,
+		)))
 		operatorID := "sha256:" + hex.EncodeToString(digest[:])
 		operatorRaw, err := json.Marshal(operatorID)
 		if err != nil {

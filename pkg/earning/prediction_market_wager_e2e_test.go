@@ -232,7 +232,10 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 		parsed.StringRaw() != sourceAddress {
 		t.Fatal("OPENFOX_PREDICTION_MATCH_SOURCE_ADDRESS is not canonical")
 	}
-	sink := &TOSCTLPaymentSink{Executable: executable, VaultURL: strings.TrimSpace(os.Getenv("OPENFOX_PREDICTION_VAULT_URL"))}
+	sink := &TOSCTLPaymentSink{
+		Executable: executable,
+		VaultURL:   strings.TrimSpace(os.Getenv("OPENFOX_PREDICTION_VAULT_URL")),
+	}
 	buildRaw, err := sink.run(ctx, []string{"agent", "prediction", "build-state", "--definition", definitionPath})
 	if err != nil {
 		t.Fatal(err)
@@ -243,8 +246,10 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 		!validTVMCellSHA256(build.CodeHash) || build.RulesHash != definition.RulesHash {
 		t.Fatal("Prediction accepted-wager StateInit identity is invalid")
 	}
-	if err := validatePredictionAcceptedOrders(definition, build, quantity, orders, signedOrders, 0); err != nil {
-		t.Fatal(err)
+	if validateErr := validatePredictionAcceptedOrders(
+		definition, build, quantity, orders, signedOrders, 0,
+	); validateErr != nil {
+		t.Fatal(validateErr)
 	}
 	scanStart, err := strconv.ParseUint(mustEnv(t, "OPENFOX_PREDICTION_MATCH_SCAN_START_MC_SEQNO"), 10, 64)
 	if err != nil || scanStart == 0 || strconv.FormatUint(scanStart, 10) !=
@@ -257,23 +262,31 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	}
 	definitionDigest := sha256.Sum256(definitionRaw)
 	report := predictionAcceptedWagerReport{
-		Schema: "tos.openfox.prediction-accepted-wager-three-node.v1", Verdict: "PASS",
-		ObservedAt:        time.Now().UTC().Format(time.RFC3339),
-		SelectionRule:     "direct-wallet-exact-external-to-source-transaction-to-single-outbound-to-successful-market-transaction",
-		SubmissionProfile: "direct-wallet-contract-probe",
-		DefinitionSHA256:  "sha256:" + hex.EncodeToString(definitionDigest[:]),
-		NetworkDomain:     network, NetworkDomainHash: networkDigest,
-		MarketAddress: build.Address, MarketID: build.MarketID,
-		MarketConfigHash: build.MarketConfigHash, MarketCodeHash: build.CodeHash,
-		RulesHash: definition.RulesHash, SourceAddress: sourceAddress,
+		Schema:                       "tos.openfox.prediction-accepted-wager-three-node.v1",
+		Verdict:                      "PASS",
+		ObservedAt:                   time.Now().UTC().Format(time.RFC3339),
+		SelectionRule:                "direct-wallet-exact-external-to-source-transaction-to-single-outbound-to-successful-market-transaction",
+		SubmissionProfile:            "direct-wallet-contract-probe",
+		DefinitionSHA256:             "sha256:" + hex.EncodeToString(definitionDigest[:]),
+		NetworkDomain:                network,
+		NetworkDomainHash:            networkDigest,
+		MarketAddress:                build.Address,
+		MarketID:                     build.MarketID,
+		MarketConfigHash:             build.MarketConfigHash,
+		MarketCodeHash:               build.CodeHash,
+		RulesHash:                    definition.RulesHash,
+		SourceAddress:                sourceAddress,
 		SubmittedExternalMessageHash: submittedHash,
 		ExactExternalBOCSHA256:       sha256Digest(externalRaw),
 		ExactExternalBOCBase64:       base64.StdEncoding.EncodeToString(externalRaw),
-		OperationBodyHash:            bodyHash, OperationBodyBOCBase64: base64.StdEncoding.EncodeToString(bodyRaw),
-		ScanStartMasterchainBlock: scanStartBlock,
-		MatchQuantityLots:         quantity, ParticipantTradingPublicKeys: participantKeys, Orders: orders,
+		OperationBodyHash:            bodyHash,
+		OperationBodyBOCBase64:       base64.StdEncoding.EncodeToString(bodyRaw),
+		ScanStartMasterchainBlock:    scanStartBlock,
+		MatchQuantityLots:            quantity,
+		ParticipantTradingPublicKeys: participantKeys,
+		Orders:                       orders,
 	}
-	var states []predictionEntropyNodeState
+	states := make([]predictionEntropyNodeState, 0, len(nodes))
 	var canonicalSource, canonicalDestination predictionDecodedTransaction
 	var canonicalOutbound predictionAcceptedMessage
 	var canonicalAccounting predictionAcceptedAccounting
@@ -300,14 +313,15 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 		if destinationErr != nil {
 			t.Fatalf("find accepted-wager destination transaction at observer %d: %v", index+1, destinationErr)
 		}
-		if destination.report.UTime < source.report.UTime || uint64(destination.report.UTime) >= definition.TradeClose ||
+		if destination.report.UTime < source.report.UTime ||
+			uint64(destination.report.UTime) >= definition.TradeClose ||
 			predictionAcceptanceSuccessfulOrdinary(destination.tx) != nil {
 			t.Fatalf("accepted-wager destination execution is invalid at observer %d", index+1)
 		}
-		if err := validatePredictionAcceptedOrders(
+		if validateErr := validatePredictionAcceptedOrders(
 			definition, build, quantity, orders, signedOrders, uint64(destination.report.UTime),
-		); err != nil {
-			t.Fatalf("verify accepted-wager order execution time at observer %d: %v", index+1, err)
+		); validateErr != nil {
+			t.Fatalf("verify accepted-wager order execution time at observer %d: %v", index+1, validateErr)
 		}
 		sourceInclusion, inclusionErr := findPredictionAcceptanceMasterchainInclusion(
 			ctx, node.client, source.report.Block, scanStart, state.snapshot.ConsensusSeqno,
@@ -321,7 +335,11 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 				ctx, node.client, destination.report.Block, scanStart, state.snapshot.ConsensusSeqno,
 			)
 			if inclusionErr != nil {
-				t.Fatalf("find accepted-wager destination masterchain inclusion at observer %d: %v", index+1, inclusionErr)
+				t.Fatalf(
+					"find accepted-wager destination masterchain inclusion at observer %d: %v",
+					index+1,
+					inclusionErr,
+				)
 			}
 		}
 		source.report.MasterchainSeqno = sourceInclusion
@@ -367,8 +385,10 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	report.SourceTransaction, report.OutboundMessage = canonicalSource.report, canonicalOutbound
 	report.DestinationTransaction, report.Accounting = canonicalDestination.report, canonicalAccounting
 	report.ObservedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := validatePredictionAcceptedWagerReport(report, definition, sha256Digest(definitionRaw)); err != nil {
-		t.Fatal(err)
+	if validateErr := validatePredictionAcceptedWagerReport(
+		report, definition, sha256Digest(definitionRaw),
+	); validateErr != nil {
+		t.Fatal(validateErr)
 	}
 	evidenceDirectory := predictionAcceptanceEvidenceDirectory(t)
 	acceptedRaw, err := persistPredictionAcceptedWagerReport(
@@ -527,10 +547,10 @@ func findPredictionAcceptanceTransaction(ctx context.Context, rpc predictionEntr
 		return zero, errors.New("invalid Prediction accepted-wager account")
 	}
 	var infoDocument map[string]json.RawMessage
-	if err := rpc.Call(ctx, "getAddressInformation", struct {
+	if callErr := rpc.Call(ctx, "getAddressInformation", struct {
 		Address string `json:"address"`
-	}{accountAddress}, &infoDocument); err != nil {
-		return zero, err
+	}{accountAddress}, &infoDocument); callErr != nil {
+		return zero, callErr
 	}
 	var info predictionAcceptedAccountInfo
 	stateErr := json.Unmarshal(infoDocument["state"], &info.State)
@@ -680,7 +700,11 @@ func decodePredictionAcceptanceTransaction(wire predictionAcceptedTransactionWir
 		return zero, errors.New("Prediction accepted-wager transaction block is invalid")
 	}
 	var tx tlb.Transaction
-	if err := tlb.LoadFromCell(&tx, root.MustBeginParse()); err != nil || tx.LT != lt || tx.Now != wire.UTime {
+	if decodeErr := tlb.LoadFromCell(
+		&tx,
+		root.MustBeginParse(),
+	); decodeErr != nil || tx.LT != lt ||
+		tx.Now != wire.UTime {
 		return zero, errors.New("Prediction accepted-wager transaction TL-B is invalid")
 	}
 	rebuilt, err := tx.ToCell()
@@ -911,7 +935,8 @@ func validatePredictionAcceptedWagerReport(report predictionAcceptedWagerReport,
 	}
 	destinationInput, err := destinationTx.IO.In.ToCell()
 	declaredOutbound, decodeErr := base64.StdEncoding.Strict().DecodeString(report.OutboundMessage.BOCBase64)
-	if err != nil || decodeErr != nil || predictionAcceptanceCellHash(destinationInput) != report.OutboundMessage.Hash ||
+	if err != nil || decodeErr != nil ||
+		predictionAcceptanceCellHash(destinationInput) != report.OutboundMessage.Hash ||
 		!bytes.Equal(destinationInput.ToBOCWithFlags(false), declaredOutbound) {
 		return errors.New("Prediction accepted-wager destination did not consume the exact source outbound")
 	}
@@ -992,7 +1017,7 @@ func decodePredictionAcceptanceReportTransaction(report predictionAcceptedTransa
 		return nil, errors.New("Prediction accepted-wager report transaction is not hash-bound")
 	}
 	var tx tlb.Transaction
-	if err := tlb.LoadFromCell(&tx, root.MustBeginParse()); err != nil || tx.LT != report.LT ||
+	if decodeErr := tlb.LoadFromCell(&tx, root.MustBeginParse()); decodeErr != nil || tx.LT != report.LT ||
 		tx.Now != report.UTime {
 		return nil, errors.New("Prediction accepted-wager report transaction TL-B is invalid")
 	}
@@ -1063,8 +1088,8 @@ func persistPredictionAcceptedWagerReport(directory string, report predictionAcc
 	if !errors.Is(readErr, os.ErrNotExist) {
 		return nil, readErr
 	}
-	if err := fileutil.WriteFileAtomicRoot(root, name, raw, 0o600); err != nil {
-		return nil, err
+	if writeErr := fileutil.WriteFileAtomicRoot(root, name, raw, 0o600); writeErr != nil {
+		return nil, writeErr
 	}
 	durable, err := readPredictionEntropyRootFile(root, name, maxPredictionEntropyEvidenceBytes)
 	if err != nil || !bytes.Equal(durable, raw) {
@@ -1188,8 +1213,8 @@ func persistPredictionEntropyRevealReport(directory string, report predictionEnt
 	if !errors.Is(readErr, os.ErrNotExist) {
 		return nil, readErr
 	}
-	if err := fileutil.WriteFileAtomicRoot(root, name, raw, 0o600); err != nil {
-		return nil, err
+	if writeErr := fileutil.WriteFileAtomicRoot(root, name, raw, 0o600); writeErr != nil {
+		return nil, writeErr
 	}
 	durable, err := readPredictionEntropyRootFile(root, name, maxPredictionEntropyEvidenceBytes)
 	if err != nil || !bytes.Equal(durable, raw) {
@@ -1209,14 +1234,46 @@ func TestPredictionFutureRevealRejectsChangedParity(t *testing.T) {
 		UTimeSince:     1_700_000_000, UTimeUntil: 1_700_100_000, Total: 2, Main: 2, TotalWeight: 20,
 		Validators: []predictionEntropyValidator{
 			{PublicKey: strings.Repeat("11", 32), ADNLAddress: strings.Repeat("12", 32), Weight: 10},
-			{PublicKey: strings.Repeat("13", 32), ADNLAddress: strings.Repeat("14", 32), Weight: 10, CumulativeWeight: 10},
+			{
+				PublicKey:        strings.Repeat("13", 32),
+				ADNLAddress:      strings.Repeat("14", 32),
+				Weight:           10,
+				CumulativeWeight: 10,
+			},
 		},
 	}
 	now := time.Unix(1_700_000_200, 0).UTC()
 	states := []predictionEntropyNodeState{
-		{snapshot: predictionEntropyObserverSnapshot{ObserverID: "sha256:" + strings.Repeat("41", 32), ConsensusSeqno: 29, LastSeqno: 30, LastBlockUtime: now.Unix(), ValidatorSetHash: validators.ConfigCellHash}, validators: validators},
-		{snapshot: predictionEntropyObserverSnapshot{ObserverID: "sha256:" + strings.Repeat("42", 32), ConsensusSeqno: 30, LastSeqno: 31, LastBlockUtime: now.Unix(), ValidatorSetHash: validators.ConfigCellHash}, validators: validators},
-		{snapshot: predictionEntropyObserverSnapshot{ObserverID: "sha256:" + strings.Repeat("43", 32), ConsensusSeqno: 30, LastSeqno: 31, LastBlockUtime: now.Unix(), ValidatorSetHash: validators.ConfigCellHash}, validators: validators},
+		{
+			snapshot: predictionEntropyObserverSnapshot{
+				ObserverID:       "sha256:" + strings.Repeat("41", 32),
+				ConsensusSeqno:   29,
+				LastSeqno:        30,
+				LastBlockUtime:   now.Unix(),
+				ValidatorSetHash: validators.ConfigCellHash,
+			},
+			validators: validators,
+		},
+		{
+			snapshot: predictionEntropyObserverSnapshot{
+				ObserverID:       "sha256:" + strings.Repeat("42", 32),
+				ConsensusSeqno:   30,
+				LastSeqno:        31,
+				LastBlockUtime:   now.Unix(),
+				ValidatorSetHash: validators.ConfigCellHash,
+			},
+			validators: validators,
+		},
+		{
+			snapshot: predictionEntropyObserverSnapshot{
+				ObserverID:       "sha256:" + strings.Repeat("43", 32),
+				ConsensusSeqno:   30,
+				LastSeqno:        31,
+				LastBlockUtime:   now.Unix(),
+				ValidatorSetHash: validators.ConfigCellHash,
+			},
+			validators: validators,
+		},
 	}
 	lock, err := buildPredictionEntropyFutureLock(
 		[]byte(`{"schema":"accepted","verdict":"PASS"}`), network,
@@ -1239,8 +1296,10 @@ func TestPredictionFutureRevealRejectsChangedParity(t *testing.T) {
 		FutureLockSHA256:            lockDigest,
 		NetworkDomain:               lock.NetworkDomain, NetworkDomainHash: lock.NetworkDomainHash,
 		MarketID: lock.MarketID, TargetSeqno: lock.TargetSeqno,
-		Block: predictionEntropyBlock{Seqno: lock.TargetSeqno, RootHash: "02" + strings.Repeat("00", 31),
-			FileHash: strings.Repeat("71", 32), Parity: "EVEN"},
+		Block: predictionEntropyBlock{
+			Seqno: lock.TargetSeqno, RootHash: "02" + strings.Repeat("00", 31),
+			FileHash: strings.Repeat("71", 32), Parity: "EVEN",
+		},
 		Outcome: "YES",
 	}
 	for index := 0; index < 3; index++ {

@@ -38,7 +38,7 @@ const (
 )
 
 type predictionEntropyRPC interface {
-	Call(context.Context, string, interface{}, interface{}) error
+	Call(ctx context.Context, method string, params, result any) error
 }
 
 type predictionEntropyNode struct {
@@ -170,7 +170,7 @@ type fixedPredictionEntropyBlockRPC struct {
 	fileByte byte
 }
 
-func (rpc fixedPredictionEntropyBlockRPC) Call(_ context.Context, method string, params, result interface{}) error {
+func (rpc fixedPredictionEntropyBlockRPC) Call(_ context.Context, method string, params, result any) error {
 	if method != "lookupBlock" {
 		return errors.New("unexpected entropy test RPC method")
 	}
@@ -264,7 +264,10 @@ func TestPredictionFutureBlockEntropyDistributionThreeNodeReleaseGate(t *testing
 		}
 	}
 	if !predictionEntropyDistributionWithinBound(even, odd) {
-		t.Fatalf("Prediction block-root parity distribution is outside the frozen three-sigma bound: even=%d odd=%d", even, odd)
+		t.Fatalf(
+			"Prediction block-root parity distribution is outside the frozen three-sigma bound: even=%d odd=%d",
+			even, odd,
+		)
 	}
 	report := predictionEntropyDistributionReport{
 		Schema: "tos.openfox.prediction-entropy-distribution-three-node.v1", Verdict: "PASS",
@@ -326,13 +329,43 @@ func TestPredictionFutureBlockLockIsDurableAndExcludesValidators(t *testing.T) {
 		TotalWeight: 20,
 		Validators: []predictionEntropyValidator{
 			{PublicKey: strings.Repeat("11", sha256.Size), ADNLAddress: strings.Repeat("21", sha256.Size), Weight: 10},
-			{PublicKey: strings.Repeat("12", sha256.Size), ADNLAddress: strings.Repeat("22", sha256.Size), Weight: 10, CumulativeWeight: 10},
+			{
+				PublicKey: strings.Repeat("12", sha256.Size), ADNLAddress: strings.Repeat("22", sha256.Size),
+				Weight: 10, CumulativeWeight: 10,
+			},
 		},
 	}
 	states := []predictionEntropyNodeState{
-		{snapshot: predictionEntropyObserverSnapshot{ObserverID: "sha256:" + strings.Repeat("31", sha256.Size), ConsensusSeqno: 99, LastSeqno: 100, LastBlockUtime: 1_700_000_199, ValidatorSetHash: validators.ConfigCellHash}, validators: validators},
-		{snapshot: predictionEntropyObserverSnapshot{ObserverID: "sha256:" + strings.Repeat("32", sha256.Size), ConsensusSeqno: 100, LastSeqno: 101, LastBlockUtime: 1_700_000_199, ValidatorSetHash: validators.ConfigCellHash}, validators: validators},
-		{snapshot: predictionEntropyObserverSnapshot{ObserverID: "sha256:" + strings.Repeat("33", sha256.Size), ConsensusSeqno: 100, LastSeqno: 102, LastBlockUtime: 1_700_000_199, ValidatorSetHash: validators.ConfigCellHash}, validators: validators},
+		{
+			snapshot: predictionEntropyObserverSnapshot{
+				ObserverID:       "sha256:" + strings.Repeat("31", sha256.Size),
+				ConsensusSeqno:   99,
+				LastSeqno:        100,
+				LastBlockUtime:   1_700_000_199,
+				ValidatorSetHash: validators.ConfigCellHash,
+			},
+			validators: validators,
+		},
+		{
+			snapshot: predictionEntropyObserverSnapshot{
+				ObserverID:       "sha256:" + strings.Repeat("32", sha256.Size),
+				ConsensusSeqno:   100,
+				LastSeqno:        101,
+				LastBlockUtime:   1_700_000_199,
+				ValidatorSetHash: validators.ConfigCellHash,
+			},
+			validators: validators,
+		},
+		{
+			snapshot: predictionEntropyObserverSnapshot{
+				ObserverID:       "sha256:" + strings.Repeat("33", sha256.Size),
+				ConsensusSeqno:   100,
+				LastSeqno:        102,
+				LastBlockUtime:   1_700_000_199,
+				ValidatorSetHash: validators.ConfigCellHash,
+			},
+			validators: validators,
+		},
 	}
 	accepted := []byte(`{"schema":"tos.openfox.prediction-accepted-wager-three-node.v1","verdict":"PASS"}`)
 	marketID := "sha256:" + strings.Repeat("41", sha256.Size)
@@ -348,17 +381,17 @@ func TestPredictionFutureBlockLockIsDurableAndExcludesValidators(t *testing.T) {
 		_ = root.Close()
 		t.Fatal(err)
 	}
-	if _, _, err := persistPredictionEntropyFutureLock(
+	if _, _, persistErr := persistPredictionEntropyFutureLock(
 		directory, accepted, network, marketID, participants, states, now,
-	); err == nil {
+	); persistErr == nil {
 		t.Error("concurrent Prediction future-lock writer was accepted")
 	}
-	if err := releaseRelayJournalLock(held); err != nil {
+	if releaseErr := releaseRelayJournalLock(held); releaseErr != nil {
 		_ = root.Close()
-		t.Fatal(err)
+		t.Fatal(releaseErr)
 	}
-	if err := root.Close(); err != nil {
-		t.Fatal(err)
+	if closeErr := root.Close(); closeErr != nil {
+		t.Fatal(closeErr)
 	}
 	first, firstDigest, err := persistPredictionEntropyFutureLock(
 		directory, accepted, network, marketID, participants, states, now,
@@ -473,8 +506,8 @@ func readPredictionEntropyNodeState(ctx context.Context, node predictionEntropyN
 		return result, errors.New("Prediction entropy observer has the wrong zero-state file")
 	}
 	var consensus predictionEntropyConsensus
-	if err := node.client.Call(ctx, "getConsensusBlock", struct{}{}, &consensus); err != nil {
-		return result, err
+	if callErr := node.client.Call(ctx, "getConsensusBlock", struct{}{}, &consensus); callErr != nil {
+		return result, callErr
 	}
 	now := time.Now().UTC().Unix()
 	if consensus.Type != "ext.blocks.consensusBlock" || consensus.ConsensusBlock == 0 ||
@@ -500,7 +533,10 @@ func readPredictionEntropyNodeState(ctx context.Context, node predictionEntropyN
 	return result, nil
 }
 
-func readPredictionEntropyValidatorSet(ctx context.Context, client predictionEntropyRPC) (predictionEntropyValidatorSet, error) {
+func readPredictionEntropyValidatorSet(
+	ctx context.Context,
+	client predictionEntropyRPC,
+) (predictionEntropyValidatorSet, error) {
 	var response predictionEntropyConfigInfo
 	if err := client.Call(ctx, "getConfigParam", struct {
 		Param int `json:"param"`
@@ -523,7 +559,7 @@ func readPredictionEntropyValidatorSet(ctx context.Context, client predictionEnt
 		return predictionEntropyValidatorSet{}, errors.New("invalid Prediction ConfigParam 34 root cell")
 	}
 	var parsed tlb.ValidatorSetAny
-	if err := tlb.LoadFromCell(&parsed, rootSlice); err != nil {
+	if decodeErr := tlb.LoadFromCell(&parsed, rootSlice); decodeErr != nil {
 		return predictionEntropyValidatorSet{}, errors.New("cannot decode Prediction ConfigParam 34")
 	}
 	result := predictionEntropyValidatorSet{
@@ -583,7 +619,9 @@ func readPredictionEntropyValidatorSet(ctx context.Context, client predictionEnt
 			strings.TrimPrefix(wireKey, "sha256:") != validator.PublicKey ||
 			strings.TrimPrefix(wireADNL, "sha256:") != validator.ADNLAddress ||
 			wireWeight != validator.Weight || wireCumulative != validator.CumulativeWeight {
-			return predictionEntropyValidatorSet{}, errors.New("Prediction validator JSON conflicts with descriptor bytes")
+			return predictionEntropyValidatorSet{}, errors.New(
+				"Prediction validator JSON conflicts with descriptor bytes",
+			)
 		}
 		result.Validators = append(result.Validators, validator)
 	}
@@ -881,8 +919,8 @@ func persistPredictionEntropyFutureLock(directory string, acceptedEvidence []byt
 		return zero, "", errors.New("Prediction future lock exceeds its encoding bound")
 	}
 	raw = append(raw, '\n')
-	if err := fileutil.WriteFileAtomicRoot(root, name, raw, 0o600); err != nil {
-		return zero, "", err
+	if writeErr := fileutil.WriteFileAtomicRoot(root, name, raw, 0o600); writeErr != nil {
+		return zero, "", writeErr
 	}
 	durable, err := readPredictionEntropyRootFile(root, name, maxPredictionEntropyEvidenceBytes)
 	if err != nil || !bytes.Equal(durable, raw) {
@@ -912,8 +950,8 @@ func buildPredictionEntropyFutureLock(acceptedEvidence []byte, network agentrela
 		}
 	}
 	validatorSet := states[0].validators
-	if err := validatePredictionEntropyValidatorSet(validatorSet); err != nil {
-		return result, err
+	if validateErr := validatePredictionEntropyValidatorSet(validatorSet); validateErr != nil {
+		return result, validateErr
 	}
 	validatorSetRaw, err := json.Marshal(validatorSet)
 	if err != nil {

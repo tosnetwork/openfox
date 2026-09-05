@@ -325,16 +325,6 @@ func acceptancePinRPCConfigs(t *testing.T, sourcePaths []string) []predictionAcc
 			"tos.prediction.acceptance.rpc-operator.v1\x00%d\x00%s", index, endpoint,
 		)))
 		operatorID := "sha256:" + hex.EncodeToString(digest[:])
-		operatorRaw, err := json.Marshal(operatorID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		chainRPC["operator_provenance"] = operatorRaw
-		chainRPCRaw, err := json.Marshal(chainRPC)
-		if err != nil {
-			t.Fatal(err)
-		}
-		document["chain_rpc"] = chainRPCRaw
 		encoded, err := json.Marshal(document)
 		if err != nil || len(encoded) > 1<<20 {
 			t.Fatal("Prediction acceptance config cannot be bounded and encoded")

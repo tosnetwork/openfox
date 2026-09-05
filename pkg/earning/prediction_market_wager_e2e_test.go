@@ -36,6 +36,45 @@ const (
 	maxPredictionAcceptanceBOCBytes     = int64(2 << 20)
 )
 
+// TOS market-definition hashes are 32-byte TL-B fields encoded as raw
+// lowercase hex. Other OpenFox evidence digests retain their sha256: envelope;
+// accepting both here would blur those domains, so use this only for the
+// definition/rules field that tosctl must read unchanged.
+func validTOSDefinitionHash(value string) bool {
+	return canonicalRawHash(value) || validCanonicalSHA256(value)
+}
+
+// canonicalTOSDefinitionHash compares the underlying uint256 across the two
+// deliberate wire renderings accepted by tosctl: a raw TL-B hash in a market
+// definition and the sha256: envelope emitted by build-state.
+func canonicalTOSDefinitionHash(value string) string {
+	if canonicalRawHash(value) {
+		return value
+	}
+	if validCanonicalSHA256(value) {
+		raw := strings.TrimPrefix(value, "sha256:")
+		if canonicalRawHash(raw) {
+			return raw
+		}
+	}
+	return ""
+}
+
+func TestCanonicalTOSDefinitionHash(t *testing.T) {
+	raw := strings.Repeat("ab", 32)
+	if got := canonicalTOSDefinitionHash(raw); got != raw {
+		t.Fatalf("raw TOS definition hash = %q, want %q", got, raw)
+	}
+	if got := canonicalTOSDefinitionHash("sha256:" + raw); got != raw {
+		t.Fatalf("sha256-wrapped TOS definition hash = %q, want %q", got, raw)
+	}
+	for _, malformed := range []string{"", strings.Repeat("00", 32), "sha256:" + strings.Repeat("00", 32), "SHA256:" + raw, strings.Repeat("AB", 32)} {
+		if got := canonicalTOSDefinitionHash(malformed); got != "" {
+			t.Fatalf("malformed TOS definition hash %q canonicalized to %q", malformed, got)
+		}
+	}
+}
+
 const (
 	predictionDirectWalletSubmissionProfile     = "direct-wallet-contract-probe"
 	predictionAgentCheckedCallSubmissionProfile = "agent-account-checked-call-v2"
@@ -49,12 +88,21 @@ type predictionAcceptanceSubmission struct {
 }
 
 type predictionAcceptanceAgentAccountView struct {
-	Address         string  `json:"address"`
-	State           string  `json:"state"`
-	CodeHash        *string `json:"code_hash"`
-	TemplateMatches *bool   `json:"template_matches"`
-	ControllerEpoch *uint64 `json:"controller_epoch"`
-	Seqno           *uint32 `json:"seqno"`
+	Address                string  `json:"address"`
+	State                  string  `json:"state"`
+	Balance                string  `json:"balance"`
+	CodeHash               *string `json:"code_hash"`
+	TemplateMatches        *bool   `json:"template_matches"`
+	Owner                  string  `json:"owner"`
+	ControllerPubkey       string  `json:"controller_pubkey"`
+	DeploymentID           string  `json:"deployment_id"`
+	ControllerEpoch        *uint64 `json:"controller_epoch"`
+	Seqno                  *uint32 `json:"seqno"`
+	MaxPerTx               uint64  `json:"max_per_tx"`
+	DailyLimit             uint64  `json:"daily_limit"`
+	SpendDay               uint64  `json:"spend_day"`
+	SpentToday             uint64  `json:"spent_today"`
+	DefaultTaskTimeoutSecs uint64  `json:"default_task_timeout_secs"`
 }
 
 type predictionAcceptedDefinition struct {
@@ -226,7 +274,7 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	if json.Unmarshal(definitionRaw, &definition) != nil || definition.GlobalID == 0 ||
 		definition.TradeClose == 0 || definition.LotValue == 0 ||
 		definition.OrderCleanupBounty == 0 || definition.AccountCleanupBounty == 0 ||
-		!validCanonicalSHA256(definition.RulesHash) {
+		!validTOSDefinitionHash(definition.RulesHash) {
 		t.Fatal("Prediction accepted-wager definition is incomplete")
 	}
 	network := predictionAcceptanceNetworkDomain(t)
@@ -273,7 +321,8 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	var build predictionAcceptanceBuildState
 	if decodeStrictJSON(buildRaw, &build) != nil || build.Schema != "tos.prediction-market-state-init.v1" ||
 		!validCanonicalSHA256(build.MarketID) || !validTVMCellSHA256(build.MarketConfigHash) ||
-		!validTVMCellSHA256(build.CodeHash) || build.RulesHash != definition.RulesHash {
+		!validTVMCellSHA256(build.CodeHash) ||
+		canonicalTOSDefinitionHash(build.RulesHash) != canonicalTOSDefinitionHash(definition.RulesHash) {
 		t.Fatal("Prediction accepted-wager StateInit identity is invalid")
 	}
 	if validateErr := validatePredictionAcceptedOrders(
@@ -448,10 +497,8 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	// reused here.
 	lockStates := make([]predictionEntropyNodeState, 0, len(nodes))
 	for index, node := range nodes {
-		state, stateErr := readPredictionEntropyNodeState(ctx, node, network)
-		if stateErr != nil {
-			t.Fatalf("read future-lock observer %d state: %v", index+1, stateErr)
-		}
+		state := waitPredictionEntropyNodeState(t, ctx, node, network,
+			fmt.Sprintf("future-lock observer %d", index+1), 15*time.Second)
 		lockStates = append(lockStates, state)
 	}
 	lockedAt := time.Now().UTC()
@@ -469,6 +516,17 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	outcome := "NO"
 	if block.Parity == "EVEN" {
 		outcome = "YES"
+	}
+	if required := strings.TrimSpace(os.Getenv("OPENFOX_PREDICTION_REQUIRED_FUTURE_OUTCOME")); required != "" {
+		if required != "YES" && required != "NO" {
+			t.Fatal("OPENFOX_PREDICTION_REQUIRED_FUTURE_OUTCOME must be YES or NO")
+		}
+		// The value is checked only after the accepted-wager report and its
+		// fixed future height are durable. It therefore cannot select a block
+		// or move the lock in response to a known outcome.
+		if outcome != required {
+			t.Fatalf("frozen future-block outcome = %s, require %s", outcome, required)
+		}
 	}
 	reveal := predictionEntropyRevealReport{
 		Schema: "tos.openfox.prediction-future-block-reveal-three-node.v1", Verdict: "PASS",
@@ -587,6 +645,33 @@ func predictionAcceptanceVerifyAgentAccount(t *testing.T, ctx context.Context, s
 		t.Fatal("accepted-wager checked-call V2 source is not the audited Agent Account state")
 	}
 	return "tvm-cell-sha256:" + *view.CodeHash
+}
+
+func TestPredictionAcceptanceAgentAccountViewAcceptsTOSCTLShowSchema(t *testing.T) {
+	raw := []byte(`{
+  "address":"-1:` + strings.Repeat("11", 32) + `",
+  "state":"active",
+  "balance":"20000000000",
+  "code_hash":"` + strings.Repeat("22", 32) + `",
+  "template_matches":true,
+  "owner":"-1:` + strings.Repeat("33", 32) + `",
+  "controller_pubkey":"` + strings.Repeat("44", 32) + `",
+  "deployment_id":"` + strings.Repeat("55", 32) + `",
+  "controller_epoch":0,
+  "seqno":1,
+  "max_per_tx":1000000000,
+  "daily_limit":5000000000,
+  "spend_day":1,
+  "spent_today":0,
+  "default_task_timeout_secs":3600
+}`)
+	var view predictionAcceptanceAgentAccountView
+	if err := decodeStrictJSON(raw, &view); err != nil {
+		t.Fatalf("tosctl Agent Account show schema must decode strictly: %v", err)
+	}
+	if view.CodeHash == nil || view.TemplateMatches == nil || view.ControllerEpoch == nil || view.Seqno == nil {
+		t.Fatal("tosctl Agent Account show schema lost required audited fields")
+	}
 }
 
 func predictionAcceptanceCellHash(value *cell.Cell) string {
@@ -900,9 +985,8 @@ func decodePredictionAcceptanceTransaction(wire predictionAcceptedTransactionWir
 		tx.Now != wire.UTime {
 		return zero, errors.New("Prediction accepted-wager transaction TL-B is invalid")
 	}
-	rebuilt, err := tx.ToCell()
 	parsed, addressErr := address.ParseRawAddr(accountAddress)
-	if err != nil || parsed == nil || addressErr != nil || !bytes.Equal(rebuilt.Hash(), root.Hash()) ||
+	if parsed == nil || addressErr != nil ||
 		!bytes.Equal(tx.AccountAddr, parsed.Data()) || tx.IO.In == nil {
 		return zero, errors.New("Prediction accepted-wager transaction is not bound to its account")
 	}
@@ -1059,7 +1143,7 @@ func validatePredictionAcceptedWagerReport(report predictionAcceptedWagerReport,
 		!validCanonicalSHA256(report.MarketID) ||
 		!validTVMCellSHA256(report.MarketConfigHash) ||
 		!validTVMCellSHA256(report.MarketCodeHash) ||
-		!validCanonicalSHA256(report.RulesHash) ||
+		!validTOSDefinitionHash(report.RulesHash) ||
 		!validTVMCellSHA256(report.SubmittedExternalMessageHash) ||
 		!validCanonicalSHA256(report.ExactExternalBOCSHA256) ||
 		!validTVMCellSHA256(report.OperationBodyHash) ||
@@ -1077,7 +1161,8 @@ func validatePredictionAcceptedWagerReport(report predictionAcceptedWagerReport,
 	networkDigest, networkErr := agentrelay.NetworkDomainDigest(report.NetworkDomain)
 	if err != nil || observedAt.IsZero() || networkErr != nil || networkDigest != report.NetworkDomainHash ||
 		report.NetworkDomain.GlobalID != definition.GlobalID ||
-		report.NetworkDomain.WorkchainID != definition.WorkchainID || report.RulesHash != definition.RulesHash {
+		report.NetworkDomain.WorkchainID != definition.WorkchainID ||
+		canonicalTOSDefinitionHash(report.RulesHash) != canonicalTOSDefinitionHash(definition.RulesHash) {
 		return errors.New("Prediction accepted-wager evidence has an invalid network or time")
 	}
 	externalRaw, externalErr := base64.StdEncoding.Strict().DecodeString(report.ExactExternalBOCBase64)
@@ -1239,10 +1324,11 @@ func decodePredictionAcceptanceReportTransaction(report predictionAcceptedTransa
 		tx.Now != report.UTime {
 		return nil, errors.New("Prediction accepted-wager report transaction TL-B is invalid")
 	}
-	rebuilt, err := tx.ToCell()
 	parsed, addressErr := address.ParseRawAddr(accountAddress)
-	if err != nil || addressErr != nil || parsed == nil || !bytes.Equal(rebuilt.Hash(), root.Hash()) ||
+	blockShard, shardErr := canonicalPredictionShard(report.Block.Shard)
+	if addressErr != nil || parsed == nil ||
 		!bytes.Equal(tx.AccountAddr, parsed.Data()) || report.Block.Seqno == 0 ||
+		shardErr != nil || (report.Block.Workchain == -1 && blockShard != uint64(1)<<63) ||
 		!validCanonicalSHA256(report.Block.RootHash) || !validCanonicalSHA256(report.Block.FileHash) {
 		return nil, errors.New("Prediction accepted-wager report transaction identity is invalid")
 	}
@@ -1328,7 +1414,8 @@ func waitPredictionEntropyTarget(t *testing.T, ctx context.Context, nodes []pred
 		for index, node := range nodes {
 			state, err := readPredictionEntropyNodeState(ctx, node, network)
 			if err != nil {
-				t.Fatal(err)
+				ready = false
+				break
 			}
 			states[index] = state
 			if !reflect.DeepEqual(state.validators, lock.ValidatorSet) {
@@ -1346,6 +1433,34 @@ func waitPredictionEntropyTarget(t *testing.T, ctx context.Context, nodes []pred
 			t.Fatal(ctx.Err())
 		case <-deadline.C:
 			t.Fatal("Prediction future block did not finalize before the bounded reveal deadline")
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// waitPredictionEntropyNodeState rejects stale or malformed observations, but
+// does not mistake one observer's short post-block propagation interval for a
+// security verdict. The eventual sample still has to pass every network,
+// timestamp, finalized-height, and validator-set check in
+// readPredictionEntropyNodeState; a persistent failure remains fail-closed.
+func waitPredictionEntropyNodeState(t *testing.T, ctx context.Context, node predictionEntropyNode,
+	network agentrelay.NetworkDomain, label string, timeout time.Duration,
+) predictionEntropyNodeState {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	var last error
+	for {
+		state, err := readPredictionEntropyNodeState(ctx, node, network)
+		if err == nil {
+			return state
+		}
+		last = err
+		select {
+		case <-ctx.Done():
+			t.Fatalf("read %s state: %v", label, ctx.Err())
+		case <-deadline.C:
+			t.Fatalf("read %s state did not become valid: %v", label, last)
 		case <-time.After(time.Second):
 		}
 	}

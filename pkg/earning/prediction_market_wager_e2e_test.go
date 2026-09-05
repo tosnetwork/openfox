@@ -762,13 +762,41 @@ func findPredictionAcceptanceMasterchainInclusion(ctx context.Context, rpc predi
 	wanted predictionAcceptedBlock, start, finalized uint64,
 ) (uint64, error) {
 	if ctx == nil || rpc == nil || start == 0 || finalized < start ||
-		wanted.Workchain == -1 || wanted.Seqno == 0 || !validCanonicalSHA256(wanted.RootHash) ||
+		wanted.Seqno == 0 || !validCanonicalSHA256(wanted.RootHash) ||
 		!validCanonicalSHA256(wanted.FileHash) {
 		return 0, errors.New("invalid Prediction accepted-wager masterchain inclusion search")
 	}
 	wantedShard, err := canonicalPredictionShard(wanted.Shard)
 	if err != nil {
 		return 0, err
+	}
+	// A transaction may itself be in the masterchain.  Such a block is not a
+	// member of getShards(seqno): it is the exact masterchain block which owns
+	// that shard list.  Treating this as an ordinary shard transaction either
+	// makes valid masterchain deployments unverifiable or, worse, tempts a
+	// caller to accept an unrelated shard observation.  Query the exact block
+	// identity and bind both hashes instead.
+	if wanted.Workchain == -1 {
+		if wanted.Shard != predictionMasterchainShard || wanted.Seqno < start || wanted.Seqno > finalized {
+			return 0, errors.New("Prediction accepted-wager masterchain transaction is outside the finalized range")
+		}
+		var exact predictionEntropyBlockID
+		if err := rpc.Call(ctx, "lookupBlock", struct {
+			Workchain int32  `json:"workchain"`
+			Shard     string `json:"shard"`
+			Seqno     uint64 `json:"seqno"`
+		}{-1, predictionMasterchainShard, wanted.Seqno}, &exact); err != nil {
+			return 0, err
+		}
+		root, rootErr := predictionRPCDigest(exact.RootHash)
+		file, fileErr := predictionRPCDigest(exact.FileHash)
+		if rootErr != nil || fileErr != nil || !validPredictionMasterchainBlockID(exact, false) ||
+			exact.Seqno != wanted.Seqno || root != wanted.RootHash || file != wanted.FileHash {
+			return 0, errors.New(
+				"Prediction accepted-wager masterchain transaction has no exact finalized block identity",
+			)
+		}
+		return wanted.Seqno, nil
 	}
 	end := finalized
 	if finalized-start > 4096 {
@@ -803,6 +831,23 @@ func findPredictionAcceptanceMasterchainInclusion(ctx context.Context, rpc predi
 		}
 	}
 	return 0, errors.New("Prediction accepted-wager transaction block is absent from the finalized masterchain range")
+}
+
+func TestPredictionAcceptedWagerMasterchainInclusionUsesExactBlockIdentity(t *testing.T) {
+	rpc := fixedPredictionEntropyBlockRPC{rootByte: 0x31, fileByte: 0x32}
+	wanted := predictionAcceptedBlock{
+		Workchain: -1, Shard: predictionMasterchainShard, Seqno: 91,
+		RootHash: "sha256:" + strings.Repeat("31", sha256.Size),
+		FileHash: "sha256:" + strings.Repeat("32", sha256.Size),
+	}
+	got, err := findPredictionAcceptanceMasterchainInclusion(t.Context(), rpc, wanted, 90, 92)
+	if err != nil || got != wanted.Seqno {
+		t.Fatalf("exact masterchain inclusion failed: got=%d err=%v", got, err)
+	}
+	wanted.RootHash = "sha256:" + strings.Repeat("33", sha256.Size)
+	if _, err := findPredictionAcceptanceMasterchainInclusion(t.Context(), rpc, wanted, 90, 92); err == nil {
+		t.Fatal("different masterchain root hash was accepted")
+	}
 }
 
 func canonicalPredictionShard(value string) (uint64, error) {
@@ -1197,7 +1242,7 @@ func decodePredictionAcceptanceReportTransaction(report predictionAcceptedTransa
 	rebuilt, err := tx.ToCell()
 	parsed, addressErr := address.ParseRawAddr(accountAddress)
 	if err != nil || addressErr != nil || parsed == nil || !bytes.Equal(rebuilt.Hash(), root.Hash()) ||
-		!bytes.Equal(tx.AccountAddr, parsed.Data()) || report.Block.Workchain == -1 || report.Block.Seqno == 0 ||
+		!bytes.Equal(tx.AccountAddr, parsed.Data()) || report.Block.Seqno == 0 ||
 		!validCanonicalSHA256(report.Block.RootHash) || !validCanonicalSHA256(report.Block.FileHash) {
 		return nil, errors.New("Prediction accepted-wager report transaction identity is invalid")
 	}

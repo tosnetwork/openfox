@@ -17,13 +17,11 @@ import (
 )
 
 type PredictionOracleSubmissionConfig struct {
-	MarketDefinitionJSON  []byte
-	OracleProfile         prediction.OracleProfile
-	VoteMessageValue      uint64
-	PolicyRevision        uint64
-	ApprovalDigest        string
-	SourceCursor          prediction.AccountCursor
-	MasterchainCheckpoint prediction.BlockIdentity
+	MarketDefinitionJSON []byte
+	OracleProfile        prediction.OracleProfile
+	VoteMessageValue     uint64
+	PolicyRevision       uint64
+	ApprovalDigest       string
 }
 
 type predictionReportOperation struct {
@@ -105,8 +103,7 @@ func oracleVoteEffectRequest(engine *Engine, sink *TOSCTLPaymentSink,
 		MarketDefinitionJSON: append([]byte(nil), config.MarketDefinitionJSON...),
 		OperationJSON:        operation, AmountNanoTOS: config.VoteMessageValue,
 		ValidUntil: uint32(plan.StatementExpiry), PolicyRevision: config.PolicyRevision,
-		ApprovalDigest: config.ApprovalDigest, SourceCursor: config.SourceCursor,
-		MasterchainCheckpoint: config.MasterchainCheckpoint,
+		ApprovalDigest: config.ApprovalDigest,
 	}, nil
 }
 
@@ -168,8 +165,7 @@ func oracleChallengeEffectRequest(engine *Engine, sink *TOSCTLPaymentSink,
 		MarketDefinitionJSON: append([]byte(nil), config.MarketDefinitionJSON...),
 		OperationJSON:        operation, AmountNanoTOS: plan.RequiredMessageValue,
 		ValidUntil: uint32(plan.ChallengeDeadline), PolicyRevision: config.PolicyRevision,
-		ApprovalDigest: config.ApprovalDigest, SourceCursor: config.SourceCursor,
-		MasterchainCheckpoint: config.MasterchainCheckpoint,
+		ApprovalDigest: config.ApprovalDigest,
 	}, nil
 }
 

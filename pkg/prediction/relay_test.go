@@ -371,6 +371,26 @@ func TestPredictionRelayRichBounceRequiresExactAgentCredit(t *testing.T) {
 		disposition.ReleaseSourceLiquidity {
 		t.Fatalf("bounce creation released source funds early: %#v", disposition)
 	}
+	// A crash after the destination has created the rich bounce but before the
+	// source account has credited it is the economically sensitive window: the
+	// market exposure is gone, but the source funds are not yet reusable.
+	if closeErr := journal.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	restarted, err := OpenPredictionRelayJournal(journal.directory, fixture.profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal = restarted
+	recovered, ok := journal.Get(fixture.actionID)
+	if !ok || recovered.State != RelayDestinationFailedBounceCreated || recovered.DestinationEvidence == nil ||
+		recovered.DestinationEvidence.BounceMessage == nil ||
+		recovered.ReservationDisposition().ReleaseSourceLiquidity {
+		t.Fatalf("restart lost the unresolved rich-bounce boundary: %#v", recovered)
+	}
+	if _, err := journal.BeginOrResumeExactBroadcast(t.Context(), fixture.actionID, &relayTestBroadcaster{}); err == nil {
+		t.Fatal("restart rebroadcast an action whose destination already created a rich bounce")
+	}
 	creditCell := cell.BeginCell().MustStoreUInt(0x705, 12).EndCell()
 	credit := BounceCreditEvidence{
 		InboundBounceMessageHash: bounce.MessageHash,
@@ -396,6 +416,19 @@ func TestPredictionRelayRichBounceRequiresExactAgentCredit(t *testing.T) {
 	if disposition := credited.ReservationDisposition(); !disposition.ReleaseSourceLiquidity ||
 		disposition.RealizeSourceLoss {
 		t.Fatalf("credited bounce did not release source funds: %#v", disposition)
+	}
+	if closeErr := journal.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	restarted, err = OpenPredictionRelayJournal(journal.directory, fixture.profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	recovered, ok = restarted.Get(fixture.actionID)
+	if !ok || recovered.State != RelayBounceCreditedAtAgent || recovered.BounceCreditEvidence == nil ||
+		!recovered.ReservationDisposition().ReleaseSourceLiquidity {
+		t.Fatalf("restart lost terminal rich-bounce credit: %#v", recovered)
 	}
 }
 

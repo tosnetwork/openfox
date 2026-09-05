@@ -161,8 +161,8 @@ func TestOracleEvidenceAcquisitionUsesTwoDurableFileReplicas(t *testing.T) {
 	directories := []string{t.TempDir(), t.TempDir()}
 	replicas := make([]*FileEvidenceArchiveReplica, 0, len(directories))
 	for index, directory := range directories {
-		if err := os.Chmod(directory, 0o700); err != nil {
-			t.Fatal(err)
+		if chmodErr := os.Chmod(directory, 0o700); chmodErr != nil {
+			t.Fatal(chmodErr)
 		}
 		replica, openErr := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
 			Directory: directory, SigningKey: keys[index], MaximumObjects: 8,
@@ -186,8 +186,8 @@ func TestOracleEvidenceAcquisitionUsesTwoDurableFileReplicas(t *testing.T) {
 		t.Fatalf("durable evidence acquisition failed: %+v err=%v", evidence, err)
 	}
 	for index, replica := range replicas {
-		if err := replica.Close(); err != nil {
-			t.Fatal(err)
+		if closeReplicaErr := replica.Close(); closeReplicaErr != nil {
+			t.Fatal(closeReplicaErr)
 		}
 		reopened, openErr := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
 			Directory: directories[index], SigningKey: keys[index], MaximumObjects: 8,
@@ -200,7 +200,10 @@ func TestOracleEvidenceAcquisitionUsesTwoDurableFileReplicas(t *testing.T) {
 		closeErr := reopened.Close()
 		if loadErr != nil || closeErr != nil || !bytes.Equal(loaded.Content, content) ||
 			loaded.RetainUntil != profile.ClaimDeadline+profile.AuditRetention {
-			t.Fatalf("file replica %d did not retain exact evidence: %+v load=%v close=%v", index, loaded, loadErr, closeErr)
+			t.Fatalf(
+				"file replica %d did not retain exact evidence: %+v load=%v close=%v",
+				index, loaded, loadErr, closeErr,
+			)
 		}
 	}
 }

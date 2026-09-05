@@ -67,8 +67,8 @@ func TestFileEvidenceArchivePersistsExactContentAndExtendsRetention(t *testing.T
 	if err != nil || extended.RetainUntil != 40_000 {
 		t.Fatalf("idempotent retention extension failed: %+v err=%v", extended, err)
 	}
-	if err := replica.Close(); err != nil {
-		t.Fatal(err)
+	if closeErr := replica.Close(); closeErr != nil {
+		t.Fatal(closeErr)
 	}
 
 	reopened := openFileArchiveTestReplica(t, directory, key, 4, 4096)
@@ -228,15 +228,18 @@ func TestFileEvidenceArchivePrunesOnlyPastRetentionAndRestoresCapacity(t *testin
 	defer func() { _ = replica.Close() }()
 	expires := fileArchiveTestObject(string(bytes.Repeat([]byte{'a'}, 500)), 21_000)
 	retained := fileArchiveTestObject(string(bytes.Repeat([]byte{'b'}, 500)), 22_000)
-	if _, err := replica.StorePredictionEvidence(t.Context(), expires); err != nil {
-		t.Fatal(err)
+	if _, storeErr := replica.StorePredictionEvidence(t.Context(), expires); storeErr != nil {
+		t.Fatal(storeErr)
 	}
-	if _, err := replica.StorePredictionEvidence(t.Context(), retained); err != nil {
-		t.Fatal(err)
+	if _, storeErr := replica.StorePredictionEvidence(t.Context(), retained); storeErr != nil {
+		t.Fatal(storeErr)
 	}
 	now = 21_000
-	if count, size, err := replica.PruneExpiredPredictionEvidence(t.Context()); err != nil || count != 0 || size != 0 {
-		t.Fatalf("archive pruned at the inclusive retention boundary: count=%d size=%d err=%v", count, size, err)
+	if count, size, pruneErr := replica.PruneExpiredPredictionEvidence(t.Context()); pruneErr != nil || count != 0 || size != 0 {
+		t.Fatalf(
+			"archive pruned at the inclusive retention boundary: count=%d size=%d err=%v",
+			count, size, pruneErr,
+		)
 	}
 	now = 21_001
 	count, size, err := replica.PruneExpiredPredictionEvidence(t.Context())

@@ -305,8 +305,10 @@ func (replica *FileEvidenceArchiveReplica) loadOrInitialize() error {
 		if marshalErr != nil {
 			return errors.New("encode prediction file archive identity")
 		}
-		if err := fileutil.WriteFileAtomicRoot(replica.root, fileArchiveIdentityName, encoded, 0o600); err != nil {
-			return err
+		if writeErr := fileutil.WriteFileAtomicRoot(
+			replica.root, fileArchiveIdentityName, encoded, 0o600,
+		); writeErr != nil {
+			return writeErr
 		}
 	} else if err != nil {
 		return err
@@ -433,7 +435,9 @@ func syncFileArchiveRoot(root *os.Root) error {
 
 func validateFileArchiveObject(object ArchiveObjectV1) error {
 	if len(object.CanonicalSourceID) == 0 || len(object.CanonicalSourceID) > maxOracleSourceURLBytes ||
-		strings.IndexFunc(object.CanonicalSourceID, func(value rune) bool { return value < 0x20 || value == 0x7f }) >= 0 ||
+		strings.IndexFunc(object.CanonicalSourceID, func(value rune) bool {
+			return value < 0x20 || value == 0x7f
+		}) >= 0 ||
 		len(object.ContentType) == 0 || len(object.ContentType) > 255 ||
 		canonicalMediaType(object.ContentType) != object.ContentType || len(object.Content) == 0 ||
 		object.RetainUntil == 0 || sha256.Sum256(object.Content) != object.ContentDigest {

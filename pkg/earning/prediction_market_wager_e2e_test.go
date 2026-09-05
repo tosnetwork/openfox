@@ -735,7 +735,11 @@ func findPredictionAcceptanceTransaction(ctx context.Context, rpc predictionEntr
 			if decodeErr != nil || decoded.report.LT != expectedLT || decoded.report.Hash != expectedHash {
 				return zero, fmt.Errorf(
 					"Prediction accepted-wager transaction chain is invalid: decode=%v observed_lt=%d expected_lt=%d observed_hash=%s expected_hash=%s",
-					decodeErr, decoded.report.LT, expectedLT, decoded.report.Hash, expectedHash,
+					decodeErr,
+					decoded.report.LT,
+					expectedLT,
+					decoded.report.Hash,
+					expectedHash,
 				)
 			}
 			inspected++

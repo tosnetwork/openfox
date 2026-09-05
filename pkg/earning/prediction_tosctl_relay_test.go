@@ -8,6 +8,19 @@ import (
 	"github.com/tosnetwork/openfox/pkg/prediction"
 )
 
+func TestPredictionRecoveryHistoryLimitCannotDropBelowLongHorizonGate(t *testing.T) {
+	for _, configured := range []uint32{0, 1, 10_000, minimumPredictionRecoveryTransactions} {
+		sink := &TOSCTLPaymentSink{PredictionMaximumTransactions: configured}
+		if got := sink.maximumPredictionTransactions(); got < minimumPredictionRecoveryTransactions {
+			t.Fatalf("configured history limit %d weakened long-horizon recovery to %d", configured, got)
+		}
+	}
+	configured := uint32(75_000)
+	if got := (&TOSCTLPaymentSink{PredictionMaximumTransactions: configured}).maximumPredictionTransactions(); got != configured {
+		t.Fatalf("safe explicit history limit changed: got %d want %d", got, configured)
+	}
+}
+
 func TestVerifyTOSCTLPredictionSourceEnvelopeBindsReceiptsAndView(t *testing.T) {
 	digest := func(label string) string {
 		value := sha256.Sum256([]byte(label))

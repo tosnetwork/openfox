@@ -55,6 +55,7 @@ type predictionAcceptanceBuildState struct {
 type predictionAcceptanceConfig struct {
 	path       string
 	operatorID string
+	endpoint   string
 }
 
 type predictionContextAcceptanceReport struct {
@@ -340,7 +341,9 @@ func acceptancePinRPCConfigs(t *testing.T, sourcePaths []string) []predictionAcc
 		if err := os.WriteFile(target, encoded, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		configs = append(configs, predictionAcceptanceConfig{path: target, operatorID: operatorID})
+		configs = append(configs, predictionAcceptanceConfig{
+			path: target, operatorID: operatorID, endpoint: endpoint,
+		})
 	}
 	sort.Slice(configs, func(left, right int) bool {
 		return configs[left].operatorID < configs[right].operatorID

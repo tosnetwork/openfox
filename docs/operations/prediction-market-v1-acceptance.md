@@ -68,6 +68,60 @@ claim quorum. A stale context can still be observed for audit, but
 `OracleJournal.PrepareVote` rejects it at or after its deadline; this gate does
 not claim that a stale context remains voteable.
 
+## Future block-root entropy distribution gate
+
+`TestPredictionFutureBlockEntropyDistributionThreeNodeReleaseGate` qualifies
+the synthetic subject used by the eventual lifecycle E2E. It freezes a
+contiguous historical window ending at the minimum finalized checkpoint seen
+across the three nodes before issuing any sampled `lookupBlock` read. Every
+block is then resolved by exact seqno on all three nodes. Root hash, file hash,
+workchain, shard, and seqno must agree exactly.
+
+The gate also reads ConfigParam 34 from each node. It decodes the returned BOC,
+reconstructs every validator public key, ADNL identity, weight, and cumulative
+weight, and compares those bytes with the RPC's decoded view. The three nodes
+must return the same config cell hash. The future wager gate will use this
+authenticated set to reject a participant trading key that is also an active
+validator key.
+
+The parity gate requires both outcomes and applies the frozen integer form of
+a three-standard-deviation bound, `(EVEN - ODD)^2 <= 9 * sample_count`. This is
+a subject preflight, not a proof of perfect randomness. The committed evidence
+records 25 EVEN and 23 ODD results over 48 consecutively selected finalized
+blocks.
+
+Required environment:
+
+```text
+OPENFOX_PREDICTION_ENTROPY_DISTRIBUTION_THREE_NODE_E2E=1
+OPENFOX_PREDICTION_TOSCTL_CONFIG_1=/absolute/node-1.json
+OPENFOX_PREDICTION_TOSCTL_CONFIG_2=/absolute/node-2.json
+OPENFOX_PREDICTION_TOSCTL_CONFIG_3=/absolute/node-3.json
+OPENFOX_PREDICTION_NETWORK_ID=tos:local-three-node
+OPENFOX_PREDICTION_GLOBAL_ID=3
+OPENFOX_PREDICTION_WORKCHAIN_ID=0
+OPENFOX_PREDICTION_ZERO_STATE_ROOT_HASH=<32-byte Base64 or sha256: lowercase hex>
+OPENFOX_PREDICTION_ZERO_STATE_FILE_HASH=<32-byte Base64 or sha256: lowercase hex>
+OPENFOX_PREDICTION_EVIDENCE_DIRECTORY=/absolute/owner-private/evidence
+OPENFOX_PREDICTION_ENTROPY_SAMPLE_COUNT=48
+```
+
+Run:
+
+```sh
+GOWORK=off go test ./pkg/earning \
+  -run TestPredictionFutureBlockEntropyDistributionThreeNodeReleaseGate \
+  -count=1 -v
+```
+
+The output file is
+`future-block-entropy-distribution-three-node.json`. A separate lifecycle gate
+must still persist exact wager-acceptance evidence first, choose a height that
+was future to every observer at that durable boundary, reject participant keys
+present in ConfigParam 34, and reveal the result only after all three nodes
+finalize and agree on that height. This distribution report cannot satisfy
+those requirements by itself.
+
 ## Evidence archive replicas
 
 Each reporter must operate at least two `FileEvidenceArchiveReplica` instances
@@ -89,7 +143,8 @@ The context gate is one component of system acceptance, not a substitute for
 the complete lifecycle. Release remains blocked until separate machine-readable
 reports cover:
 
-- real, future-height block-root entropy producing YES and NO cases;
+- post-acceptance future-height locks and reveals producing real YES and NO
+  cases (the separate distribution preflight is complete);
 - factual INVALID, no-proposal Oracle timeout, challenge uphold, challenge
   overturn, and challenged-proposal appellate timeout;
 - Agent Account V2 signed, durable, broadcasting, source-finalized,

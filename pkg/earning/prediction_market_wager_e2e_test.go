@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tosnetwork/tos-service-protocol/pkg/agentgift"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
 	"github.com/tosnetwork/tosutils-go/address"
@@ -34,6 +35,27 @@ const (
 	predictionAcceptanceHistoryLimit    = 128
 	maxPredictionAcceptanceBOCBytes     = int64(2 << 20)
 )
+
+const (
+	predictionDirectWalletSubmissionProfile     = "direct-wallet-contract-probe"
+	predictionAgentCheckedCallSubmissionProfile = "agent-account-checked-call-v2"
+)
+
+type predictionAcceptanceSubmission struct {
+	profile       string
+	selectionRule string
+	extraFlags    uint64
+	checkedCall   *agentgift.ParsedCheckedContractCallV2
+}
+
+type predictionAcceptanceAgentAccountView struct {
+	Address         string  `json:"address"`
+	State           string  `json:"state"`
+	CodeHash        *string `json:"code_hash"`
+	TemplateMatches *bool   `json:"template_matches"`
+	ControllerEpoch *uint64 `json:"controller_epoch"`
+	Seqno           *uint32 `json:"seqno"`
+}
 
 type predictionAcceptedDefinition struct {
 	GlobalID             int32  `json:"global_id"`
@@ -144,6 +166,10 @@ type predictionAcceptedWagerReport struct {
 	MarketCodeHash               string                              `json:"market_code_hash"`
 	RulesHash                    string                              `json:"rules_hash"`
 	SourceAddress                string                              `json:"source_address"`
+	SourceAgentAccountCodeHash   string                              `json:"source_agent_account_code_hash,omitempty"`
+	SourceControllerEpoch        uint64                              `json:"source_controller_epoch,omitempty"`
+	SourceSeqno                  uint32                              `json:"source_seqno,omitempty"`
+	SourceValidUntil             uint32                              `json:"source_valid_until,omitempty"`
 	SubmittedExternalMessageHash string                              `json:"submitted_external_message_hash"`
 	ExactExternalBOCSHA256       string                              `json:"exact_external_boc_sha256"`
 	ExactExternalBOCBase64       string                              `json:"exact_external_boc_base64"`
@@ -223,6 +249,7 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	bodyCell := canonicalPredictionAcceptanceCell(t, "match operation body", bodyRaw)
 	submittedHash := predictionAcceptanceCellHash(externalCell)
 	bodyHash := predictionAcceptanceCellHash(bodyCell)
+	submission := predictionAcceptedWagerSubmission(t, externalRaw, bodyRaw, bodyHash, network)
 	quantity, orders, participantKeys, signedOrders, err := decodePredictionAcceptedMatch(bodyCell)
 	if err != nil {
 		t.Fatal(err)
@@ -231,6 +258,9 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	if parsed, parseErr := address.ParseRawAddr(sourceAddress); parseErr != nil || parsed == nil ||
 		parsed.StringRaw() != sourceAddress {
 		t.Fatal("OPENFOX_PREDICTION_MATCH_SOURCE_ADDRESS is not canonical")
+	}
+	if submission.checkedCall != nil && submission.checkedCall.SenderAgentAccount != sourceAddress {
+		t.Fatal("checked-call V2 sender conflicts with OPENFOX_PREDICTION_MATCH_SOURCE_ADDRESS")
 	}
 	sink := &TOSCTLPaymentSink{
 		Executable: executable,
@@ -265,8 +295,8 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 		Schema:                       "tos.openfox.prediction-accepted-wager-three-node.v1",
 		Verdict:                      "PASS",
 		ObservedAt:                   time.Now().UTC().Format(time.RFC3339),
-		SelectionRule:                "direct-wallet-exact-external-to-source-transaction-to-single-outbound-to-successful-market-transaction",
-		SubmissionProfile:            "direct-wallet-contract-probe",
+		SelectionRule:                submission.selectionRule,
+		SubmissionProfile:            submission.profile,
 		DefinitionSHA256:             "sha256:" + hex.EncodeToString(definitionDigest[:]),
 		NetworkDomain:                network,
 		NetworkDomainHash:            networkDigest,
@@ -286,6 +316,11 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 		ParticipantTradingPublicKeys: participantKeys,
 		Orders:                       orders,
 	}
+	if submission.checkedCall != nil {
+		report.SourceControllerEpoch = submission.checkedCall.ControllerEpoch
+		report.SourceSeqno = submission.checkedCall.Seqno
+		report.SourceValidUntil = submission.checkedCall.ValidUntil
+	}
 	states := make([]predictionEntropyNodeState, 0, len(nodes))
 	var canonicalSource, canonicalDestination predictionDecodedTransaction
 	var canonicalOutbound predictionAcceptedMessage
@@ -295,6 +330,15 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 		if stateErr != nil {
 			t.Fatalf("read accepted-wager observer %d state: %v", index+1, stateErr)
 		}
+		if submission.checkedCall != nil {
+			codeHash := predictionAcceptanceVerifyAgentAccount(t, ctx, sink, configs[index].path,
+				sourceAddress, *submission.checkedCall)
+			if index == 0 {
+				report.SourceAgentAccountCodeHash = codeHash
+			} else if report.SourceAgentAccountCodeHash != codeHash {
+				t.Fatalf("accepted-wager Agent Account code hash differs at observer %d", index+1)
+			}
+		}
 		source, sourceErr := findPredictionAcceptanceTransaction(
 			ctx, node.client, sourceAddress, submittedHash, predictionAcceptanceHistoryLimit,
 		)
@@ -302,7 +346,7 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 			t.Fatalf("find accepted-wager source transaction at observer %d: %v", index+1, sourceErr)
 		}
 		outbound, outboundErr := predictionAcceptanceSourceOutbound(
-			source.tx, sourceAddress, build.Address, bodyRaw, bodyHash,
+			source.tx, sourceAddress, build.Address, bodyRaw, bodyHash, submission.extraFlags,
 		)
 		if outboundErr != nil {
 			t.Fatalf("verify accepted-wager source output at observer %d: %v", index+1, outboundErr)
@@ -452,6 +496,74 @@ func canonicalPredictionAcceptanceCell(t *testing.T, label string, raw []byte) *
 		t.Fatalf("%s is not one canonical BOC", label)
 	}
 	return root
+}
+
+func predictionAcceptedWagerSubmission(t *testing.T, externalRaw, bodyRaw []byte, bodyHash string,
+	network agentrelay.NetworkDomain,
+) predictionAcceptanceSubmission {
+	t.Helper()
+	profile := strings.TrimSpace(os.Getenv("OPENFOX_PREDICTION_SUBMISSION_PROFILE"))
+	if profile == "" {
+		profile = predictionDirectWalletSubmissionProfile
+	}
+	switch profile {
+	case predictionDirectWalletSubmissionProfile:
+		return predictionAcceptanceSubmission{
+			profile:       profile,
+			selectionRule: "direct-wallet-exact-external-to-source-transaction-to-single-outbound-to-successful-market-transaction",
+		}
+	case predictionAgentCheckedCallSubmissionProfile:
+		checkedCall, err := agentgift.ParseAgentCheckedContractCallV2BOC(externalRaw)
+		if err != nil || checkedCall.GlobalID != network.GlobalID || checkedCall.DestinationAddress == "" ||
+			checkedCall.BodyHash != bodyHash || !bytes.Equal(checkedCall.BodyBOC, bodyRaw) ||
+			checkedCall.ValidUntil == 0 {
+			t.Fatal("accepted-wager checked-call V2 input is incomplete or differs from the frozen match body")
+		}
+		return predictionAcceptanceSubmission{
+			profile:       profile,
+			selectionRule: "agent-account-checked-call-v2-exact-external-to-audited-agent-transaction-to-single-flagged-outbound-to-successful-market-transaction",
+			extraFlags:    agentgift.AgentCheckedContractCallV2Flags, checkedCall: &checkedCall,
+		}
+	default:
+		t.Fatal("OPENFOX_PREDICTION_SUBMISSION_PROFILE must be direct-wallet-contract-probe or agent-account-checked-call-v2")
+		return predictionAcceptanceSubmission{}
+	}
+}
+
+func TestPredictionAcceptedWagerCheckedCallV2SubmissionBindsExactBody(t *testing.T) {
+	source := "0:" + strings.Repeat("1", 64)
+	destination := "0:" + strings.Repeat("2", 64)
+	body := cell.BeginCell().MustStoreUInt(predictionMatchPairOpcode, 32).MustStoreUInt(7, 64).EndCell()
+	bodyRaw := body.ToBOCWithFlags(false)
+	external := predictionCheckedCallTestBOC(t, source, destination, 42, 9, 11, uint32(time.Now().Add(time.Minute).Unix()), 2_000_000, body)
+	t.Setenv("OPENFOX_PREDICTION_SUBMISSION_PROFILE", predictionAgentCheckedCallSubmissionProfile)
+	submission := predictionAcceptedWagerSubmission(t, external, bodyRaw, predictionAcceptanceCellHash(body), agentrelay.NetworkDomain{
+		NetworkID: "tos:local", GlobalID: 42, WorkchainID: 0,
+	})
+	if submission.profile != predictionAgentCheckedCallSubmissionProfile ||
+		submission.checkedCall == nil || submission.checkedCall.SenderAgentAccount != source ||
+		submission.checkedCall.DestinationAddress != destination || submission.checkedCall.ControllerEpoch != 9 ||
+		submission.checkedCall.Seqno != 11 || submission.extraFlags != agentgift.AgentCheckedContractCallV2Flags {
+		t.Fatalf("checked-call V2 acceptance profile lost an exact custody boundary: %+v", submission)
+	}
+}
+
+func predictionAcceptanceVerifyAgentAccount(t *testing.T, ctx context.Context, sink *TOSCTLPaymentSink,
+	configPath, source string, checkedCall agentgift.ParsedCheckedContractCallV2,
+) string {
+	t.Helper()
+	raw, err := sink.run(ctx, []string{"agent", "account", "show", "--address", source, "--format", "json", "-c", configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view predictionAcceptanceAgentAccountView
+	if decodeStrictJSON(raw, &view) != nil || view.Address != source || view.State != "active" ||
+		view.CodeHash == nil || len(*view.CodeHash) != 64 || view.TemplateMatches == nil || !*view.TemplateMatches ||
+		view.ControllerEpoch == nil || *view.ControllerEpoch != checkedCall.ControllerEpoch || view.Seqno == nil ||
+		*view.Seqno <= checkedCall.Seqno {
+		t.Fatal("accepted-wager checked-call V2 source is not the audited Agent Account state")
+	}
+	return "tvm-cell-sha256:" + *view.CodeHash
 }
 
 func predictionAcceptanceCellHash(value *cell.Cell) string {
@@ -739,7 +851,7 @@ func decodePredictionAcceptanceTransaction(wire predictionAcceptedTransactionWir
 }
 
 func predictionAcceptanceSourceOutbound(tx *tlb.Transaction, source, destination string,
-	bodyRaw []byte, bodyHash string,
+	bodyRaw []byte, bodyHash string, expectedExtraFlags uint64,
 ) (predictionAcceptedMessage, error) {
 	var zero predictionAcceptedMessage
 	if tx == nil || tx.IO.In == nil || tx.IO.In.MsgType != tlb.MsgTypeExternalIn ||
@@ -769,8 +881,8 @@ func predictionAcceptanceSourceOutbound(tx *tlb.Transaction, source, destination
 		(internal.ExtraCurrencies != nil && !internal.ExtraCurrencies.IsEmpty()) {
 		return zero, errors.New("Prediction accepted-wager source output has invalid value or body")
 	}
-	if !internal.IHRFee.Nano().IsUint64() || internal.IHRFee.Nano().Uint64() != 0 {
-		return zero, errors.New("Prediction direct-wallet accepted-wager output has unexpected extra flags")
+	if !internal.IHRFee.Nano().IsUint64() || internal.IHRFee.Nano().Uint64() != expectedExtraFlags {
+		return zero, errors.New("Prediction accepted-wager output has unexpected transport flags")
 	}
 	if predictionAcceptanceCellHash(internal.Body) != bodyHash ||
 		!bytes.Equal(internal.Body.ToBOCWithFlags(false), bodyRaw) {
@@ -781,7 +893,7 @@ func predictionAcceptanceSourceOutbound(tx *tlb.Transaction, source, destination
 		BOCBase64:     base64.StdEncoding.EncodeToString(messageCell.ToBOCWithFlags(false)),
 		SourceAddress: source, DestinationAddress: destination,
 		ValueNanoTOS: internal.Amount.Nano().Uint64(), BodyHash: bodyHash,
-		BodyBOCBase64: base64.StdEncoding.EncodeToString(bodyRaw), ExtraFlags: 0,
+		BodyBOCBase64: base64.StdEncoding.EncodeToString(bodyRaw), ExtraFlags: expectedExtraFlags,
 	}, nil
 }
 
@@ -863,9 +975,15 @@ func checkedPredictionSum(left, right uint64) (uint64, bool) {
 func validatePredictionAcceptedWagerReport(report predictionAcceptedWagerReport,
 	definition predictionAcceptedDefinition, expectedDefinitionDigest string,
 ) error {
-	if report.Schema != "tos.openfox.prediction-accepted-wager-three-node.v1" || report.Verdict != "PASS" ||
-		report.SelectionRule != "direct-wallet-exact-external-to-source-transaction-to-single-outbound-to-successful-market-transaction" ||
-		report.SubmissionProfile != "direct-wallet-contract-probe" ||
+	direct := report.SubmissionProfile == predictionDirectWalletSubmissionProfile &&
+		report.SelectionRule == "direct-wallet-exact-external-to-source-transaction-to-single-outbound-to-successful-market-transaction" &&
+		report.SourceAgentAccountCodeHash == "" && report.SourceControllerEpoch == 0 && report.SourceSeqno == 0 && report.SourceValidUntil == 0 &&
+		report.OutboundMessage.ExtraFlags == 0
+	checked := report.SubmissionProfile == predictionAgentCheckedCallSubmissionProfile &&
+		report.SelectionRule == "agent-account-checked-call-v2-exact-external-to-audited-agent-transaction-to-single-flagged-outbound-to-successful-market-transaction" &&
+		validTVMCellSHA256(report.SourceAgentAccountCodeHash) && report.SourceValidUntil > 0 &&
+		report.OutboundMessage.ExtraFlags == agentgift.AgentCheckedContractCallV2Flags
+	if report.Schema != "tos.openfox.prediction-accepted-wager-three-node.v1" || report.Verdict != "PASS" || (!direct && !checked) ||
 		!validCanonicalSHA256(expectedDefinitionDigest) || report.DefinitionSHA256 != expectedDefinitionDigest ||
 		!validCanonicalSHA256(report.NetworkDomainHash) ||
 		!validCanonicalSHA256(report.MarketID) || !validTVMCellSHA256(report.MarketConfigHash) ||
@@ -919,7 +1037,7 @@ func validatePredictionAcceptedWagerReport(report predictionAcceptedWagerReport,
 		report.OutboundMessage.DestinationAddress != report.MarketAddress ||
 		report.OutboundMessage.BodyHash != report.OperationBodyHash ||
 		report.OutboundMessage.BodyBOCBase64 != report.OperationBodyBOCBase64 ||
-		report.OutboundMessage.ExtraFlags != 0 || report.OutboundMessage.ValueNanoTOS == 0 {
+		report.OutboundMessage.ValueNanoTOS == 0 {
 		return errors.New("Prediction accepted-wager exact transaction path is inconsistent")
 	}
 	sourceTx, err := decodePredictionAcceptanceReportTransaction(report.SourceTransaction, report.SourceAddress)
@@ -932,8 +1050,20 @@ func validatePredictionAcceptedWagerReport(report predictionAcceptedWagerReport,
 		!bytes.Equal(sourceInput.ToBOCWithFlags(false), externalRaw) {
 		return errors.New("Prediction accepted-wager source transaction did not consume the exact external BOC")
 	}
+	expectedFlags := uint64(0)
+	if checked {
+		checkedCall, parseErr := agentgift.ParseAgentCheckedContractCallV2BOC(externalRaw)
+		if parseErr != nil || checkedCall.SenderAgentAccount != report.SourceAddress ||
+			checkedCall.GlobalID != report.NetworkDomain.GlobalID || checkedCall.DestinationAddress != report.MarketAddress ||
+			checkedCall.ControllerEpoch != report.SourceControllerEpoch || checkedCall.Seqno != report.SourceSeqno ||
+			checkedCall.ValidUntil != report.SourceValidUntil || checkedCall.BodyHash != report.OperationBodyHash ||
+			!bytes.Equal(checkedCall.BodyBOC, bodyRaw) {
+			return errors.New("Prediction accepted-wager checked-call V2 envelope is inconsistent")
+		}
+		expectedFlags = agentgift.AgentCheckedContractCallV2Flags
+	}
 	outbound, err := predictionAcceptanceSourceOutbound(
-		sourceTx, report.SourceAddress, report.MarketAddress, bodyRaw, report.OperationBodyHash,
+		sourceTx, report.SourceAddress, report.MarketAddress, bodyRaw, report.OperationBodyHash, expectedFlags,
 	)
 	if err != nil || outbound != report.OutboundMessage {
 		return errors.New("Prediction accepted-wager source transaction did not create the declared outbound")

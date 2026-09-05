@@ -122,16 +122,81 @@ present in ConfigParam 34, and reveal the result only after all three nodes
 finalize and agree on that height. This distribution report cannot satisfy
 those requirements by itself.
 
-The acceptance harness includes the durable lock primitive used by that later
-gate. It hashes the already-persisted accepted-wager evidence, requires two
+The acceptance harness includes the durable lock primitive used by the wager
+gate below. It hashes the already-persisted accepted-wager evidence, requires two
 sorted non-validator trading keys, snapshots the same active ConfigParam 34
 from three distinct observers, and fixes the target to the greatest tip any
 observer had already exposed plus exactly 60 blocks. Pre-lock observations may
 be at most five seconds old. A process-level file lock serializes creation;
 after a crash or restart, the same market and accepted-evidence digest can only
 reuse the byte-identical lock and target. Different accepted evidence cannot
-replace it. No future-block `PASS` report is committed yet because an actual
-PredictionMarket match acceptance must feed this primitive first.
+replace it.
+
+## Direct-wallet contract acceptance and future reveal gate
+
+`TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate` proves the
+contract portion of one fresh complete-set trade from immutable bytes. It
+starts from the exact submitted external BOC, walks the source account's
+hash-linked transaction history, requires one successful ordinary source
+transaction, reconstructs its unique internal outbound message, and then
+requires a successful market transaction that consumed that exact message.
+The signed BUY YES and BUY NO orders must be valid, complementary, non-partial
+maker/taker orders for one lot. Their prices must sum to the fixed price scale,
+and their signatures, network, market, configuration hash, validity window,
+and distinct trading identities are checked again offline from the evidence.
+
+Each node independently locates both transactions. Their shard blocks are
+then located by exact root hash, file hash, shard, and seqno in finalized
+masterchain shard listings. The three observers must agree on the transaction
+BOCs, outbound message, accounting, and market checkpoint. The accounting
+must show exactly one complete set, fixed collateral conservation, and the
+expected bounded cleanup liability.
+
+After the accepted-wager report is durably written, the gate snapshots the
+three observer tips and active validator set, excludes both participant keys
+from that set, and atomically locks a block 60 heights beyond the greatest
+observed tip. Only after every observer finalizes that height does it fetch the
+same exact block from all three nodes and derive YES from an even first root
+byte or NO from an odd first root byte. The reveal is bound to the exact
+accepted report and future-lock file digests. Restarting cannot move or replace
+either durable result.
+
+Required environment:
+
+```text
+OPENFOX_PREDICTION_ACCEPTED_WAGER_CONTRACT_THREE_NODE_E2E=1
+OPENFOX_PREDICTION_TOSCTL=/absolute/trusted/tosctl
+OPENFOX_PREDICTION_MARKET_DEFINITION=/absolute/market.json
+OPENFOX_PREDICTION_MATCH_EXTERNAL_BOC=/absolute/match-external.boc
+OPENFOX_PREDICTION_MATCH_BODY_BOC=/absolute/match-body.boc
+OPENFOX_PREDICTION_MATCH_SOURCE_ADDRESS=<canonical raw wallet address>
+OPENFOX_PREDICTION_MATCH_SCAN_START_MC_SEQNO=<frozen nonzero masterchain seqno>
+OPENFOX_PREDICTION_TOSCTL_CONFIG_1=/absolute/node-1.json
+OPENFOX_PREDICTION_TOSCTL_CONFIG_2=/absolute/node-2.json
+OPENFOX_PREDICTION_TOSCTL_CONFIG_3=/absolute/node-3.json
+OPENFOX_PREDICTION_NETWORK_ID=tos:local-three-node
+OPENFOX_PREDICTION_GLOBAL_ID=3
+OPENFOX_PREDICTION_WORKCHAIN_ID=0
+OPENFOX_PREDICTION_ZERO_STATE_ROOT_HASH=<32-byte Base64 or sha256: lowercase hex>
+OPENFOX_PREDICTION_ZERO_STATE_FILE_HASH=<32-byte Base64 or sha256: lowercase hex>
+OPENFOX_PREDICTION_EVIDENCE_DIRECTORY=/absolute/owner-private/evidence
+OPENFOX_PREDICTION_VAULT_URL=<operator-provided vault capability, when tosctl requires it>
+```
+
+Run:
+
+```sh
+GOWORK=off go test ./pkg/earning \
+  -run TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate \
+  -count=1 -v
+```
+
+The source profile is deliberately named `direct-wallet-contract-probe` in the
+accepted report. The source wallet directly submitted the match call, so this
+gate proves contract execution, transaction provenance, accounting, and one
+post-acceptance future NO reveal. It does **not** prove the production OpenFox
+Intent to Agent Account V2 relay path, its durable exact-BOC journal, or its
+crash recovery. It therefore cannot be relabeled as the full release gate.
 
 ## Evidence archive replicas
 
@@ -154,8 +219,9 @@ The context gate is one component of system acceptance, not a substitute for
 the complete lifecycle. Release remains blocked until separate machine-readable
 reports cover:
 
-- post-acceptance future-height locks and reveals producing real YES and NO
-  cases (the separate distribution preflight is complete);
+- a production Agent Account V2 wager path with its own post-acceptance future
+  lock and real reveal, plus a real YES case (the direct-wallet contract probe
+  has produced one real NO case and the distribution preflight is complete);
 - factual INVALID, no-proposal Oracle timeout, challenge uphold, challenge
   overturn, and challenged-proposal appellate timeout;
 - Agent Account V2 signed, durable, broadcasting, source-finalized,

@@ -517,6 +517,17 @@ func TestPredictionAcceptedWagerAndFutureRevealThreeNodeContractGate(t *testing.
 	if block.Parity == "EVEN" {
 		outcome = "YES"
 	}
+	if required := strings.TrimSpace(os.Getenv("OPENFOX_PREDICTION_REQUIRED_FUTURE_OUTCOME")); required != "" {
+		if required != "YES" && required != "NO" {
+			t.Fatal("OPENFOX_PREDICTION_REQUIRED_FUTURE_OUTCOME must be YES or NO")
+		}
+		// The value is checked only after the accepted-wager report and its
+		// fixed future height are durable. It therefore cannot select a block
+		// or move the lock in response to a known outcome.
+		if outcome != required {
+			t.Fatalf("frozen future-block outcome = %s, require %s", outcome, required)
+		}
+	}
 	reveal := predictionEntropyRevealReport{
 		Schema: "tos.openfox.prediction-future-block-reveal-three-node.v1", Verdict: "PASS",
 		RevealedAt:                  time.Now().UTC().Format(time.RFC3339),

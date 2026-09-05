@@ -168,6 +168,9 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 		); verifyErr != nil {
 			return nil, verifyErr
 		}
+		if authorization.Destination != market {
+			return nil, errors.New("Prediction custody authorization omitted its exact market destination")
+		}
 		outputPath := argumentValue(args, "--output-boc")
 		if writeErr := os.WriteFile(outputPath, external, 0o600); writeErr != nil {
 			return nil, writeErr

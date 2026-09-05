@@ -235,14 +235,15 @@ func TestFileEvidenceArchivePrunesOnlyPastRetentionAndRestoresCapacity(t *testin
 		t.Fatal(storeErr)
 	}
 	now = 21_000
-	if count, size, pruneErr := replica.PruneExpiredPredictionEvidence(t.Context()); pruneErr != nil || count != 0 || size != 0 {
+	count, size, pruneErr := replica.PruneExpiredPredictionEvidence(t.Context())
+	if pruneErr != nil || count != 0 || size != 0 {
 		t.Fatalf(
 			"archive pruned at the inclusive retention boundary: count=%d size=%d err=%v",
 			count, size, pruneErr,
 		)
 	}
 	now = 21_001
-	count, size, err := replica.PruneExpiredPredictionEvidence(t.Context())
+	count, size, err = replica.PruneExpiredPredictionEvidence(t.Context())
 	if err != nil || count != 1 || size != 500 {
 		t.Fatalf("archive did not prune the expired object: count=%d size=%d err=%v", count, size, err)
 	}

@@ -122,6 +122,17 @@ present in ConfigParam 34, and reveal the result only after all three nodes
 finalize and agree on that height. This distribution report cannot satisfy
 those requirements by itself.
 
+The acceptance harness includes the durable lock primitive used by that later
+gate. It hashes the already-persisted accepted-wager evidence, requires two
+sorted non-validator trading keys, snapshots the same active ConfigParam 34
+from three distinct observers, and fixes the target to the greatest tip any
+observer had already exposed plus exactly 60 blocks. Pre-lock observations may
+be at most five seconds old. A process-level file lock serializes creation;
+after a crash or restart, the same market and accepted-evidence digest can only
+reuse the byte-identical lock and target. Different accepted evidence cannot
+replace it. No future-block `PASS` report is committed yet because an actual
+PredictionMarket match acceptance must feed this primitive first.
+
 ## Evidence archive replicas
 
 Each reporter must operate at least two `FileEvidenceArchiveReplica` instances

@@ -1,15 +1,18 @@
 package earning
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,6 +32,9 @@ const (
 	predictionEntropyMinimumSamples   = 32
 	predictionEntropyMaximumSamples   = 256
 	maxPredictionEntropyRPCBody       = int64(1 << 20)
+	predictionEntropyFutureOffset     = uint64(60)
+	maxPredictionEntropyEvidenceBytes = int64(2 << 20)
+	predictionEntropyPrelockMaxAge    = 5 * time.Second
 )
 
 type predictionEntropyRPC interface {
@@ -140,6 +146,23 @@ type predictionEntropyDistributionReport struct {
 type predictionEntropyNodeState struct {
 	snapshot   predictionEntropyObserverSnapshot
 	validators predictionEntropyValidatorSet
+}
+
+type predictionEntropyFutureLock struct {
+	Schema                       string                              `json:"schema"`
+	Status                       string                              `json:"status"`
+	LockedAt                     string                              `json:"locked_at"`
+	SelectionRule                string                              `json:"selection_rule"`
+	AcceptedWagerEvidenceSHA256  string                              `json:"accepted_wager_evidence_sha256"`
+	NetworkDomain                agentrelay.NetworkDomain            `json:"network_domain"`
+	NetworkDomainHash            string                              `json:"network_domain_hash"`
+	MarketID                     string                              `json:"market_id"`
+	ParticipantTradingPublicKeys []string                            `json:"participant_trading_public_keys"`
+	ValidatorSet                 predictionEntropyValidatorSet       `json:"validator_set"`
+	PrelockObserverSnapshots     []predictionEntropyObserverSnapshot `json:"prelock_observer_snapshots"`
+	AnchorLatestObservedSeqno    uint64                              `json:"anchor_latest_observed_seqno"`
+	TargetOffsetBlocks           uint64                              `json:"target_offset_blocks"`
+	TargetSeqno                  uint64                              `json:"target_seqno"`
 }
 
 type fixedPredictionEntropyBlockRPC struct {
@@ -288,6 +311,77 @@ func TestPredictionFutureBlockEntropyRequiresThreeExactBlockIDs(t *testing.T) {
 	nodes[2].client = fixedPredictionEntropyBlockRPC{rootByte: 2, fileByte: 4}
 	if _, err := readPredictionEntropyBlockQuorum(t.Context(), nodes, 91); err == nil {
 		t.Fatal("conflicting third Prediction block file hash reached entropy selection")
+	}
+}
+
+func TestPredictionFutureBlockLockIsDurableAndExcludesValidators(t *testing.T) {
+	network := agentrelay.NetworkDomain{
+		NetworkID: "tos:test-prediction-entropy", GlobalID: 3, WorkchainID: 0,
+		ZeroStateRootHash: "sha256:" + strings.Repeat("01", sha256.Size),
+		ZeroStateFileHash: "sha256:" + strings.Repeat("02", sha256.Size),
+	}
+	validators := predictionEntropyValidatorSet{
+		ConfigCellHash: "tvm-cell-sha256:" + strings.Repeat("03", sha256.Size),
+		UTimeSince:     1_700_000_000, UTimeUntil: 1_700_100_000, Total: 2, Main: 2,
+		TotalWeight: 20,
+		Validators: []predictionEntropyValidator{
+			{PublicKey: strings.Repeat("11", sha256.Size), ADNLAddress: strings.Repeat("21", sha256.Size), Weight: 10},
+			{PublicKey: strings.Repeat("12", sha256.Size), ADNLAddress: strings.Repeat("22", sha256.Size), Weight: 10, CumulativeWeight: 10},
+		},
+	}
+	states := []predictionEntropyNodeState{
+		{snapshot: predictionEntropyObserverSnapshot{ObserverID: "sha256:" + strings.Repeat("31", sha256.Size), ConsensusSeqno: 99, LastSeqno: 100, LastBlockUtime: 1_700_000_199, ValidatorSetHash: validators.ConfigCellHash}, validators: validators},
+		{snapshot: predictionEntropyObserverSnapshot{ObserverID: "sha256:" + strings.Repeat("32", sha256.Size), ConsensusSeqno: 100, LastSeqno: 101, LastBlockUtime: 1_700_000_199, ValidatorSetHash: validators.ConfigCellHash}, validators: validators},
+		{snapshot: predictionEntropyObserverSnapshot{ObserverID: "sha256:" + strings.Repeat("33", sha256.Size), ConsensusSeqno: 100, LastSeqno: 102, LastBlockUtime: 1_700_000_199, ValidatorSetHash: validators.ConfigCellHash}, validators: validators},
+	}
+	accepted := []byte(`{"schema":"tos.openfox.prediction-accepted-wager-three-node.v1","verdict":"PASS"}`)
+	marketID := "sha256:" + strings.Repeat("41", sha256.Size)
+	participants := []string{strings.Repeat("51", sha256.Size), strings.Repeat("52", sha256.Size)}
+	directory := privateTempDir(t)
+	now := time.Unix(1_700_000_200, 0).UTC()
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := acquireRelayJournalLockRoot(root)
+	if err != nil {
+		_ = root.Close()
+		t.Fatal(err)
+	}
+	if _, _, err := persistPredictionEntropyFutureLock(
+		directory, accepted, network, marketID, participants, states, now,
+	); err == nil {
+		t.Error("concurrent Prediction future-lock writer was accepted")
+	}
+	if err := releaseRelayJournalLock(held); err != nil {
+		_ = root.Close()
+		t.Fatal(err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatal(err)
+	}
+	first, firstDigest, err := persistPredictionEntropyFutureLock(
+		directory, accepted, network, marketID, participants, states, now,
+	)
+	if err != nil || first.TargetSeqno != 162 || !validCanonicalSHA256(firstDigest) {
+		t.Fatalf("persist initial future lock: lock=%+v digest=%q err=%v", first, firstDigest, err)
+	}
+	for index := range states {
+		states[index].snapshot.ConsensusSeqno = 999
+		states[index].snapshot.LastSeqno = 1_000 + uint64(index)
+	}
+	restarted, restartedDigest, err := persistPredictionEntropyFutureLock(
+		directory, accepted, network, marketID, participants, states, now.Add(time.Minute),
+	)
+	if err != nil || restarted.TargetSeqno != first.TargetSeqno || restartedDigest != firstDigest {
+		t.Fatalf("restart moved a durable future lock: lock=%+v digest=%q err=%v", restarted, restartedDigest, err)
+	}
+	conflictingParticipants := []string{validators.Validators[0].PublicKey, participants[1]}
+	if _, _, err := persistPredictionEntropyFutureLock(
+		privateTempDir(t), accepted, network, marketID, conflictingParticipants,
+		states[:3], now,
+	); err == nil {
+		t.Fatal("active validator key was accepted as a Prediction entropy participant")
 	}
 }
 
@@ -727,6 +821,265 @@ func validCanonicalSHA256(value string) bool {
 	return err == nil && value == "sha256:"+hex.EncodeToString(raw)
 }
 
+func validNonzeroCanonicalSHA256(value string) bool {
+	return validCanonicalSHA256(value) && canonicalRawHash(strings.TrimPrefix(value, "sha256:"))
+}
+
+func persistPredictionEntropyFutureLock(directory string, acceptedEvidence []byte,
+	network agentrelay.NetworkDomain, marketID string, participantKeys []string,
+	states []predictionEntropyNodeState, now time.Time,
+) (result predictionEntropyFutureLock, digest string, resultErr error) {
+	var zero predictionEntropyFutureLock
+	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory ||
+		len(acceptedEvidence) == 0 || int64(len(acceptedEvidence)) > maxPredictionEntropyEvidenceBytes ||
+		now.IsZero() || now.Unix() <= 0 {
+		return zero, "", errors.New("invalid Prediction future-lock persistence request")
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return zero, "", err
+	}
+	if err := validateRelayJournalDirectorySecurity(directory); err != nil {
+		return zero, "", errors.New("Prediction future-lock directory is not owner-private")
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return zero, "", errors.New("open Prediction future-lock root")
+	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	lock, err := acquireRelayJournalLockRoot(root)
+	if err != nil {
+		return zero, "", err
+	}
+	defer func() { resultErr = errors.Join(resultErr, releaseRelayJournalLock(lock)) }()
+	name := "future-block-lock-" + strings.TrimPrefix(marketID, "sha256:") + ".json"
+	priorRaw, readErr := readPredictionEntropyRootFile(root, name, maxPredictionEntropyEvidenceBytes)
+	if readErr == nil {
+		var prior predictionEntropyFutureLock
+		if decodeStrictJSON(priorRaw, &prior) != nil || validatePredictionEntropyFutureLock(prior) != nil {
+			return zero, "", errors.New("durable Prediction future lock is corrupt")
+		}
+		expectedNetworkDigest, digestErr := agentrelay.NetworkDomainDigest(network)
+		expectedAcceptedDigest := sha256Digest(acceptedEvidence)
+		if digestErr != nil || prior.NetworkDomain != network || prior.NetworkDomainHash != expectedNetworkDigest ||
+			prior.AcceptedWagerEvidenceSHA256 != expectedAcceptedDigest || prior.MarketID != marketID ||
+			!equalPredictionStrings(prior.ParticipantTradingPublicKeys, participantKeys) {
+			return zero, "", errors.New("durable Prediction future lock belongs to different accepted evidence")
+		}
+		return prior, sha256Digest(priorRaw), nil
+	}
+	if !errors.Is(readErr, os.ErrNotExist) {
+		return zero, "", readErr
+	}
+	candidate, err := buildPredictionEntropyFutureLock(
+		acceptedEvidence, network, marketID, participantKeys, states, now,
+	)
+	if err != nil {
+		return zero, "", err
+	}
+	raw, err := json.MarshalIndent(candidate, "", "  ")
+	if err != nil || int64(len(raw)) > maxPredictionEntropyEvidenceBytes {
+		return zero, "", errors.New("Prediction future lock exceeds its encoding bound")
+	}
+	raw = append(raw, '\n')
+	if err := fileutil.WriteFileAtomicRoot(root, name, raw, 0o600); err != nil {
+		return zero, "", err
+	}
+	durable, err := readPredictionEntropyRootFile(root, name, maxPredictionEntropyEvidenceBytes)
+	if err != nil || !bytes.Equal(durable, raw) {
+		return zero, "", errors.New("Prediction future lock did not become durable exactly")
+	}
+	return candidate, sha256Digest(durable), nil
+}
+
+func buildPredictionEntropyFutureLock(acceptedEvidence []byte, network agentrelay.NetworkDomain,
+	marketID string, participantKeys []string, states []predictionEntropyNodeState,
+	now time.Time,
+) (predictionEntropyFutureLock, error) {
+	var result predictionEntropyFutureLock
+	networkDigest, err := agentrelay.NetworkDomainDigest(network)
+	if err != nil || !validNonzeroCanonicalSHA256(marketID) || len(participantKeys) != 2 || len(states) != 3 ||
+		len(acceptedEvidence) == 0 || int64(len(acceptedEvidence)) > maxPredictionEntropyEvidenceBytes ||
+		now.IsZero() || now.Unix() <= 0 {
+		return result, errors.New("invalid Prediction future-lock identity")
+	}
+	participants := append([]string(nil), participantKeys...)
+	if !sort.StringsAreSorted(participants) || participants[0] == participants[1] {
+		return result, errors.New("Prediction future-lock participants must be sorted and unique")
+	}
+	for _, participant := range participants {
+		if !canonicalRawHash(participant) {
+			return result, errors.New("invalid Prediction future-lock participant key")
+		}
+	}
+	validatorSet := states[0].validators
+	if err := validatePredictionEntropyValidatorSet(validatorSet); err != nil {
+		return result, err
+	}
+	validatorSetRaw, err := json.Marshal(validatorSet)
+	if err != nil {
+		return result, errors.New("encode Prediction future-lock validator set")
+	}
+	validatorKeys := make(map[string]struct{}, len(validatorSet.Validators))
+	for _, validator := range validatorSet.Validators {
+		validatorKeys[validator.PublicKey] = struct{}{}
+	}
+	for _, participant := range participants {
+		if _, validator := validatorKeys[participant]; validator {
+			return result, errors.New("Prediction entropy participant is an active validator")
+		}
+	}
+	var anchor uint64
+	previousObserver := ""
+	snapshots := make([]predictionEntropyObserverSnapshot, 0, len(states))
+	for _, state := range states {
+		snapshot := state.snapshot
+		stateValidatorRaw, encodeErr := json.Marshal(state.validators)
+		if encodeErr != nil || !bytes.Equal(stateValidatorRaw, validatorSetRaw) ||
+			!validCanonicalSHA256(snapshot.ObserverID) || snapshot.ObserverID <= previousObserver ||
+			snapshot.ConsensusSeqno == 0 || snapshot.ConsensusSeqno > snapshot.LastSeqno ||
+			snapshot.LastBlockUtime < now.Add(-predictionEntropyPrelockMaxAge).Unix() ||
+			snapshot.LastBlockUtime > now.Add(predictionEntropyPrelockMaxAge).Unix() ||
+			snapshot.ValidatorSetHash != validatorSet.ConfigCellHash {
+			return result, errors.New("invalid Prediction future-lock observer snapshot")
+		}
+		for _, participant := range participants {
+			for _, validator := range state.validators.Validators {
+				if participant == validator.PublicKey {
+					return result, errors.New("Prediction entropy participant is a node-observed active validator")
+				}
+			}
+		}
+		if snapshot.LastSeqno > anchor {
+			anchor = snapshot.LastSeqno
+		}
+		previousObserver = snapshot.ObserverID
+		snapshots = append(snapshots, snapshot)
+	}
+	if anchor == 0 || ^uint64(0)-anchor < predictionEntropyFutureOffset ||
+		validatorSet.UTimeSince > uint64(now.Unix()) ||
+		validatorSet.UTimeUntil <= uint64(now.Add(2*time.Minute).Unix()) {
+		return result, errors.New("Prediction future-lock anchor or validator horizon is unsafe")
+	}
+	result = predictionEntropyFutureLock{
+		Schema: "tos.openfox.prediction-future-block-lock-three-node.v1", Status: "locked",
+		LockedAt:                    now.UTC().Format(time.RFC3339),
+		SelectionRule:               "target-equals-maximum-prelock-observed-tip-plus-frozen-60-block-offset",
+		AcceptedWagerEvidenceSHA256: sha256Digest(acceptedEvidence),
+		NetworkDomain:               network, NetworkDomainHash: networkDigest, MarketID: marketID,
+		ParticipantTradingPublicKeys: participants, ValidatorSet: validatorSet,
+		PrelockObserverSnapshots: snapshots, AnchorLatestObservedSeqno: anchor,
+		TargetOffsetBlocks: predictionEntropyFutureOffset, TargetSeqno: anchor + predictionEntropyFutureOffset,
+	}
+	if err := validatePredictionEntropyFutureLock(result); err != nil {
+		return predictionEntropyFutureLock{}, err
+	}
+	return result, nil
+}
+
+func validatePredictionEntropyFutureLock(value predictionEntropyFutureLock) error {
+	if value.Schema != "tos.openfox.prediction-future-block-lock-three-node.v1" || value.Status != "locked" ||
+		value.SelectionRule != "target-equals-maximum-prelock-observed-tip-plus-frozen-60-block-offset" ||
+		!validCanonicalSHA256(value.AcceptedWagerEvidenceSHA256) ||
+		!validCanonicalSHA256(value.NetworkDomainHash) || !validNonzeroCanonicalSHA256(value.MarketID) ||
+		value.TargetOffsetBlocks != predictionEntropyFutureOffset ||
+		value.AnchorLatestObservedSeqno == 0 ||
+		^uint64(0)-value.AnchorLatestObservedSeqno < value.TargetOffsetBlocks ||
+		value.TargetSeqno != value.AnchorLatestObservedSeqno+value.TargetOffsetBlocks ||
+		len(value.ParticipantTradingPublicKeys) != 2 || len(value.PrelockObserverSnapshots) != 3 {
+		return errors.New("Prediction future lock has invalid bounds")
+	}
+	lockedAt, err := time.Parse(time.RFC3339, value.LockedAt)
+	networkDigest, networkErr := agentrelay.NetworkDomainDigest(value.NetworkDomain)
+	if err != nil || lockedAt.IsZero() || networkErr != nil || networkDigest != value.NetworkDomainHash ||
+		validatePredictionEntropyValidatorSet(value.ValidatorSet) != nil ||
+		value.ValidatorSet.UTimeSince > uint64(lockedAt.Unix()) ||
+		value.ValidatorSet.UTimeUntil <= uint64(lockedAt.Add(2*time.Minute).Unix()) {
+		return errors.New("Prediction future lock has an invalid network, time, or validator set")
+	}
+	if !sort.StringsAreSorted(value.ParticipantTradingPublicKeys) ||
+		value.ParticipantTradingPublicKeys[0] == value.ParticipantTradingPublicKeys[1] {
+		return errors.New("Prediction future lock participant set is invalid")
+	}
+	validators := make(map[string]struct{}, len(value.ValidatorSet.Validators))
+	for _, validator := range value.ValidatorSet.Validators {
+		validators[validator.PublicKey] = struct{}{}
+	}
+	for _, participant := range value.ParticipantTradingPublicKeys {
+		if !canonicalRawHash(participant) {
+			return errors.New("Prediction future lock participant key is invalid")
+		}
+		if _, found := validators[participant]; found {
+			return errors.New("Prediction future lock participant is an active validator")
+		}
+	}
+	var anchor uint64
+	previousObserver := ""
+	for _, snapshot := range value.PrelockObserverSnapshots {
+		if !validCanonicalSHA256(snapshot.ObserverID) || snapshot.ObserverID <= previousObserver ||
+			snapshot.ConsensusSeqno == 0 || snapshot.ConsensusSeqno > snapshot.LastSeqno ||
+			snapshot.LastBlockUtime < lockedAt.Add(-predictionEntropyPrelockMaxAge).Unix() ||
+			snapshot.LastBlockUtime > lockedAt.Add(predictionEntropyPrelockMaxAge).Unix() ||
+			snapshot.ValidatorSetHash != value.ValidatorSet.ConfigCellHash ||
+			snapshot.LastSeqno >= value.TargetSeqno {
+			return errors.New("Prediction future lock observer snapshot is invalid")
+		}
+		if snapshot.LastSeqno > anchor {
+			anchor = snapshot.LastSeqno
+		}
+		previousObserver = snapshot.ObserverID
+	}
+	if anchor != value.AnchorLatestObservedSeqno {
+		return errors.New("Prediction future lock target is not derived from every observer tip")
+	}
+	return nil
+}
+
+func readPredictionEntropyRootFile(root *os.Root, name string, maximum int64) ([]byte, error) {
+	if root == nil || name == "" || filepath.Base(name) != name || maximum <= 0 {
+		return nil, errors.New("invalid rooted Prediction evidence read")
+	}
+	linked, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !linked.Mode().IsRegular() || linked.Mode()&os.ModeSymlink != 0 || linked.Size() <= 0 ||
+		linked.Size() > maximum || linked.Mode().Perm() != 0o600 {
+		return nil, errors.New("Prediction evidence file is not bounded and owner-only")
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(linked, opened) || !opened.Mode().IsRegular() ||
+		opened.Size() != linked.Size() || opened.Mode().Perm() != 0o600 ||
+		validateAuthorityJournalFile(file, linked) != nil {
+		_ = file.Close()
+		return nil, errors.New("Prediction evidence file changed while opening")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	closeErr := file.Close()
+	if err != nil || len(raw) == 0 || int64(len(raw)) != opened.Size() {
+		return nil, errors.New("read bounded Prediction evidence file")
+	}
+	if closeErr != nil {
+		return nil, errors.New("close bounded Prediction evidence file")
+	}
+	return raw, nil
+}
+
+func equalPredictionStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func writePredictionEntropyReport(t *testing.T, report predictionEntropyDistributionReport) {
 	t.Helper()
 	directory := mustEnv(t, "OPENFOX_PREDICTION_EVIDENCE_DIRECTORY")
@@ -748,7 +1101,11 @@ func writePredictionEntropyReport(t *testing.T, report predictionEntropyDistribu
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = root.Close() }()
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close Prediction entropy evidence root: %v", closeErr)
+		}
+	}()
 	name := "future-block-entropy-distribution-three-node.json"
 	if err := fileutil.WriteFileAtomicRoot(root, name, append(raw, '\n'), 0o600); err != nil {
 		t.Fatal(err)

@@ -497,7 +497,11 @@ func acceptanceWritePredictionReport(t *testing.T, report predictionContextAccep
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = root.Close() }()
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close Prediction context evidence root: %v", closeErr)
+		}
+	}()
 	name := "prediction-oracle-context-" + strings.TrimPrefix(report.MarketID, "sha256:") + ".json"
 	if err := fileutil.WriteFileAtomicRoot(root, name, append(raw, '\n'), 0o600); err != nil {
 		t.Fatal(err)

@@ -440,6 +440,31 @@ func (server *SharedAuthorityServer) dispatch(ctx context.Context, grant SharedA
 			return nil, err
 		}
 		return backing.AuthorizeCustodyEffect(input.Action, fields, input.Request, input.Fence, input.Template)
+	case "authorize-prediction-custody-effect":
+		var input struct {
+			Action   commerce.AuthorizedAction                       `json:"action"`
+			Fields   []commerce.SemanticFieldValue                   `json:"fields"`
+			Request  []byte                                          `json:"request"`
+			Fence    commerce.WriterFence                            `json:"fence"`
+			Template commerce.PredictionCustodyEffectAuthorizationV1 `json:"template"`
+		}
+		if err := decodeSharedBody(raw, &input); err != nil {
+			return nil, err
+		}
+		if err := validateFence(input.Fence); err != nil {
+			return nil, err
+		}
+		fields, err := commerce.ImportSemanticFields(input.Action.ActionKind, input.Fields)
+		if err != nil {
+			return nil, err
+		}
+		return backing.AuthorizePredictionCustodyEffect(
+			input.Action,
+			fields,
+			input.Request,
+			input.Fence,
+			input.Template,
+		)
 	case "record-proposal":
 		var input struct {
 			Body             commerce.AgentAgreementBody `json:"body"`
@@ -1138,6 +1163,29 @@ func (client *SharedAuthorityClient) AuthorizeCustodyEffect(action commerce.Auth
 	}{action, wireFields, request, fence, template}, &out)
 	return out, err
 }
+
+func (client *SharedAuthorityClient) AuthorizePredictionCustodyEffect(
+	action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue,
+	request []byte,
+	fence commerce.WriterFence,
+	template commerce.PredictionCustodyEffectAuthorizationV1,
+) (commerce.PredictionCustodyEffectAuthorizationV1, error) {
+	var output commerce.PredictionCustodyEffectAuthorizationV1
+	wireFields, err := commerce.ExportSemanticFields(action.ActionKind, fields)
+	if err != nil {
+		return output, err
+	}
+	err = client.call(context.Background(), "authorize-prediction-custody-effect", struct {
+		Action   commerce.AuthorizedAction                       `json:"action"`
+		Fields   []commerce.SemanticFieldValue                   `json:"fields"`
+		Request  []byte                                          `json:"request"`
+		Fence    commerce.WriterFence                            `json:"fence"`
+		Template commerce.PredictionCustodyEffectAuthorizationV1 `json:"template"`
+	}{action, wireFields, request, fence, template}, &output)
+	return output, err
+}
+
 func (client *SharedAuthorityClient) RecordAgreementProposal(body commerce.AgentAgreementBody, proposer, event, action string) (EngagementRecord, error) {
 	var out EngagementRecord
 	err := client.call(context.Background(), "record-proposal", struct {

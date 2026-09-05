@@ -343,6 +343,79 @@ func (authority *PersonalAuthority) AuthorizeCustodyEffect(action commerce.Autho
 	return commerce.SignCustodyEffectAuthorization(template, authority.key)
 }
 
+// AuthorizePredictionCustodyEffect turns one already prepared Prediction
+// semantic action into a capability for one exact Agent Account V2 checked
+// call. It has a separate wire domain from escrow and never invents Agreement
+// or obligation fields to cross that boundary.
+func (authority *PersonalAuthority) AuthorizePredictionCustodyEffect(
+	action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue,
+	canonicalRequest []byte,
+	fence commerce.WriterFence,
+	template commerce.PredictionCustodyEffectAuthorizationV1,
+) (commerce.PredictionCustodyEffectAuthorizationV1, error) {
+	if authority == nil || commerce.ValidateCustodyNetworkDomain(template.NetworkDomain) != nil ||
+		!commerce.IsPredictionCustodyEffectKind(template.ActionKind) ||
+		template.EffectKind != template.ActionKind {
+		return commerce.PredictionCustodyEffectAuthorizationV1{}, errors.New(
+			"prediction custody effect authority is unavailable",
+		)
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	if err := authority.ensureStorageIdentityLocked(); err != nil {
+		return commerce.PredictionCustodyEffectAuthorizationV1{}, err
+	}
+	now := authority.now().UTC()
+	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
+		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
+		return commerce.PredictionCustodyEffectAuthorizationV1{}, errors.New(
+			"stale writer cannot authorize prediction custody effect",
+		)
+	}
+	resolver := localFenceResolver{
+		authorityID: authority.doc.AuthorityID,
+		key:         authority.key.Public().(ed25519.PublicKey),
+	}
+	if action.ActionKind != template.ActionKind ||
+		commerce.VerifyAuthorizedAction(action, fields, canonicalRequest, fence, resolver, now) != nil {
+		return commerce.PredictionCustodyEffectAuthorizationV1{}, errors.New(
+			"prediction custody effect is not the exact authorized action",
+		)
+	}
+	prior, found := authority.doc.Actions[action.StableActionID]
+	if !found || prior.ExactRequestDigest != action.ExactRequestDigest ||
+		prior.State != commerce.ActionPrepared {
+		return commerce.PredictionCustodyEffectAuthorizationV1{}, errors.New(
+			"prediction custody effect has no prepared authority record",
+		)
+	}
+	fenceDigest, err := commerce.WriterFenceDigest(fence)
+	if err != nil {
+		return commerce.PredictionCustodyEffectAuthorizationV1{}, err
+	}
+	approval := action.ApprovalDigest
+	if approval == "" {
+		approval = zeroSHA256Digest()
+	}
+	template.SchemaVersion = 1
+	template.Profile = commerce.PredictionCustodyEffectProfileV1
+	template.AuthorityID = authority.doc.AuthorityID
+	template.OwnerID = authority.doc.OwnerID
+	template.AgentID = authority.doc.AgentID
+	template.EffectKind = action.ActionKind
+	template.ActionKind = action.ActionKind
+	template.StableActionID = action.StableActionID
+	template.ExactRequestDigest = action.ExactRequestDigest
+	template.WriterGeneration = action.WriterGeneration
+	template.WriterFenceDigest = fenceDigest
+	template.PolicyRevision = action.PolicyRevision
+	template.MandateDigest = action.MandateDigest
+	template.ApprovalDigestOrZero = approval
+	template.ExpiresAtUnix = minUint64(template.ExpiresAtUnix, action.ExpiresAtUnix)
+	return commerce.SignPredictionCustodyEffectAuthorizationV1(template, authority.key)
+}
+
 // exactLivePaidDemandReservation is called while the PersonalAuthority mutex
 // is held at the final accept/fund signing boundary. It reconstructs the
 // profile-specific buyer exposure from the retained Agreement: a caller cannot

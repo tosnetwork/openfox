@@ -111,30 +111,76 @@ and validation.
 
 So this is not a missing-mechanism problem. The money-touching subsystems were
 simply built inside the binary instead of behind a boundary that already
-existed.
+existed. The one genuine gap is the remote transport, which the authorizer
+closes — see the subsection following the table.
 
 | Destination | What belongs there | Why |
 |---|---|---|
 | **Local hermetic MCP** (compute only) | Deterministic matchers, pricing and conservation reference models, canonical encoders | No network, no credentials; the core can recompute the answer independently, so a wrong result is rejected rather than paid |
-| **Remote MCP** | Oracle source adapters, evidence fetching and archiving, market discovery and indexing | Network-heavy, SSRF-exposed, and sources change often; the server carries the network, the core receives content-addressed results |
+| **Remote MCP** | — *currently unavailable, see below* | Rejected at connection time for anything under capability authority |
 | **Skills** | The work the agent actually sells: contract review, translation, OTC quoting, evidence checking | This is what differs between agents, and is exactly what the existing registry and installer are for |
-| **Separate binaries** — *not* extension points | **relay**, **guarantor** | They hold their own journals and keys and play a network role rather than offering an agent capability. Modelling them as extensions would be wrong; they should be independent components sharing the protocol packages |
+| **Separate binaries** — *not* extension points | **relay**, **guarantor**; anything network-facing that a remote MCP would otherwise carry | They hold their own journals and keys and play a network role rather than offering an agent capability. Modelling them as extensions would be wrong; they should be independent components sharing the protocol packages |
 
 The last row is the largest single move available: relay and guarantor together
 are **24,912 lines, 49% of `pkg/earning`**. Removing them from the default link
 set stops every edge agent paying for two roles it does not play.
 
+### Remote MCP is closed today, and local MCP cannot reach the network
+
+An earlier revision of this document routed network-facing work — Oracle source
+adapters, evidence fetching, market discovery and indexing — to a remote MCP
+server. **That destination does not exist for this runtime.** The constraint was
+not checked before it was recommended; it is recorded here so the next plan does
+not repeat it.
+
+The agent loop installs `mcp.CapabilityAuthorizer` unconditionally
+(`pkg/agent/agent_mcp.go:128`), and that authorizer rejects every non-stdio
+transport before a connection is opened
+(`pkg/mcp/capability_authorizer.go:45`):
+
+> `consequential remote MCP is disabled until an authenticated nonce-bound
+> session profile is configured`
+
+The transport layer itself is complete — `pkg/mcp/manager.go` supports `stdio`,
+`sse`, `http` and `streamable-http`, and each of the last three requires a URL
+(`manager.go:422`), meaning a hosted process, an auth story and an availability
+budget. None of that is reachable while the authorizer is in the path.
+
+The remaining local path is narrower than "MCP" suggests. A stdio server must
+satisfy `computeOnlyMCPPermissions` (`capability_authorizer.go:150`), which
+requires the permission manifest to declare **no** process, filesystem,
+network, credential, data-class, disclosure, upload or destructive capability,
+and it runs under the pinned `HermeticMCPRuntimeBindings` sandbox with a fixed
+empty environment. It is a pure-computation box.
+
+So the two destinations divide by whether the work touches the network:
+
+| Work | Local hermetic MCP | Remote MCP | Verdict |
+|---|---|---|---|
+| Deterministic matching, conservation arithmetic, canonical encoding | ✅ compute-only fits exactly | blocked | **Local MCP — available now** |
+| Anything that fetches, serves or indexes over the network | ❌ no network capability | ❌ transport rejected | **Separate `cmd/` binary** |
+
+A separate binary reaches the same goal as the remote MCP recommendation did —
+it keeps the code out of the edge agent's link set — without waiting on the
+session profile and without requiring every owner to operate a server. It is
+also already the recommendation for relay and guarantor, so it adds no new
+mechanism.
+
+This constraint is a property of the current build, not a design position. If
+an authenticated nonce-bound session profile lands, the remote row reopens and
+the network-facing components above become candidates again.
+
 ## Applying this to PredictionMarket
 
-PredictionMarket is not one more feature to place. It spans all three
-destinations, and splitting it correctly is what keeps it from repeating the
-history that produced the 49%.
+PredictionMarket is not one more feature to place. It spans every destination
+above, and splitting it correctly is what keeps it from repeating the history
+that produced the 49%.
 
 | Component | Destination | Reasoning |
 |---|---|---|
-| Deterministic matcher, `quote_match` reference arithmetic, conservation model | Local hermetic MCP | Pure computation. The V1 design already requires an independent reference model for differential testing; that model and this component are the same artifact |
-| Order-book index, search by market / outcome / price / remaining / expiry | Remote MCP | A projection with no authority, and its size grows with the number of markets rather than with the agent |
-| Oracle source adapters, evidence archiving, SSRF controls, challenge watcher | Remote MCP | Source governance changes far more often than the agent; changing a source must not mean rebuilding the binary |
+| Deterministic matcher, `quote_match` reference arithmetic, conservation model | Local hermetic MCP | Pure computation, and the only destination outside the core that is open today. The V1 design already requires an independent reference model for differential testing; that model and this component are the same artifact |
+| Order-book index, search by market / outcome / price / remaining / expiry | Separate `cmd/` binary | A projection with no authority, and its size grows with the number of markets rather than with the agent. Serving it needs the network, so neither MCP destination accepts it |
+| Oracle source adapters, evidence archiving, SSRF controls, challenge watcher | Separate `cmd/` binary | Source governance changes far more often than the agent, and these are **operator role** components: whoever runs a reporter runs the binary. An agent that never reports should not link them |
 | Probability models, betting strategy, risk appetite | Skill | The differentiating part, and precisely the part that should *not* be uniform across agents |
 | Trading-key custody, order authorisation, exposure reservation, exact-BOC submission | **Core** | The V1 design states the threat model as "a fully malicious OpenFox main process must not be able to sign an order on its own." That property only holds if this stays inside the authority boundary |
 
@@ -144,6 +190,32 @@ needs to be in the core. `resolution.report`, `resolution.challenge`,
 `market.compact` and `terminal-surplus.withdraw` are **role** actions belonging
 to oracle operators and keepers. Like relay and guarantor, they should ship as
 separate components rather than in every agent.
+
+### Where it actually landed
+
+As of 2026-09-04, `pkg/prediction` holds 3,157 source lines and 1,302 test
+lines, carrying no feature tag. At `HEAD` nothing imports it yet — the wiring
+into `pkg/earning` is in flight — so it is standalone today and becomes an
+unconditional part of every binary the moment that lands. Three of the four
+files match the table above; one does not.
+
+| File | Lines | Contents | Against the table |
+|---|---:|---|---|
+| `custody.go` | 282 | Trading-key custody, order signing authorisation | ✅ Core |
+| `portfolio.go` | 1,002 | Owner-wide portfolio ledger, exposure reservation | ✅ Core |
+| `relay.go` | 1,079 | Two-hop exact-BOC broadcast and finality resolution | ✅ Core |
+| `book.go` | 705 | Admission, **index and `SearchOrders`**, **`PlanMatch`** | ❌ two non-core components in a core file |
+
+The three core placements are right, and for the stated reason: the V1 threat
+model only holds if signing, exposure and submission stay inside the authority
+boundary. `book.go` is the one to split — it carries both the projection
+(`rebuildSearchIndex`, `indexOrder`, `SearchOrders`) that belongs in a separate
+binary and the deterministic arithmetic (`PlanMatch`, `MatchPlan`) that is the
+one component a local hermetic MCP can host today.
+
+Splitting it at 705 lines, before anything imports the package, is as cheap as
+this move will ever be. The 49% figure above is what the same decision costs
+when it is deferred instead.
 
 ## Sequence
 
@@ -157,9 +229,15 @@ in by the next change.
    gate already exist — only the earning subsystems are outside them.
 2. **Split relay and guarantor into their own `cmd/` binaries**, sharing the
    protocol packages rather than the process.
-3. **Land PredictionMarket distributed across the table above from the start.**
-   Not into `pkg/earning` with an intention to move it later — that intention
-   is how the current 49% accumulated.
+3. **Split `book.go`** into the index projection and the deterministic matcher,
+   and put a feature tag on `pkg/prediction` so an agent that does not trade
+   does not link it. Doing this at 705 lines is the cheapest this move will
+   ever be.
+4. **Keep the rest of PredictionMarket distributed across the table above as it
+   lands** — the Oracle reporter and challenge watcher especially, which are
+   operator roles and have not been written yet. Not into the core with an
+   intention to move them later; that intention is how the current 49%
+   accumulated.
 
 ## What this document does not establish
 
@@ -172,3 +250,10 @@ falsify it.
 The 8,000–10,000 line estimate for the core is a reading of file
 responsibilities, not the result of a compiled dependency cut. The real
 boundary will move once the tags exist.
+
+The first revision of this document assigned network-facing components to a
+remote MCP server without checking whether this runtime can connect to one. It
+cannot. The correction is recorded above rather than quietly edited away,
+because the failure mode is general: a destination table is only as good as the
+authorizer that has to admit each destination, and that authorizer is code, not
+a design intent. Check the gate before routing work through it.

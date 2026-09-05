@@ -63,6 +63,15 @@ type EconomicAuthority interface {
 	reconciliationSnapshot() (uint64, []ExposureReservation, map[string]EngagementRecord)
 }
 
+// PredictionCustodyEffectAuthority is additive so deployments that have not
+// enabled Prediction cannot accidentally gain this signing capability merely
+// by implementing the general EconomicAuthority surface.
+type PredictionCustodyEffectAuthority interface {
+	AuthorizePredictionCustodyEffect(action commerce.AuthorizedAction, fields map[string]commerce.SemanticValue,
+		request []byte, fence commerce.WriterFence, template commerce.PredictionCustodyEffectAuthorizationV1) (
+		commerce.PredictionCustodyEffectAuthorizationV1, error)
+}
+
 // RelaySponsorshipCustodyPurpose is the exact semantic purpose stored by the
 // owner authority when it atomically admits a Provider-funded gas top-up and
 // its maximum-loss hold. Its digest also binds the AuthorizedAction, but that
@@ -109,3 +118,6 @@ var _ EconomicAuthority = (*PersonalAuthority)(nil)
 var _ RelaySponsorshipAdmissionAuthority = (*PersonalAuthority)(nil)
 var _ RelaySponsorshipAdmissionAuthority = (*SharedAuthorityClient)(nil)
 var _ RelaySponsorshipAdmissionAuthority = (*OutcomeRecordingAuthority)(nil)
+var _ PredictionCustodyEffectAuthority = (*PersonalAuthority)(nil)
+var _ PredictionCustodyEffectAuthority = (*SharedAuthorityClient)(nil)
+var _ PredictionCustodyEffectAuthority = (*OutcomeRecordingAuthority)(nil)

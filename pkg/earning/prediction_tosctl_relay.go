@@ -27,6 +27,10 @@ const (
 	tosctlPredictionBounceCreditEvidenceSchema = "tosctl.prediction-relay-bounce-credit-evidence.v1"
 	maximumPredictionSourceTransactions        = 1_000_000
 	maximumPredictionMasterchainBlocks         = 1_000_000
+	// A recovery cursor must remain usable after more than 10,000 later
+	// source or destination transactions. Do not let a deployment knob silently
+	// reduce this safety/liveness boundary below the release requirement.
+	minimumPredictionRecoveryTransactions = 10_001
 )
 
 var (
@@ -533,6 +537,9 @@ func (sink *TOSCTLPaymentSink) validatePredictionDestinationResolver(ctx context
 func (sink *TOSCTLPaymentSink) maximumPredictionTransactions() uint32 {
 	if sink.PredictionMaximumTransactions == 0 {
 		return 100_000
+	}
+	if sink.PredictionMaximumTransactions < minimumPredictionRecoveryTransactions {
+		return minimumPredictionRecoveryTransactions
 	}
 	return sink.PredictionMaximumTransactions
 }

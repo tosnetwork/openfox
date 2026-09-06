@@ -2,6 +2,7 @@ package prediction
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -50,6 +51,40 @@ type ArchiveReceipt struct {
 	StoredAt       uint64                      `json:"stored_at"`
 	RetainUntil    uint64                      `json:"retain_until"`
 	Signature      [ed25519.SignatureSize]byte `json:"signature"`
+}
+
+// ArchiveReceiptSigner keeps archive authority keys outside the evidence
+// replica process. A production implementation is expected to delegate to a
+// Vault/HSM and to return only the public key and a signature over this narrow
+// receipt digest.
+type ArchiveReceiptSigner interface {
+	ArchiveReceiptPublicKey(ctx context.Context) (ed25519.PublicKey, error)
+	SignArchiveReceiptDigest(ctx context.Context, digest [sha256.Size]byte) ([ed25519.SignatureSize]byte, error)
+}
+
+// Ed25519ArchiveReceiptSigner is a local development/test adapter. Production
+// archive replicas should use an ArchiveReceiptSigner backed by Vault or HSM
+// rather than placing an Ed25519 private key in process configuration.
+type Ed25519ArchiveReceiptSigner struct {
+	PrivateKey ed25519.PrivateKey
+}
+
+func (signer Ed25519ArchiveReceiptSigner) ArchiveReceiptPublicKey(context.Context) (ed25519.PublicKey, error) {
+	if len(signer.PrivateKey) != ed25519.PrivateKeySize {
+		return nil, errors.New("archive receipt key is invalid")
+	}
+	return append(ed25519.PublicKey(nil), signer.PrivateKey.Public().(ed25519.PublicKey)...), nil
+}
+
+func (signer Ed25519ArchiveReceiptSigner) SignArchiveReceiptDigest(
+	_ context.Context, digest [sha256.Size]byte,
+) ([ed25519.SignatureSize]byte, error) {
+	if len(signer.PrivateKey) != ed25519.PrivateKeySize {
+		return [ed25519.SignatureSize]byte{}, errors.New("archive receipt key is invalid")
+	}
+	var signature [ed25519.SignatureSize]byte
+	copy(signature[:], ed25519.Sign(signer.PrivateKey, digest[:]))
+	return signature, nil
 }
 
 type ArchivedEvidence struct {
@@ -139,6 +174,32 @@ func SignArchiveReceipt(privateKey ed25519.PrivateKey, contentDigest protocol.Ha
 		return ArchiveReceipt{}, err
 	}
 	copy(receipt.Signature[:], ed25519.Sign(privateKey, digest[:]))
+	return receipt, nil
+}
+
+func signArchiveReceipt(
+	ctx context.Context, signer ArchiveReceiptSigner, receipt ArchiveReceipt,
+) (ArchiveReceipt, error) {
+	if ctx == nil || signer == nil {
+		return ArchiveReceipt{}, errors.New("archive receipt signer is unavailable")
+	}
+	publicKey, err := signer.ArchiveReceiptPublicKey(ctx)
+	if err != nil {
+		return ArchiveReceipt{}, err
+	}
+	operator, err := ArchiveOperatorID(publicKey)
+	if err != nil || operator != receipt.OperatorID {
+		return ArchiveReceipt{}, errors.New("archive receipt signer identity is invalid")
+	}
+	digest, err := archiveReceiptDigest(receipt)
+	if err != nil {
+		return ArchiveReceipt{}, err
+	}
+	signature, err := signer.SignArchiveReceiptDigest(ctx, digest)
+	if err != nil {
+		return ArchiveReceipt{}, err
+	}
+	receipt.Signature = signature
 	return receipt, nil
 }
 

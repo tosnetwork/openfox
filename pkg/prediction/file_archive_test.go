@@ -14,6 +14,26 @@ import (
 	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
 )
 
+type hsmArchiveReceiptTestSigner struct {
+	key          ed25519.PrivateKey
+	publicCalls  int
+	signingCalls int
+}
+
+func (signer *hsmArchiveReceiptTestSigner) ArchiveReceiptPublicKey(context.Context) (ed25519.PublicKey, error) {
+	signer.publicCalls++
+	return append(ed25519.PublicKey(nil), signer.key.Public().(ed25519.PublicKey)...), nil
+}
+
+func (signer *hsmArchiveReceiptTestSigner) SignArchiveReceiptDigest(
+	_ context.Context, digest [sha256.Size]byte,
+) ([ed25519.SignatureSize]byte, error) {
+	signer.signingCalls++
+	var signature [ed25519.SignatureSize]byte
+	copy(signature[:], ed25519.Sign(signer.key, digest[:]))
+	return signature, nil
+}
+
 func fileArchiveTestObject(content string, retainUntil uint64) ArchiveObjectV1 {
 	digest := protocol.Hash32(sha256.Sum256([]byte(content)))
 	return ArchiveObjectV1{
@@ -38,7 +58,7 @@ func openFileArchiveTestReplica(
 		t.Fatal(err)
 	}
 	replica, err := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
-		Directory: directory, SigningKey: key, MaximumObjects: maximumObjects,
+		Directory: directory, Signer: Ed25519ArchiveReceiptSigner{PrivateKey: key}, MaximumObjects: maximumObjects,
 		MaximumObjectBytes: 1024, MaximumContentBytes: maximumBytes,
 		Now: func() time.Time { return time.Unix(20_000, 0).UTC() },
 	})
@@ -84,6 +104,32 @@ func TestFileEvidenceArchivePersistsExactContentAndExtendsRetention(t *testing.T
 	}
 }
 
+func TestFileEvidenceArchiveDelegatesReceiptSigningToHSMBoundary(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	signer := &hsmArchiveReceiptTestSigner{key: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x5a}, ed25519.SeedSize))}
+	replica, err := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
+		Directory: directory, Signer: signer, MaximumObjects: 2, MaximumObjectBytes: 1024,
+		MaximumContentBytes: 2048, Now: func() time.Time { return time.Unix(20_000, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replica.Close()
+	object := fileArchiveTestObject(`{"result":"INVALID"}`, 30_000)
+	if _, err := replica.StorePredictionEvidence(t.Context(), object); err != nil {
+		t.Fatal(err)
+	}
+	if signer.publicCalls < 2 || signer.signingCalls != 1 {
+		t.Fatalf(
+			"archive did not use the external signer boundary: public=%d signing=%d",
+			signer.publicCalls, signer.signingCalls,
+		)
+	}
+}
+
 func TestFileEvidenceArchiveFailsClosedAtObjectAndByteCapacity(t *testing.T) {
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x52}, ed25519.SeedSize))
 	objectLimited := openFileArchiveTestReplica(t, t.TempDir(), key, 1, 4096)
@@ -118,7 +164,7 @@ func TestFileEvidenceArchiveAcceptsItsExactConfiguredObjectMaximum(t *testing.T)
 		t.Fatal(err)
 	}
 	replica, err := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
-		Directory: directory, SigningKey: key, MaximumObjects: 1,
+		Directory: directory, Signer: Ed25519ArchiveReceiptSigner{PrivateKey: key}, MaximumObjects: 1,
 		MaximumObjectBytes:  fileArchiveMaximumObjectBytes,
 		MaximumContentBytes: fileArchiveMaximumObjectBytes,
 		Now:                 func() time.Time { return time.Unix(20_000, 0).UTC() },
@@ -149,7 +195,7 @@ func TestFileEvidenceArchiveRejectsTamperingAndOperatorReplacement(t *testing.T)
 
 	otherKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x54}, ed25519.SeedSize))
 	if replacement, err := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
-		Directory: directory, SigningKey: otherKey, MaximumObjects: 4,
+		Directory: directory, Signer: Ed25519ArchiveReceiptSigner{PrivateKey: otherKey}, MaximumObjects: 4,
 		MaximumObjectBytes: 1024, MaximumContentBytes: 4096,
 	}); err == nil {
 		_ = replacement.Close()
@@ -166,7 +212,7 @@ func TestFileEvidenceArchiveRejectsTamperingAndOperatorReplacement(t *testing.T)
 		t.Fatal(err)
 	}
 	if reopened, err := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
-		Directory: directory, SigningKey: key, MaximumObjects: 4,
+		Directory: directory, Signer: Ed25519ArchiveReceiptSigner{PrivateKey: key}, MaximumObjects: 4,
 		MaximumObjectBytes: 1024, MaximumContentBytes: 4096,
 	}); err == nil {
 		_ = reopened.Close()
@@ -191,7 +237,7 @@ func TestFileEvidenceArchiveRejectsIdentityReplacementWithExistingObjects(t *tes
 	}
 	otherKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x58}, ed25519.SeedSize))
 	if replacement, err := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
-		Directory: directory, SigningKey: otherKey, MaximumObjects: 4,
+		Directory: directory, Signer: Ed25519ArchiveReceiptSigner{PrivateKey: otherKey}, MaximumObjects: 4,
 		MaximumObjectBytes: 1024, MaximumContentBytes: 4096,
 	}); err == nil {
 		_ = replacement.Close()
@@ -218,7 +264,7 @@ func TestFileEvidenceArchivePrunesOnlyPastRetentionAndRestoresCapacity(t *testin
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x59}, ed25519.SeedSize))
 	now := int64(20_000)
 	replica, err := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
-		Directory: directory, SigningKey: key, MaximumObjects: 2,
+		Directory: directory, Signer: Ed25519ArchiveReceiptSigner{PrivateKey: key}, MaximumObjects: 2,
 		MaximumObjectBytes: 1024, MaximumContentBytes: 1024,
 		Now: func() time.Time { return time.Unix(now, 0).UTC() },
 	})

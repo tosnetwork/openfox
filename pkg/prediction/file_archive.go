@@ -3,7 +3,6 @@ package prediction
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -31,7 +30,7 @@ const (
 
 type FileEvidenceArchiveConfig struct {
 	Directory           string
-	SigningKey          ed25519.PrivateKey
+	Signer              ArchiveReceiptSigner
 	MaximumObjects      uint32
 	MaximumObjectBytes  uint64
 	MaximumContentBytes uint64
@@ -60,7 +59,7 @@ type FileEvidenceArchiveReplica struct {
 	mu                  sync.Mutex
 	root                *os.Root
 	lock                *os.File
-	signingKey          ed25519.PrivateKey
+	signer              ArchiveReceiptSigner
 	operatorID          string
 	maximumObjects      uint32
 	maximumObjectBytes  uint64
@@ -75,10 +74,14 @@ func OpenFileEvidenceArchiveReplica(config FileEvidenceArchiveConfig) (*FileEvid
 		config.MaximumObjectBytes == 0 || config.MaximumObjectBytes > fileArchiveMaximumObjectBytes ||
 		config.MaximumContentBytes < config.MaximumObjectBytes ||
 		config.MaximumContentBytes > fileArchiveMaximumTotalBytes ||
-		len(config.SigningKey) != ed25519.PrivateKeySize {
+		config.Signer == nil {
 		return nil, errors.New("prediction file archive configuration is invalid")
 	}
-	operatorID, err := ArchiveOperatorID(config.SigningKey.Public().(ed25519.PublicKey))
+	publicKey, err := config.Signer.ArchiveReceiptPublicKey(context.Background())
+	if err != nil {
+		return nil, errors.New("prediction file archive signer is unavailable")
+	}
+	operatorID, err := ArchiveOperatorID(publicKey)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +99,7 @@ func OpenFileEvidenceArchiveReplica(config FileEvidenceArchiveConfig) (*FileEvid
 		now = time.Now
 	}
 	replica := &FileEvidenceArchiveReplica{
-		root: root, lock: lock, signingKey: append(ed25519.PrivateKey(nil), config.SigningKey...),
+		root: root, lock: lock, signer: config.Signer,
 		operatorID: operatorID, maximumObjects: config.MaximumObjects,
 		maximumObjectBytes: config.MaximumObjectBytes, maximumContentBytes: config.MaximumContentBytes,
 		now: now,
@@ -118,13 +121,11 @@ func (replica *FileEvidenceArchiveReplica) Close() error {
 	if replica.lock == nil {
 		return nil
 	}
-	for index := range replica.signingKey {
-		replica.signingKey[index] = 0
-	}
 	rootErr := replica.root.Close()
 	lockErr := releaseBookLock(replica.lock)
 	replica.root = nil
 	replica.lock = nil
+	replica.signer = nil
 	return errors.Join(rootErr, lockErr)
 }
 
@@ -166,9 +167,8 @@ func (replica *FileEvidenceArchiveReplica) StorePredictionEvidence(
 				return ArchiveReceipt{}, err
 			}
 		}
-		return SignArchiveReceipt(
-			replica.signingKey, object.ContentDigest, object.ArchiveLocator,
-			uint64(now.Unix()), prior.RetainUntil,
+		return replica.signReceipt(
+			ctx, object.ContentDigest, object.ArchiveLocator, uint64(now.Unix()), prior.RetainUntil,
 		)
 	}
 	nextBytes, ok := add64(replica.contentBytes, uint64(len(object.Content)))
@@ -187,10 +187,16 @@ func (replica *FileEvidenceArchiveReplica) StorePredictionEvidence(
 	if err := replica.persistObject(name, envelope); err != nil {
 		return ArchiveReceipt{}, err
 	}
-	return SignArchiveReceipt(
-		replica.signingKey, object.ContentDigest, object.ArchiveLocator,
-		uint64(now.Unix()), object.RetainUntil,
-	)
+	return replica.signReceipt(ctx, object.ContentDigest, object.ArchiveLocator, uint64(now.Unix()), object.RetainUntil)
+}
+
+func (replica *FileEvidenceArchiveReplica) signReceipt(
+	ctx context.Context, contentDigest protocol.Hash32, locator string, storedAt, retainUntil uint64,
+) (ArchiveReceipt, error) {
+	return signArchiveReceipt(ctx, replica.signer, ArchiveReceipt{
+		OperatorID: replica.operatorID, ContentDigest: contentDigest, ArchiveLocator: locator,
+		StoredAt: storedAt, RetainUntil: retainUntil,
+	})
 }
 
 func (replica *FileEvidenceArchiveReplica) LoadPredictionEvidence(

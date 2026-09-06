@@ -165,7 +165,7 @@ func TestOracleEvidenceAcquisitionUsesTwoDurableFileReplicas(t *testing.T) {
 			t.Fatal(chmodErr)
 		}
 		replica, openErr := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
-			Directory: directory, SigningKey: keys[index], MaximumObjects: 8,
+			Directory: directory, Signer: Ed25519ArchiveReceiptSigner{PrivateKey: keys[index]}, MaximumObjects: 8,
 			MaximumObjectBytes: 4096, MaximumContentBytes: 32 << 10,
 			Now: func() time.Time { return time.Unix(10_950, 0).UTC() },
 		})
@@ -190,7 +190,9 @@ func TestOracleEvidenceAcquisitionUsesTwoDurableFileReplicas(t *testing.T) {
 			t.Fatal(closeReplicaErr)
 		}
 		reopened, openErr := OpenFileEvidenceArchiveReplica(FileEvidenceArchiveConfig{
-			Directory: directories[index], SigningKey: keys[index], MaximumObjects: 8,
+			Directory:          directories[index],
+			Signer:             Ed25519ArchiveReceiptSigner{PrivateKey: keys[index]},
+			MaximumObjects:     8,
 			MaximumObjectBytes: 4096, MaximumContentBytes: 32 << 10,
 		})
 		if openErr != nil {

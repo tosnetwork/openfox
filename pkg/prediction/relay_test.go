@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,7 +83,9 @@ type relayFixture struct {
 }
 
 func newRelayFixture(t *testing.T) relayFixture {
-	t.Helper()
+	if t != nil {
+		t.Helper()
+	}
 	digest := func(prefix, value string) string { return prefix + strings.Repeat(value, 64) }
 	sourceAddress := "0:" + strings.Repeat("1", 64)
 	marketAddress := "0:" + strings.Repeat("2", 64)
@@ -102,7 +106,10 @@ func newRelayFixture(t *testing.T) relayFixture {
 		"prediction.match.submit", actionID, marketAddress, 10_000_000, body.ToBOCWithFlags(false),
 	)
 	if err != nil {
-		t.Fatal(err)
+		if t != nil {
+			t.Fatal(err)
+		}
+		panic(err)
 	}
 	checkpoint := BlockIdentity{
 		WorkchainID: -1, Shard: -1, SequenceNumber: 100,
@@ -272,6 +279,130 @@ func TestPredictionRelayBroadcastCrashWindowAndSourceFinalBoundary(t *testing.T)
 	if _, err := journal.BeginOrResumeExactBroadcast(t.Context(), fixture.actionID, resumed); err == nil ||
 		len(resumed.calls) != 1 {
 		t.Fatal("source-final exact BOC was rebroadcast")
+	}
+}
+
+// TestPredictionRelayProcessCrashHelper is re-executed by
+// TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries.  It uses
+// os.Exit rather than Close: the parent must therefore recover the on-disk
+// journal exactly as a supervisor would after an ungraceful process death.
+func TestPredictionRelayProcessCrashHelper(t *testing.T) {
+	if os.Getenv("OPENFOX_PREDICTION_RELAY_CRASH_HELPER") != "1" {
+		return
+	}
+	phase := os.Getenv("OPENFOX_PREDICTION_RELAY_CRASH_PHASE")
+	directory := os.Getenv("OPENFOX_PREDICTION_RELAY_CRASH_DIRECTORY")
+	fixture := newRelayFixture(nil)
+	journal, err := OpenPredictionRelayJournal(directory, fixture.profile)
+	if err != nil {
+		t.Fatalf("child open journal: %v", err)
+	}
+	switch phase {
+	case "signed":
+		// The signed record was fsync'd before this independently started
+		// process observed it.  Dying here exercises durable read recovery.
+	case "broadcasting":
+		if _, err := journal.BeginOrResumeExactBroadcast(t.Context(), fixture.actionID, &relayTestBroadcaster{}); err != nil {
+			t.Fatalf("child broadcast: %v", err)
+		}
+	case "source-finalized":
+		if _, err := journal.ResolveSource(t.Context(), fixture.actionID, fixture.source, &relayTestVerifier{}); err != nil {
+			t.Fatalf("child source resolve: %v", err)
+		}
+	case "destination-resolving":
+		if _, err := journal.ResolveDestination(
+			t.Context(), fixture.actionID, fixture.destination, &relayTestVerifier{},
+		); err != nil {
+			t.Fatalf("child destination resolve: %v", err)
+		}
+	default:
+		t.Fatalf("unknown process-crash phase %q", phase)
+	}
+	// Deliberately bypass all defers and journal.Close(). The preceding public
+	// operation has already atomically persisted its state.
+	os.Exit(86)
+}
+
+func runRelayProcessCrash(t *testing.T, directory, phase string) {
+	t.Helper()
+	command := exec.Command(os.Args[0], "-test.run=^TestPredictionRelayProcessCrashHelper$")
+	command.Env = append(os.Environ(),
+		"OPENFOX_PREDICTION_RELAY_CRASH_HELPER=1",
+		"OPENFOX_PREDICTION_RELAY_CRASH_PHASE="+phase,
+		"OPENFOX_PREDICTION_RELAY_CRASH_DIRECTORY="+directory,
+	)
+	err := command.Run()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 86 {
+		t.Fatalf("%s crash helper did not die at the requested boundary: %v", phase, err)
+	}
+}
+
+// TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries proves that
+// the persisted state is usable after the operating system kills the relay
+// process at every externally visible journal boundary.  The source-finalized
+// and destination-resolving cases also prove that recovery never broadcasts a
+// BOC again after chain evidence has become durable.
+func TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries(t *testing.T) {
+	for _, phase := range []struct {
+		name  string
+		state RelayState
+	}{
+		{name: "signed", state: RelaySigned},
+		{name: "broadcasting", state: RelayBroadcasting},
+		{name: "source-finalized", state: RelaySourceFinalized},
+		{name: "destination-resolving", state: RelayDestinationCommitted},
+	} {
+		t.Run(phase.name, func(t *testing.T) {
+			fixture := newRelayFixture(t)
+			directory := filepath.Join(t.TempDir(), "relay")
+			journal := openRelayFixture(t, fixture, directory)
+			if _, err := journal.Prepare(
+				fixture.actionID, fixture.signedBOC, fixture.expected, fixture.cursor, fixture.checkpoint,
+			); err != nil {
+				t.Fatal(err)
+			}
+			if phase.name == "source-finalized" || phase.name == "destination-resolving" {
+				if _, err := journal.BeginOrResumeExactBroadcast(
+					t.Context(), fixture.actionID, &relayTestBroadcaster{},
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if phase.name == "destination-resolving" {
+				if _, err := journal.ResolveSource(
+					t.Context(), fixture.actionID, fixture.source, &relayTestVerifier{},
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := journal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			runRelayProcessCrash(t, directory, phase.name)
+			restarted, err := OpenPredictionRelayJournal(directory, fixture.profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer restarted.Close()
+			recovered, found := restarted.Get(fixture.actionID)
+			if !found || recovered.State != phase.state {
+				t.Fatalf("recovery after %s process death: %#v", phase.name, recovered)
+			}
+			if phase.name == "broadcasting" {
+				resumed := &relayTestBroadcaster{}
+				if _, err := restarted.BeginOrResumeExactBroadcast(t.Context(), fixture.actionID, resumed); err != nil ||
+					len(resumed.calls) != 1 || !bytes.Equal(resumed.calls[0], fixture.signedBOC) {
+					t.Fatalf("broadcast recovery did not resend the durable exact BOC: %v", err)
+				}
+			}
+			if phase.name == "source-finalized" || phase.name == "destination-resolving" {
+				if _, err := restarted.BeginOrResumeExactBroadcast(
+					t.Context(), fixture.actionID, &relayTestBroadcaster{},
+				); err == nil {
+					t.Fatalf("recovery after %s process death rebroadcast a final action", phase.name)
+				}
+			}
+		})
 	}
 }
 

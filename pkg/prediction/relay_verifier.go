@@ -97,7 +97,9 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionDestina
 		evidence.NextDestinationCursor.LastTransactionHash != evidence.TransactionHash {
 		return errors.New("prediction destination transaction identity is invalid")
 	}
-	if messageErr := verifyDeclaredPredictionMessage(tx.IO.In, rawMessages.inbound, *record.ActualOutbound); messageErr != nil {
+	if messageErr := verifyDeclaredPredictionMessage(
+		tx.IO.In, rawMessages.inbound, *record.ActualOutbound,
+	); messageErr != nil {
 		return fmt.Errorf("verify prediction destination inbound: %w", messageErr)
 	}
 	ordinary, ok := predictionOrdinary(tx)

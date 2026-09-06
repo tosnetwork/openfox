@@ -346,11 +346,12 @@ func TestPredictionRelayDestinationThreeNodeProcessDeathReleaseGate(t *testing.T
 		t.Fatal(closeErr)
 	}
 	command := exec.Command(os.Args[0], "-test.run=^TestPredictionRelayDestinationThreeNodeProcessDeathReleaseGate$")
+	childInput := mustEnv(t, "OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_INPUT")
 	command.Env = append(
 		os.Environ(),
 		predictionRelayCrashThreeNodeGate+"=1",
 		"OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_CHILD=1",
-		"OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_INPUT="+mustEnv(t, "OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_INPUT"),
+		"OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_INPUT="+childInput,
 		"OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_DIRECTORY="+directory,
 	)
 	output, err := command.CombinedOutput()

@@ -361,8 +361,9 @@ func TestPredictionRelayProcessCrashHelper(t *testing.T) {
 		}
 	case "bounce-resolving":
 		failure := relayFixtureBounceDestination(fixture)
+		bounce := relayFixtureBounceCredit(fixture, *failure.BounceMessage)
 		_, resolveErr := journal.ResolveBounceCredit(
-			t.Context(), fixture.actionID, relayFixtureBounceCredit(fixture, *failure.BounceMessage), &relayTestVerifier{},
+			t.Context(), fixture.actionID, bounce, &relayTestVerifier{},
 		)
 		if resolveErr != nil {
 			t.Fatalf("child bounce resolve: %v", resolveErr)

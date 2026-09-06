@@ -302,7 +302,9 @@ func TestPredictionRelayProcessCrashHelper(t *testing.T) {
 		// The signed record was fsync'd before this independently started
 		// process observed it.  Dying here exercises durable read recovery.
 	case "broadcasting":
-		if _, err := journal.BeginOrResumeExactBroadcast(t.Context(), fixture.actionID, &relayTestBroadcaster{}); err != nil {
+		if _, err := journal.BeginOrResumeExactBroadcast(
+			t.Context(), fixture.actionID, &relayTestBroadcaster{},
+		); err != nil {
 			t.Fatalf("child broadcast: %v", err)
 		}
 	case "source-finalized":

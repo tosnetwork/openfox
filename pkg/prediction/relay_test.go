@@ -183,6 +183,46 @@ func openRelayFixture(t *testing.T, fixture relayFixture, directory string) *Pre
 	return journal
 }
 
+func relayFixtureBounceDestination(fixture relayFixture) DestinationTransactionEvidence {
+	richBody := cell.BeginCell().MustStoreUInt(0xfffffffe, 32).MustStoreUInt(0x504d0001, 32).EndCell()
+	bounceCell := cell.BeginCell().MustStoreUInt(0x704, 12).MustStoreRef(richBody).EndCell()
+	bounce := ChainObservedMessage{
+		MessageHash:     cellDigest(bounceCell),
+		ExactMessageBOC: base64.StdEncoding.EncodeToString(bounceCell.ToBOCWithFlags(false)),
+		SourceAddress:   fixture.profile.MarketAddress, DestinationAddress: fixture.profile.SourceAgentAccount,
+		ValueNanoTOS:  fixture.expected.ValueNanoTOS - 1000,
+		BodyBOCBase64: base64.StdEncoding.EncodeToString(richBody.ToBOCWithFlags(false)),
+		BodyHash:      cellDigest(richBody), Bounced: true,
+	}
+	failure := fixture.destination
+	failure.Aborted, failure.ComputeSuccess, failure.ActionSuccess, failure.OpcodeSuccess = true, false, false, false
+	failure.SuccessPredicateDigest = ""
+	failure.BounceMessage = &bounce
+	failure.RichBounceEnvelopeHash = bounce.BodyHash
+	failure.RichBounceOriginalBodyHash = fixture.expected.BodyHash
+	return failure
+}
+
+func relayFixtureBounceCredit(fixture relayFixture, bounce ChainObservedMessage) BounceCreditEvidence {
+	creditCell := cell.BeginCell().MustStoreUInt(0x705, 12).EndCell()
+	return BounceCreditEvidence{
+		InboundBounceMessageHash: bounce.MessageHash,
+		TransactionHash:          "sha256:" + hex.EncodeToString(creditCell.Hash()),
+		TransactionBOCBase64:     base64.StdEncoding.EncodeToString(creditCell.ToBOCWithFlags(false)),
+		Block: BlockIdentity{
+			WorkchainID: -1, Shard: -1, SequenceNumber: 53,
+			RootHash: "sha256:" + strings.Repeat("a", 64), FileHash: "sha256:" + strings.Repeat("b", 64),
+			MasterchainSequence: 104,
+		},
+		Finality: fixture.destination.Finality,
+		NextSourceCursor: AccountCursor{
+			AccountAddress: fixture.profile.SourceAgentAccount, LastLogicalTime: 140,
+			LastTransactionHash: "sha256:" + strings.Repeat("c", 64),
+		},
+		CreditedValueNanoTOS: bounce.ValueNanoTOS,
+	}
+}
+
 func TestPredictionRelayProfileCapsObserverMemory(t *testing.T) {
 	fixture := newRelayFixture(t)
 	fixture.profile.ObserverIDs = make([]string, 65)
@@ -283,9 +323,9 @@ func TestPredictionRelayBroadcastCrashWindowAndSourceFinalBoundary(t *testing.T)
 }
 
 // TestPredictionRelayProcessCrashHelper is re-executed by
-// TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries.  It uses
-// os.Exit rather than Close: the parent must therefore recover the on-disk
-// journal exactly as a supervisor would after an ungraceful process death.
+// TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries. It is
+// killed without Close or deferred cleanup: the parent must recover the
+// on-disk journal exactly as a supervisor would after an ungraceful death.
 func TestPredictionRelayProcessCrashHelper(t *testing.T) {
 	if os.Getenv("OPENFOX_PREDICTION_RELAY_CRASH_HELPER") != "1" {
 		return
@@ -302,29 +342,47 @@ func TestPredictionRelayProcessCrashHelper(t *testing.T) {
 		// The signed record was fsync'd before this independently started
 		// process observed it.  Dying here exercises durable read recovery.
 	case "broadcasting":
-		if _, err := journal.BeginOrResumeExactBroadcast(
+		if _, broadcastErr := journal.BeginOrResumeExactBroadcast(
 			t.Context(), fixture.actionID, &relayTestBroadcaster{},
-		); err != nil {
-			t.Fatalf("child broadcast: %v", err)
+		); broadcastErr != nil {
+			t.Fatalf("child broadcast: %v", broadcastErr)
 		}
 	case "source-finalized":
-		if _, err := journal.ResolveSource(
+		if _, sourceErr := journal.ResolveSource(
 			t.Context(), fixture.actionID, fixture.source, &relayTestVerifier{},
-		); err != nil {
-			t.Fatalf("child source resolve: %v", err)
+		); sourceErr != nil {
+			t.Fatalf("child source resolve: %v", sourceErr)
 		}
 	case "destination-resolving":
-		if _, err := journal.ResolveDestination(
+		if _, destinationErr := journal.ResolveDestination(
 			t.Context(), fixture.actionID, fixture.destination, &relayTestVerifier{},
-		); err != nil {
-			t.Fatalf("child destination resolve: %v", err)
+		); destinationErr != nil {
+			t.Fatalf("child destination resolve: %v", destinationErr)
+		}
+	case "bounce-resolving":
+		failure := relayFixtureBounceDestination(fixture)
+		bounce := relayFixtureBounceCredit(fixture, *failure.BounceMessage)
+		_, resolveErr := journal.ResolveBounceCredit(
+			t.Context(), fixture.actionID, bounce, &relayTestVerifier{},
+		)
+		if resolveErr != nil {
+			t.Fatalf("child bounce resolve: %v", resolveErr)
 		}
 	default:
 		t.Fatalf("unknown process-crash phase %q", phase)
 	}
 	// Deliberately bypass all defers and journal.Close(). The preceding public
-	// operation has already atomically persisted its state.
-	os.Exit(86)
+	// operation has already atomically persisted its state. A process cannot
+	// handle its own Kill, so this is an actual forced process death, not a
+	// graceful test return or an os.Exit cleanup shortcut.
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("locate crash helper: %v", err)
+	}
+	if err := process.Kill(); err != nil {
+		t.Fatalf("force kill crash helper: %v", err)
+	}
+	select {}
 }
 
 func runRelayProcessCrash(t *testing.T, directory, phase string) {
@@ -336,8 +394,8 @@ func runRelayProcessCrash(t *testing.T, directory, phase string) {
 		"OPENFOX_PREDICTION_RELAY_CRASH_DIRECTORY="+directory,
 	)
 	err := command.Run()
-	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 86 {
-		t.Fatalf("%s crash helper did not die at the requested boundary: %v", phase, err)
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != -1 {
+		t.Fatalf("%s crash helper was not force-killed at the requested boundary: %v", phase, err)
 	}
 }
 
@@ -355,6 +413,7 @@ func TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries(t *testing.T
 		{name: "broadcasting", state: RelayBroadcasting},
 		{name: "source-finalized", state: RelaySourceFinalized},
 		{name: "destination-resolving", state: RelayDestinationCommitted},
+		{name: "bounce-resolving", state: RelayBounceCreditedAtAgent},
 	} {
 		t.Run(phase.name, func(t *testing.T) {
 			fixture := newRelayFixture(t)
@@ -365,16 +424,26 @@ func TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries(t *testing.T
 			); err != nil {
 				t.Fatal(err)
 			}
-			if phase.name == "source-finalized" || phase.name == "destination-resolving" {
+			needsBroadcast := phase.name == "source-finalized" ||
+				phase.name == "destination-resolving" || phase.name == "bounce-resolving"
+			if needsBroadcast {
 				if _, err := journal.BeginOrResumeExactBroadcast(
 					t.Context(), fixture.actionID, &relayTestBroadcaster{},
 				); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if phase.name == "destination-resolving" {
+			if phase.name == "destination-resolving" || phase.name == "bounce-resolving" {
 				if _, err := journal.ResolveSource(
 					t.Context(), fixture.actionID, fixture.source, &relayTestVerifier{},
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if phase.name == "bounce-resolving" {
+				failure := relayFixtureBounceDestination(fixture)
+				if _, err := journal.ResolveDestination(
+					t.Context(), fixture.actionID, failure, &relayTestVerifier{},
 				); err != nil {
 					t.Fatal(err)
 				}
@@ -401,7 +470,9 @@ func TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries(t *testing.T
 					t.Fatalf("broadcast recovery did not resend the durable exact BOC: %v", err)
 				}
 			}
-			if phase.name == "source-finalized" || phase.name == "destination-resolving" {
+			isFinalPhase := phase.name == "source-finalized" ||
+				phase.name == "destination-resolving" || phase.name == "bounce-resolving"
+			if isFinalPhase {
 				if _, err := restarted.BeginOrResumeExactBroadcast(
 					t.Context(), fixture.actionID, &relayTestBroadcaster{},
 				); err == nil {

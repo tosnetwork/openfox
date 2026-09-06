@@ -186,7 +186,11 @@ func (signer *VaultTransitArchiveReceiptSigner) doJSON(request *http.Request, re
 		canonicalMediaType(response.Header.Get("Content-Type")) != "application/json" {
 		return errors.New("Vault Transit rejected archive signer request")
 	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maximumVaultTransitReplyBytes+1))
+	payload, err := io.ReadAll(io.LimitReader(response.Body, maximumVaultTransitReplyBytes+1))
+	if err != nil || len(payload) > maximumVaultTransitReplyBytes {
+		return errors.New("Vault Transit response exceeds its bound")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	if err := decoder.Decode(result); err != nil {
 		return err
 	}

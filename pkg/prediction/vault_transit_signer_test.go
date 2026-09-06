@@ -159,6 +159,27 @@ func TestVaultTransitArchiveReceiptSignerRejectsUnsafeConfigurationAndResponses(
 	}
 }
 
+func TestVaultTransitArchiveReceiptSignerRejectsOversizeReply(t *testing.T) {
+	key := ed25519.NewKeyFromSeed(vaultSignerTestBytes(0x75, ed25519.SeedSize))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"data":{"type":"ed25519","keys":{`))
+		_, _ = writer.Write(bytes.Repeat([]byte{' '}, maximumVaultTransitReplyBytes))
+		_, _ = writer.Write([]byte(`}}}`))
+	}))
+	defer server.Close()
+	signer, err := newVaultTransitArchiveReceiptSigner(VaultTransitArchiveReceiptSignerConfig{
+		Address: server.URL, Token: "token", TransitMount: "transit", KeyName: "key", KeyVersion: 1,
+		ExpectedPublicKey: key.Public().(ed25519.PublicKey),
+	}, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := signer.ArchiveReceiptPublicKey(t.Context()); err == nil {
+		t.Fatal("oversize Vault response was accepted")
+	}
+}
+
 func vaultSignerTestBytes(value byte, count int) []byte {
 	return bytes.Repeat([]byte{value}, count)
 }

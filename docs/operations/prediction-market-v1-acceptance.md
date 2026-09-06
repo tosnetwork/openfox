@@ -239,6 +239,40 @@ derived from the key returned by the signer at both initialization and signing
 time, so a signer cannot silently rotate identity underneath a running
 replica.
 
+### Vault Transit receipt signer
+
+`VaultTransitArchiveReceiptSigner` is the production adapter for an Ed25519
+Vault Transit key. Its configuration pins the HTTPS Vault origin, Transit mount,
+key name, immutable key version, and the expected 32-byte public key. It reads
+the configured key version before archive initialization and verifies every
+returned signature locally over the exact 32-byte archive-receipt digest.
+Consequently a route change, key rotation, wrong key type, malformed response,
+or signature from any other key fails closed rather than changing an archive
+authority identity.
+
+The Vault capability is process-secret input; do not put its token in a market
+profile, OpenFox configuration file, report, evidence object, or command line.
+For each replica, provision a distinct short-lived authenticated token with
+only these paths (replace the mount and key literally; do not grant wildcards):
+
+```hcl
+path "transit/keys/oracle-replica-a" {
+  capabilities = ["read"]
+}
+path "transit/sign/oracle-replica-a" {
+  capabilities = ["update"]
+}
+```
+
+Transit receives the SHA-256 receipt digest as the ordinary Ed25519 message;
+the adapter does not request `prehashed`/Ed25519ph semantics, because the
+protocol verifies ordinary Ed25519 signatures over that digest. Configure an
+HTTPS endpoint with normal certificate validation and a non-exportable Transit
+Ed25519 key. Separate replicas need distinct Transit keys, credentials,
+operators, storage roots, and failure domains. Two signers or two directories
+under one operator are development evidence only, not independent archival
+availability.
+
 Retention can only increase while an object exists. Pruning removes an object
 only after its inclusive `retain_until` boundary is in the past, synchronizes
 the rooted directory, and only then releases in-memory capacity. Operators

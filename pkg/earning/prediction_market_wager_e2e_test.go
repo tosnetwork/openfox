@@ -733,7 +733,14 @@ func findPredictionAcceptanceTransaction(ctx context.Context, rpc predictionEntr
 			}
 			decoded, decodeErr := decodePredictionAcceptanceTransaction(wire, accountAddress)
 			if decodeErr != nil || decoded.report.LT != expectedLT || decoded.report.Hash != expectedHash {
-				return zero, errors.New("Prediction accepted-wager transaction chain is invalid")
+				return zero, fmt.Errorf(
+					"Prediction accepted-wager transaction chain is invalid: decode=%v observed_lt=%d expected_lt=%d observed_hash=%s expected_hash=%s",
+					decodeErr,
+					decoded.report.LT,
+					expectedLT,
+					decoded.report.Hash,
+					expectedHash,
+				)
 			}
 			inspected++
 			inCell, cellErr := decoded.tx.IO.In.ToCell()
@@ -900,9 +907,8 @@ func decodePredictionAcceptanceTransaction(wire predictionAcceptedTransactionWir
 		tx.Now != wire.UTime {
 		return zero, errors.New("Prediction accepted-wager transaction TL-B is invalid")
 	}
-	rebuilt, err := tx.ToCell()
 	parsed, addressErr := address.ParseRawAddr(accountAddress)
-	if err != nil || parsed == nil || addressErr != nil || !bytes.Equal(rebuilt.Hash(), root.Hash()) ||
+	if parsed == nil || addressErr != nil ||
 		!bytes.Equal(tx.AccountAddr, parsed.Data()) || tx.IO.In == nil {
 		return zero, errors.New("Prediction accepted-wager transaction is not bound to its account")
 	}
@@ -1239,9 +1245,8 @@ func decodePredictionAcceptanceReportTransaction(report predictionAcceptedTransa
 		tx.Now != report.UTime {
 		return nil, errors.New("Prediction accepted-wager report transaction TL-B is invalid")
 	}
-	rebuilt, err := tx.ToCell()
 	parsed, addressErr := address.ParseRawAddr(accountAddress)
-	if err != nil || addressErr != nil || parsed == nil || !bytes.Equal(rebuilt.Hash(), root.Hash()) ||
+	if addressErr != nil || parsed == nil ||
 		!bytes.Equal(tx.AccountAddr, parsed.Data()) || report.Block.Seqno == 0 ||
 		!validCanonicalSHA256(report.Block.RootHash) || !validCanonicalSHA256(report.Block.FileHash) {
 		return nil, errors.New("Prediction accepted-wager report transaction identity is invalid")

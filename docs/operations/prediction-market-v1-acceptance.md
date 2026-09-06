@@ -50,6 +50,11 @@ OPENFOX_PREDICTION_EVIDENCE_DIRECTORY=/absolute/owner-private/evidence
 OPENFOX_PREDICTION_VAULT_URL=<operator-provided vault capability, when tosctl requires it>
 ```
 
+`OPENFOX_PREDICTION_TEST_MAX_CLOCK_SKEW_SECONDS` is deliberately absent from
+the release configuration. It is a test-only, 120–3600 second override for an
+accelerated localnet whose virtual block timestamps run ahead of wall time;
+the default release freshness bound remains 120 seconds.
+
 For the production relay profile, additionally set:
 
 ```text
@@ -210,7 +215,7 @@ GOWORK=off go test ./pkg/earning \
 The default source profile is deliberately named `direct-wallet-contract-probe`
 in the accepted report. The source wallet directly submitted the match call, so
 that default proves contract execution, transaction provenance, accounting, and
-one post-acceptance future NO reveal, but not the production relay path. Only
+one post-acceptance future-block reveal, but not the production relay path. Only
 the explicit `agent-account-checked-call-v2` profile can claim the Agent Account
 source boundary; it still requires separate durable-journal crash evidence.
 

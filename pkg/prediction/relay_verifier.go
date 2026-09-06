@@ -136,7 +136,10 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionDestina
 		}
 		matches := 0
 		for index := range outputs {
-			if verifyDeclaredPredictionMessage(outputs[index].parsed, outputs[index].raw, *evidence.BounceMessage) == nil &&
+			messageErr := verifyDeclaredPredictionMessage(
+				outputs[index].parsed, outputs[index].raw, *evidence.BounceMessage,
+			)
+			if messageErr == nil &&
 				verifyPredictionRichBounce(ordinary, tx.IO.In.AsInternal(), outputs[index].parsed.AsInternal()) == nil {
 				matches++
 			}

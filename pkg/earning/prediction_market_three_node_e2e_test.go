@@ -437,8 +437,10 @@ func openPredictionRelayCrashThreeNode(t *testing.T, input predictionRelayCrashT
 		}
 		raw, err := sink.run(ctx, []string{
 			"agent", "account", "prediction-relay-profile", "--network-id", network.NetworkID,
-			"--global-id", strconv.FormatInt(int64(network.GlobalID), 10), "--zero-state-root-hash", network.ZeroStateRootHash,
-			"--zero-state-file-hash", network.ZeroStateFileHash, "--workchain-id", strconv.FormatInt(int64(network.WorkchainID), 10),
+			"--global-id", strconv.FormatInt(int64(network.GlobalID), 10),
+			"--zero-state-root-hash", network.ZeroStateRootHash,
+			"--zero-state-file-hash", network.ZeroStateFileHash,
+			"--workchain-id", strconv.FormatInt(int64(network.WorkchainID), 10),
 			"--quorum-config", input.QuorumConfigs[0], input.QuorumConfigs[1], "-c", config,
 		})
 		if err != nil {

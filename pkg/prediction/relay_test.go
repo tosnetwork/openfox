@@ -424,7 +424,9 @@ func TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries(t *testing.T
 			); err != nil {
 				t.Fatal(err)
 			}
-			if phase.name == "source-finalized" || phase.name == "destination-resolving" || phase.name == "bounce-resolving" {
+			needsBroadcast := phase.name == "source-finalized" ||
+				phase.name == "destination-resolving" || phase.name == "bounce-resolving"
+			if needsBroadcast {
 				if _, err := journal.BeginOrResumeExactBroadcast(
 					t.Context(), fixture.actionID, &relayTestBroadcaster{},
 				); err != nil {

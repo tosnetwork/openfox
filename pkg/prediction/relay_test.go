@@ -342,22 +342,22 @@ func TestPredictionRelayProcessCrashHelper(t *testing.T) {
 		// The signed record was fsync'd before this independently started
 		// process observed it.  Dying here exercises durable read recovery.
 	case "broadcasting":
-		if _, err := journal.BeginOrResumeExactBroadcast(
+		if _, broadcastErr := journal.BeginOrResumeExactBroadcast(
 			t.Context(), fixture.actionID, &relayTestBroadcaster{},
-		); err != nil {
-			t.Fatalf("child broadcast: %v", err)
+		); broadcastErr != nil {
+			t.Fatalf("child broadcast: %v", broadcastErr)
 		}
 	case "source-finalized":
-		if _, err := journal.ResolveSource(
+		if _, sourceErr := journal.ResolveSource(
 			t.Context(), fixture.actionID, fixture.source, &relayTestVerifier{},
-		); err != nil {
-			t.Fatalf("child source resolve: %v", err)
+		); sourceErr != nil {
+			t.Fatalf("child source resolve: %v", sourceErr)
 		}
 	case "destination-resolving":
-		if _, err := journal.ResolveDestination(
+		if _, destinationErr := journal.ResolveDestination(
 			t.Context(), fixture.actionID, fixture.destination, &relayTestVerifier{},
-		); err != nil {
-			t.Fatalf("child destination resolve: %v", err)
+		); destinationErr != nil {
+			t.Fatalf("child destination resolve: %v", destinationErr)
 		}
 	case "bounce-resolving":
 		failure := relayFixtureBounceDestination(fixture)
@@ -470,7 +470,9 @@ func TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries(t *testing.T
 					t.Fatalf("broadcast recovery did not resend the durable exact BOC: %v", err)
 				}
 			}
-			if phase.name == "source-finalized" || phase.name == "destination-resolving" || phase.name == "bounce-resolving" {
+			isFinalPhase := phase.name == "source-finalized" ||
+				phase.name == "destination-resolving" || phase.name == "bounce-resolving"
+			if isFinalPhase {
 				if _, err := restarted.BeginOrResumeExactBroadcast(
 					t.Context(), fixture.actionID, &relayTestBroadcaster{},
 				); err == nil {

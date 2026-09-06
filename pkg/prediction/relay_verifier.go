@@ -199,7 +199,9 @@ type predictionOutputMessage struct {
 	raw    *cell.Cell
 }
 
-func decodePredictionTransaction(encoded, digest string) (*tlb.Transaction, *cell.Cell, predictionTransactionMessages, error) {
+func decodePredictionTransaction(encoded, digest string) (
+	*tlb.Transaction, *cell.Cell, predictionTransactionMessages, error,
+) {
 	raw, err := base64.StdEncoding.Strict().DecodeString(encoded)
 	if err != nil || len(raw) == 0 || len(raw) > maximumChainBOCBytes {
 		return nil, nil, predictionTransactionMessages{}, errors.New("prediction transaction BOC is invalid")
@@ -207,7 +209,8 @@ func decodePredictionTransaction(encoded, digest string) (*tlb.Transaction, *cel
 	root, err := cell.FromBOC(raw)
 	if err != nil || root == nil || !bytes.Equal(raw, root.ToBOCWithFlags(false)) ||
 		digest != "sha256:"+hex.EncodeToString(root.Hash()) {
-		return nil, nil, predictionTransactionMessages{}, errors.New("prediction transaction BOC is not canonical or hash-bound")
+		return nil, nil, predictionTransactionMessages{},
+			errors.New("prediction transaction BOC is not canonical or hash-bound")
 	}
 	var tx tlb.Transaction
 	transactionSlice := root.MustBeginParse()
@@ -215,11 +218,13 @@ func decodePredictionTransaction(encoded, digest string) (*tlb.Transaction, *cel
 		return nil, nil, predictionTransactionMessages{}, errors.New("prediction transaction TL-B is invalid")
 	}
 	if transactionSlice.BitsLeft() != 0 || transactionSlice.RefsNum() != 0 {
-		return nil, nil, predictionTransactionMessages{}, errors.New("prediction transaction has trailing or noncanonical TL-B")
+		return nil, nil, predictionTransactionMessages{},
+			errors.New("prediction transaction has trailing or noncanonical TL-B")
 	}
 	messages, err := predictionRawTransactionMessages(root)
 	if err != nil {
-		return nil, nil, predictionTransactionMessages{}, fmt.Errorf("prediction transaction raw messages are invalid: %w", err)
+		return nil, nil, predictionTransactionMessages{},
+			fmt.Errorf("prediction transaction raw messages are invalid: %w", err)
 	}
 	return &tx, root, messages, nil
 }

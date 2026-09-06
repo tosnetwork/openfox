@@ -283,11 +283,12 @@ claim deadline plus audit-retention horizon before admitting a market.
 
 `TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries` starts a
 separate test process, lets it persist one normal relay transition, and ends it
-with `os.Exit` without running `Close` or any deferred cleanup. The parent
+with a forced process kill without running `Close` or any deferred cleanup. The parent
 then reopens the real owner-private journal. It covers the signed durable
-record, the pre-socket broadcasting boundary, source finality, and destination
-resolution. Broadcasting recovery must resend byte-identical durable BOC
-bytes; source- and destination-final recovery must reject any rebroadcast.
+record, the pre-socket broadcasting boundary, source finality, destination
+resolution, and bounce-credit resolution. Broadcasting recovery must resend
+byte-identical durable BOC bytes; every post-source terminal recovery must
+reject any rebroadcast.
 
 Run it with:
 
@@ -301,6 +302,45 @@ journal, not a substitute for an Agent Account three-node crash-injection
 test. The latter must still kill the actual `tosctl`/relay process at every
 chain-observation checkpoint and verify its exact transaction evidence.
 
+### Three-node Agent Account crash injection (partial)
+
+The TOS lifecycle harness now has an opt-in `agent-crash-recovery` scenario.
+It starts three real local validators and sends `SIGKILL` to the actual
+`tosctl` child only after an owner-private, fsync'd checkpoint proves one of
+these durable boundaries:
+
+- `signed`: the exact checked-call BOC and its digest are in the Agent Account
+  custody journal, before it is marked broadcastable or emitted to an output
+  file;
+- `broadcasting`: the exact BOC is durable and the journal is in its
+  pre-submission state, before the pinned RPC socket write;
+- `source_finalized`: the exact source evidence is durable, before `tosctl`
+  returns it to its caller.
+
+Each kill is followed by a new `tosctl` process. The signed and broadcasting
+paths must recover the byte-identical BOC; the source-finalized path must
+replay the durable exact evidence without a replacement broadcast. The harness
+also rejects a killed pre-submission process that advanced the Agent Account
+seqno, and rejects a killed signer that wrote an executable output BOC.
+
+Run it from the TOS checkout against a validator build:
+
+```sh
+TOS_BUILD_DIR=/absolute/path/to/build \
+  /path/to/python scripts/prediction-market-v1-lifecycle-e2e.py \
+  --scenario agent-crash-recovery
+```
+
+The OpenFox relay's own process-death test force-kills a real child process
+after each durable relay transition, including destination and bounce credit,
+then reopens the actual journal. In addition,
+`TestPredictionRelayDestinationThreeNodeProcessDeathReleaseGate` combines the
+real three-node source and destination resolvers with an actual forced process
+death after durable destination evidence. It proves that restart is idempotent
+and cannot rebroadcast the exact BOC. The remaining end-to-end crash gate is
+the analogous real three-node bounce-credit path; its local forced-death test
+is not a replacement for that chain-level evidence.
+
 ## Remaining release gates
 
 The context gate is one component of system acceptance, not a substitute for
@@ -312,8 +352,10 @@ reports cover:
   has produced one real NO case and the distribution preflight is complete);
 - factual INVALID, no-proposal Oracle timeout, challenge uphold, challenge
   overturn, and challenged-proposal appellate timeout;
-- Agent Account checked-call v2 signed, durable, broadcasting, source-finalized,
-  destination/bounce-resolving crash points;
+- Agent Account checked-call v2 real three-node bounce-credit crash recovery
+  (the OpenFox relay journal has forced-process-death coverage at every
+  durable transition; TOS signed, broadcasting, source-finalized, and OpenFox
+  destination-resolving windows have three-node SIGKILL/retry evidence);
 - cursor recovery after more than 10,000 later source and destination
   transactions;
 - maximum participant/order/vote state, storage rent, fee, reserve, and gas

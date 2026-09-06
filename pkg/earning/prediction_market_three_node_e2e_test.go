@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +27,27 @@ import (
 )
 
 const predictionContextThreeNodeGate = "OPENFOX_PREDICTION_CONTEXT_THREE_NODE_E2E"
+const predictionRelayCrashThreeNodeGate = "OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_E2E"
+
+type predictionRelayCrashThreeNodeInput struct {
+	Profile       prediction.PredictionRelayProfile `json:"profile"`
+	Prepared      tosctlPredictionAgentPrepared     `json:"prepared"`
+	Network       agentrelay.NetworkDomain          `json:"network"`
+	BodyBOCPath   string                            `json:"body_boc_path"`
+	TOSCTL        string                            `json:"tosctl"`
+	PrimaryConfig string                            `json:"primary_config"`
+	QuorumConfigs []string                          `json:"quorum_configs"`
+	VaultURL      string                            `json:"vault_url"`
+}
+
+type predictionRelayCrashNoopBroadcaster struct{ calls int }
+
+func (broadcaster *predictionRelayCrashNoopBroadcaster) BroadcastExactPredictionBOC(
+	context.Context, []byte,
+) error {
+	broadcaster.calls++
+	return nil
+}
 
 type predictionAcceptanceAuthority struct{ EconomicAuthority }
 
@@ -294,6 +317,165 @@ func TestPredictionOracleContextThreeNodeEvidenceIsSelfConsistent(t *testing.T) 
 			t.Fatal("committed Prediction observer checkpoint is malformed")
 		}
 	}
+}
+
+// TestPredictionRelayDestinationThreeNodeProcessDeathReleaseGate combines the
+// production TOS resolver with OpenFox's durable relay journal.  The parent
+// proves source finality from three nodes, then a child process proves and
+// persists destination finality before it is force-killed.  The parent must
+// recover the terminal record without a new network broadcast.
+func TestPredictionRelayDestinationThreeNodeProcessDeathReleaseGate(t *testing.T) {
+	if os.Getenv(predictionRelayCrashThreeNodeGate) != "1" {
+		t.Skip("set " + predictionRelayCrashThreeNodeGate + "=1 for the live release gate")
+	}
+	input := loadPredictionRelayCrashThreeNodeInput(t)
+	if os.Getenv("OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_CHILD") == "1" {
+		runPredictionRelayCrashThreeNodeChild(t, input)
+		return
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	directory := filepath.Join(t.TempDir(), "relay")
+	journal, sink, engine := openPredictionRelayCrashThreeNode(t, input, directory)
+	source, err := engine.ResolvePredictionEffectSource(ctx, sink, input.Prepared.StableActionID)
+	if err != nil || source.State != prediction.RelaySourceFinalized || source.SourceEvidence == nil {
+		t.Fatalf("three-node source resolution before destination crash: %#v %v", source, err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestPredictionRelayDestinationThreeNodeProcessDeathReleaseGate$")
+	command.Env = append(os.Environ(),
+		predictionRelayCrashThreeNodeGate+"=1",
+		"OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_CHILD=1",
+		"OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_INPUT="+mustEnv(t, "OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_INPUT"),
+		"OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_DIRECTORY="+directory,
+	)
+	output, err := command.CombinedOutput()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != -1 {
+		t.Fatalf("destination resolver child was not force-killed: %v: %s", err, output)
+	}
+	restarted, sink, engine := openPredictionRelayCrashThreeNode(t, input, directory)
+	defer func() { _ = restarted.Close() }()
+	recovered, found := restarted.Get(input.Prepared.StableActionID)
+	if !found || recovered.State != prediction.RelayDestinationCommitted || recovered.DestinationEvidence == nil {
+		t.Fatalf("destination terminal evidence was not durable across process death: %#v", recovered)
+	}
+	resumed, err := engine.ResolvePredictionEffectDestination(ctx, sink, input.Prepared.StableActionID)
+	if err != nil || resumed.State != prediction.RelayDestinationCommitted || resumed.Revision != recovered.Revision {
+		t.Fatalf("terminal destination recovery was not idempotent: %#v %v", resumed, err)
+	}
+	if _, err := restarted.BeginOrResumeExactBroadcast(
+		ctx, input.Prepared.StableActionID, &predictionRelayCrashNoopBroadcaster{},
+	); err == nil {
+		t.Fatal("destination-finalized three-node record was broadcast again")
+	}
+}
+
+func loadPredictionRelayCrashThreeNodeInput(t *testing.T) predictionRelayCrashThreeNodeInput {
+	t.Helper()
+	path := acceptanceRequiredAbsoluteFile(t, "OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_INPUT")
+	var input predictionRelayCrashThreeNodeInput
+	if err := json.Unmarshal(acceptanceReadBounded(t, path, 1<<20), &input); err != nil ||
+		input.Prepared.StableActionID == "" || input.Prepared.ExactSignedBOC == "" ||
+		!filepath.IsAbs(input.BodyBOCPath) || !filepath.IsAbs(input.TOSCTL) ||
+		!filepath.IsAbs(input.PrimaryConfig) || len(input.QuorumConfigs) != 2 ||
+		input.Network != input.Prepared.NetworkDomain {
+		t.Fatal("Prediction relay crash input is incomplete or inconsistent")
+	}
+	return input
+}
+
+func openPredictionRelayCrashThreeNode(t *testing.T, input predictionRelayCrashThreeNodeInput,
+	directory string,
+) (*prediction.PredictionRelayJournal, *TOSCTLPaymentSink, *Engine) {
+	t.Helper()
+	body := acceptanceReadBounded(t, input.BodyBOCPath, 256<<10)
+	exact, err := base64.StdEncoding.Strict().DecodeString(input.Prepared.ExactSignedBOC)
+	if err != nil || len(exact) == 0 {
+		t.Fatal("Prediction relay crash input has no exact BOC")
+	}
+	expected, err := prediction.NewExpectedContractCall(
+		input.Prepared.ActionKind, input.Prepared.StableActionID, input.Prepared.Destination,
+		input.Prepared.AmountNanoTOS, body,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := prediction.OpenPredictionRelayJournal(directory, input.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := journal.Get(input.Prepared.StableActionID); !found {
+		if _, err := journal.Prepare(input.Prepared.StableActionID, exact, expected,
+			input.Prepared.PreBroadcastSourceCursor, input.Prepared.PreBroadcastMasterchainCheckpoint); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journal.BeginOrResumeExactBroadcast(
+			t.Context(), input.Prepared.StableActionID, &predictionRelayCrashNoopBroadcaster{},
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stateDir := filepath.Join(filepath.Dir(directory), "evidence")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sink := &TOSCTLPaymentSink{
+		Authority: &predictionAcceptanceAuthority{}, Executable: input.TOSCTL, ConfigPath: input.PrimaryConfig,
+		Wallet: "prediction-solver", SourceAccount: input.Prepared.Source, NetworkGlobalID: input.Network.GlobalID,
+		RelayNetworkDomain: &input.Network, FeeReserveNanoTOS: 1, QuorumConfigPaths: input.QuorumConfigs,
+		PredictionRelayJournal: journal, EvidenceDirectory: stateDir, VaultURL: input.VaultURL,
+		PredictionMaximumTransactions: 100_000, PredictionMaximumMasterchainBlocks: 100_000,
+	}
+	sink.RelayNetworkPreflight = func(ctx context.Context, config string, network agentrelay.NetworkDomain) error {
+		if config != input.PrimaryConfig || network != input.Network {
+			return errors.New("Prediction crash relay escaped the owner-pinned network")
+		}
+		raw, err := sink.run(ctx, []string{
+			"agent", "account", "prediction-relay-profile", "--network-id", network.NetworkID,
+			"--global-id", strconv.FormatInt(int64(network.GlobalID), 10), "--zero-state-root-hash", network.ZeroStateRootHash,
+			"--zero-state-file-hash", network.ZeroStateFileHash, "--workchain-id", strconv.FormatInt(int64(network.WorkchainID), 10),
+			"--quorum-config", input.QuorumConfigs[0], input.QuorumConfigs[1], "-c", config,
+		})
+		if err != nil {
+			return err
+		}
+		var profile struct {
+			Schema            string   `json:"schema"`
+			NetworkDomainHash string   `json:"network_domain_hash"`
+			ObserverIDs       []string `json:"observer_ids"`
+			QuorumThreshold   uint32   `json:"quorum_threshold"`
+		}
+		if err := json.Unmarshal(raw, &profile); err != nil ||
+			profile.Schema != "tosctl.prediction-relay-observer-profile.v1" ||
+			profile.NetworkDomainHash != input.Profile.NetworkDomainHash ||
+			profile.QuorumThreshold != input.Profile.QuorumThreshold ||
+			!reflect.DeepEqual(profile.ObserverIDs, input.Profile.ObserverIDs) {
+			return errors.New("Prediction crash relay observer profile conflicts with its owner pin")
+		}
+		return nil
+	}
+	engine := &Engine{Authority: &predictionAcceptanceAuthority{}, Gates: FeatureGates{Prediction: true}}
+	return journal, sink, engine
+}
+
+func runPredictionRelayCrashThreeNodeChild(t *testing.T, input predictionRelayCrashThreeNodeInput) {
+	directory := mustEnv(t, "OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_DIRECTORY")
+	journal, sink, engine := openPredictionRelayCrashThreeNode(t, input, directory)
+	defer func() { _ = journal.Close() }()
+	resolved, err := engine.ResolvePredictionEffectDestination(t.Context(), sink, input.Prepared.StableActionID)
+	if err != nil || resolved.State != prediction.RelayDestinationCommitted || resolved.DestinationEvidence == nil {
+		t.Fatalf("three-node destination resolution before forced death: %#v %v", resolved, err)
+	}
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	select {}
 }
 
 func acceptancePinRPCConfigs(t *testing.T, sourcePaths []string) []predictionAcceptanceConfig {

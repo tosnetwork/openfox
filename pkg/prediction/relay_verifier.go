@@ -47,13 +47,13 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionSource(
 	if ctx == nil || verifier.Attestor == nil {
 		return errors.New("prediction source verifier is unavailable")
 	}
-	tx, root, err := decodePredictionTransaction(evidence.TransactionBOCBase64, evidence.TransactionHash)
+	tx, root, rawMessages, err := decodePredictionTransaction(evidence.TransactionBOCBase64, evidence.TransactionHash)
 	if err != nil || !transactionAccountMatches(tx, record.Profile.SourceAgentAccount) ||
 		evidence.NextSourceCursor.LastLogicalTime != tx.LT ||
 		evidence.NextSourceCursor.LastTransactionHash != evidence.TransactionHash {
 		return errors.New("prediction source transaction identity is invalid")
 	}
-	inCell, err := predictionMessageCell(tx.IO.In)
+	inCell, err := predictionMessageCell(tx.IO.In, rawMessages.inbound)
 	if err != nil || tx.IO.In.MsgType != tlb.MsgTypeExternalIn ||
 		cellDigest(inCell) != record.SubmittedExternalMessageHash {
 		return errors.New("prediction source transaction did not consume the submitted external message")
@@ -63,12 +63,12 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionSource(
 		!predictionActionSucceeded(ordinary) {
 		return errors.New("prediction source Agent Account transaction did not execute successfully")
 	}
-	outputs, err := predictionOutMessages(tx)
+	outputs, err := predictionOutMessages(tx, rawMessages.outputs)
 	if err != nil || len(outputs) != int(tx.OutMsgCount) || len(outputs) != len(evidence.OutboundMessages) {
 		return errors.New("prediction source outbound message count is inconsistent")
 	}
 	for index := range outputs {
-		if err := verifyDeclaredPredictionMessage(outputs[index], evidence.OutboundMessages[index]); err != nil {
+		if err := verifyDeclaredPredictionMessage(outputs[index].parsed, outputs[index].raw, evidence.OutboundMessages[index]); err != nil {
 			return fmt.Errorf("verify prediction source outbound: %w", err)
 		}
 	}
@@ -86,13 +86,16 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionDestina
 	if ctx == nil || verifier.Attestor == nil || record.ActualOutbound == nil {
 		return errors.New("prediction destination verifier is unavailable")
 	}
-	tx, _, err := decodePredictionTransaction(evidence.TransactionBOCBase64, evidence.TransactionHash)
-	if err != nil || !transactionAccountMatches(tx, record.Profile.MarketAddress) ||
+	tx, _, rawMessages, err := decodePredictionTransaction(evidence.TransactionBOCBase64, evidence.TransactionHash)
+	if err != nil {
+		return fmt.Errorf("prediction destination transaction BOC is invalid: %w", err)
+	}
+	if !transactionAccountMatches(tx, record.Profile.MarketAddress) ||
 		evidence.NextDestinationCursor.LastLogicalTime != tx.LT ||
 		evidence.NextDestinationCursor.LastTransactionHash != evidence.TransactionHash {
 		return errors.New("prediction destination transaction identity is invalid")
 	}
-	if messageErr := verifyDeclaredPredictionMessage(tx.IO.In, *record.ActualOutbound); messageErr != nil {
+	if messageErr := verifyDeclaredPredictionMessage(tx.IO.In, rawMessages.inbound, *record.ActualOutbound); messageErr != nil {
 		return fmt.Errorf("verify prediction destination inbound: %w", messageErr)
 	}
 	ordinary, ok := predictionOrdinary(tx)
@@ -118,7 +121,7 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionDestina
 	if opcodeSuccess {
 		return verifier.Attestor.VerifyPredictionSuccessPredicate(ctx, record, evidence)
 	}
-	outputs, err := predictionOutMessages(tx)
+	outputs, err := predictionOutMessages(tx, rawMessages.outputs)
 	if err != nil || len(outputs) != int(tx.OutMsgCount) {
 		return errors.New("prediction destination outbound messages are malformed")
 	}
@@ -129,8 +132,8 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionDestina
 		}
 		matches := 0
 		for index := range outputs {
-			if verifyDeclaredPredictionMessage(outputs[index], *evidence.BounceMessage) == nil &&
-				verifyPredictionRichBounce(ordinary, tx.IO.In.AsInternal(), outputs[index].AsInternal()) == nil {
+			if verifyDeclaredPredictionMessage(outputs[index].parsed, outputs[index].raw, *evidence.BounceMessage) == nil &&
+				verifyPredictionRichBounce(ordinary, tx.IO.In.AsInternal(), outputs[index].parsed.AsInternal()) == nil {
 				matches++
 			}
 		}
@@ -155,14 +158,14 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionBounceC
 		record.DestinationEvidence.BounceMessage == nil {
 		return errors.New("prediction bounce-credit verifier is unavailable")
 	}
-	tx, _, err := decodePredictionTransaction(evidence.TransactionBOCBase64, evidence.TransactionHash)
+	tx, _, rawMessages, err := decodePredictionTransaction(evidence.TransactionBOCBase64, evidence.TransactionHash)
 	if err != nil || !transactionAccountMatches(tx, record.Profile.SourceAgentAccount) ||
 		evidence.NextSourceCursor.LastLogicalTime != tx.LT ||
 		evidence.NextSourceCursor.LastTransactionHash != evidence.TransactionHash {
 		return errors.New("prediction bounce-credit transaction identity is invalid")
 	}
 	if err := verifyDeclaredPredictionMessage(
-		tx.IO.In, *record.DestinationEvidence.BounceMessage,
+		tx.IO.In, rawMessages.inbound, *record.DestinationEvidence.BounceMessage,
 	); err != nil {
 		return fmt.Errorf("verify prediction inbound bounce: %w", err)
 	}
@@ -179,25 +182,84 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionBounceC
 	)
 }
 
-func decodePredictionTransaction(encoded, digest string) (*tlb.Transaction, *cell.Cell, error) {
+type predictionTransactionMessages struct {
+	inbound *cell.Cell
+	outputs []*cell.Cell
+}
+
+type predictionOutputMessage struct {
+	parsed *tlb.Message
+	raw    *cell.Cell
+}
+
+func decodePredictionTransaction(encoded, digest string) (*tlb.Transaction, *cell.Cell, predictionTransactionMessages, error) {
 	raw, err := base64.StdEncoding.Strict().DecodeString(encoded)
 	if err != nil || len(raw) == 0 || len(raw) > maximumChainBOCBytes {
-		return nil, nil, errors.New("prediction transaction BOC is invalid")
+		return nil, nil, predictionTransactionMessages{}, errors.New("prediction transaction BOC is invalid")
 	}
 	root, err := cell.FromBOC(raw)
 	if err != nil || root == nil || !bytes.Equal(raw, root.ToBOCWithFlags(false)) ||
 		digest != "sha256:"+hex.EncodeToString(root.Hash()) {
-		return nil, nil, errors.New("prediction transaction BOC is not canonical or hash-bound")
+		return nil, nil, predictionTransactionMessages{}, errors.New("prediction transaction BOC is not canonical or hash-bound")
 	}
 	var tx tlb.Transaction
-	if loadErr := tlb.LoadFromCell(&tx, root.MustBeginParse()); loadErr != nil {
-		return nil, nil, errors.New("prediction transaction TL-B is invalid")
+	transactionSlice := root.MustBeginParse()
+	if loadErr := tlb.LoadFromCell(&tx, transactionSlice); loadErr != nil {
+		return nil, nil, predictionTransactionMessages{}, errors.New("prediction transaction TL-B is invalid")
 	}
-	rebuilt, err := tx.ToCell()
-	if err != nil || !bytes.Equal(rebuilt.Hash(), root.Hash()) {
-		return nil, nil, errors.New("prediction transaction has trailing or noncanonical TL-B")
+	if transactionSlice.BitsLeft() != 0 || transactionSlice.RefsNum() != 0 {
+		return nil, nil, predictionTransactionMessages{}, errors.New("prediction transaction has trailing or noncanonical TL-B")
 	}
-	return &tx, root, nil
+	messages, err := predictionRawTransactionMessages(root)
+	if err != nil {
+		return nil, nil, predictionTransactionMessages{}, fmt.Errorf("prediction transaction raw messages are invalid: %w", err)
+	}
+	return &tx, root, messages, nil
+}
+
+// predictionRawTransactionMessages preserves the physical message cells
+// committed by the transaction BOC. tlb.Transaction intentionally exposes
+// parsed messages, but rebuilding those messages is not a safe substitute for
+// a hash-bound observation: valid cell layouts can decode to the same value.
+func predictionRawTransactionMessages(root *cell.Cell) (predictionTransactionMessages, error) {
+	if root == nil {
+		return predictionTransactionMessages{}, errors.New("transaction root is absent")
+	}
+	ioCell, err := root.MustBeginParse().LoadRefCell()
+	if err != nil {
+		return predictionTransactionMessages{}, err
+	}
+	io := ioCell.MustBeginParse()
+	inboundSlice, err := io.LoadMaybeRef()
+	if err != nil {
+		return predictionTransactionMessages{}, err
+	}
+	result := predictionTransactionMessages{}
+	if inboundSlice != nil {
+		result.inbound, err = inboundSlice.ToCell()
+		if err != nil {
+			return predictionTransactionMessages{}, err
+		}
+	}
+	outputs, err := io.LoadDict(15)
+	if err != nil {
+		return predictionTransactionMessages{}, err
+	}
+	if outputs == nil {
+		return result, nil
+	}
+	values, err := outputs.LoadAll()
+	if err != nil {
+		return predictionTransactionMessages{}, err
+	}
+	result.outputs = make([]*cell.Cell, len(values))
+	for index := range values {
+		result.outputs[index], err = values[index].Value.LoadRefCell()
+		if err != nil {
+			return predictionTransactionMessages{}, err
+		}
+	}
+	return result, nil
 }
 
 func transactionAccountMatches(tx *tlb.Transaction, rawAddress string) bool {
@@ -205,14 +267,17 @@ func transactionAccountMatches(tx *tlb.Transaction, rawAddress string) bool {
 	return err == nil && parsed != nil && tx != nil && bytes.Equal(tx.AccountAddr, parsed.Data())
 }
 
-func predictionMessageCell(message *tlb.Message) (*cell.Cell, error) {
+func predictionMessageCell(message *tlb.Message, raw *cell.Cell) (*cell.Cell, error) {
 	if message == nil {
 		return nil, errors.New("prediction transaction message is absent")
+	}
+	if raw != nil {
+		return raw, nil
 	}
 	return message.ToCell()
 }
 
-func predictionOutMessages(tx *tlb.Transaction) ([]*tlb.Message, error) {
+func predictionOutMessages(tx *tlb.Transaction, raw []*cell.Cell) ([]predictionOutputMessage, error) {
 	if tx == nil || tx.IO.Out == nil {
 		return nil, nil
 	}
@@ -220,9 +285,12 @@ func predictionOutMessages(tx *tlb.Transaction) ([]*tlb.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := make([]*tlb.Message, len(values))
+	if len(values) != len(raw) {
+		return nil, errors.New("prediction transaction output cells do not match parsed outputs")
+	}
+	result := make([]predictionOutputMessage, len(values))
 	for index := range values {
-		result[index] = &values[index]
+		result[index] = predictionOutputMessage{parsed: &values[index], raw: raw[index]}
 	}
 	return result, nil
 }
@@ -258,18 +326,19 @@ func predictionActionSucceeded(value tlb.TransactionDescriptionOrdinary) bool {
 		!value.ActionPhase.NoFunds && value.ActionPhase.ResultCode == 0
 }
 
-func verifyDeclaredPredictionMessage(actual *tlb.Message, declared ChainObservedMessage) error {
+func verifyDeclaredPredictionMessage(actual *tlb.Message, raw *cell.Cell, declared ChainObservedMessage) error {
 	if actual == nil || actual.MsgType != tlb.MsgTypeInternal {
 		return errors.New("declared prediction message is not internal")
 	}
-	actualCell, err := actual.ToCell()
+	actualCell, err := predictionMessageCell(actual, raw)
 	if err != nil {
 		return err
 	}
 	declaredRaw, err := base64.StdEncoding.Strict().DecodeString(declared.ExactMessageBOC)
-	if err != nil || !bytes.Equal(declaredRaw, actualCell.ToBOCWithFlags(false)) ||
-		declared.MessageHash != cellDigest(actualCell) {
-		return errors.New("declared prediction message bytes differ from the transaction")
+	declaredCell, declaredErr := cell.FromBOC(declaredRaw)
+	if err != nil || declaredErr != nil || declaredCell == nil ||
+		declared.MessageHash != cellDigest(actualCell) || declared.MessageHash != cellDigest(declaredCell) {
+		return errors.New("declared prediction message cell differs from the transaction")
 	}
 	internal := actual.AsInternal()
 	extraFlags, err := predictionInternalExtraFlags(internal)

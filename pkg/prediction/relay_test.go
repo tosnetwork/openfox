@@ -187,8 +187,9 @@ func relayFixtureBounceDestination(fixture relayFixture) DestinationTransactionE
 	richBody := cell.BeginCell().MustStoreUInt(0xfffffffe, 32).MustStoreUInt(0x504d0001, 32).EndCell()
 	bounceCell := cell.BeginCell().MustStoreUInt(0x704, 12).MustStoreRef(richBody).EndCell()
 	bounce := ChainObservedMessage{
-		MessageHash: cellDigest(bounceCell), ExactMessageBOC: base64.StdEncoding.EncodeToString(bounceCell.ToBOCWithFlags(false)),
-		SourceAddress: fixture.profile.MarketAddress, DestinationAddress: fixture.profile.SourceAgentAccount,
+		MessageHash:     cellDigest(bounceCell),
+		ExactMessageBOC: base64.StdEncoding.EncodeToString(bounceCell.ToBOCWithFlags(false)),
+		SourceAddress:   fixture.profile.MarketAddress, DestinationAddress: fixture.profile.SourceAgentAccount,
 		ValueNanoTOS:  fixture.expected.ValueNanoTOS - 1000,
 		BodyBOCBase64: base64.StdEncoding.EncodeToString(richBody.ToBOCWithFlags(false)),
 		BodyHash:      cellDigest(richBody), Bounced: true,
@@ -360,10 +361,11 @@ func TestPredictionRelayProcessCrashHelper(t *testing.T) {
 		}
 	case "bounce-resolving":
 		failure := relayFixtureBounceDestination(fixture)
-		if _, err := journal.ResolveBounceCredit(
+		_, resolveErr := journal.ResolveBounceCredit(
 			t.Context(), fixture.actionID, relayFixtureBounceCredit(fixture, *failure.BounceMessage), &relayTestVerifier{},
-		); err != nil {
-			t.Fatalf("child bounce resolve: %v", err)
+		)
+		if resolveErr != nil {
+			t.Fatalf("child bounce resolve: %v", resolveErr)
 		}
 	default:
 		t.Fatalf("unknown process-crash phase %q", phase)

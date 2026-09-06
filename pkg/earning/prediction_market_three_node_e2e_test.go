@@ -341,11 +341,13 @@ func TestPredictionRelayDestinationThreeNodeProcessDeathReleaseGate(t *testing.T
 	if err != nil || source.State != prediction.RelaySourceFinalized || source.SourceEvidence == nil {
 		t.Fatalf("three-node source resolution before destination crash: %#v %v", source, err)
 	}
-	if err := journal.Close(); err != nil {
-		t.Fatal(err)
+	closeErr := journal.Close()
+	if closeErr != nil {
+		t.Fatal(closeErr)
 	}
 	command := exec.Command(os.Args[0], "-test.run=^TestPredictionRelayDestinationThreeNodeProcessDeathReleaseGate$")
-	command.Env = append(os.Environ(),
+	command.Env = append(
+		os.Environ(),
 		predictionRelayCrashThreeNodeGate+"=1",
 		"OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_CHILD=1",
 		"OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_INPUT="+mustEnv(t, "OPENFOX_PREDICTION_RELAY_CRASH_THREE_NODE_INPUT"),

@@ -68,7 +68,9 @@ func (verifier CanonicalPredictionRelayEvidenceVerifier) VerifyPredictionSource(
 		return errors.New("prediction source outbound message count is inconsistent")
 	}
 	for index := range outputs {
-		if err := verifyDeclaredPredictionMessage(outputs[index].parsed, outputs[index].raw, evidence.OutboundMessages[index]); err != nil {
+		if err := verifyDeclaredPredictionMessage(
+			outputs[index].parsed, outputs[index].raw, evidence.OutboundMessages[index],
+		); err != nil {
 			return fmt.Errorf("verify prediction source outbound: %w", err)
 		}
 	}

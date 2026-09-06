@@ -81,6 +81,7 @@ type tosctlPredictionAgentPrepared struct {
 	ExactSignedBOC                    string                   `json:"exact_signed_boc"`
 	ExactSignedBOCDigest              string                   `json:"exact_signed_boc_digest"`
 	OutputBOC                         string                   `json:"output_boc"`
+	JournalState                      string                   `json:"journal_state"`
 	Broadcast                         bool                     `json:"broadcast"`
 }
 
@@ -433,7 +434,7 @@ func validatePreparedPredictionEffect(prepared tosctlPredictionAgentPrepared,
 		prepared.MarketCodeHash != artifact.MarketCodeHash || prepared.AmountNanoTOS != request.AmountNanoTOS ||
 		prepared.BodyHash != artifact.BodyHash || prepared.ValidUntil != request.ValidUntil ||
 		prepared.NetworkDomain != network || prepared.OutputBOC != outputPath ||
-		prepared.Broadcast || decodeErr != nil || len(exactBOC) == 0 ||
+		prepared.JournalState != "broadcasting" || prepared.Broadcast || decodeErr != nil || len(exactBOC) == 0 ||
 		prepared.ExactSignedBOCDigest != "sha256:"+hex.EncodeToString(digest[:]) {
 		return nil, errors.New("tosctl returned an unrelated prepared Prediction effect")
 	}

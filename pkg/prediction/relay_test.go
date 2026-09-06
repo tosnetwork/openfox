@@ -308,7 +308,9 @@ func TestPredictionRelayProcessCrashHelper(t *testing.T) {
 			t.Fatalf("child broadcast: %v", err)
 		}
 	case "source-finalized":
-		if _, err := journal.ResolveSource(t.Context(), fixture.actionID, fixture.source, &relayTestVerifier{}); err != nil {
+		if _, err := journal.ResolveSource(
+			t.Context(), fixture.actionID, fixture.source, &relayTestVerifier{},
+		); err != nil {
 			t.Fatalf("child source resolve: %v", err)
 		}
 	case "destination-resolving":
@@ -392,7 +394,9 @@ func TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries(t *testing.T
 			}
 			if phase.name == "broadcasting" {
 				resumed := &relayTestBroadcaster{}
-				if _, err := restarted.BeginOrResumeExactBroadcast(t.Context(), fixture.actionID, resumed); err != nil ||
+				if _, err := restarted.BeginOrResumeExactBroadcast(
+					t.Context(), fixture.actionID, resumed,
+				); err != nil ||
 					len(resumed.calls) != 1 || !bytes.Equal(resumed.calls[0], fixture.signedBOC) {
 					t.Fatalf("broadcast recovery did not resend the durable exact BOC: %v", err)
 				}

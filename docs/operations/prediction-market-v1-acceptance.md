@@ -228,11 +228,44 @@ count, and total content bytes. Capacity exhaustion fails before a receipt is
 signed. Objects are keyed by their exact SHA-256 content digest, and an
 existing digest cannot be rebound to different source metadata or bytes.
 
+An archive replica now accepts an `ArchiveReceiptSigner`, not a raw key. The
+production signer must be a narrow Vault/HSM client which returns the pinned
+Ed25519 public key and signs only the archive-receipt digest; a process-local
+`Ed25519ArchiveReceiptSigner` exists solely for tests and local development.
+Each replica's Vault policy must permit only that digest-signing operation,
+must be independently authenticated and audited, and must fail closed on a
+key, identity, timeout, or signature mismatch. The archive's operator ID is
+derived from the key returned by the signer at both initialization and signing
+time, so a signer cannot silently rotate identity underneath a running
+replica.
+
 Retention can only increase while an object exists. Pruning removes an object
 only after its inclusive `retain_until` boundary is in the past, synchronizes
 the rooted directory, and only then releases in-memory capacity. Operators
 must monitor the configured watermarks and provision capacity for the maximum
 claim deadline plus audit-retention horizon before admitting a market.
+
+## Relay process-death recovery
+
+`TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries` starts a
+separate test process, lets it persist one normal relay transition, and ends it
+with `os.Exit` without running `Close` or any deferred cleanup. The parent
+then reopens the real owner-private journal. It covers the signed durable
+record, the pre-socket broadcasting boundary, source finality, and destination
+resolution. Broadcasting recovery must resend byte-identical durable BOC
+bytes; source- and destination-final recovery must reject any rebroadcast.
+
+Run it with:
+
+```sh
+GOWORK=off go test ./pkg/prediction \
+  -run TestPredictionRelayRecoversFromProcessDeathAtDurableBoundaries -count=1 -v
+```
+
+This is an operating-system process-death test of OpenFox's durable relay
+journal, not a substitute for an Agent Account three-node crash-injection
+test. The latter must still kill the actual `tosctl`/relay process at every
+chain-observation checkpoint and verify its exact transaction evidence.
 
 ## Remaining release gates
 

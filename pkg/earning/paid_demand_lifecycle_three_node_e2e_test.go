@@ -146,8 +146,11 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 	assetMaster := deployment.Asset.MasterContractRaw
 	relayerAccount := lifecycleRawAccount(t, mustEnv(t, "OPENFOX_PAID_DEMAND_RELAYER_ACCOUNT"))
 	custodyNetwork := &commerce.CustodyNetworkDomain{
-		NetworkID: network.NetworkId, GlobalID: 3,
-		ZeroStateRootHash: network.GenesisRootHash, ZeroStateFileHash: network.GenesisFileHash, WorkchainID: 0,
+		NetworkID:         network.GetNetworkId(),
+		GlobalID:          3,
+		ZeroStateRootHash: network.GetGenesisRootHash(),
+		ZeroStateFileHash: network.GetGenesisFileHash(),
+		WorkchainID:       0,
 	}
 	endpoints := []string{
 		mustEnv(t, "OPENFOX_TOS_RPC_1"),
@@ -296,7 +299,7 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 	providerIdentityKey := lifecycleKey("provider-intent")
 	intent := lifecycleSupplyIntent(
 		t,
-		network.NetworkId,
+		network.GetNetworkId(),
 		providerID,
 		assetMaster,
 		publicCanonical,
@@ -340,7 +343,7 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	agreementDigest, _ := commerce.AgreementBodyDigest(body)
-	if _, err := buyer.RecordAgreementProposal(
+	if _, err = buyer.RecordAgreementProposal(
 		body,
 		buyerID,
 		"event:buyer-proposal",
@@ -348,7 +351,7 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.RecordAgreementProposal(
+	if _, err = provider.RecordAgreementProposal(
 		body,
 		buyerID,
 		"event:provider-inbox",
@@ -377,7 +380,7 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		providerID,
 		capabilityID,
 		capabilityVersion,
-		proposal.ManifestDigest,
+		proposal.GetManifestDigest(),
 	)
 	providerOfferKey := lifecycleKey("provider-offer")
 	offerPolicy := ProviderOfferAuthorityPolicy{
@@ -443,7 +446,7 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		ReservationID: "reservation:" + agreementDigest[7:], AgreementDigest: agreementDigest,
 		ComputeUnits: 1, ReceivableAtomic: 5_000_000,
 	}
-	if _, _, err := providerEngine.ReserveAgreement(
+	if _, _, err = providerEngine.ReserveAgreement(
 		ctx,
 		agreementDigest,
 		reservation,
@@ -679,8 +682,8 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		"autonomous lifecycle settled agreement=%s escrow=%s checkpoint=%d tx=%s",
 		agreementDigest,
 		purchase.Escrow.Address,
-		resolved.Reference.FinalizedCheckpoint,
-		resolved.Reference.TransactionHash,
+		resolved.Reference.GetFinalizedCheckpoint(),
+		resolved.Reference.GetTransactionHash(),
 	)
 	if retainedEvidenceDirectory != "" {
 		writeCampaignJSON(t, filepath.Join(retainedEvidenceDirectory, "paid-demand-lifecycle.json"), map[string]any{
@@ -911,11 +914,13 @@ func lifecycleWaitNativeVersion(t *testing.T, ctx context.Context, resolver exec
 		capability, capabilityFound, _, capabilityErr := resolver.ResolveFinalizedState(ctx, capabilityID, "")
 		last = fmt.Sprintf("provider_error=%v capability_error=%v provider=%+v capability=%+v",
 			providerErr, capabilityErr, provider, capability)
-		if providerErr == nil && capabilityErr == nil && providerFound && capabilityFound && provider != nil && provider.GetAgent() != nil &&
-			!provider.GetAgent().Tombstoned && capability != nil &&
+		if providerErr == nil && capabilityErr == nil && providerFound && capabilityFound && provider != nil &&
+			provider.GetAgent() != nil &&
+			!provider.GetAgent().GetTombstoned() &&
+			capability != nil &&
 			capability.GetCapability() != nil &&
-			capability.GetCapability().OwnerAgentId == providerID &&
-			!capability.GetCapability().Tombstoned {
+			capability.GetCapability().GetOwnerAgentId() == providerID &&
+			!capability.GetCapability().GetTombstoned() {
 			for _, item := range capability.GetCapability().Versions {
 				if item != nil && item.Version == version && item.ManifestDigest == manifestDigest && !item.Revoked {
 					return

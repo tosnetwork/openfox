@@ -71,9 +71,14 @@ func (service PaidDemandProviderSettlement) ResolveReceivable(ctx context.Contex
 	if !hasLocalPaidDemandReceivable(record, service.Engine) {
 		return false, nil
 	}
-	if service.Store == nil || service.Network == nil || service.EscrowResolver == nil || service.AssetResolver == nil ||
-		service.OfferAuthorities == nil || service.EscrowCode == nil || service.AssetWalletCode == nil ||
-		len(service.ExecutionKey) != ed25519.PrivateKeySize || service.ActionSender == nil || service.Authorizer == nil ||
+	if service.Store == nil || service.Network == nil || service.EscrowResolver == nil ||
+		service.AssetResolver == nil ||
+		service.OfferAuthorities == nil ||
+		service.EscrowCode == nil ||
+		service.AssetWalletCode == nil ||
+		len(service.ExecutionKey) != ed25519.PrivateKeySize ||
+		service.ActionSender == nil ||
+		service.Authorizer == nil ||
 		service.NetworkGlobalID == 0 ||
 		service.ActionNanoTOS == 0 {
 		return false, errors.New("Paid Demand Provider settlement is incomplete")
@@ -166,7 +171,7 @@ func (service PaidDemandProviderSettlement) ResolveReceivable(ctx context.Contex
 		return false, err
 	}
 	if resolved.State.Status == nativecore.EscrowStatusFundedV2 {
-		if err := service.submitRelease(
+		if err = service.submitRelease(
 			ctx,
 			record,
 			payment,
@@ -198,9 +203,11 @@ func (service PaidDemandProviderSettlement) ResolveReceivable(ctx context.Contex
 		}
 		return false, err
 	}
-	if resolved.FinalizedAt.Unix() <= 0 || assetObservation.FinalizedCheckpoint < resolved.Reference.FinalizedCheckpoint ||
+	if resolved.FinalizedAt.Unix() <= 0 ||
+		assetObservation.FinalizedCheckpoint < resolved.Reference.GetFinalizedCheckpoint() ||
 		assetObservation.TransactionTime < uint64(resolved.FinalizedAt.Unix()) ||
-		!atLeastAtomic(assetObservation.RecipientBalanceAtomic, payment.Amount.AmountAtomic) || assetObservation.TransactionHash == "" ||
+		!atLeastAtomic(assetObservation.RecipientBalanceAtomic, payment.Amount.AmountAtomic) ||
+		assetObservation.TransactionHash == "" ||
 		assetObservation.SourceOwnerAddress != escrow.Address ||
 		assetObservation.QueryID != queryID ||
 		assetObservation.AmountAtomic != payment.Amount.AmountAtomic {
@@ -218,8 +225,8 @@ func (service PaidDemandProviderSettlement) ResolveReceivable(ctx context.Contex
 		EscrowAddress:         escrow.Address,
 		QuoteCommitment:       commitment,
 		ReceiptCommitment:     receiptCommitment,
-		EscrowCheckpoint:      resolved.Reference.FinalizedCheckpoint,
-		EscrowTransactionHash: resolved.Reference.TransactionHash,
+		EscrowCheckpoint:      resolved.Reference.GetFinalizedCheckpoint(),
+		EscrowTransactionHash: resolved.Reference.GetTransactionHash(),
 		EscrowWalletAddress:   assetObservation.SourceWalletAddress,
 		ProviderWalletAddress: packageValue.Binding.ProviderWallet,
 		ReleaseQueryID:        queryID,
@@ -241,7 +248,7 @@ func (service PaidDemandProviderSettlement) ResolveReceivable(ctx context.Contex
 		AdapterEvidenceProfile: paidDemandPaymentEvidenceProfile,
 		ResolvedState:          "finalized",
 		ResolvedAtUnix:         assetObservation.TransactionTime,
-		FinalityReference:      resolved.Reference.TransactionHash,
+		FinalityReference:      resolved.Reference.GetTransactionHash(),
 		Evidence:               canonicalEvidence,
 	}
 	verifier := PaidDemandEscrowPaymentVerifier{
@@ -320,7 +327,7 @@ func (service PaidDemandProviderSettlement) submitRelease(ctx context.Context, r
 	}
 	prepared, err := service.ActionSender.PrepareWalletAction(ctx, buyersdk.WalletActionIntent{
 		StableActionID: authorization.StableActionID,
-		NetworkID:      service.Network.NetworkId,
+		NetworkID:      service.Network.GetNetworkId(),
 		TransitionKind: authorization.ActionKind,
 		Destination:    escrow.Address,
 		AmountNanoTOS:  service.ActionNanoTOS,
@@ -356,8 +363,10 @@ func (service PaidDemandProviderSettlement) waitForRelease(
 	defer cancel()
 	for {
 		resolved, found, err := service.EscrowResolver.ResolveFinalizedV2(call, address)
-		if err == nil && found && resolved != nil && resolved.State != nil && resolved.State.Status == nativecore.EscrowStatusReleasePendingV2 &&
-			resolved.State.QuoteCommitment == quote && resolved.State.ReceiptCommitment == receipt &&
+		if err == nil && found && resolved != nil && resolved.State != nil &&
+			resolved.State.Status == nativecore.EscrowStatusReleasePendingV2 &&
+			resolved.State.QuoteCommitment == quote &&
+			resolved.State.ReceiptCommitment == receipt &&
 			resolved.Reference != nil {
 			return resolved, true, nil
 		}
@@ -386,8 +395,12 @@ type PaidDemandEscrowPaymentVerifier struct {
 func (verifier PaidDemandEscrowPaymentVerifier) VerifyPaymentEvidence(request commerce.AgreementPaymentRequest,
 	evidence commerce.AgreementPaymentEvidence, now time.Time,
 ) error {
-	if evidence.AdapterEvidenceProfile != paidDemandPaymentEvidenceProfile || request.SettlementAdapterURI != paiddemand.SettlementAdapterURI ||
-		verifier.Escrow == nil || verifier.Asset == nil || verifier.Network == nil || verifier.Offers == nil ||
+	if evidence.AdapterEvidenceProfile != paidDemandPaymentEvidenceProfile ||
+		request.SettlementAdapterURI != paiddemand.SettlementAdapterURI ||
+		verifier.Escrow == nil ||
+		verifier.Asset == nil ||
+		verifier.Network == nil ||
+		verifier.Offers == nil ||
 		verifier.Proposal == nil {
 		return errors.New("unsupported Paid Demand payment evidence")
 	}
@@ -411,7 +424,7 @@ func (verifier PaidDemandEscrowPaymentVerifier) VerifyPaymentEvidence(request co
 	}
 	observation, found, err := verifier.Asset.ResolveExactCredit(
 		context.Background(),
-		verifier.Proposal.MaximumPrice.Asset,
+		verifier.Proposal.GetMaximumPrice().GetAsset(),
 		payload.EscrowAddress,
 		payload.ProviderWalletAddress,
 		payload.ReleaseQueryID,

@@ -20,14 +20,16 @@ import (
 type releaseAuthorizerFake struct{}
 
 func (releaseAuthorizerFake) AuthorizeCustodyEffect(_ context.Context,
-	request buyersdk.CustodyEffectRequest) (commerce.CustodyEffectAuthorization, error) {
+	request buyersdk.CustodyEffectRequest,
+) (commerce.CustodyEffectAuthorization, error) {
 	return commerce.CustodyEffectAuthorization{ActionKind: request.ActionKind, StableActionID: "release-action"}, nil
 }
 
 type releaseSenderFake struct{ body []byte }
 
 func (sender *releaseSenderFake) PrepareWalletAction(_ context.Context,
-	intent buyersdk.WalletActionIntent) (*buyersdk.PreparedWalletAction, error) {
+	intent buyersdk.WalletActionIntent,
+) (*buyersdk.PreparedWalletAction, error) {
 	body, err := base64.StdEncoding.DecodeString(intent.BodyBOCBase64)
 	if err != nil {
 		return nil, err
@@ -47,20 +49,36 @@ func TestPaidDemandReleaseSignsTheEscrowV2IntentForTheConfiguredNetwork(t *testi
 	executionKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x51}, ed25519.SeedSize))
 	sender := &releaseSenderFake{}
 	const globalID int32 = -217
-	service := PaidDemandProviderSettlement{Engine: &Engine{OwnerID: "owner:test", AgentID: "agent:test",
-		Now: func() time.Time { return time.Unix(1_800_000_000, 0) }},
+	service := PaidDemandProviderSettlement{
+		Engine: &Engine{
+			OwnerID: "owner:test", AgentID: "agent:test",
+			Now: func() time.Time { return time.Unix(1_800_000_000, 0) },
+		},
 		Network:      &nativev1.NetworkDomain{NetworkId: "tos:test"},
 		ExecutionKey: executionKey, ActionSender: sender, Authorizer: releaseAuthorizerFake{},
-		NetworkGlobalID: globalID, ActionNanoTOS: 100_000_000}
+		NetworkGlobalID: globalID, ActionNanoTOS: 100_000_000,
+	}
 	escrow := nativecore.EscrowIdentityV2{Address: "0:" + strings.Repeat("b0", 32)}
-	state := &nativecore.EscrowStateV2{QuoteCommitment: "tvm-cell-sha256:" + strings.Repeat("c1", 32),
-		ProviderAddress: "0:" + strings.Repeat("9e", 32), ExecutionDeadline: 1_800_000_500}
+	state := &nativecore.EscrowStateV2{
+		QuoteCommitment: "tvm-cell-sha256:" + strings.Repeat("c1", 32),
+		ProviderAddress: "0:" + strings.Repeat("9e", 32), ExecutionDeadline: 1_800_000_500,
+	}
 	quote := cell.BeginCell().MustStoreUInt(0x51, 8).EndCell()
 	receipt := cell.BeginCell().MustStoreUInt(0x52, 8).EndCell()
-	payment := commerce.AgreementObligation{ObligationID: "pay",
-		Amount: &commerce.AgreementAmount{AmountAtomic: "25000000"}}
-	if err := service.submitRelease(context.Background(), EngagementRecord{AgreementDigest: "sha256:" + strings.Repeat("a1", 32)},
-		payment, escrow, state, quote, receipt, "tvm-cell-sha256:"+strings.Repeat("d2", 32)); err != nil {
+	payment := commerce.AgreementObligation{
+		ObligationID: "pay",
+		Amount:       &commerce.AgreementAmount{AmountAtomic: "25000000"},
+	}
+	if err := service.submitRelease(
+		context.Background(),
+		EngagementRecord{AgreementDigest: "sha256:" + strings.Repeat("a1", 32)},
+		payment,
+		escrow,
+		state,
+		quote,
+		receipt,
+		"tvm-cell-sha256:"+strings.Repeat("d2", 32),
+	); err != nil {
 		t.Fatal(err)
 	}
 	body, err := cell.FromBOC(sender.body)

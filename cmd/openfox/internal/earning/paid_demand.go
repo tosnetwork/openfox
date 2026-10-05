@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/tosnetwork/openfox/pkg/config"
-	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
@@ -20,6 +18,9 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/paiddemand"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
+
+	"github.com/tosnetwork/openfox/pkg/config"
+	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
 )
 
 type paidDemandRuntime struct {
@@ -41,18 +42,23 @@ type paidDemandRuntime struct {
 }
 
 func openPaidDemandRuntime(settings config.EarningSettings, engine *openfoxearning.Engine,
-	identityKey ed25519.PrivateKey, fence openfoxearning.WriterFenceProvider) (*paidDemandRuntime, error) {
+	identityKey ed25519.PrivateKey, fence openfoxearning.WriterFenceProvider,
+) (*paidDemandRuntime, error) {
 	if engine == nil || engine.Authority == nil || fence == nil || !settings.TOSEscrow.Enabled {
 		return nil, errors.New("Paid Demand runtime is disabled or incomplete")
 	}
 	configured := settings.TOSEscrow
-	network := &nativev1.NetworkDomain{NetworkId: configured.NetworkID,
-		GenesisRootHash: configured.GenesisRootHash, GenesisFileHash: configured.GenesisFileHash}
-	chainAdapter, err := toschain.New(toschain.Config{Network: configured.NetworkID,
+	network := &nativev1.NetworkDomain{
+		NetworkId:       configured.NetworkID,
+		GenesisRootHash: configured.GenesisRootHash, GenesisFileHash: configured.GenesisFileHash,
+	}
+	chainAdapter, err := toschain.New(toschain.Config{
+		Network:   configured.NetworkID,
 		Endpoints: append([]string(nil), configured.RPCEndpoints...), Quorum: int(configured.Quorum),
 		QueryTimeout:     time.Duration(configured.QueryTimeoutMillis) * time.Millisecond,
 		MaxResponseBytes: int64(configured.MaximumResponseBytes),
-		ReadinessMaxAge:  time.Duration(configured.ReadinessMaximumAgeSeconds) * time.Second})
+		ReadinessMaxAge:  time.Duration(configured.ReadinessMaximumAgeSeconds) * time.Second,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +73,12 @@ func openPaidDemandRuntime(settings config.EarningSettings, engine *openfoxearni
 	if err != nil {
 		return nil, fmt.Errorf("load pinned Native Registry code: %w", err)
 	}
-	locator, err := nativecore.NewLocator(network, -1, base64.StdEncoding.EncodeToString(registryRaw), configured.RegistryCodeHash)
+	locator, err := nativecore.NewLocator(
+		network,
+		-1,
+		base64.StdEncoding.EncodeToString(registryRaw),
+		configured.RegistryCodeHash,
+	)
 	if err != nil || registryCode == nil {
 		return nil, errors.New("construct pinned Native Registry locator")
 	}
@@ -102,26 +113,42 @@ func openPaidDemandRuntime(settings config.EarningSettings, engine *openfoxearni
 	if err != nil {
 		return nil, err
 	}
-	if len(identityKey) != ed25519.PrivateKeySize || !identityKey.Public().(ed25519.PublicKey).Equal(localPolicy.PublicKey) {
+	if len(identityKey) != ed25519.PrivateKeySize ||
+		!identityKey.Public().(ed25519.PublicKey).Equal(localPolicy.PublicKey) {
 		return nil, errors.New("local Agent identity key differs from its Provider Offer authority pin")
 	}
-	executionKey, err := loadOrCreateNamedKey(filepath.Join(settings.StateDir, "identity"), "paid-demand-execution-ed25519.key")
+	executionKey, err := loadOrCreateNamedKey(
+		filepath.Join(settings.StateDir, "identity"),
+		"paid-demand-execution-ed25519.key",
+	)
 	if err != nil {
 		return nil, err
 	}
-	publicTerms := paiddemand.PublicTermsV1{SchemaVersion: 1, ProviderWallet: configured.ProviderWallet,
-		AssetMasterAddress: configured.AssetMasterAddress, AssetMasterCodeHash: configured.AssetMasterCodeHash,
-		AssetWalletCodeHash: configured.AssetWalletCodeHash, AssetDecimals: configured.AssetDecimals,
-		CapabilityID: configured.CapabilityID, CapabilityVersion: configured.CapabilityVersion,
+	publicTerms := paiddemand.PublicTermsV1{
+		SchemaVersion:          1,
+		ProviderWallet:         configured.ProviderWallet,
+		AssetMasterAddress:     configured.AssetMasterAddress,
+		AssetMasterCodeHash:    configured.AssetMasterCodeHash,
+		AssetWalletCodeHash:    configured.AssetWalletCodeHash,
+		AssetDecimals:          configured.AssetDecimals,
+		CapabilityID:           configured.CapabilityID,
+		CapabilityVersion:      configured.CapabilityVersion,
 		ExecutionSignerEd25519: append([]byte(nil), executionKey.Public().(ed25519.PublicKey)...),
-		TransportBinding: nativecore.TransportBindingV1{SecurityMode: configured.TransportSecurityMode,
-			MaxRequestBytes: configured.TransportMaximumBytes, BaseURL: configured.TransportBaseURL},
-		ExecutionProfileURI: paiddemand.ExecutionManifestProfileV1, FundingWindowSeconds: configured.FundingWindowSeconds,
-		ExecutionWindowSeconds: configured.ExecutionWindowSeconds, RefundDelaySeconds: configured.RefundDelaySeconds}
+		TransportBinding: nativecore.TransportBindingV1{
+			SecurityMode:    configured.TransportSecurityMode,
+			MaxRequestBytes: configured.TransportMaximumBytes, BaseURL: configured.TransportBaseURL,
+		},
+		ExecutionProfileURI:    paiddemand.ExecutionManifestProfileV1,
+		FundingWindowSeconds:   configured.FundingWindowSeconds,
+		ExecutionWindowSeconds: configured.ExecutionWindowSeconds,
+		RefundDelaySeconds:     configured.RefundDelaySeconds,
+	}
 	if _, err := paiddemand.CanonicalPublicTerms(publicTerms); err != nil {
 		return nil, err
 	}
-	negotiations, err := openfoxearning.OpenPaidDemandNegotiationStore(filepath.Join(settings.StateDir, "paid-demand-negotiations"))
+	negotiations, err := openfoxearning.OpenPaidDemandNegotiationStore(
+		filepath.Join(settings.StateDir, "paid-demand-negotiations"),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -132,60 +159,96 @@ func openPaidDemandRuntime(settings config.EarningSettings, engine *openfoxearni
 	actionSender, err := buyersdk.NewTOSCTLWalletActionSender(buyersdk.TOSCTLWalletActionSenderConfig{
 		BinaryPath: configured.Executable, ConfigPath: configured.ConfigPath, WalletName: configured.ActionWallet,
 		FeeReserveNanoTOS: configured.FeeReserveNanoTOS, VaultURL: configured.VaultURL,
-		JournalDirectory: configured.CustodyJournalDirectory, QuorumConfigPaths: configured.CustodyQuorumConfigPaths})
+		JournalDirectory: configured.CustodyJournalDirectory, QuorumConfigPaths: configured.CustodyQuorumConfigPaths,
+	})
 	if err != nil {
 		return nil, err
 	}
 	providerSender, err := buyersdk.NewTOSCTLWalletActionSender(buyersdk.TOSCTLWalletActionSenderConfig{
-		BinaryPath: configured.Executable, ConfigPath: configured.ConfigPath, WalletName: configured.ProviderActionWallet,
-		FeeReserveNanoTOS: configured.FeeReserveNanoTOS, VaultURL: configured.VaultURL,
+		BinaryPath:        configured.Executable,
+		ConfigPath:        configured.ConfigPath,
+		WalletName:        configured.ProviderActionWallet,
+		FeeReserveNanoTOS: configured.FeeReserveNanoTOS,
+		VaultURL:          configured.VaultURL,
 		JournalDirectory:  filepath.Join(configured.CustodyJournalDirectory, "provider"),
-		QuorumConfigPaths: configured.CustodyQuorumConfigPaths})
+		QuorumConfigPaths: configured.CustodyQuorumConfigPaths,
+	})
 	if err != nil {
 		return nil, err
 	}
 	offerResolver := openfoxearning.PinnedProviderOfferAuthorities{Policies: authorities}
-	buyer, err := buyersdk.NewPaidDemandBuyer(buyersdk.PaidDemandBuyerConfig{NativeClient: nativeClient,
-		AssetResolver: assetResolver, Network: network, RegistryCodeHash: configured.RegistryCodeHash,
-		BuyerAddress: configured.BuyerAddress, AssetWalletCode: assetWalletCode,
-		BudgetLimits: buyersdk.BudgetLimits{Window: time.Duration(configured.BudgetWindowSeconds) * time.Second,
+	buyer, err := buyersdk.NewPaidDemandBuyer(buyersdk.PaidDemandBuyerConfig{
+		NativeClient:     nativeClient,
+		AssetResolver:    assetResolver,
+		Network:          network,
+		RegistryCodeHash: configured.RegistryCodeHash,
+		BuyerAddress:     configured.BuyerAddress,
+		AssetWalletCode:  assetWalletCode,
+		BudgetLimits: buyersdk.BudgetLimits{
+			Window:       time.Duration(configured.BudgetWindowSeconds) * time.Second,
 			MaxPurchases: configured.MaximumPurchases, MaxPerPurchaseAtomic: configured.MaximumPerPurchaseAtomic,
-			MaxTotalAtomic: configured.MaximumTotalAtomic}, EscrowResolver: escrowResolver,
-		ProviderOfferResolver: offerResolver, EscrowCode: escrowCode, Deployer: deployer, ActionSender: actionSender,
-		EffectAuthorizer: openfoxearning.PaidDemandCustodyAuthorizer{Engine: engine, FenceSource: fence, PolicyRevision: 1,
-			NetworkDomain: configuredPaidDemandCustodyNetwork(configured)},
-		OwnerID: settings.OwnerID, AgentID: settings.AgentID, CallerID: settings.AgentID, NetworkGlobalID: configured.NetworkGlobalID,
-		ActionNanoTOS: configured.ActionNanoTOS, PollInterval: time.Duration(configured.PollIntervalMillis) * time.Millisecond,
-		FinalityTimeout: time.Duration(configured.FinalityTimeoutSeconds) * time.Second})
+			MaxTotalAtomic: configured.MaximumTotalAtomic,
+		},
+		EscrowResolver:        escrowResolver,
+		ProviderOfferResolver: offerResolver,
+		EscrowCode:            escrowCode,
+		Deployer:              deployer,
+		ActionSender:          actionSender,
+		EffectAuthorizer: openfoxearning.PaidDemandCustodyAuthorizer{
+			Engine: engine, FenceSource: fence, PolicyRevision: 1,
+			NetworkDomain: configuredPaidDemandCustodyNetwork(configured),
+		},
+		OwnerID:         settings.OwnerID,
+		AgentID:         settings.AgentID,
+		CallerID:        settings.AgentID,
+		NetworkGlobalID: configured.NetworkGlobalID,
+		ActionNanoTOS:   configured.ActionNanoTOS,
+		PollInterval:    time.Duration(configured.PollIntervalMillis) * time.Millisecond,
+		FinalityTimeout: time.Duration(configured.FinalityTimeoutSeconds) * time.Second,
+	})
 	if err != nil {
 		return nil, err
 	}
-	evidence := paiddemand.NativeEvidenceVerifier{ProviderOffers: offerResolver,
-		BuyerAccepts: paiddemand.QuorumBuyerAcceptVerifier{Resolver: escrowResolver, Network: network,
-			ProviderOffers: offerResolver, Timeout: time.Duration(configured.QueryTimeoutMillis) * time.Millisecond}}
-	return &paidDemandRuntime{Buyer: buyer, Network: network, EscrowResolver: escrowResolver, NativeResolver: nativeResolver,
+	evidence := paiddemand.NativeEvidenceVerifier{
+		ProviderOffers: offerResolver,
+		BuyerAccepts: paiddemand.QuorumBuyerAcceptVerifier{
+			Resolver: escrowResolver, Network: network,
+			ProviderOffers: offerResolver, Timeout: time.Duration(configured.QueryTimeoutMillis) * time.Millisecond,
+		},
+	}
+	return &paidDemandRuntime{
+		Buyer: buyer, Network: network, EscrowResolver: escrowResolver, NativeResolver: nativeResolver,
 		AssetResolver:    assetResolver,
 		OfferAuthorities: offerResolver,
-		EvidenceVerifier: evidence, ProviderSigner: openfoxearning.PolicyProviderOfferSigner{Policy: localPolicy,
-			Key: identityKey, TTL: time.Hour}, PublicTerms: publicTerms, Negotiations: negotiations,
+		EvidenceVerifier: evidence, ProviderSigner: openfoxearning.PolicyProviderOfferSigner{
+			Policy: localPolicy,
+			Key:    identityKey, TTL: time.Hour,
+		}, PublicTerms: publicTerms, Negotiations: negotiations,
 		ExecutionKey: executionKey, EscrowCode: escrowCode, AssetWalletCode: assetWalletCode,
-		ActionSender: actionSender, ProviderSender: providerSender}, nil
+		ActionSender: actionSender, ProviderSender: providerSender,
+	}, nil
 }
 
 func configuredPaidDemandCustodyNetwork(value config.EarningTOSEscrowSettings) *commerce.CustodyNetworkDomain {
-	return &commerce.CustodyNetworkDomain{NetworkID: value.NetworkID, GlobalID: value.NetworkGlobalID,
+	return &commerce.CustodyNetworkDomain{
+		NetworkID: value.NetworkID, GlobalID: value.NetworkGlobalID,
 		ZeroStateRootHash: value.GenesisRootHash, ZeroStateFileHash: value.GenesisFileHash,
-		WorkchainID: value.NetworkWorkchainID}
+		WorkchainID: value.NetworkWorkchainID,
+	}
 }
 
 // paidDemandDeployerConfig carries the configured custody and the escrow v2
 // non-production acknowledgment to the deployer; without the acknowledgment
 // the deployer refuses to prepare or broadcast any escrow.
-func paidDemandDeployerConfig(configured config.EarningTOSEscrowSettings) buyersdk.TOSCTLPaidDemandEscrowDeployerConfig {
-	return buyersdk.TOSCTLPaidDemandEscrowDeployerConfig{BinaryPath: configured.Executable,
+func paidDemandDeployerConfig(
+	configured config.EarningTOSEscrowSettings,
+) buyersdk.TOSCTLPaidDemandEscrowDeployerConfig {
+	return buyersdk.TOSCTLPaidDemandEscrowDeployerConfig{
+		BinaryPath: configured.Executable,
 		ConfigPath: configured.ConfigPath, WalletName: configured.DeploymentWallet,
 		RelayerAddress: configured.RelayerAddress, AttachedNanoTOS: configured.DeploymentNanoTOS,
-		VaultURL: configured.VaultURL, AcknowledgeNonProductionTestDeployment: configured.NonProductionTestDeployment}
+		VaultURL: configured.VaultURL, AcknowledgeNonProductionTestDeployment: configured.NonProductionTestDeployment,
+	}
 }
 
 func readPinnedCell(path, expectedHash string) ([]byte, *cell.Cell, error) {
@@ -204,7 +267,8 @@ func readPinnedCell(path, expectedHash string) ([]byte, *cell.Cell, error) {
 }
 
 func providerOfferAuthorities(configured []config.EarningProviderOfferAuthoritySettings,
-	localAgentID string) (map[string]openfoxearning.ProviderOfferAuthorityPolicy, openfoxearning.ProviderOfferAuthorityPolicy, error) {
+	localAgentID string,
+) (map[string]openfoxearning.ProviderOfferAuthorityPolicy, openfoxearning.ProviderOfferAuthorityPolicy, error) {
 	result := make(map[string]openfoxearning.ProviderOfferAuthorityPolicy, len(configured))
 	var local openfoxearning.ProviderOfferAuthorityPolicy
 	for _, item := range configured {
@@ -212,11 +276,13 @@ func providerOfferAuthorities(configured []config.EarningProviderOfferAuthorityS
 		if err != nil {
 			return nil, local, err
 		}
-		policy := openfoxearning.ProviderOfferAuthorityPolicy{AgentID: item.AgentID, PublicKey: key,
+		policy := openfoxearning.ProviderOfferAuthorityPolicy{
+			AgentID: item.AgentID, PublicKey: key,
 			AgentGeneration: item.AgentGeneration, ControllerPolicyDigest: item.ControllerPolicyDigest,
 			DelegationDigest: item.DelegationDigest, ScopeBoundsDigest: item.ScopeBoundsDigest,
 			OwnerMandateDigest:               item.OwnerMandateDigest,
-			IssuanceAuthorityReferenceDigest: item.IssuanceAuthorityReferenceDigest}
+			IssuanceAuthorityReferenceDigest: item.IssuanceAuthorityReferenceDigest,
+		}
 		result[item.AgentID] = policy
 		if item.AgentID == localAgentID {
 			local = policy

@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
+
+	"github.com/tosnetwork/openfox/pkg/config"
 )
 
 func paidDemandDeployerFor(t *testing.T, nonProduction bool) *buyersdk.TOSCTLPaidDemandEscrowDeployer {
@@ -22,9 +23,11 @@ func paidDemandDeployerFor(t *testing.T, nonProduction bool) *buyersdk.TOSCTLPai
 	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	settings := config.EarningTOSEscrowSettings{Executable: binary, ConfigPath: configPath,
+	settings := config.EarningTOSEscrowSettings{
+		Executable: binary, ConfigPath: configPath,
 		DeploymentWallet: "deployer", RelayerAddress: "0:" + strings.Repeat("ab", 32),
-		DeploymentNanoTOS: 100_000_000, NonProductionTestDeployment: nonProduction}
+		DeploymentNanoTOS: 100_000_000, NonProductionTestDeployment: nonProduction,
+	}
 	deployer, err := buyersdk.NewTOSCTLPaidDemandEscrowDeployer(paidDemandDeployerConfig(settings))
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +38,9 @@ func paidDemandDeployerFor(t *testing.T, nonProduction bool) *buyersdk.TOSCTLPai
 // Escrow v2 deployments require the operator's non-production
 // acknowledgment, which is off unless configured.
 func TestPaidDemandEscrowDeploymentRequiresTheNonProductionAcknowledgment(t *testing.T) {
-	if !paidDemandDeployerConfig(config.EarningTOSEscrowSettings{NonProductionTestDeployment: true}).AcknowledgeNonProductionTestDeployment ||
+	if !paidDemandDeployerConfig(
+		config.EarningTOSEscrowSettings{NonProductionTestDeployment: true},
+	).AcknowledgeNonProductionTestDeployment ||
 		paidDemandDeployerConfig(config.EarningTOSEscrowSettings{}).AcknowledgeNonProductionTestDeployment {
 		t.Fatal("the configured acknowledgment does not reach the deployer")
 	}

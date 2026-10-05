@@ -2,10 +2,14 @@ package nativeimpl
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 )
@@ -20,12 +24,10 @@ func writeOpportunityCoordinatorConfig(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	base := testChainBuyerStackConfig(t)
-	registryRaw, _ := base64.StdEncoding.DecodeString(base.RegistryCodeBOC)
-	registry, err := cell.FromBOC(registryRaw)
-	if err != nil {
-		t.Fatal(err)
-	}
+	registry := cell.BeginCell().MustStoreUInt(0xdeadbeef, 32).EndCell()
+	network := &nativev1.NetworkDomain{NetworkId: "tos-local",
+		GenesisRootHash: "sha256:" + strings.Repeat("1", 64), GenesisFileHash: "sha256:" + strings.Repeat("2", 64)}
+	endpoints := []string{"http://127.0.0.1:19001", "http://127.0.0.1:19002", "http://127.0.0.1:19003"}
 	registryPath := filepath.Join(directory, "registry.boc")
 	if err := os.WriteFile(registryPath, []byte(base64.StdEncoding.EncodeToString(registry.ToBOC())+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -40,8 +42,8 @@ func writeOpportunityCoordinatorConfig(t *testing.T) string {
 			BaseURL: "http://127.0.0.1:" + string(rune('1'+index)) + "8000", BearerTokenFile: token, InsecureLoopback: true})
 	}
 	document := opportunityCoordinatorDocument{Schema: opportunityCoordinatorConfigSchema, StateDir: state,
-		SocketPath: filepath.Join(run, "opportunity.sock"), Network: base.Network, ChainEndpoints: base.Endpoints,
-		ChainQuorum: 2, RegistryCodeBOCPath: registryPath, RegistryCodeHash: base.RegistryCodeHash,
+		SocketPath: filepath.Join(run, "opportunity.sock"), Network: network, ChainEndpoints: endpoints,
+		ChainQuorum: 2, RegistryCodeBOCPath: registryPath, RegistryCodeHash: "tvm-cell-sha256:" + hex.EncodeToString(registry.Hash()),
 		CallerID: "openfox-opportunity", RequestTimeoutSeconds: 5, MaxResults: 100,
 		CredentialQuotaEnforced: true, Gateways: gateways}
 	raw, _ := json.Marshal(document)
@@ -89,20 +91,25 @@ func TestLoadOpportunityCoordinatorRequiresPollingProtectionAndStrictConfig(t *t
 	}
 }
 
-func TestLoadOpportunityCoordinatorRejectsIncompletePolicyGatedAuthority(t *testing.T) {
+// Autonomous purchasing settled through the retired version 1 escrow; a
+// configuration that still asks for it is refused rather than ignored.
+func TestLoadOpportunityCoordinatorRefusesAutonomousPurchaseConfiguration(t *testing.T) {
 	path := writeOpportunityCoordinatorConfig(t)
+	if _, err := LoadOpportunityCoordinator(path); err != nil {
+		t.Fatalf("positive control: read-only configuration refused: %v", err)
+	}
 	raw, _ := os.ReadFile(path)
-	var document opportunityCoordinatorDocument
+	var document map[string]any
 	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatal(err)
 	}
-	document.Purchase = &opportunityPurchaseConfig{StateDir: document.StateDir, MandateID: "mandate",
-		CapabilityClass: "software-work", RequestTimeoutSeconds: 5}
+	document["purchase"] = map[string]any{"state_dir": document["state_dir"], "mandate_id": "mandate",
+		"capability_class": "software-work", "request_timeout_seconds": 5}
 	mutated, _ := json.Marshal(document)
 	if err := os.WriteFile(path, mutated, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadOpportunityCoordinator(path); err == nil {
-		t.Fatal("incomplete policy, custody, Messenger, and task authority was accepted")
+		t.Fatal("a configuration requesting autonomous purchasing was accepted")
 	}
 }

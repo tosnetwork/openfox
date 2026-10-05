@@ -157,16 +157,10 @@ readable on the OpenFox host.
 
 ## Typed Agent Packet provider handoff
 
-The native `tos-service-provider` may expose its existing Agent Packet verifier
-and shared A2A/MCP/Agent Packet Execution Gate on an owner-private local socket:
-
-```text
--messenger-agent-packet-socket /run/user/1000/openfox-provider/agent-packet.sock
-```
-
-The parent directory must already exist with no group/world permissions. The
-provider refuses a relative path, symlink, ordinary-file replacement or public
-directory, creates the socket as mode `0600`, and removes it on shutdown. Unix
+`nativeimpl.OpenAgentPacketUnixServer` exposes an Agent Packet handler on an
+owner-private local socket. The parent directory must already exist with no
+group/world permissions. The server refuses a relative path, symlink,
+ordinary-file replacement or public directory, creates the socket as mode `0600`, and removes it on shutdown. Unix
 socket possession is only a delivery boundary: the received canonical Packet
 still passes the protocol's finalized sender/controller verification and replay
 guard before the purchase-bound adapter reaches the one shared Execution Gate.

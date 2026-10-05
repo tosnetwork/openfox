@@ -125,9 +125,7 @@ func openPaidDemandRuntime(settings config.EarningSettings, engine *openfoxearni
 	if err != nil {
 		return nil, err
 	}
-	deployer, err := buyersdk.NewTOSCTLPaidDemandEscrowDeployer(buyersdk.TOSCTLPaidDemandEscrowDeployerConfig{
-		BinaryPath: configured.Executable, ConfigPath: configured.ConfigPath, WalletName: configured.DeploymentWallet,
-		RelayerAddress: configured.RelayerAddress, AttachedNanoTOS: configured.DeploymentNanoTOS, VaultURL: configured.VaultURL})
+	deployer, err := buyersdk.NewTOSCTLPaidDemandEscrowDeployer(paidDemandDeployerConfig(configured))
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +176,16 @@ func configuredPaidDemandCustodyNetwork(value config.EarningTOSEscrowSettings) *
 	return &commerce.CustodyNetworkDomain{NetworkID: value.NetworkID, GlobalID: value.NetworkGlobalID,
 		ZeroStateRootHash: value.GenesisRootHash, ZeroStateFileHash: value.GenesisFileHash,
 		WorkchainID: value.NetworkWorkchainID}
+}
+
+// paidDemandDeployerConfig carries the configured custody and the escrow v2
+// non-production acknowledgment to the deployer; without the acknowledgment
+// the deployer refuses to prepare or broadcast any escrow.
+func paidDemandDeployerConfig(configured config.EarningTOSEscrowSettings) buyersdk.TOSCTLPaidDemandEscrowDeployerConfig {
+	return buyersdk.TOSCTLPaidDemandEscrowDeployerConfig{BinaryPath: configured.Executable,
+		ConfigPath: configured.ConfigPath, WalletName: configured.DeploymentWallet,
+		RelayerAddress: configured.RelayerAddress, AttachedNanoTOS: configured.DeploymentNanoTOS,
+		VaultURL: configured.VaultURL, AcknowledgeNonProductionTestDeployment: configured.NonProductionTestDeployment}
 }
 
 func readPinnedCell(path, expectedHash string) ([]byte, *cell.Cell, error) {

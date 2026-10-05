@@ -352,7 +352,7 @@ func TestPaidDemandAutonomousLifecycleThreeNode(t *testing.T) {
 		BinaryPath: executable, ConfigPath: configPath, WalletName: "operator-funder",
 		RelayerAddress:  relayerAccount,
 		AttachedNanoTOS: 200_000_000, Timeout: 15 * time.Second, VaultURL: vaultURL,
-		AcknowledgeUnpinnedManualBroadcast: true})
+		AcknowledgeUnpinnedManualBroadcast: true, AcknowledgeNonProductionTestDeployment: true})
 	if err != nil {
 		t.Fatal(err)
 	}

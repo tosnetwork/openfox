@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 )
 
 var (
@@ -361,12 +363,17 @@ func (settings EarningSettings) Validate() error {
 		return errors.New("TOS escrow gate and Paid Demand Adapter enablement must match")
 	}
 	if escrow.Enabled {
+		// Paid Demand settles only through the released stablecoin escrow v2
+		// contract; any other escrow code is refused, however well formed.
+		if err := nativecore.RequireEscrowV2CodeHash(escrow.EscrowCodeHash); err != nil {
+			return fmt.Errorf("Paid Demand TOS escrow code: %w", err)
+		}
 		if escrow.NetworkID == "" || !earningDigestPattern.MatchString(escrow.GenesisRootHash) ||
 			!earningDigestPattern.MatchString(escrow.GenesisFileHash) || len(escrow.RPCEndpoints) < 3 || len(escrow.RPCEndpoints) > 8 ||
 			escrow.Quorum <= uint32(len(escrow.RPCEndpoints))/2 || escrow.Quorum > uint32(len(escrow.RPCEndpoints)) ||
 			escrow.QueryTimeoutMillis < 100 || escrow.QueryTimeoutMillis > 30_000 || escrow.MaximumResponseBytes == 0 ||
 			escrow.MaximumResponseBytes > 16<<20 || escrow.ReadinessMaximumAgeSeconds == 0 || escrow.ReadinessMaximumAgeSeconds > 3600 ||
-			!earningCellDigestPattern.MatchString(escrow.RegistryCodeHash) || !earningCellDigestPattern.MatchString(escrow.EscrowCodeHash) ||
+			!earningCellDigestPattern.MatchString(escrow.RegistryCodeHash) ||
 			!earningRawWC0Pattern.MatchString(escrow.AssetMasterAddress) || !earningCellDigestPattern.MatchString(escrow.AssetMasterCodeHash) ||
 			!earningCellDigestPattern.MatchString(escrow.AssetWalletCodeHash) || escrow.AssetDecimals == 0 || escrow.AssetDecimals > 18 ||
 			escrow.CapabilityID == "" || len(escrow.CapabilityID) > 256 || escrow.CapabilityVersion == "" || len(escrow.CapabilityVersion) > 64 ||

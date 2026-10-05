@@ -208,16 +208,16 @@ func (service PaidDemandProviderSettlement) ResolveReceivable(ctx context.Contex
 }
 
 func (service PaidDemandProviderSettlement) submitRelease(ctx context.Context, record EngagementRecord,
-	payment commerce.AgreementObligation, escrow nativecore.EscrowIdentityV1, state *nativecore.EscrowStateV2,
+	payment commerce.AgreementObligation, escrow nativecore.EscrowIdentityV2, state *nativecore.EscrowStateV2,
 	quote, receipt *cell.Cell, receiptCommitment string) error {
 	queryID := stableQueryID("release", state.QuoteCommitment)
 	charged, _ := new(big.Int).SetString(payment.Amount.AmountAtomic, 10)
-	intent, err := nativecore.BuildEscrowSettlementIntentV1(escrow.Address, quote, receipt, charged, queryID)
+	intent, err := nativecore.BuildEscrowSettlementIntentV2(service.NetworkGlobalID, escrow.Address, quote, receipt, charged, queryID)
 	if err != nil {
 		return err
 	}
 	signature := ed25519.Sign(service.ExecutionKey, intent.Hash())
-	body, err := nativecore.BuildEscrowReleaseBodyV1(queryID, receipt, signature)
+	body, err := nativecore.BuildEscrowReleaseBodyV2(queryID, receipt, signature)
 	if err != nil {
 		return err
 	}

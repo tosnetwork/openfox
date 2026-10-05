@@ -333,6 +333,8 @@ github.com/tosnetwork/tos-service-protocol v0.0.0-20260905112329-0fdc18940ab9 h1
 github.com/tosnetwork/tos-service-protocol v0.0.0-20260905112329-0fdc18940ab9/go.mod h1:LHTXahrT3G7Kee+8cvIY/HOSz3tO6B4hHozE/sBzzrE=
 github.com/tosnetwork/tos-service-protocol v0.0.0-20260905112659-d5f8c8e377a0 h1:h+eckInn3Nd1aU/6zdfZQAigo5Mq2/R5sCmj+80R5J0=
 github.com/tosnetwork/tos-service-protocol v0.0.0-20260905112659-d5f8c8e377a0/go.mod h1:LHTXahrT3G7Kee+8cvIY/HOSz3tO6B4hHozE/sBzzrE=
+github.com/tosnetwork/tos-service-protocol v0.0.0-20261005081311-6773bf9abb1e h1:awRi4ln/l1C22QKOwdAxilAO6bmpmFiLal4GjreT3gE=
+github.com/tosnetwork/tos-service-protocol v0.0.0-20261005081311-6773bf9abb1e/go.mod h1:LHTXahrT3G7Kee+8cvIY/HOSz3tO6B4hHozE/sBzzrE=
 github.com/tosnetwork/tosutils-go v1.18.2-0.20260820143526-4d1a10d94bef h1:P+zHw4vfeKoRdLgjEmLFnkZOu4MleU9X22hHEX6l/F8=
 github.com/tosnetwork/tosutils-go v1.18.2-0.20260820143526-4d1a10d94bef/go.mod h1:HtytU2Ya/EII8lswkqK30qgQePIHS1k7XDMxll3d9CQ=
 github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS4MhqMhdFk5YI=

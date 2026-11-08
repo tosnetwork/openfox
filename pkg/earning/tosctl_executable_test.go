@@ -379,7 +379,7 @@ func TestTOSCTLExecutableRejectsWritableOrIndirectAncestry(t *testing.T) {
 }
 
 func TestRound5CampaignBootstrapPinsBeforeBinderAndProvider(t *testing.T) {
-	_, authorityKey, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestRound5CampaignBootstrapPinsBeforeBinderAndProvider(t *testing.T) {
 					manifestEntry := entry(index)
 					if bindErr := wiring.bind(bootstrap, func() error {
 						binderCallbacks++
-						return bindCampaignPayer(t, manifestEntry, authorityKey, journal, bootstrap)
+						return bindCampaignPayer(t, manifestEntry, testAuthorityKeys(), journal, bootstrap)
 					}); bindErr != nil {
 						return bindErr
 					}
@@ -507,7 +507,7 @@ func TestRound5CampaignBootstrapPinsBeforeBinderAndProvider(t *testing.T) {
 						}
 						bootstraps = append(bootstraps, bootstrap)
 						snapshots = append(snapshots, snapshot)
-						return bindCampaignPayer(t, manifestEntry, authorityKey, journal, bootstrap)
+						return bindCampaignPayer(t, manifestEntry, testAuthorityKeys(), journal, bootstrap)
 					}); bindErr != nil {
 						return bindErr
 					}
@@ -577,7 +577,7 @@ func TestRound5CampaignBootstrapPinsBeforeBinderAndProvider(t *testing.T) {
 				}
 				return wiring.bind(bootstrap, func() error {
 					binderCallbacks++
-					return bindCampaignPayer(t, entry(0), authorityKey, journal, bootstrap)
+					return bindCampaignPayer(t, entry(0), testAuthorityKeys(), journal, bootstrap)
 				})
 			})
 		if err == nil || !strings.Contains(err.Error(), "executable is untrusted") ||
@@ -608,7 +608,7 @@ func TestRound5CampaignBootstrapPinsBeforeBinderAndProvider(t *testing.T) {
 				return errors.New("legacy campaign unexpectedly received a sealed bootstrap")
 			}
 			binderCallbacks++
-			return bindCampaignPayer(t, entry(0), authorityKey, journal, nil)
+			return bindCampaignPayer(t, entry(0), testAuthorityKeys(), journal, nil)
 		})
 		if err != nil || binderCallbacks != 1 {
 			t.Fatalf("legacy direct binder behavior changed: binders=%d err=%v", binderCallbacks, err)

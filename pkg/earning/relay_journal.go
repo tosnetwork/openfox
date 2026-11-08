@@ -429,11 +429,11 @@ func (journal *DurableRelayJournal) ReserveQuote(profile agentrelay.RelayService
 }
 
 func (journal *DurableRelayJournal) Admit(request agentrelay.RelayExecutionRequest,
-	now time.Time) (agentrelay.Record, bool, error) {
+	verified agentrelay.VerifiedRelayAdmissionReceipt, now time.Time) (agentrelay.Record, bool, error) {
 	if journal == nil || !validFrozenRelayRequest(request) || now.IsZero() {
 		return agentrelay.Record{}, false, errors.New("relay journal admission is invalid")
 	}
-	prepared, err := agentrelay.NewPreparedRecord(request, now.UTC())
+	prepared, err := agentrelay.NewPreparedRecord(request, verified, now.UTC())
 	if err != nil {
 		return agentrelay.Record{}, false, err
 	}

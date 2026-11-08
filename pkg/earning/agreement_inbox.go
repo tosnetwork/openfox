@@ -25,7 +25,6 @@ type ClaimedAgreementEvent struct {
 	Proposal                                                                          *payload.AgreementPropose
 	Acceptance                                                                        *payload.AgreementAccept
 	Evidence                                                                          *payload.AgreementEvidence
-	ProviderOffer                                                                     *payload.PaidDemandProviderOffer
 	Withdrawal                                                                        *payload.AgreementWithdraw
 	Delivery                                                                          *payload.AgreementDelivery
 }
@@ -91,8 +90,6 @@ func (inbox AgreementInbox) ClaimNext(ctx context.Context) (*ClaimedAgreementEve
 		result.Acceptance = &value
 	case payload.AgreementEvidence:
 		result.Evidence = &value
-	case payload.PaidDemandProviderOffer:
-		result.ProviderOffer = &value
 	case payload.AgreementWithdraw:
 		result.Withdrawal = &value
 	case payload.AgreementDelivery:

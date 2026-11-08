@@ -849,7 +849,6 @@ type EarningSettings struct {
 	Acquisition                EarningAcquisitionSettings        `json:"acquisition"`
 	Retrieval                  EarningRetrievalSettings          `json:"retrieval"`
 	TOSPayment                 EarningTOSPaymentSettings         `json:"tos_payment"`
-	TOSEscrow                  EarningTOSEscrowSettings          `json:"tos_escrow"`
 	PrivateHandoff             EarningPrivateHandoffSettings     `json:"private_handoff"`
 	ExternalSettlement         EarningExternalSettlementSettings `json:"external_settlement"`
 	Publication                EarningPublicationSettings        `json:"publication"`
@@ -1087,15 +1086,35 @@ type EarningPrivateUploaderSettings struct {
 // mutually-authenticated remote authority and never loads that signing key in
 // the OpenFox worker process.
 type EarningAuthoritySettings struct {
-	Mode               string `json:"mode,omitempty"`
-	Endpoint           string `json:"endpoint,omitempty"`
-	ServerName         string `json:"server_name,omitempty"`
-	CAFile             string `json:"ca_file,omitempty"`
-	ClientCertFile     string `json:"client_cert_file,omitempty"`
-	ClientKeyFile      string `json:"client_key_file,omitempty"`
-	AuthorityPublicKey string `json:"authority_public_key,omitempty"`
-	InstanceID         string `json:"instance_id,omitempty"`
-	TimeoutMillis      uint32 `json:"timeout_millis,omitempty"`
+	Mode           string `json:"mode,omitempty"`
+	Endpoint       string `json:"endpoint,omitempty"`
+	ServerName     string `json:"server_name,omitempty"`
+	CAFile         string `json:"ca_file,omitempty"`
+	ClientCertFile string `json:"client_cert_file,omitempty"`
+	ClientKeyFile  string `json:"client_key_file,omitempty"`
+	InstanceID     string `json:"instance_id,omitempty"`
+	TimeoutMillis  uint32 `json:"timeout_millis,omitempty"`
+	// AuthorityKeyID pins the owner Action Authority key (mldsa44:<64 hex>).
+	// It names the key; the key itself stays in tosctl custody, and the
+	// public key is read from custody (personal) or the shared authority
+	// (shared) and must derive this ID.
+	AuthorityKeyID string `json:"authority_key_id"`
+	// CustodyAuthorizationKeyID pins the custody authorization key of a
+	// personal authority (mldsa44:<64 hex>). A shared client sets none.
+	CustodyAuthorizationKeyID string `json:"custody_authorization_key_id,omitempty"`
+	// TOSCTL is the pinned tosctl helper that signs with the personal
+	// authority's custody controllers and verifies every ML-DSA-44 signature.
+	TOSCTL EarningTOSCTLHelperSettings `json:"tosctl"`
+}
+
+// EarningTOSCTLHelperSettings pins the tosctl helper by path and SHA-256.
+// ConfigPath and VaultURLEnvironment are needed only to sign; the vault URL
+// is read from the named environment variable and never stored in config.
+type EarningTOSCTLHelperSettings struct {
+	Binary              string `json:"binary"`
+	SHA256              string `json:"sha256"`
+	ConfigPath          string `json:"config_path,omitempty"`
+	VaultURLEnvironment string `json:"vault_url_environment,omitempty"`
 }
 
 type EarningPublicationSettings struct {
@@ -1135,77 +1154,6 @@ type EarningTOSPaymentSettings struct {
 	// inclusion/finality/reorg window used only after every signed Agreement
 	// payment horizon has elapsed. Zero keeps custody holds indefinitely.
 	CustodyFinalityGraceSeconds uint64 `json:"custody_finality_grace_seconds,omitempty"`
-}
-
-// EarningTOSEscrowSettings pins every network, code, custody, budget, and
-// Provider authority input needed by the optional Paid Demand Adapter. None of
-// these values may be learned from an Intent or model output at execution time.
-type EarningTOSEscrowSettings struct {
-	Enabled                    bool     `json:"enabled"`
-	NetworkID                  string   `json:"network_id,omitempty"`
-	GenesisRootHash            string   `json:"genesis_root_hash,omitempty"`
-	GenesisFileHash            string   `json:"genesis_file_hash,omitempty"`
-	RPCEndpoints               []string `json:"rpc_endpoints,omitempty"`
-	Quorum                     uint32   `json:"quorum,omitempty"`
-	QueryTimeoutMillis         uint32   `json:"query_timeout_millis,omitempty"`
-	MaximumResponseBytes       uint64   `json:"maximum_response_bytes,omitempty"`
-	ReadinessMaximumAgeSeconds uint32   `json:"readiness_maximum_age_seconds,omitempty"`
-	RegistryCodeBOCFile        string   `json:"registry_code_boc_file,omitempty"`
-	RegistryCodeHash           string   `json:"registry_code_hash,omitempty"`
-	EscrowCodeBOCFile          string   `json:"escrow_code_boc_file,omitempty"`
-	EscrowCodeHash             string   `json:"escrow_code_hash,omitempty"`
-	AssetWalletCodeBOCFile     string   `json:"asset_wallet_code_boc_file,omitempty"`
-	AssetMasterAddress         string   `json:"asset_master_address,omitempty"`
-	AssetMasterCodeHash        string   `json:"asset_master_code_hash,omitempty"`
-	AssetWalletCodeHash        string   `json:"asset_wallet_code_hash,omitempty"`
-	AssetDecimals              uint32   `json:"asset_decimals,omitempty"`
-	CapabilityID               string   `json:"capability_id,omitempty"`
-	CapabilityVersion          string   `json:"capability_version,omitempty"`
-	TransportSecurityMode      uint8    `json:"transport_security_mode,omitempty"`
-	TransportMaximumBytes      uint32   `json:"transport_maximum_bytes,omitempty"`
-	TransportBaseURL           string   `json:"transport_base_url,omitempty"`
-	FundingWindowSeconds       uint32   `json:"funding_window_seconds,omitempty"`
-	ExecutionWindowSeconds     uint32   `json:"execution_window_seconds,omitempty"`
-	RefundDelaySeconds         uint32   `json:"refund_delay_seconds,omitempty"`
-	BuyerAddress               string   `json:"buyer_address,omitempty"`
-	ProviderWallet             string   `json:"provider_wallet,omitempty"`
-	Executable                 string   `json:"executable,omitempty"`
-	ConfigPath                 string   `json:"config_path,omitempty"`
-	ActionWallet               string   `json:"action_wallet,omitempty"`
-	ProviderActionWallet       string   `json:"provider_action_wallet,omitempty"`
-	DeploymentWallet           string   `json:"deployment_wallet,omitempty"`
-	RelayerAddress             string   `json:"relayer_address,omitempty"`
-	VaultURL                   string   `json:"vault_url,omitempty"`
-	CustodyJournalDirectory    string   `json:"custody_journal_directory,omitempty"`
-	CustodyQuorumConfigPaths   []string `json:"custody_quorum_config_paths,omitempty"`
-	NetworkGlobalID            int32    `json:"network_global_id,omitempty"`
-	NetworkWorkchainID         int32    `json:"network_workchain_id,omitempty"`
-	DeploymentNanoTOS          uint64   `json:"deployment_nanotos,omitempty"`
-	// NonProductionTestDeployment acknowledges that escrows are deployed on a
-	// local or test network with test assets. Escrow v2 can strand funds when
-	// a recipient wallet refuses a payout, so without this acknowledgment
-	// (off by default) no escrow is deployed.
-	NonProductionTestDeployment bool                                    `json:"non_production_test_deployment,omitempty"`
-	ActionNanoTOS               uint64                                  `json:"action_nanotos,omitempty"`
-	FeeReserveNanoTOS           uint64                                  `json:"fee_reserve_nanotos,omitempty"`
-	MaximumPurchases            uint64                                  `json:"maximum_purchases,omitempty"`
-	MaximumPerPurchaseAtomic    string                                  `json:"maximum_per_purchase_atomic,omitempty"`
-	MaximumTotalAtomic          string                                  `json:"maximum_total_atomic,omitempty"`
-	BudgetWindowSeconds         uint32                                  `json:"budget_window_seconds,omitempty"`
-	PollIntervalMillis          uint32                                  `json:"poll_interval_millis,omitempty"`
-	FinalityTimeoutSeconds      uint32                                  `json:"finality_timeout_seconds,omitempty"`
-	ProviderAuthorities         []EarningProviderOfferAuthoritySettings `json:"provider_authorities,omitempty"`
-}
-
-type EarningProviderOfferAuthoritySettings struct {
-	AgentID                          string `json:"agent_id"`
-	PublicKey                        string `json:"public_key"`
-	AgentGeneration                  uint64 `json:"agent_generation"`
-	ControllerPolicyDigest           string `json:"controller_policy_digest"`
-	DelegationDigest                 string `json:"delegation_digest"`
-	ScopeBoundsDigest                string `json:"scope_bounds_digest"`
-	OwnerMandateDigest               string `json:"owner_mandate_digest"`
-	IssuanceAuthorityReferenceDigest string `json:"issuance_authority_reference_digest"`
 }
 
 type EarningAcquisitionSettings struct {
@@ -1278,7 +1226,6 @@ type EarningGateSettings struct {
 	Execution          bool `json:"execution"`
 	DirectPayment      bool `json:"direct_payment"`
 	ExternalSettlement bool `json:"external_settlement"`
-	TOSEscrow          bool `json:"tos_escrow"`
 	AgentRelay         bool `json:"agent_relay"`
 	AgentGuarantor     bool `json:"agent_guarantor"`
 }

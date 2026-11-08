@@ -235,8 +235,7 @@ func TestRelayProviderHandlerBindsAdmissionToAuthenticatedPrincipal(t *testing.T
 	attempt := fixture.attempt(t)
 	mutatedBody := attempt.Execution.AdmissionReceipt.Body
 	mutatedBody.AuthenticatedPrincipal = "principal:different-session"
-	attempt.Execution.AdmissionReceipt, err = agentrelay.SignRelaySideEffectAdmissionReceipt(mutatedBody,
-		fixture.authorityKey)
+	attempt.Execution.AdmissionReceipt, err = agentrelay.SignRelaySideEffectAdmissionReceipt(context.Background(), mutatedBody, testAuthorityCustody, fixture.authorityKey)
 	if err != nil {
 		t.Fatal(err)
 	}

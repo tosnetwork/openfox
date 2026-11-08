@@ -12,14 +12,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
+	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 )
 
 var (
-	earningDigestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	earningEd25519KeyPattern = regexp.MustCompile(`^ed25519:[0-9a-f]{64}$`)
-	earningCellDigestPattern = regexp.MustCompile(`^tvm-cell-sha256:[0-9a-f]{64}$`)
-	earningRawWC0Pattern     = regexp.MustCompile(`^0:[0-9a-f]{64}$`)
+	earningDigestPattern          = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	earningSHA256HexPattern       = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	earningEnvironmentNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+	earningEd25519KeyPattern      = regexp.MustCompile(`^ed25519:[0-9a-f]{64}$`)
 )
 
 func (settings EarningSettings) Validate() error {
@@ -41,7 +41,7 @@ func (settings EarningSettings) Validate() error {
 		return errors.New("earning economic policy is invalid")
 	}
 	anyGate := settings.Gates.Publication || settings.Gates.Contact || settings.Gates.Agreement || settings.Gates.Execution ||
-		settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow || settings.Gates.AgentRelay ||
+		settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.AgentRelay ||
 		settings.Gates.AgentGuarantor
 	if !settings.Enabled {
 		if anyGate || mode != "off" || !reflect.DeepEqual(settings.AgentRelay, EarningAgentRelaySettings{}) ||
@@ -64,10 +64,10 @@ func (settings EarningSettings) Validate() error {
 		return errors.New("side-effect earning modes cannot set observe_only")
 	}
 	if mode == "contact" && (settings.Gates.Agreement || settings.Gates.Execution || settings.Gates.DirectPayment ||
-		settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow || settings.Gates.AgentRelay || settings.Gates.AgentGuarantor) {
+		settings.Gates.ExternalSettlement || settings.Gates.AgentRelay || settings.Gates.AgentGuarantor) {
 		return errors.New("contact mode cannot enable Agreement, execution, or settlement")
 	}
-	if mode == "trusted" && (settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow) {
+	if mode == "trusted" && (settings.Gates.DirectPayment || settings.Gates.ExternalSettlement) {
 		return errors.New("trusted mode cannot enable value-transfer gates")
 	}
 	if mode == "approval-required" && anyGate {
@@ -100,7 +100,7 @@ func (settings EarningSettings) Validate() error {
 		if err != nil || parsed == nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
 			parsed.Path != "/v1/economic-authority" || parsed.RawQuery != "" || parsed.Fragment != "" ||
 			settings.Authority.ServerName == "" || settings.Authority.InstanceID == "" ||
-			!earningEd25519KeyPattern.MatchString(settings.Authority.AuthorityPublicKey) ||
+			settings.Authority.CustodyAuthorizationKeyID != "" ||
 			settings.Authority.TimeoutMillis < 1000 || settings.Authority.TimeoutMillis > 60000 {
 			return errors.New("shared earning authority endpoint, identity, key, and timeout are invalid")
 		}
@@ -110,9 +110,12 @@ func (settings EarningSettings) Validate() error {
 			}
 		}
 	} else if settings.Authority.Endpoint != "" || settings.Authority.ServerName != "" || settings.Authority.CAFile != "" ||
-		settings.Authority.ClientCertFile != "" || settings.Authority.ClientKeyFile != "" || settings.Authority.AuthorityPublicKey != "" ||
+		settings.Authority.ClientCertFile != "" || settings.Authority.ClientKeyFile != "" ||
 		settings.Authority.InstanceID != "" || settings.Authority.TimeoutMillis != 0 {
 		return errors.New("personal earning authority cannot configure shared authority fields")
+	}
+	if err := validateEarningAuthorityKeys(settings.Authority, authorityMode, anyGate); err != nil {
+		return err
 	}
 	if settings.Gates.Contact && uint32(len(settings.Carriers)) < minimumCarriers {
 		return errors.New("autonomous contact requires the configured independent Carrier minimum")
@@ -323,7 +326,7 @@ func (settings EarningSettings) Validate() error {
 		return errors.New("disabled external settlement cannot retain an active Adapter")
 	}
 	if settings.Gates.Execution && !settings.Gates.Agreement ||
-		(settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow) && !settings.Gates.Agreement {
+		(settings.Gates.DirectPayment || settings.Gates.ExternalSettlement) && !settings.Gates.Agreement {
 		return errors.New("execution and settlement gates require the Agreement gate")
 	}
 	if settings.Gates.Agreement && !settings.Gates.Contact {
@@ -357,99 +360,6 @@ func (settings EarningSettings) Validate() error {
 		}
 	} else if settings.TOSPayment.Enabled {
 		return errors.New("TOS payment Adapter cannot run while the direct-payment gate is closed")
-	}
-	escrow := settings.TOSEscrow
-	if settings.Gates.TOSEscrow != escrow.Enabled {
-		return errors.New("TOS escrow gate and Paid Demand Adapter enablement must match")
-	}
-	if escrow.Enabled {
-		// Paid Demand settles only through the released stablecoin escrow v2
-		// contract; any other escrow code is refused, however well formed.
-		if err := nativecore.RequireEscrowV2CodeHash(escrow.EscrowCodeHash); err != nil {
-			return fmt.Errorf("Paid Demand TOS escrow code: %w", err)
-		}
-		if escrow.NetworkID == "" || !earningDigestPattern.MatchString(escrow.GenesisRootHash) ||
-			!earningDigestPattern.MatchString(escrow.GenesisFileHash) || len(escrow.RPCEndpoints) < 3 || len(escrow.RPCEndpoints) > 8 ||
-			escrow.Quorum <= uint32(len(escrow.RPCEndpoints))/2 || escrow.Quorum > uint32(len(escrow.RPCEndpoints)) ||
-			escrow.QueryTimeoutMillis < 100 || escrow.QueryTimeoutMillis > 30_000 || escrow.MaximumResponseBytes == 0 ||
-			escrow.MaximumResponseBytes > 16<<20 || escrow.ReadinessMaximumAgeSeconds == 0 || escrow.ReadinessMaximumAgeSeconds > 3600 ||
-			!earningCellDigestPattern.MatchString(escrow.RegistryCodeHash) ||
-			!earningRawWC0Pattern.MatchString(escrow.AssetMasterAddress) || !earningCellDigestPattern.MatchString(escrow.AssetMasterCodeHash) ||
-			!earningCellDigestPattern.MatchString(escrow.AssetWalletCodeHash) || escrow.AssetDecimals == 0 || escrow.AssetDecimals > 18 ||
-			escrow.CapabilityID == "" || len(escrow.CapabilityID) > 256 || escrow.CapabilityVersion == "" || len(escrow.CapabilityVersion) > 64 ||
-			escrow.TransportMaximumBytes == 0 || escrow.TransportMaximumBytes > 16<<20 ||
-			escrow.FundingWindowSeconds < 60 || escrow.FundingWindowSeconds > 7*86400 ||
-			escrow.ExecutionWindowSeconds < 60 || escrow.ExecutionWindowSeconds > 30*86400 ||
-			escrow.RefundDelaySeconds < 60 || escrow.RefundDelaySeconds > 90*86400 ||
-			!earningRawWC0Pattern.MatchString(escrow.BuyerAddress) || !earningRawWC0Pattern.MatchString(escrow.ProviderWallet) ||
-			!earningRawWC0Pattern.MatchString(escrow.RelayerAddress) || escrow.ActionWallet == "" ||
-			escrow.ProviderActionWallet == "" || escrow.DeploymentWallet == "" ||
-			len(escrow.CustodyQuorumConfigPaths) != 2 ||
-			escrow.NetworkGlobalID == 0 || escrow.NetworkWorkchainID != 0 ||
-			escrow.DeploymentNanoTOS == 0 || escrow.DeploymentNanoTOS > 1_000_000_000 ||
-			escrow.ActionNanoTOS == 0 || escrow.ActionNanoTOS > 1_000_000_000 || escrow.FeeReserveNanoTOS == 0 ||
-			escrow.FeeReserveNanoTOS > 1_000_000_000 || escrow.MaximumPurchases == 0 ||
-			!canonicalEconomicInteger(escrow.MaximumPerPurchaseAtomic) || !canonicalEconomicInteger(escrow.MaximumTotalAtomic) ||
-			escrow.BudgetWindowSeconds < 60 || escrow.BudgetWindowSeconds > 90*86400 ||
-			escrow.PollIntervalMillis < 10 || escrow.PollIntervalMillis > 60_000 ||
-			escrow.FinalityTimeoutSeconds == 0 || escrow.FinalityTimeoutSeconds > 3600 ||
-			uint64(escrow.PollIntervalMillis) >= uint64(escrow.FinalityTimeoutSeconds)*1000 {
-			return errors.New("Paid Demand TOS escrow policy is incomplete or unbounded")
-		}
-		for _, path := range []string{escrow.RegistryCodeBOCFile, escrow.EscrowCodeBOCFile, escrow.AssetWalletCodeBOCFile,
-			escrow.Executable, escrow.ConfigPath, escrow.CustodyJournalDirectory} {
-			if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-				return errors.New("Paid Demand code, custody, and journal paths must be canonical and absolute")
-			}
-		}
-		seenCustodyConfigs := map[string]bool{escrow.ConfigPath: true}
-		for _, path := range escrow.CustodyQuorumConfigPaths {
-			if !filepath.IsAbs(path) || filepath.Clean(path) != path || seenCustodyConfigs[path] {
-				return errors.New("Paid Demand custody quorum configs must be distinct canonical absolute paths")
-			}
-			seenCustodyConfigs[path] = true
-		}
-		transportURL, err := url.Parse(escrow.TransportBaseURL)
-		if err != nil || transportURL == nil || transportURL.Host == "" || transportURL.User != nil || transportURL.Path != "" ||
-			transportURL.RawQuery != "" || transportURL.Fragment != "" ||
-			(escrow.TransportSecurityMode == 0 && (transportURL.Scheme != "http" || !earningLoopback(transportURL.Hostname()))) ||
-			(escrow.TransportSecurityMode == 1 && transportURL.Scheme != "https") || escrow.TransportSecurityMode > 1 {
-			return errors.New("Paid Demand transport binding is invalid")
-		}
-		seenEndpoints := map[string]bool{}
-		for _, endpoint := range escrow.RPCEndpoints {
-			parsed, err := url.Parse(endpoint)
-			if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
-				(parsed.Scheme != "https" && !(parsed.Scheme == "http" && earningLoopback(parsed.Hostname()))) || seenEndpoints[endpoint] {
-				return errors.New("Paid Demand RPC endpoints must be distinct HTTPS or loopback HTTP URLs")
-			}
-			seenEndpoints[endpoint] = true
-		}
-		if !containsSortedConfig(settings.SettlementAdapters, "tos.escrow.paid-demand.v1") {
-			return errors.New("Paid Demand gate requires its settlement Adapter in Inventory")
-		}
-		if len(escrow.ProviderAuthorities) == 0 || len(escrow.ProviderAuthorities) > 1024 {
-			return errors.New("Paid Demand requires bounded pinned Provider authorities")
-		}
-		priorAgent := ""
-		localFound := false
-		for _, authority := range escrow.ProviderAuthorities {
-			if authority.AgentID == "" || authority.AgentID <= priorAgent || !earningEd25519KeyPattern.MatchString(authority.PublicKey) ||
-				authority.AgentGeneration == 0 || !earningDigestPattern.MatchString(authority.ControllerPolicyDigest) ||
-				!earningDigestPattern.MatchString(authority.DelegationDigest) || !earningDigestPattern.MatchString(authority.ScopeBoundsDigest) ||
-				!earningDigestPattern.MatchString(authority.OwnerMandateDigest) ||
-				!earningDigestPattern.MatchString(authority.IssuanceAuthorityReferenceDigest) {
-				return errors.New("Paid Demand Provider authority pins are invalid or unsorted")
-			}
-			localFound = localFound || authority.AgentID == settings.AgentID
-			priorAgent = authority.AgentID
-		}
-		if !localFound {
-			return errors.New("Paid Demand Provider mode requires the local Agent authority context")
-		}
-	} else if escrow.NetworkID != "" || len(escrow.RPCEndpoints) != 0 || escrow.Executable != "" ||
-		len(escrow.ProviderAuthorities) != 0 {
-		return errors.New("disabled Paid Demand Adapter cannot retain active chain or authority configuration")
 	}
 	if settings.Gates.Publication {
 		publication := settings.Publication
@@ -950,4 +860,51 @@ func earningLoopback(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// validateEarningTOSCTLHelper requires a pinned, absolute helper binary, and
+// for signing an absolute tosctl configuration and the name of the
+// environment variable holding the vault URL.
+func validateEarningTOSCTLHelper(helper EarningTOSCTLHelperSettings, signing bool) error {
+	if !filepath.IsAbs(helper.Binary) || filepath.Clean(helper.Binary) != helper.Binary ||
+		!earningSHA256HexPattern.MatchString(helper.SHA256) {
+		return errors.New("earning authority tosctl helper must be an absolute binary pinned by lowercase SHA-256")
+	}
+	if !signing {
+		if helper.ConfigPath != "" || helper.VaultURLEnvironment != "" {
+			return errors.New("a verify-only earning authority tosctl helper cannot configure custody")
+		}
+		return nil
+	}
+	if !filepath.IsAbs(helper.ConfigPath) || filepath.Clean(helper.ConfigPath) != helper.ConfigPath ||
+		!earningEnvironmentNamePattern.MatchString(helper.VaultURLEnvironment) {
+		return errors.New("earning authority tosctl signing needs an absolute config path and a vault URL environment variable name")
+	}
+	return nil
+}
+
+// validateEarningAuthorityKeys pins the Action Authority (and, for a
+// personal authority, the custody authorization) key by key ID whenever a
+// side-effect gate can reach the authority. Without such a gate no key may be
+// configured, so a disabled path never carries authority material.
+func validateEarningAuthorityKeys(authority EarningAuthoritySettings, mode string, anyGate bool) error {
+	if !anyGate {
+		if authority.AuthorityKeyID != "" || authority.CustodyAuthorizationKeyID != "" ||
+			authority.TOSCTL != (EarningTOSCTLHelperSettings{}) {
+			return errors.New("earning authority keys are configured without a side-effect gate")
+		}
+		return nil
+	}
+	if _, err := commerce.ParseActionAuthorityKeyID(authority.AuthorityKeyID); err != nil {
+		return fmt.Errorf("earning authority key: %w", err)
+	}
+	if mode == "personal" {
+		if _, err := commerce.ParseCustodyAuthorizationKeyID(authority.CustodyAuthorizationKeyID); err != nil {
+			return fmt.Errorf("personal earning authority custody authorization key: %w", err)
+		}
+		if authority.CustodyAuthorizationKeyID == authority.AuthorityKeyID {
+			return errors.New("Action Authority and custody authorization keys must differ")
+		}
+	}
+	return validateEarningTOSCTLHelper(authority.TOSCTL, mode == "personal")
 }

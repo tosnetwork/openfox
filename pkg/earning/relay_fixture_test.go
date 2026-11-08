@@ -17,11 +17,12 @@ import (
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
 )
 
 type relayTestResolver struct {
 	agents       map[string]ed25519.PublicKey
-	authorityKey ed25519.PublicKey
+	authorityKey []byte
 	current      *relayTestWriterState
 }
 
@@ -43,11 +44,17 @@ func (resolver relayTestResolver) AuthorizeIntentKey(agentID string, key ed25519
 	return resolver.AuthorizeRelayKey(agentrelay.NetworkDomain{}, agentID, key, at)
 }
 
-func (resolver relayTestResolver) AuthorizeFenceKey(authorityID string, key ed25519.PublicKey, _ time.Time) error {
-	if authorityID != "authority:client" || resolver.authorityKey == nil || !resolver.authorityKey.Equal(key) {
-		return errors.New("unknown fence authority")
+func (resolver relayTestResolver) ResolveActionAuthorityKey(authorityID string, keyID [mldsa44.KeyIDSize]byte,
+	_ time.Time) ([]byte, error) {
+	derived, err := mldsa44.KeyID(resolver.authorityKey)
+	if authorityID != "authority:client" || err != nil || derived != keyID {
+		return nil, errors.New("unknown fence authority")
 	}
-	return nil
+	return append([]byte(nil), resolver.authorityKey...), nil
+}
+
+func (resolver relayTestResolver) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+	return testAuthorityCustody.Verify(ctx, use, payload, publicKey, signature)
 }
 
 func (resolver relayTestResolver) ConfirmCurrentWriterFence(fence commerce.WriterFence, now time.Time) error {
@@ -73,7 +80,7 @@ func (resolver relayTestResolver) setCurrentWriter(fence commerce.WriterFence) {
 
 type relayTestAdmissionAuthority struct {
 	mu       sync.Mutex
-	key      ed25519.PrivateKey
+	key      string
 	resolver relayTestResolver
 	now      time.Time
 	next     uint64
@@ -116,7 +123,7 @@ func (authority *relayTestAdmissionAuthority) AdmitRelaySideEffects(_ context.Co
 		}
 	} else {
 		predecessor, found := authority.receipts[priorLookup]
-		if !found || agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(predecessor, descriptor) != nil {
+		if !found || agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(predecessor, descriptor, authority.resolver) != nil {
 			return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, agentrelay.ErrRelayConflict
 		}
 	}
@@ -133,7 +140,7 @@ func (authority *relayTestAdmissionAuthority) AdmitRelaySideEffects(_ context.Co
 	if err != nil {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
 	}
-	receipt, err := agentrelay.SignRelaySideEffectAdmissionReceipt(body, authority.key)
+	receipt, err := agentrelay.SignRelaySideEffectAdmissionReceipt(context.Background(), body, testAuthorityCustody, authority.key)
 	if err != nil {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
 	}
@@ -421,7 +428,7 @@ type relayTestFixture struct {
 	now                 time.Time
 	clientKey           ed25519.PrivateKey
 	providerKey         ed25519.PrivateKey
-	authorityKey        ed25519.PrivateKey
+	authorityKey        string
 	resolver            relayTestResolver
 	network             agentrelay.NetworkDomain
 	transaction         agentrelay.TransactionProfile
@@ -444,9 +451,9 @@ func newRelayTestFixture(t *testing.T, providerID string, providerKey ed25519.Pr
 	if providerKey == nil {
 		_, providerKey, _ = ed25519.GenerateKey(rand.Reader)
 	}
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
+	authorityKey := ActionAuthorityController
 	resolver := relayTestResolver{agents: map[string]ed25519.PublicKey{"agent:client": clientKey.Public().(ed25519.PublicKey),
-		providerID: providerKey.Public().(ed25519.PublicKey)}, authorityKey: authorityKey.Public().(ed25519.PublicKey),
+		providerID: providerKey.Public().(ed25519.PublicKey)}, authorityKey: testAuthorityCustody.PublicKey(authorityKey),
 		current: &relayTestWriterState{}}
 	network := agentrelay.NetworkDomain{NetworkID: "tos:testnet", GlobalID: 42, ZeroStateRootHash: relayTestDigest("1"),
 		ZeroStateFileHash: relayTestDigest("2"), WorkchainID: 0}
@@ -490,10 +497,10 @@ func newRelayTestFixture(t *testing.T, providerID string, providerKey ed25519.Pr
 		"payer_id": commerce.ID("agent:client"), "payee_id": commerce.ID("agent:merchant"), "network_id": commerce.ID("tos:testnet"),
 		"asset_digest": commerce.Digest32(relayTestDigest("a")), "amount_atomic": commerce.ID("25"),
 		"destination_digest": commerce.Digest32(relayTestDigest("b"))}
-	fence, err := commerce.SignWriterFence(commerce.WriterFenceBody{SchemaVersion: 1, OwnerID: "owner:client", AgentID: "agent:client",
+	fence, err := commerce.SignWriterFence(context.Background(), commerce.WriterFenceBody{SchemaVersion: 1, OwnerID: "owner:client", AgentID: "agent:client",
 		InstanceID: "instance:client", LeaseID: "lease:client", WriterGeneration: 1,
 		IssuedAtUnix: uint64(now.Add(-time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix()),
-		AuthorityID: "authority:client", Scope: []string{"payment.direct"}}, authorityKey)
+		AuthorityID: "authority:client", Scope: []string{"payment.direct"}}, testAuthorityCustody, authorityKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +510,7 @@ func newRelayTestFixture(t *testing.T, providerID string, providerKey ed25519.Pr
 	if err != nil {
 		t.Fatal(err)
 	}
-	action, err = commerce.SignAuthorizedAction(action, authorityKey)
+	action, err = commerce.SignAuthorizedAction(context.Background(), action, testAuthorityCustody.KeyID(authorityKey), testAuthorityCustody, authorityKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +608,7 @@ func (fixture *relayTestFixture) takeoverFence(t *testing.T) commerce.WriterFenc
 	body.LeaseID = "lease:takeover"
 	body.WriterGeneration++
 	body.IssuedAtUnix = uint64(fixture.now.Unix())
-	fence, err := commerce.SignWriterFence(body, fixture.authorityKey)
+	fence, err := commerce.SignWriterFence(context.Background(), body, testAuthorityCustody, fixture.authorityKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -818,4 +825,21 @@ func relayTestDigest(character string) string { return "sha256:" + strings.Repea
 
 func relayTestCellDigest(character string) string {
 	return "tvm-cell-sha256:" + strings.Repeat(character, 64)
+}
+
+// testRelayRouteAuthority resolves the relay fixture's owner Action Authority
+// key for route journals opened outside a fixture.
+func testRelayRouteAuthority() relayTestResolver {
+	return relayTestResolver{authorityKey: testAuthorityCustody.PublicKey(ActionAuthorityController)}
+}
+
+// testVerifiedRelayReceipt verifies a request's admission receipt under the
+// fixture Action Authority. A receipt that does not verify yields the zero
+// value, which every journal admission refuses.
+func testVerifiedRelayReceipt(request agentrelay.RelayExecutionRequest) agentrelay.VerifiedRelayAdmissionReceipt {
+	verified, err := agentrelay.VerifyRelaySideEffectAdmissionReceiptAuthority(request.AdmissionReceipt, testRelayRouteAuthority())
+	if err != nil {
+		return agentrelay.VerifiedRelayAdmissionReceipt{}
+	}
+	return verified
 }

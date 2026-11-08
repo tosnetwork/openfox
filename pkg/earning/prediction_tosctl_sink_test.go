@@ -1,7 +1,6 @@
 package earning
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -25,29 +24,11 @@ import (
 	"github.com/tosnetwork/openfox/pkg/prediction"
 )
 
-type predictionCustodyKeyResolver struct {
-	authorityID string
-	ownerID     string
-	agentID     string
-	key         ed25519.PublicKey
-}
-
-func (resolver predictionCustodyKeyResolver) AuthorizeCustodyKey(authorityID, ownerID, agentID string,
-	key ed25519.PublicKey, _ time.Time,
-) error {
-	if authorityID != resolver.authorityID || ownerID != resolver.ownerID || agentID != resolver.agentID ||
-		!resolver.key.Equal(key) {
-		return errors.New("unexpected Prediction custody key")
-	}
-	return nil
-}
-
 func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *testing.T) {
 	fixed := time.Unix(1_800_000_000, 0).UTC()
 	ownerID, agentID, authorityID := "owner:prediction", "agent:prediction", "authority:prediction"
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x71}, ed25519.SeedSize))
 	authority, err := OpenPersonalAuthority(
-		privateTempDir(t), ownerID, agentID, authorityID, key, PortfolioLimits{},
+		privateTempDir(t), ownerID, agentID, authorityID, testAuthorityKeys(), PortfolioLimits{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -160,10 +141,7 @@ func TestPredictionTOSCTLSinkAuthorizesAndJournalsExactBOCBeforeSubmission(t *te
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
-		resolver := predictionCustodyKeyResolver{
-			authorityID: authorityID, ownerID: ownerID, agentID: agentID,
-			key: key.Public().(ed25519.PublicKey),
-		}
+		resolver := testCustodyResolver(authorityID, ownerID, agentID)
 		if verifyErr := commerce.VerifyPredictionCustodyEffectAuthorizationV1(
 			authorization, resolver, fixed,
 		); verifyErr != nil {

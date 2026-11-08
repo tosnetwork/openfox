@@ -25,9 +25,8 @@ func TestBuyerLossCapAgreementEvidenceRequiresExactLiveHold(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
 	buyerPublic, buyerKey, _ := ed25519.GenerateKey(rand.Reader)
 	sellerPublic, _, _ := ed25519.GenerateKey(rand.Reader)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:buyer-cap", "agent:buyer",
-		"authority:buyer-cap", authorityKey, buyerLossCapDirectLimits(25))
+		"authority:buyer-cap", testAuthorityKeys(), buyerLossCapDirectLimits(25))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,9 +101,8 @@ func TestBuyerLossCapSharedEvidenceCannotBypassBackingHold(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	buyerPublic, buyerKey, _ := ed25519.GenerateKey(rand.Reader)
 	sellerPublic, _, _ := ed25519.GenerateKey(rand.Reader)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	backing, err := OpenPersonalAuthority(privateTempDir(t), "owner:shared-cap", "agent:buyer",
-		"authority:shared-cap", authorityKey, buyerLossCapDirectLimits(25))
+		"authority:shared-cap", testAuthorityKeys(), buyerLossCapDirectLimits(25))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +139,7 @@ func TestBuyerLossCapSharedEvidenceCannotBypassBackingHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer httpClient.CloseIdleConnections()
-	client, err := NewSharedAuthorityClient(testServer.URL+"/v1/economic-authority", httpClient,
-		"authority:shared-cap", authorityKey.Public().(ed25519.PublicKey))
+	client, err := NewSharedAuthorityClient(t.Context(), testServer.URL+"/v1/economic-authority", httpClient, "authority:shared-cap", testAuthorityKeys().ActionKeyID, testAuthorityCustody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,12 +194,11 @@ func TestBuyerLossCapRelaySponsorshipAdmissionIsAtomic(t *testing.T) {
 	secondFixture.prepared.QuoteBody.RequestID = "request:two"
 	firstExecution, firstAgreement, firstObligation := relaySponsorshipFixture(t, firstFixture)
 	secondExecution, secondAgreement, secondObligation := relaySponsorshipFixture(t, secondFixture)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	directory := privateTempDir(t)
 	limits := relaySponsorshipTestLimits(t, firstFixture)
 	limits.SpendAtomic, limits.MaximumLossAtomic = 5, 5
 	authority, err := OpenPersonalAuthority(directory, "owner:provider-cap", firstFixture.profile.ProviderAgentID,
-		"authority:provider-cap", authorityKey, limits)
+		"authority:provider-cap", testAuthorityKeys(), limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +275,7 @@ func TestBuyerLossCapRelaySponsorshipAdmissionIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	authority, err = OpenPersonalAuthority(directory, "owner:provider-cap", firstFixture.profile.ProviderAgentID,
-		"authority:provider-cap", authorityKey, limits)
+		"authority:provider-cap", testAuthorityKeys(), limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +547,7 @@ func TestBuyerLossCapCustodyExpiryIsOwnerPinnedAndDurable(t *testing.T) {
 		t.Fatal(err)
 	}
 	authority, err = OpenPersonalAuthority(fixture.directory, "owner:direct-cap", "agent:buyer",
-		"authority:direct-cap", fixture.key, fixture.limits)
+		"authority:direct-cap", testAuthorityKeys(), fixture.limits)
 	if err != nil {
 		t.Fatalf("valid custody tombstone did not survive restart: %v", err)
 	}
@@ -570,7 +566,7 @@ func TestBuyerLossCapCustodyExpiryIsOwnerPinnedAndDurable(t *testing.T) {
 		t.Fatal(err)
 	}
 	if reopened, reopenErr := OpenPersonalAuthority(fixture.directory, "owner:direct-cap", "agent:buyer",
-		"authority:direct-cap", fixture.key, fixture.limits); reopenErr == nil {
+		"authority:direct-cap", testAuthorityKeys(), fixture.limits); reopenErr == nil {
 		_ = reopened.Close()
 		t.Fatal("shortened custody grace was accepted after restart")
 	}
@@ -658,7 +654,7 @@ func newDirectCustodyLossCapFixture(t *testing.T, now time.Time, grace uint64) d
 		CustodyNativeAsset: &asset, CustodySourceAccount: "0:source"}
 	directory := privateTempDir(t)
 	authority, err := OpenPersonalAuthority(directory, "owner:direct-cap", "agent:buyer",
-		"authority:direct-cap", key, limits)
+		"authority:direct-cap", testAuthorityKeys(), limits)
 	if err != nil {
 		t.Fatal(err)
 	}

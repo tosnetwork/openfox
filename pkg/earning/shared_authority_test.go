@@ -19,6 +19,7 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
 )
 
 func TestSharedAuthorityMutualTLSAndCrossHostTakeoverFence(t *testing.T) {
@@ -27,8 +28,7 @@ func TestSharedAuthorityMutualTLSAndCrossHostTakeoverFence(t *testing.T) {
 	_, _, serverCert := issueTestCertificate(t, caCert, caKey, "authority.test", false, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, now)
 	clientACert, _, clientATLS := issueTestCertificate(t, caCert, caKey, "runtime-a", false, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, now)
 	clientBCert, _, clientBTLS := issueTestCertificate(t, caCert, caKey, "runtime-b", false, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, now)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
-	backing, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", authorityKey,
+	backing, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", testAuthorityKeys(),
 		PortfolioLimits{ComputeUnits: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -63,8 +63,7 @@ func TestSharedAuthorityMutualTLSAndCrossHostTakeoverFence(t *testing.T) {
 		if clientErr != nil {
 			t.Fatal(clientErr)
 		}
-		client, clientErr := NewSharedAuthorityClient(testServer.URL+"/v1/economic-authority", httpClient,
-			"authority-1", authorityKey.Public().(ed25519.PublicKey))
+		client, clientErr := NewSharedAuthorityClient(t.Context(), testServer.URL+"/v1/economic-authority", httpClient, "authority-1", testAuthorityKeys().ActionKeyID, testAuthorityCustody)
 		if clientErr != nil {
 			t.Fatal(clientErr)
 		}
@@ -201,4 +200,63 @@ func issueTestCertificate(t *testing.T, parent *x509.Certificate, parentKey ed25
 		t.Fatal(err)
 	}
 	return parsed, private, tls.Certificate{Certificate: [][]byte{raw}, PrivateKey: private, Leaf: parsed}
+}
+
+func TestSharedAuthorityClientPinsTheServedActionAuthorityKey(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	caCert, caKey, _ := issueTestCertificate(t, nil, nil, "authority-test-ca", true, nil, now)
+	_, _, serverCert := issueTestCertificate(t, caCert, caKey, "authority.test", false, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, now)
+	clientCert, _, clientTLS := issueTestCertificate(t, caCert, caKey, "runtime", false, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, now)
+	backing, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", testAuthorityKeys(),
+		PortfolioLimits{ComputeUnits: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backing.Close()
+	digest := sha256.Sum256(clientCert.RawSubjectPublicKeyInfo)
+	server := &SharedAuthorityServer{Backing: backing, ClientsBySPKI: map[string]SharedAuthorityClientGrant{
+		"sha256:" + hex.EncodeToString(digest[:]): {OwnerID: "owner-1", AgentID: "agent-1", InstanceID: "runtime",
+			Scopes: []string{"payment.direct"}}}}
+	testServer := httptest.NewUnstartedServer(server.Handler())
+	clientRoots := x509.NewCertPool()
+	clientRoots.AddCert(caCert)
+	serverTLS, err := NewSharedAuthorityServerTLSConfig(serverCert, clientRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testServer.TLS = serverTLS
+	testServer.StartTLS()
+	defer testServer.Close()
+	serverRoots := x509.NewCertPool()
+	serverRoots.AddCert(caCert)
+	httpClient, err := NewSharedAuthorityHTTPClient(clientTLS, serverRoots, "authority.test", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer httpClient.CloseIdleConnections()
+	endpoint := testServer.URL + "/v1/economic-authority"
+	keys := testAuthorityKeys()
+	if _, err := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1", keys.CustodyKeyID,
+		testAuthorityCustody); err == nil {
+		t.Fatal("client pinned a served key that does not derive its configured key ID")
+	}
+	if _, err := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-2", keys.ActionKeyID,
+		testAuthorityCustody); err == nil {
+		t.Fatal("client accepted a shared authority serving another authority ID")
+	}
+	if _, err := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1",
+		"ed25519:"+strings.Repeat("a", 64), testAuthorityCustody); !errors.Is(err, commerce.ErrEd25519ActionAuthority) {
+		t.Fatalf("an Ed25519 key reference was not refused with the protocol diagnostic: %v", err)
+	}
+	client, err := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1", keys.ActionKeyID, testAuthorityCustody)
+	if err != nil {
+		t.Fatalf("client did not pin the configured key: %v", err)
+	}
+	actionID, _ := mldsa44.ParseKeyIDText(keys.ActionKeyID)
+	if key, err := client.ResolveActionAuthorityKey("authority-1", actionID, now); err != nil || string(key) != string(keys.ActionPublicKey) {
+		t.Fatalf("client did not resolve its pinned key: %v", err)
+	}
+	if _, err := client.ResolveActionAuthorityKey("authority-2", actionID, now); err == nil {
+		t.Fatal("client resolved its pinned key for another authority")
+	}
 }

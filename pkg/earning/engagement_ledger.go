@@ -1,7 +1,6 @@
 package earning
 
 import (
-	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"sort"
@@ -371,18 +370,12 @@ func (authority *PersonalAuthority) ReserveEngagement(action commerce.Authorized
 	if !exactRetainedAgreementBody(record) {
 		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Agreement reservation targets a mutated retained body")
 	}
-	if paidDemandBuyerCandidate(record, authority.doc.AgentID) {
-		expected, expectedErr := paidDemandBuyerReservation(record, authority.doc.AgentID)
-		if expectedErr != nil || !sameExposureReservation(request.Reservation, expected) {
-			return commerce.ActionResolution{}, EngagementRecord{}, errors.New("Paid Demand buyer reservation does not exactly cover Agreement exposure")
-		}
-	}
 	exposure, exposureErr := localAgreementPaymentExposure(record.Agreement.Body, authority.doc.AgentID)
 	if exposureErr != nil || exposure.MaximumLoss.Sign() > 0 &&
 		!reservationExactlyCoversAgreementPayment(request.Reservation, record, exposure) {
 		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("buyer reservation does not exactly cover Agreement maximum-loss exposure")
 	}
-	if exposure.MaximumLoss.Sign() > 0 && !paidDemandBuyerCandidate(record, authority.doc.AgentID) {
+	if exposure.MaximumLoss.Sign() > 0 {
 		for _, obligation := range record.Agreement.Body.Obligations {
 			if obligation.Amount == nil || obligation.ObligorAgentID != authority.doc.AgentID {
 				continue
@@ -401,7 +394,7 @@ func (authority *PersonalAuthority) ReserveEngagement(action commerce.Authorized
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("stale writer cannot reserve an Agreement")
 	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if action.ActionKind != "portfolio.reserve" || commerce.VerifyAuthorizedAction(action, fields, canonicalRequest, fence, resolver, authority.now().UTC()) != nil {
 		return commerce.ActionResolution{}, EngagementRecord{}, errors.New("portfolio reservation action is not authorized")
 	}
@@ -472,7 +465,7 @@ func (authority *PersonalAuthority) CancelUnsignedReservation(agreementDigest, r
 		return nil
 	}
 	exposure, exposureErr := localAgreementPaymentExposure(record.Agreement.Body, authority.doc.AgentID)
-	if record.State != EngagementAuthorizing || paidDemandBuyerCandidate(record, authority.doc.AgentID) ||
+	if record.State != EngagementAuthorizing ||
 		!hasLocalAgentSignaturePredicate(record, authority.doc.AgentID) || exposureErr != nil ||
 		!reservationExactlyCoversAgreementPayment(reservation, record, exposure) ||
 		reservation.Released || record.ExecutionID != "" || record.CustodyAuthorizationExpiredAtUnix != 0 ||
@@ -510,11 +503,9 @@ func (authority *PersonalAuthority) CancelUnsignedReservation(agreementDigest, r
 }
 
 // engagementEligibleForReservation permits the normal fully-authorized path
-// and two narrow pre-authorization paths. A generic buyer must atomically hold
-// maximum loss before its Agent signature, while a Paid-Demand Provider or
-// represented wallet must reserve before the Offer/on-chain acceptance that
-// itself satisfies the selected predicate. Reserving only after those acts
-// would leave a TOCTOU window or be circular.
+// and one narrow pre-authorization path: a buyer must atomically hold maximum
+// loss before its Agent signature. Reserving only after the signature would
+// leave a TOCTOU window.
 func engagementEligibleForReservation(record EngagementRecord, localAgentID string) bool {
 	if record.NegotiationAmbiguous {
 		return false
@@ -525,22 +516,15 @@ func engagementEligibleForReservation(record EngagementRecord, localAgentID stri
 	if record.State != EngagementProposed && record.State != EngagementAuthorizing || record.ReservationID != "" {
 		return false
 	}
-	localPaidDemandPredicate, localAgentSignaturePredicate := false, false
 	for _, predicate := range record.Agreement.Body.AuthorizationPredicates {
 		subject := predicate.AuthoritySubject
-		localSubject := subject.SubjectKind == "agent" && subject.SubjectIdentifier == localAgentID ||
-			subject.SubjectKind == "wallet" && subject.RepresentedAgentID == localAgentID
 		if subject.SubjectKind == "agent" && subject.SubjectIdentifier == localAgentID &&
 			predicate.EvidenceProfileURI == commerce.EvidenceProfileAgentSignature &&
 			predicate.EvidenceProfileVersion == 1 && predicate.EvidenceProfileDigest == commerce.AgentSignatureProfileDigest() {
-			localAgentSignaturePredicate = true
-		}
-		if localSubject && predicate.EvidenceProfileURI == commerce.EvidenceProfilePaidDemandQuote &&
-			predicate.EvidenceProfileVersion == 1 && predicate.EvidenceProfileDigest == commerce.PaidDemandQuoteProfileDigest() {
-			localPaidDemandPredicate = true
+			return true
 		}
 	}
-	return localPaidDemandPredicate || localAgentSignaturePredicate
+	return false
 }
 
 func reservationExactlyCoversAgreementPayment(reservation ExposureReservation, record EngagementRecord,

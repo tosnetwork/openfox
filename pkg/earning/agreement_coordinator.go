@@ -79,36 +79,6 @@ func (coordinator AgreementCoordinator) HandleNext(ctx context.Context) (bool, E
 			break
 		}
 		record, err = coordinator.Authority.RecordAgreementEvidence(evidence.AgreementBodyDigest, evidence, coordinator.Verifier)
-	case "agreement.provider-offer":
-		if event.ProviderOffer == nil {
-			err = errors.New("Provider Offer body is absent")
-			break
-		}
-		var offer commerce.SignedProviderOffer
-		if codec.Unmarshal(event.ProviderOffer.CanonicalOffer, &offer) != nil || offer.Binding.ProviderAgentID != event.SenderAgentID {
-			err = errors.New("Provider Offer signer does not match the authenticated sender")
-			break
-		}
-		prior, found := coordinator.Authority.Engagement(offer.Binding.AgreementBodyDigest)
-		if !found {
-			err = errors.New("Provider Offer arrived before its exact Agreement")
-			break
-		}
-		subject := commerce.AgreementAuthoritySubject{SubjectKind: "agent", SubjectNamespace: "tos.agent",
-			SubjectIdentifier: event.SenderAgentID}
-		observedAt := coordinator.Authority.AuthorityNow().UTC()
-		if observedAt.IsZero() || observedAt.Unix() < 0 {
-			err = errors.New("Agreement authority returned no valid observation time")
-			break
-		}
-		evidence, evidenceErr := commerce.PaidDemandEvidenceFromBinding(prior.Agreement.Body, subject, offer.Binding,
-			"provider_offer", event.ProviderOffer.CanonicalOffer, uint64(observedAt.Unix()),
-			event.ProviderOffer.ProviderOfferDigest)
-		if evidenceErr != nil {
-			err = evidenceErr
-			break
-		}
-		record, err = coordinator.Authority.RecordAgreementEvidence(prior.AgreementDigest, evidence, coordinator.Verifier)
 	case "agreement.withdraw":
 		if event.Withdrawal == nil {
 			err = errors.New("Agreement withdrawal body is absent")

@@ -14,13 +14,12 @@ import (
 func TestPublicationManagerEnforcesPricingRevisionAndWithdrawal(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
 	issuerPublic, issuerKey, _ := ed25519.GenerateKey(rand.Reader)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	intent := earningIntent(t, now, issuerKey)
 	intent.Body.Payload.DiscoveryCard.IntentModes = []commerce.IntentMode{commerce.IntentOffer}
 	intent.Body.Payload.DiscoveryCard.ValueHints[0].MinimumDecimal = "150"
 	intent.Body.Payload.DiscoveryCard.ValueHints[0].MaximumDecimal = "150"
 	intent.Body.Payload.DiscoveryCard.ValueHints[0].Unit = "atomic"
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:test", intent.Body.IssuerAgentID, "authority:test", authorityKey,
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:test", intent.Body.IssuerAgentID, "authority:test", testAuthorityKeys(),
 		PortfolioLimits{ComputeUnits: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +139,6 @@ func TestPublicationManagerEnforcesPricingRevisionAndWithdrawal(t *testing.T) {
 func TestPublicationManagerBindsNonDegeneratePriceRange(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
 	issuerPublic, issuerKey, _ := ed25519.GenerateKey(rand.Reader)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	intent := earningIntent(t, now, issuerKey)
 	intent.Body.Payload.DiscoveryCard.IntentModes = []commerce.IntentMode{commerce.IntentOffer}
 	intent.Body.Payload.DiscoveryCard.ValueHints[0].AmountKind = "range"
@@ -148,7 +146,7 @@ func TestPublicationManagerBindsNonDegeneratePriceRange(t *testing.T) {
 	intent.Body.Payload.DiscoveryCard.ValueHints[0].MaximumDecimal = "180"
 	intent.Body.Payload.DiscoveryCard.ValueHints[0].Unit = "atomic"
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:range", intent.Body.IssuerAgentID,
-		"authority:range", authorityKey, PortfolioLimits{ComputeUnits: 10})
+		"authority:range", testAuthorityKeys(), PortfolioLimits{ComputeUnits: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

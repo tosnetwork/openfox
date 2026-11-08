@@ -69,7 +69,8 @@ func TestAgentGuarantorIsDefaultOffAndOwnerBounded(t *testing.T) {
 		t.Fatal("Agent Guarantor must default off")
 	}
 	settings = EarningSettings{Enabled: true, Mode: "policy-gated", StateDir: "/var/lib/openfox/earning",
-		OwnerID: "owner", AgentID: "agent:guarantor", AuthorityID: "authority:owner", MessengerSocket: "/run/openfox/messenger.sock",
+		Authority: testPersonalAuthority(),
+		OwnerID:   "owner", AgentID: "agent:guarantor", AuthorityID: "authority:owner", MessengerSocket: "/run/openfox/messenger.sock",
 		MandateDigest: "sha256:" + strings.Repeat("a", 64), MinimumIndependentCarriers: 2,
 		TrustedIntentIssuerKeys: map[string]string{"agent:issuer": "ed25519:" + strings.Repeat("b", 64)},
 		Policy:                  EarningPolicySettings{MinimumExpectedProfitAtomic: "0", MaximumLossAtomic: "10000", MaximumOutgoingPaymentAtomic: "0"},
@@ -123,6 +124,7 @@ func TestAgentGuarantorIsDefaultOffAndOwnerBounded(t *testing.T) {
 
 func TestEnabledEarningRequiresIndependentSecureCarriers(t *testing.T) {
 	settings := EarningSettings{Enabled: true, StateDir: "/tmp/openfox-earning", OwnerID: "owner", AgentID: "agent", AuthorityID: "authority",
+		Authority:       testPersonalAuthority(),
 		MessengerSocket: "/tmp/openfox-messenger.sock",
 		MandateDigest:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", MinimumIndependentCarriers: 2,
 		TrustedIntentIssuerKeys: map[string]string{"agent:issuer": "ed25519:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
@@ -146,8 +148,8 @@ func TestSharedEarningAuthorityRequiresCompleteMTLSIdentity(t *testing.T) {
 		Policy:                  EarningPolicySettings{MinimumExpectedProfitAtomic: "1", MaximumLossAtomic: "10"},
 		Authority: EarningAuthoritySettings{Mode: "shared", Endpoint: "https://authority.example/v1/economic-authority",
 			ServerName: "authority.example", CAFile: "/etc/openfox/authority-ca.pem", ClientCertFile: "/etc/openfox/client.pem",
-			ClientKeyFile: "/etc/openfox/client.key", AuthorityPublicKey: "ed25519:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-			InstanceID: "worker-a", TimeoutMillis: 5000}}
+			ClientKeyFile: "/etc/openfox/client.key",
+			InstanceID:    "worker-a", TimeoutMillis: 5000}}
 	if err := settings.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +293,8 @@ func validAgentRelayEarningSettings(role string) EarningSettings {
 	network := EarningAgentRelayNetworkSettings{NetworkID: "tos:testnet", GlobalID: -3,
 		ZeroStateRootHash: digest("1"), ZeroStateFileHash: digest("2"), WorkchainID: 0}
 	settings := EarningSettings{Enabled: true, Mode: "policy-gated", StateDir: "/var/lib/openfox/earning",
-		OwnerID: "owner:test", AgentID: "agent:test", AuthorityID: "authority:test",
+		Authority: testPersonalAuthority(),
+		OwnerID:   "owner:test", AgentID: "agent:test", AuthorityID: "authority:test",
 		MessengerSocket: "/run/openfox/messenger.sock", MandateDigest: digest("3"), MinimumIndependentCarriers: 2,
 		TrustedIntentIssuerKeys: map[string]string{"agent:test": "ed25519:" + strings.Repeat("4", 64)},
 		Gates:                   EarningGateSettings{Contact: true, Agreement: true, Execution: true, AgentRelay: true},
@@ -353,4 +356,52 @@ func validAgentRelayEarningSettings(role string) EarningSettings {
 			MaximumQuoteRequestsPerRequesterWindow: 256, QuoteRequestWindowSeconds: 60}
 	}
 	return settings
+}
+
+// testPersonalAuthority is a complete personal authority pin: distinct key IDs
+// for the Action Authority and custody authorization controllers and a pinned
+// tosctl helper that can sign.
+func testPersonalAuthority() EarningAuthoritySettings {
+	return EarningAuthoritySettings{AuthorityKeyID: "mldsa44:" + strings.Repeat("1", 64),
+		CustodyAuthorizationKeyID: "mldsa44:" + strings.Repeat("2", 64),
+		TOSCTL: EarningTOSCTLHelperSettings{Binary: "/opt/tos/bin/tosctl", SHA256: strings.Repeat("3", 64),
+			ConfigPath: "/etc/openfox/tosctl-config.json", VaultURLEnvironment: "OPENFOX_VAULT_URL"}}
+}
+
+func TestEarningAuthorityKeysArePostQuantumKeyIDs(t *testing.T) {
+	base := validAgentRelayEarningSettings("client")
+	if err := base.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	mutate := map[string]func(*EarningAuthoritySettings){
+		"Ed25519 Action Authority key": func(a *EarningAuthoritySettings) { a.AuthorityKeyID = "ed25519:" + strings.Repeat("a", 64) },
+		"upper-case key ID":            func(a *EarningAuthoritySettings) { a.AuthorityKeyID = "mldsa44:" + strings.Repeat("A", 64) },
+		"short key ID":                 func(a *EarningAuthoritySettings) { a.AuthorityKeyID = "mldsa44:" + strings.Repeat("a", 62) },
+		"missing custody key":          func(a *EarningAuthoritySettings) { a.CustodyAuthorizationKeyID = "" },
+		"Ed25519 custody key": func(a *EarningAuthoritySettings) {
+			a.CustodyAuthorizationKeyID = "ed25519:" + strings.Repeat("a", 64)
+		},
+		"one key for both uses":  func(a *EarningAuthoritySettings) { a.CustodyAuthorizationKeyID = a.AuthorityKeyID },
+		"relative tosctl binary": func(a *EarningAuthoritySettings) { a.TOSCTL.Binary = "tosctl" },
+		"unpinned tosctl binary": func(a *EarningAuthoritySettings) { a.TOSCTL.SHA256 = "" },
+		"no signing config":      func(a *EarningAuthoritySettings) { a.TOSCTL.ConfigPath = "" },
+		"no vault environment":   func(a *EarningAuthoritySettings) { a.TOSCTL.VaultURLEnvironment = "" },
+		"lower-case vault env":   func(a *EarningAuthoritySettings) { a.TOSCTL.VaultURLEnvironment = "vault_url" },
+	}
+	for name, change := range mutate {
+		settings := base
+		change(&settings.Authority)
+		if err := settings.Validate(); err == nil {
+			t.Fatalf("earning authority accepted %s", name)
+		}
+	}
+	observe := EarningSettings{Enabled: true, Mode: "observe", ObserveOnly: true, StateDir: "/tmp/openfox-earning",
+		OwnerID: "owner", AgentID: "agent", AuthorityID: "authority",
+		MandateDigest:           "sha256:" + strings.Repeat("a", 64),
+		TrustedIntentIssuerKeys: map[string]string{"agent:issuer": "ed25519:" + strings.Repeat("b", 64)},
+		Policy:                  EarningPolicySettings{MinimumExpectedProfitAtomic: "1", MaximumLossAtomic: "10"},
+		Authority:               testPersonalAuthority()}
+	if err := observe.Validate(); err == nil {
+		t.Fatal("authority keys were accepted without a side-effect gate")
+	}
 }

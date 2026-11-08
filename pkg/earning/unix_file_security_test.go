@@ -59,7 +59,7 @@ func TestUnixOwnerPrivatePredicatesRejectForeignUIDAndMultipleLinks(t *testing.T
 }
 
 func TestPersonalAuthorityRejectsHardLinkedLockAndJournal(t *testing.T) {
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,14 +73,14 @@ func TestPersonalAuthorityRejectsHardLinkedLockAndJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	if authority, err := OpenPersonalAuthority(lockDirectory, "owner:lock", "agent:lock", "authority:lock",
-		key, PortfolioLimits{}); err == nil {
+		testAuthorityKeys(), PortfolioLimits{}); err == nil {
 		_ = authority.Close()
 		t.Fatal("hard-linked economic authority lock was accepted")
 	}
 
 	journalDirectory := privateTempDir(t)
 	authority, err := OpenPersonalAuthority(journalDirectory, "owner:journal", "agent:journal",
-		"authority:journal", key, PortfolioLimits{})
+		"authority:journal", testAuthorityKeys(), PortfolioLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestPersonalAuthorityRejectsHardLinkedLockAndJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	if authority, err := OpenPersonalAuthority(journalDirectory, "owner:journal", "agent:journal",
-		"authority:journal", key, PortfolioLimits{}); err == nil {
+		"authority:journal", testAuthorityKeys(), PortfolioLimits{}); err == nil {
 		_ = authority.Close()
 		t.Fatal("hard-linked economic authority journal was accepted")
 	}

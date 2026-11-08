@@ -1,7 +1,7 @@
 package earning
 
 import (
-	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,6 +19,7 @@ import (
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
 )
 
 const (
@@ -81,9 +82,13 @@ type OutcomeJournalAppendAdmission struct {
 	Fence   commerce.WriterFence
 }
 
+// historicalOutcomeFenceResolver admits only the Action Authority key the
+// retained append fence names, for that fence's authority, and resolves it
+// through the owner authority. A retained record cannot introduce its own key.
 type historicalOutcomeFenceResolver struct {
 	authorityID string
-	key         ed25519.PublicKey
+	keyID       string
+	authority   commerce.FenceAuthorityResolver
 }
 
 type historicalOutcomeOperationSelfResolver struct{}
@@ -92,11 +97,19 @@ func (historicalOutcomeOperationSelfResolver) AuthorizeAgentOperationKey(string,
 	return nil
 }
 
-func (resolver historicalOutcomeFenceResolver) AuthorizeFenceKey(authorityID string, key ed25519.PublicKey, _ time.Time) error {
-	if authorityID != resolver.authorityID || !bytes.Equal(key, resolver.key) {
-		return errors.New("historical outcome authority key differs from the retained fence")
+func (resolver historicalOutcomeFenceResolver) ResolveActionAuthorityKey(authorityID string,
+	keyID [mldsa44.KeyIDSize]byte, at time.Time) ([]byte, error) {
+	if resolver.authority == nil || authorityID != resolver.authorityID || mldsa44.KeyIDText(keyID) != resolver.keyID {
+		return nil, errors.New("historical outcome authority key differs from the retained fence")
 	}
-	return nil
+	return resolver.authority.ResolveActionAuthorityKey(authorityID, keyID, at)
+}
+
+func (resolver historicalOutcomeFenceResolver) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+	if resolver.authority == nil {
+		return mldsa44.ErrUnavailable
+	}
+	return resolver.authority.Verify(ctx, use, payload, publicKey, signature)
 }
 
 type OutcomeJournal struct {
@@ -105,6 +118,7 @@ type OutcomeJournal struct {
 	root      *os.Root
 	lock      *os.File
 	head      OutcomeJournalHead
+	authority commerce.FenceAuthorityResolver
 }
 
 // OutcomeOrderingDomainV1 creates the authority-scoped journal identity. A
@@ -159,7 +173,7 @@ func OpenOutcomeJournal(directory, ownerID, agentID, authorityID, purpose, cohor
 		_ = root.Close()
 		return nil, err
 	}
-	journal := &OutcomeJournal{directory: directory, root: root, lock: lock, head: OutcomeJournalHead{Schema: outcomeJournalSchema,
+	journal := &OutcomeJournal{authority: resolver, directory: directory, root: root, lock: lock, head: OutcomeJournalHead{Schema: outcomeJournalSchema,
 		OwnerID: ownerID, AgentID: agentID, AuthorityID: authorityID, OrderingDomain: domain, CohortScopeDigest: cohortScopeDigest,
 		WriterGeneration: fence.Body.WriterGeneration, GapSequences: []uint64{}}}
 	if err := journal.recoverHead(fence.Body.WriterGeneration); err != nil {
@@ -458,10 +472,10 @@ func (journal *OutcomeJournal) validateAppendAdmission(record OutcomeJournalReco
 	requestBytes, requestErr := codec.Marshal(*record.JournalAppendRequest)
 	requestDigest, requestDigestErr := commerce.ExactRequestDigest(requestBytes)
 	fenceDigest, fenceErr := commerce.WriterFenceDigest(*record.JournalAppendWriterFence)
-	fenceKey, keyErr := decodeOutcomeJournalFenceKey(record.JournalAppendWriterFence.PublicKey)
 	verificationTime := time.Unix(int64(record.JournalAppendWriterFence.Body.IssuedAtUnix), 0).UTC()
 	authorityErr := commerce.VerifyAuthorizedActionAtAuthorityTime(*record.JournalAppendAction, fields, requestBytes,
-		*record.JournalAppendWriterFence, historicalOutcomeFenceResolver{record.JournalAppendWriterFence.Body.AuthorityID, fenceKey}, verificationTime, verificationTime)
+		*record.JournalAppendWriterFence, historicalOutcomeFenceResolver{authorityID: record.JournalAppendWriterFence.Body.AuthorityID,
+			keyID: record.JournalAppendWriterFence.KeyID, authority: journal.authority}, verificationTime, verificationTime)
 	gapsAtAppend := make([]uint64, 0, len(gapSequences))
 	for _, sequence := range gapSequences {
 		if sequence < record.Sequence {
@@ -469,7 +483,7 @@ func (journal *OutcomeJournal) validateAppendAdmission(record OutcomeJournalReco
 		}
 	}
 	expectedGapDigest, gapDigestErr := codec.Digest("tos.openfox.outcome-journal-gap-set.v1", gapsAtAppend)
-	if requestErr != nil || requestDigestErr != nil || fenceErr != nil || keyErr != nil || authorityErr != nil ||
+	if requestErr != nil || requestDigestErr != nil || fenceErr != nil || authorityErr != nil ||
 		gapDigestErr != nil || record.JournalAppendRequest.GapSetDigest != expectedGapDigest ||
 		record.JournalAppendRequest.OrderingDomain != journal.head.OrderingDomain ||
 		record.JournalAppendRequest.Epoch != record.Epoch || record.JournalAppendRequest.Sequence != record.Sequence ||
@@ -486,17 +500,6 @@ func (journal *OutcomeJournal) validateAppendAdmission(record OutcomeJournalReco
 		return errors.New("outcome journal append admission binding is invalid")
 	}
 	return nil
-}
-
-func decodeOutcomeJournalFenceKey(encoded string) (ed25519.PublicKey, error) {
-	if !strings.HasPrefix(encoded, "ed25519:") {
-		return nil, errors.New("outcome journal fence key is invalid")
-	}
-	raw, err := hex.DecodeString(strings.TrimPrefix(encoded, "ed25519:"))
-	if err != nil || len(raw) != ed25519.PublicKeySize {
-		return nil, errors.New("outcome journal fence key is invalid")
-	}
-	return ed25519.PublicKey(raw), nil
 }
 
 func (journal *OutcomeJournal) HasActionResolution(stableActionID string, revision uint64) (bool, error) {

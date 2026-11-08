@@ -31,7 +31,6 @@ type AutonomousServiceStatus struct {
 	CandidatesAssessed    uint64    `json:"candidates_assessed"`
 	CandidatesCommitted   uint64    `json:"candidates_committed"`
 	AgreementEvents       uint64    `json:"agreement_events"`
-	PaidDemandTransitions uint64    `json:"paid_demand_transitions"`
 	PrivateHandoffs       uint64    `json:"private_handoffs"`
 	EngagementTransitions uint64    `json:"engagement_transitions"`
 	PublicationChanges    uint64    `json:"publication_changes"`
@@ -51,7 +50,6 @@ type AutonomousService struct {
 	Handler         CandidateHandler
 	Operations      *OperationalController
 	Agreements      *AgreementAutonomy
-	PaidDemand      *PaidDemandBuyerAutonomy
 	PrivateHandoffs *PrivateHandoffAutonomy
 	Engagements     *EngagementAutonomy
 	Publications    *PublicationAutonomy
@@ -100,18 +98,6 @@ func (service *AutonomousService) RunCycle(ctx context.Context) error {
 		if agreementErr != nil {
 			service.recordFailure(agreementErr)
 			return agreementErr
-		}
-	}
-	// Paid Demand consumes Provider Offer evidence processed above and must
-	// establish finalized funding before any Provider execution.
-	if service.PaidDemand != nil {
-		advanced, paidDemandErr := service.PaidDemand.Process(cycle, 100)
-		service.mu.Lock()
-		service.status.PaidDemandTransitions += uint64(advanced)
-		service.mu.Unlock()
-		if paidDemandErr != nil {
-			service.recordFailure(paidDemandErr)
-			return paidDemandErr
 		}
 	}
 	if service.PrivateHandoffs != nil {

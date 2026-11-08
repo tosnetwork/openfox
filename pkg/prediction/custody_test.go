@@ -11,24 +11,35 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
+	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44/mldsa44test"
 	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
 )
 
+// custodyTestAuthority stands in for tosctl custody; its signatures are not
+// ML-DSA-44 and only it accepts them.
+var custodyTestAuthority = &mldsa44test.Fake{}
+
 type custodyTestResolver struct {
 	authorityID string
-	key         ed25519.PublicKey
+	key         []byte
 	current     bool
 }
 
-func (resolver *custodyTestResolver) AuthorizeFenceKey(
+func (resolver *custodyTestResolver) ResolveActionAuthorityKey(
 	authorityID string,
-	publicKey ed25519.PublicKey,
+	keyID [mldsa44.KeyIDSize]byte,
 	_ time.Time,
-) error {
-	if authorityID != resolver.authorityID || !bytes.Equal(publicKey, resolver.key) {
-		return errors.New("authority key is not authorized")
+) ([]byte, error) {
+	derived, err := mldsa44.KeyID(resolver.key)
+	if authorityID != resolver.authorityID || err != nil || derived != keyID {
+		return nil, errors.New("authority key is not authorized")
 	}
-	return nil
+	return bytes.Clone(resolver.key), nil
+}
+
+func (resolver *custodyTestResolver) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+	return custodyTestAuthority.Verify(ctx, use, payload, publicKey, signature)
 }
 
 func (resolver *custodyTestResolver) ConfirmCurrentWriterFence(
@@ -81,7 +92,7 @@ func authorizedOrderFixture(
 	t *testing.T,
 	book *Book,
 	order protocol.PredictionOrderV1,
-	authorityKey ed25519.PrivateKey,
+	authorityKey string,
 	now uint64,
 ) (commerce.AuthorizedAction, commerce.WriterFence, *custodyTestResolver) {
 	t.Helper()
@@ -116,7 +127,7 @@ func authorizedOrderFixture(
 		WriterGeneration: 1, IssuedAtUnix: now - 10, ExpiresAtUnix: now + 1_000,
 		AuthorityID: "authority:test", Scope: []string{authorizeOrderAction},
 	}
-	fence, err := commerce.SignWriterFence(fenceBody, authorityKey)
+	fence, err := commerce.SignWriterFence(context.Background(), fenceBody, custodyTestAuthority, authorityKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,12 +138,13 @@ func authorizedOrderFixture(
 	if err != nil {
 		t.Fatal(err)
 	}
-	action, err = commerce.SignAuthorizedAction(action, authorityKey)
+	action, err = commerce.SignAuthorizedAction(context.Background(), action, custodyTestAuthority.KeyID(authorityKey),
+		custodyTestAuthority, authorityKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return action, fence, &custodyTestResolver{
-		authorityID: "authority:test", key: authorityKey.Public().(ed25519.PublicKey), current: true,
+		authorityID: "authority:test", key: custodyTestAuthority.PublicKey(authorityKey), current: true,
 	}
 }
 
@@ -157,7 +169,7 @@ func TestAuthorizedOrderCoordinatorKeepsOwnerAuthorityInFrontOfCustody(t *testin
 	owner := rawAddress(0x44)
 	order := custodyOrder(owner)
 	tradingKey := ed25519.NewKeyFromSeed(bytesOf(0x51, ed25519.SeedSize))
-	authorityKey := ed25519.NewKeyFromSeed(bytesOf(0x61, ed25519.SeedSize))
+	authorityKey := "action-authority"
 	action, fence, resolver := authorizedOrderFixture(t, book, order, authorityKey, now)
 	signer := &custodyTestSigner{key: tradingKey}
 	coordinator := AuthorizedOrderCoordinator{
@@ -196,7 +208,7 @@ func TestAuthorizedOrderCoordinatorRejectsSupersededFenceAndWrongTradingKey(t *t
 	owner := rawAddress(0x44)
 	order := custodyOrder(owner)
 	currentTradingKey := ed25519.NewKeyFromSeed(bytesOf(0x51, ed25519.SeedSize))
-	authorityKey := ed25519.NewKeyFromSeed(bytesOf(0x61, ed25519.SeedSize))
+	authorityKey := "action-authority"
 	action, fence, resolver := authorizedOrderFixture(t, book, order, authorityKey, now)
 	signer := &custodyTestSigner{key: currentTradingKey}
 	coordinator := AuthorizedOrderCoordinator{

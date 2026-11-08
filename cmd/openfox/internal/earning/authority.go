@@ -129,12 +129,15 @@ func openConfiguredAuthority(settings config.EarningSettings, createPersonal boo
 	if err != nil {
 		return nil, func() {}, err
 	}
-	public, err := decodeEd25519PublicKey(settings.Authority.AuthorityPublicKey)
+	verifier, err := openfoxearning.OpenTOSCTLVerifier(configuredAuthorityHelper(settings.Authority.TOSCTL))
 	if err != nil {
 		httpClient.CloseIdleConnections()
 		return nil, func() {}, err
 	}
-	client, err := openfoxearning.NewSharedAuthorityClient(settings.Authority.Endpoint, httpClient, settings.AuthorityID, public)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(settings.Authority.TimeoutMillis)*time.Millisecond)
+	defer cancel()
+	client, err := openfoxearning.NewSharedAuthorityClient(ctx, settings.Authority.Endpoint, httpClient, settings.AuthorityID,
+		settings.Authority.AuthorityKeyID, verifier)
 	if err != nil {
 		httpClient.CloseIdleConnections()
 		return nil, func() {}, err
@@ -152,13 +155,13 @@ func openPersonalAuthority(settings config.EarningSettings, create bool) (*openf
 			return nil, func() {}, err
 		}
 	}
-	var key ed25519.PrivateKey
-	var err error
-	if create {
-		key, err = loadOrCreateAuthorityKey(directory)
-	} else {
-		key, err = loadAuthorityKey(directory)
+	if !create {
+		if info, err := os.Lstat(directory); err != nil || !info.IsDir() {
+			return nil, func() {}, errors.New("economic authority has not been initialized")
+		}
 	}
+	keys, err := openfoxearning.OpenTOSCTLAuthorityKeys(context.Background(), configuredAuthorityHelper(settings.Authority.TOSCTL),
+		settings.Authority.AuthorityKeyID, settings.Authority.CustodyAuthorizationKeyID)
 	if err != nil {
 		return nil, func() {}, err
 	}
@@ -173,9 +176,6 @@ func openPersonalAuthority(settings config.EarningSettings, create bool) (*openf
 		network := configuredRelayNetwork(settings.TOSPayment.Network)
 		networkDigest, digestErr := agentrelay.NetworkDomainDigest(network)
 		if digestErr != nil {
-			for i := range key {
-				key[i] = 0
-			}
 			return nil, func() {}, fmt.Errorf("direct payment authority network domain: %w", digestErr)
 		}
 		limits.CustodyNetworkDomainDigest = networkDigest
@@ -183,14 +183,21 @@ func openPersonalAuthority(settings config.EarningSettings, create bool) (*openf
 		limits.CustodyNativeAsset = &commerce.AssetIdentityV1{AssetNamespace: "tos.asset",
 			AssetIdentifier: "native", Unit: "nanotos"}
 	}
-	authority, err := openfoxearning.OpenPersonalAuthority(directory, settings.OwnerID, settings.AgentID, settings.AuthorityID, key, limits)
-	for i := range key {
-		key[i] = 0
-	}
+	authority, err := openfoxearning.OpenPersonalAuthority(directory, settings.OwnerID, settings.AgentID, settings.AuthorityID, keys, limits)
 	if err != nil {
 		return nil, func() {}, err
 	}
 	return authority, func() { _ = authority.Close() }, nil
+}
+
+// configuredAuthorityHelper resolves the pinned tosctl helper. The vault URL
+// is read from its named environment variable at use and never stored.
+func configuredAuthorityHelper(settings config.EarningTOSCTLHelperSettings) openfoxearning.TOSCTLAuthorityHelper {
+	helper := openfoxearning.TOSCTLAuthorityHelper{Binary: settings.Binary, SHA256: settings.SHA256, ConfigPath: settings.ConfigPath}
+	if settings.VaultURLEnvironment != "" {
+		helper.VaultURL = os.Getenv(settings.VaultURLEnvironment)
+	}
+	return helper
 }
 
 func parsePortfolioLimit(value string) (uint64, error) {
@@ -303,17 +310,6 @@ func loadAuthorityGrants(path string, settings config.EarningSettings) (map[stri
 	return result, nil
 }
 
-func decodeEd25519PublicKey(value string) (ed25519.PublicKey, error) {
-	if !strings.HasPrefix(value, "ed25519:") {
-		return nil, errors.New("Authority public key is invalid")
-	}
-	raw, err := hex.DecodeString(strings.TrimPrefix(value, "ed25519:"))
-	if err != nil || len(raw) != ed25519.PublicKeySize {
-		return nil, errors.New("Authority public key is invalid")
-	}
-	return ed25519.PublicKey(raw), nil
-}
-
 func canonicalDigest(value string) bool {
 	if len(value) != 71 || !strings.HasPrefix(value, "sha256:") {
 		return false
@@ -326,4 +322,16 @@ func zeroBytes(value []byte) {
 	for index := range value {
 		value[index] = 0
 	}
+}
+
+// decodeEd25519PublicKey reads an ed25519:<64 hex> external attestor key.
+func decodeEd25519PublicKey(value string) (ed25519.PublicKey, error) {
+	if !strings.HasPrefix(value, "ed25519:") {
+		return nil, errors.New("attestor public key is invalid")
+	}
+	raw, err := hex.DecodeString(strings.TrimPrefix(value, "ed25519:"))
+	if err != nil || len(raw) != ed25519.PublicKeySize {
+		return nil, errors.New("attestor public key is invalid")
+	}
+	return ed25519.PublicKey(raw), nil
 }

@@ -43,7 +43,7 @@ func TestDurableRelayJournalFailsClosedAfterDirectoryReplacement(t *testing.T) {
 		attempt.Execution.ProviderQuote, fixture.now); err != nil || !created {
 		t.Fatalf("seed quote reservation: created=%v err=%v", created, err)
 	}
-	record, created, err := journal.Admit(attempt.Execution, fixture.now)
+	record, created, err := journal.Admit(attempt.Execution, testVerifiedRelayReceipt(attempt.Execution), fixture.now)
 	if err != nil || !created {
 		t.Fatalf("seed execution admission: created=%v err=%v", created, err)
 	}
@@ -173,11 +173,11 @@ func TestDurableRelayJournalFreezesBytesCASAndRestart(t *testing.T) {
 		attempt.Execution.ProviderQuote, fixture.now); err != nil || !created {
 		t.Fatalf("durable quote reservation: created=%v err=%v", created, err)
 	}
-	first, created, err := journal.Admit(attempt.Execution, fixture.now)
+	first, created, err := journal.Admit(attempt.Execution, testVerifiedRelayReceipt(attempt.Execution), fixture.now)
 	if err != nil || !created || first.State != commerce.ActionPrepared {
 		t.Fatalf("first admission: created=%v record=%+v err=%v", created, first.Snapshot(), err)
 	}
-	retry, created, err := journal.Admit(attempt.Execution, fixture.now)
+	retry, created, err := journal.Admit(attempt.Execution, testVerifiedRelayReceipt(attempt.Execution), fixture.now)
 	if err != nil || created || !reflect.DeepEqual(retry.Snapshot(), first.Snapshot()) {
 		t.Fatalf("exact retry changed frozen record: created=%v err=%v", created, err)
 	}
@@ -197,7 +197,7 @@ func TestDurableRelayJournalFreezesBytesCASAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := journal.Admit(mutated, fixture.now); err == nil {
+	if _, _, err := journal.Admit(mutated, testVerifiedRelayReceipt(mutated), fixture.now); err == nil {
 		t.Fatal("same semantic action with different signed bytes bypassed its admission receipt")
 	}
 	crossNetwork := attempt.Execution
@@ -207,7 +207,7 @@ func TestDurableRelayJournalFreezesBytesCASAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := journal.Admit(crossNetwork, fixture.now); err == nil {
+	if _, _, err := journal.Admit(crossNetwork, testVerifiedRelayReceipt(crossNetwork), fixture.now); err == nil {
 		t.Fatal("provider-wide stable action was admitted on a second network without a matching receipt")
 	}
 
@@ -261,7 +261,7 @@ func TestDurableRelayJournalPersistsReceiptAndAllowsPreTakeoverDrain(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	postTakeoverAction, err = commerce.SignAuthorizedAction(postTakeoverAction, fixture.authorityKey)
+	postTakeoverAction, err = commerce.SignAuthorizedAction(context.Background(), postTakeoverAction, testAuthorityCustody.KeyID(fixture.authorityKey), testAuthorityCustody, fixture.authorityKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,22 +287,22 @@ func TestDurableRelayJournalPersistsReceiptAndAllowsPreTakeoverDrain(t *testing.
 		postTakeover.Execution.ProviderQuote, fixture.now); err != nil || !created {
 		t.Fatalf("post-takeover quote reservation: created=%v err=%v", created, err)
 	}
-	newer, created, err := journal.Admit(postTakeover.Execution, fixture.now)
+	newer, created, err := journal.Admit(postTakeover.Execution, testVerifiedRelayReceipt(postTakeover.Execution), fixture.now)
 	if err != nil || !created {
 		t.Fatalf("post-takeover admission: created=%v err=%v", created, err)
 	}
-	older, created, err := journal.Admit(preTakeover.Execution, fixture.now.Add(time.Second))
+	older, created, err := journal.Admit(preTakeover.Execution, testVerifiedRelayReceipt(preTakeover.Execution), fixture.now.Add(time.Second))
 	if err != nil || !created {
 		t.Fatalf("receipt issued before takeover did not drain after higher generation: created=%v err=%v", created, err)
 	}
 	alternateReceipt := preTakeover.Execution
 	alternateBody := alternateReceipt.AdmissionReceipt.Body
 	alternateBody.AdmissionSequence += 100
-	alternateReceipt.AdmissionReceipt, err = agentrelay.SignRelaySideEffectAdmissionReceipt(alternateBody, fixture.authorityKey)
+	alternateReceipt.AdmissionReceipt, err = agentrelay.SignRelaySideEffectAdmissionReceipt(context.Background(), alternateBody, testAuthorityCustody, fixture.authorityKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := journal.Admit(alternateReceipt, fixture.now.Add(2*time.Second)); !errors.Is(err, agentrelay.ErrRelayConflict) {
+	if _, _, err := journal.Admit(alternateReceipt, testVerifiedRelayReceipt(alternateReceipt), fixture.now.Add(2*time.Second)); !errors.Is(err, agentrelay.ErrRelayConflict) {
 		t.Fatalf("same action with a different admission receipt was not conflict: %v", err)
 	}
 	if err := journal.Close(); err != nil {
@@ -313,7 +313,7 @@ func TestDurableRelayJournalPersistsReceiptAndAllowsPreTakeoverDrain(t *testing.
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if retry, created, err := reopened.Admit(preTakeover.Execution, fixture.now.Add(3*time.Second)); err != nil || created || retry.AdmissionReceiptDigest != older.AdmissionReceiptDigest {
+	if retry, created, err := reopened.Admit(preTakeover.Execution, testVerifiedRelayReceipt(preTakeover.Execution), fixture.now.Add(3*time.Second)); err != nil || created || retry.AdmissionReceiptDigest != older.AdmissionReceiptDigest {
 		t.Fatalf("restart did not preserve the exact pre-takeover receipt: created=%v digest=%q err=%v",
 			created, retry.AdmissionReceiptDigest, err)
 	}
@@ -405,7 +405,7 @@ func TestDurableRelayJournalCheckpointsSponsorshipBeforeBroadcast(t *testing.T) 
 	if _, _, err := journal.ReserveQuote(fixture.profile, execution.QuoteRequest, execution.ProviderQuote, fixture.now); err != nil {
 		t.Fatal(err)
 	}
-	record, _, err := journal.Admit(execution, fixture.now)
+	record, _, err := journal.Admit(execution, testVerifiedRelayReceipt(execution), fixture.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,7 +499,7 @@ func TestDurableRelayJournalSponsorshipSuccessTransactionAbsenceRetainsExposureA
 		execution.ProviderQuote, fixture.now); reserveErr != nil || !created {
 		t.Fatalf("reserve combined quote: created=%v err=%v", created, reserveErr)
 	}
-	record, created, err := journal.Admit(execution, fixture.now)
+	record, created, err := journal.Admit(execution, testVerifiedRelayReceipt(execution), fixture.now)
 	if err != nil || !created {
 		t.Fatalf("admit combined action: created=%v err=%v", created, err)
 	}
@@ -807,7 +807,7 @@ func TestDurableRelayJournalCorroboratedTerminalBindingSurvivesRestartAndTombsto
 		attempt.Execution.ProviderQuote, fixture.now); reserveErr != nil || !created {
 		t.Fatalf("reserve sponsor-only quote: created=%v err=%v", created, reserveErr)
 	}
-	record, created, err := journal.Admit(attempt.Execution, fixture.now)
+	record, created, err := journal.Admit(attempt.Execution, testVerifiedRelayReceipt(attempt.Execution), fixture.now)
 	if err != nil || !created {
 		t.Fatalf("admit sponsor-only action: created=%v err=%v", created, err)
 	}
@@ -929,7 +929,7 @@ func TestDurableRelayJournalCombinedCorroboratedPartialTerminalSurvivesRestart(t
 		execution.ProviderQuote, fixture.now); reserveErr != nil || !created {
 		t.Fatalf("reserve combined quote: created=%v err=%v", created, reserveErr)
 	}
-	record, created, err := journal.Admit(execution, fixture.now)
+	record, created, err := journal.Admit(execution, testVerifiedRelayReceipt(execution), fixture.now)
 	if err != nil || !created {
 		t.Fatalf("admit combined action: created=%v err=%v", created, err)
 	}
@@ -1009,7 +1009,7 @@ func TestDurableRelayJournalEnforcesOwnerStricterAdmissionLimits(t *testing.T) {
 		second.Execution.ProviderQuote, fixture.now); !errors.Is(err, agentrelay.ErrRelayAdmissionLimit) {
 		t.Fatalf("owner quote-reservation ceiling was not atomic: %v", err)
 	}
-	if _, _, err := journal.Admit(first.Execution, fixture.now); err != nil {
+	if _, _, err := journal.Admit(first.Execution, testVerifiedRelayReceipt(first.Execution), fixture.now); err != nil {
 		t.Fatal(err)
 	}
 	// Consuming the first quote frees reservation capacity, but the persisted
@@ -1059,10 +1059,10 @@ func TestDurableRelayJournalAppliesTightenedOwnerWorkLimitToReservedQuotesAfterR
 		t.Fatal(err)
 	}
 	defer journal.Close()
-	if _, created, err := journal.Admit(first.Execution, fixture.now); err != nil || !created {
+	if _, created, err := journal.Admit(first.Execution, testVerifiedRelayReceipt(first.Execution), fixture.now); err != nil || !created {
 		t.Fatalf("first previously reserved execution: created=%v err=%v", created, err)
 	}
-	if _, _, err := journal.Admit(second.Execution, fixture.now); !errors.Is(err, agentrelay.ErrRelayAdmissionLimit) {
+	if _, _, err := journal.Admit(second.Execution, testVerifiedRelayReceipt(second.Execution), fixture.now); !errors.Is(err, agentrelay.ErrRelayAdmissionLimit) {
 		t.Fatalf("reserved quote bypassed tightened owner active-work limit: %v", err)
 	}
 }
@@ -1089,7 +1089,7 @@ func TestDurableRelayJournalCompactsBeyondActiveCapacityWithoutIdentityReuse(t *
 			attempt.Execution.ProviderQuote, at); reserveErr != nil || !created {
 			t.Fatalf("reserve action %d beyond active capacity: created=%v err=%v", index, created, reserveErr)
 		}
-		record, created, admitErr := journal.Admit(attempt.Execution, at)
+		record, created, admitErr := journal.Admit(attempt.Execution, testVerifiedRelayReceipt(attempt.Execution), at)
 		if admitErr != nil || !created {
 			t.Fatalf("admit action %d beyond active capacity: created=%v err=%v", index, created, admitErr)
 		}
@@ -1123,7 +1123,7 @@ func TestDurableRelayJournalCompactsBeyondActiveCapacityWithoutIdentityReuse(t *
 		first.Execution.AuthorizedAction.ExactRequestDigest); !errors.Is(err, ErrRelayRetired) {
 		t.Fatalf("retired identity did not survive restart: %v", err)
 	}
-	if _, _, err := reopened.Admit(first.Execution, fixture.now.Add(20*time.Second)); !errors.Is(err, ErrRelayRetired) {
+	if _, _, err := reopened.Admit(first.Execution, testVerifiedRelayReceipt(first.Execution), fixture.now.Add(20*time.Second)); !errors.Is(err, ErrRelayRetired) {
 		t.Fatalf("retired exact execution was reusable after restart: %v", err)
 	}
 }
@@ -1148,7 +1148,7 @@ func relayDistinctAttempt(t *testing.T, fixture *relayTestFixture, label string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	action, err = commerce.SignAuthorizedAction(action, fixture.authorityKey)
+	action, err = commerce.SignAuthorizedAction(context.Background(), action, testAuthorityCustody.KeyID(fixture.authorityKey), testAuthorityCustody, fixture.authorityKey)
 	if err != nil {
 		t.Fatal(err)
 	}

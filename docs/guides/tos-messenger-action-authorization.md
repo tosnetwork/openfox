@@ -103,7 +103,6 @@ escrow version 1 contract (`nativeimpl.NewNativeBuyer`,
 and `tos.openfox.chain-buyer-config.v1` artifacts, and the
 `tos-service-purchase` and `tos-service-provider` commands) was removed on
 2026-10-05 together with escrow version 1 support. The opportunity
-coordinator no longer accepts a `purchase` section. Paid Demand purchases and
-settlements go through `pkg/earning` and the escrow version 2 contract, whose
-code hash `nativecore.EscrowV2CodeHash` is the only escrow code OpenFox
-deploys or settles against.
+coordinator no longer accepts a `purchase` section. The escrow-backed Paid
+Demand product has also been retired; paid software work settles on the
+Service Actor rail.

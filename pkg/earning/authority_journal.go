@@ -3,11 +3,11 @@ package earning
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,11 +21,11 @@ import (
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
-	"github.com/tosnetwork/tos-service-protocol/pkg/paiddemand"
+	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
 )
 
 const (
-	authoritySchema                    = "tos.openfox.owner-economic-action-authority.v1"
+	authoritySchema                    = "tos.openfox.owner-economic-action-authority.v2"
 	authorityFile                      = "economic-authority.json"
 	authorityLock                      = "economic-authority.lock"
 	maximumRelayAdmissions             = 4096
@@ -169,7 +169,7 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.CustodyActionAuthorization{}, errors.New("stale writer cannot authorize custody")
 	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if action.ActionKind != commerce.PaymentActionKind(payment) || action.StableActionID != payment.StableActionID ||
 		commerce.VerifyAuthorizedAction(action, fields, canonicalRequest, fence, resolver, authority.now().UTC()) != nil {
 		return commerce.CustodyActionAuthorization{}, errors.New("custody payment is not the exact authorized action")
@@ -237,7 +237,7 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 		body.SponsorshipReleaseProfileDigest = sponsorship.ReleaseProfileDigest
 		body.SponsorshipCorroborationSnapshotIdentity = sponsorship.CorroborationSnapshotID
 	}
-	authorization, err := commerce.SignCustodyActionAuthorization(body, authority.key)
+	authorization, err := authority.signCustodyAuthorization(body)
 	if err != nil {
 		return commerce.CustodyActionAuthorization{}, err
 	}
@@ -278,71 +278,6 @@ func (authority *PersonalAuthority) AuthorizeCustodyPayment(action commerce.Auth
 	return detachedCustodyAuthorization(authorization), nil
 }
 
-// AuthorizeCustodyEffect turns an already admitted semantic action into a
-// purpose-limited custody capability for one exact TVM effect. The caller may
-// describe the contract effect, but cannot choose the authority identity,
-// writer generation, policy, mandate, approval or semantic action identity.
-func (authority *PersonalAuthority) AuthorizeCustodyEffect(action commerce.AuthorizedAction,
-	fields map[string]commerce.SemanticValue, canonicalRequest []byte, fence commerce.WriterFence,
-	template commerce.CustodyEffectAuthorization) (commerce.CustodyEffectAuthorization, error) {
-	if authority == nil || template.NetworkDomain == nil ||
-		commerce.ValidateCustodyNetworkDomain(*template.NetworkDomain) != nil ||
-		template.NetworkID != template.NetworkDomain.NetworkID ||
-		template.NetworkGlobalID != template.NetworkDomain.GlobalID {
-		return commerce.CustodyEffectAuthorization{}, errors.New("custody effect authority is unavailable")
-	}
-	authority.mu.Lock()
-	defer authority.mu.Unlock()
-	if err := authority.ensureStorageIdentityLocked(); err != nil {
-		return commerce.CustodyEffectAuthorization{}, err
-	}
-	if template.ActionKind == "escrow.accept" || template.ActionKind == "escrow.fund" {
-		engagement, found := authority.doc.Engagements[template.AgreementBodyDigest]
-		if !found || engagement.NegotiationAmbiguous ||
-			!exactLivePaidDemandReservation(authority.doc, engagement, authority.doc.AgentID,
-				template.AgreementBodyDigest, template.ObligationID) {
-			return commerce.CustodyEffectAuthorization{}, errors.New("Agreement is absent, ambiguous, or unreserved for new escrow exposure")
-		}
-	}
-	now := authority.now().UTC()
-	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration ||
-		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
-		return commerce.CustodyEffectAuthorization{}, errors.New("stale writer cannot authorize custody effect")
-	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
-	if action.ActionKind != "escrow.transition" ||
-		commerce.VerifyAuthorizedAction(action, fields, canonicalRequest, fence, resolver, now) != nil {
-		return commerce.CustodyEffectAuthorization{}, errors.New("custody effect is not the exact authorized action")
-	}
-	prior, found := authority.doc.Actions[action.StableActionID]
-	if !found || prior.ExactRequestDigest != action.ExactRequestDigest || prior.State != commerce.ActionPrepared {
-		return commerce.CustodyEffectAuthorization{}, errors.New("custody effect has no prepared authority record")
-	}
-	fenceDigest, err := commerce.WriterFenceDigest(fence)
-	if err != nil {
-		return commerce.CustodyEffectAuthorization{}, err
-	}
-	approval := action.ApprovalDigest
-	if approval == "" {
-		approval = zeroSHA256Digest()
-	}
-	domain := *template.NetworkDomain
-	template.SchemaVersion = 2
-	template.NetworkDomain = &domain
-	template.AuthorityID = authority.doc.AuthorityID
-	template.OwnerID = authority.doc.OwnerID
-	template.AgentID = authority.doc.AgentID
-	template.StableActionID = action.StableActionID
-	template.ExactRequestDigest = action.ExactRequestDigest
-	template.WriterGeneration = action.WriterGeneration
-	template.WriterFenceDigest = fenceDigest
-	template.PolicyRevision = action.PolicyRevision
-	template.MandateDigest = action.MandateDigest
-	template.ApprovalDigestOrZero = approval
-	template.ExpiresAtUnix = minUint64(template.ExpiresAtUnix, action.ExpiresAtUnix)
-	return commerce.SignCustodyEffectAuthorization(template, authority.key)
-}
-
 // AuthorizePredictionCustodyEffect turns one already prepared Prediction
 // semantic action into a capability for one exact Agent Account checked-call
 // v2 action. It has a separate wire domain from escrow and never invents Agreement
@@ -373,10 +308,7 @@ func (authority *PersonalAuthority) AuthorizePredictionCustodyEffect(
 			"stale writer cannot authorize prediction custody effect",
 		)
 	}
-	resolver := localFenceResolver{
-		authorityID: authority.doc.AuthorityID,
-		key:         authority.key.Public().(ed25519.PublicKey),
-	}
+	resolver := authority.actionAuthorityResolver()
 	if action.ActionKind != template.ActionKind ||
 		commerce.VerifyAuthorizedAction(action, fields, canonicalRequest, fence, resolver, now) != nil {
 		return commerce.PredictionCustodyEffectAuthorizationV1{}, errors.New(
@@ -413,26 +345,7 @@ func (authority *PersonalAuthority) AuthorizePredictionCustodyEffect(
 	template.MandateDigest = action.MandateDigest
 	template.ApprovalDigestOrZero = approval
 	template.ExpiresAtUnix = minUint64(template.ExpiresAtUnix, action.ExpiresAtUnix)
-	return commerce.SignPredictionCustodyEffectAuthorizationV1(template, authority.key)
-}
-
-// exactLivePaidDemandReservation is called while the PersonalAuthority mutex
-// is held at the final accept/fund signing boundary. It reconstructs the
-// profile-specific buyer exposure from the retained Agreement: a caller cannot
-// turn a zero, undersized, wrong-asset, or released reservation into custody
-// authority merely by attaching its ID to the Engagement.
-func exactLivePaidDemandReservation(document authorityDocument, engagement EngagementRecord,
-	buyerAgentID, agreementDigest, obligationID string) bool {
-	if engagement.AgreementDigest != agreementDigest || buyerAgentID == "" ||
-		!paidDemandBuyerPaymentObligation(engagement, buyerAgentID, obligationID) {
-		return false
-	}
-	expected, err := paidDemandBuyerReservation(engagement, buyerAgentID)
-	if err != nil || engagement.ReservationID != expected.ReservationID {
-		return false
-	}
-	reservation, found := document.Reservations[expected.ReservationID]
-	return found && sameExposureReservation(reservation, expected)
+	return authority.signPredictionCustodyEffect(template)
 }
 
 // exactLiveDirectPaymentReservation is called under the PersonalAuthority
@@ -616,19 +529,6 @@ func exactLiveRelaySponsorshipAdmission(document authorityDocument, action comme
 		actionFound && sameJSON(retainedAction, action)
 }
 
-func paidDemandBuyerPaymentObligation(engagement EngagementRecord, buyerAgentID, obligationID string) bool {
-	if buyerAgentID == "" || obligationID == "" {
-		return false
-	}
-	for _, obligation := range engagement.Agreement.Body.Obligations {
-		if obligation.ObligationID == obligationID && obligation.Amount != nil &&
-			obligation.ObligorAgentID == buyerAgentID && obligation.SettlementAdapterURI == paiddemand.SettlementAdapterURI {
-			return true
-		}
-	}
-	return false
-}
-
 func sameExposureReservation(left, right ExposureReservation) bool {
 	if left.ReservationID != right.ReservationID || left.AgreementDigest != right.AgreementDigest ||
 		left.ComputeUnits != right.ComputeUnits || left.SpendAtomic != right.SpendAtomic ||
@@ -738,6 +638,10 @@ type authorityDocument struct {
 	OwnerID                         string                                                      `json:"owner_id"`
 	AgentID                         string                                                      `json:"agent_id"`
 	AuthorityID                     string                                                      `json:"authority_id"`
+	ActionAuthorityKeyID            string                                                      `json:"action_authority_key_id"`
+	ActionAuthorityPublicKey        []byte                                                      `json:"action_authority_public_key"`
+	CustodyAuthorizationKeyID       string                                                      `json:"custody_authorization_key_id"`
+	CustodyAuthorizationPublicKey   []byte                                                      `json:"custody_authorization_public_key"`
 	WriterGeneration                uint64                                                      `json:"writer_generation"`
 	CurrentFence                    *commerce.WriterFence                                       `json:"current_fence,omitempty"`
 	Actions                         map[string]commerce.ActionResolution                        `json:"actions"`
@@ -772,7 +676,7 @@ type PersonalAuthority struct {
 	lock       *os.File
 	domainLock *localEconomicDomainLock
 	poisoned   bool
-	key        ed25519.PrivateKey
+	keys       AuthorityKeys
 	doc        authorityDocument
 	now        func() time.Time
 }
@@ -789,10 +693,17 @@ func (authority *PersonalAuthority) AuthorityNow() time.Time {
 	return authority.now().UTC()
 }
 
-func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, key ed25519.PrivateKey, limits PortfolioLimits) (*PersonalAuthority, error) {
-	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || ownerID == "" || agentID == "" || authorityID == "" || len(key) != ed25519.PrivateKeySize {
+// OpenPersonalAuthority opens the owner's personal economic authority. keys
+// pins the Action Authority and custody authorization keys held in custody;
+// a journal created under other keys is refused rather than re-keyed.
+func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, keys AuthorityKeys, limits PortfolioLimits) (*PersonalAuthority, error) {
+	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || ownerID == "" || agentID == "" || authorityID == "" {
 		return nil, errors.New("personal authority configuration is invalid")
 	}
+	if err := keys.validate(); err != nil {
+		return nil, fmt.Errorf("personal authority keys are invalid: %w", err)
+	}
+	keys = keys.clone()
 	if err := validateRelayJournalDirectorySecurity(directory); err != nil {
 		return nil, errors.New("personal authority directory must be owner-private")
 	}
@@ -830,8 +741,10 @@ func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, key 
 	}
 	limits = clonePortfolioLimits(limits)
 	authority := &PersonalAuthority{directory: directory, root: root, path: authorityFile, lock: lock, domainLock: domainLock,
-		key: append(ed25519.PrivateKey(nil), key...), now: time.Now}
+		keys: keys, now: time.Now}
 	authority.doc = authorityDocument{Schema: authoritySchema, OwnerID: ownerID, AgentID: agentID, AuthorityID: authorityID,
+		ActionAuthorityKeyID: keys.ActionKeyID, ActionAuthorityPublicKey: append([]byte(nil), keys.ActionPublicKey...),
+		CustodyAuthorizationKeyID: keys.CustodyKeyID, CustodyAuthorizationPublicKey: append([]byte(nil), keys.CustodyPublicKey...),
 		Actions: map[string]commerce.ActionResolution{}, AuthorizedActions: map[string]commerce.AuthorizedAction{}, OutcomeJournalHeads: map[string]OutcomeJournalAuthorityHeadV1{},
 		AuthorityInstances:   map[string]commerce.AuthorityInstanceRecord{},
 		NextInstanceSequence: 1, NextRelayAdmissionSequence: 1,
@@ -897,9 +810,6 @@ func (authority *PersonalAuthority) Close() error {
 		err = domainErr
 	}
 	authority.domainLock = nil
-	for index := range authority.key {
-		authority.key[index] = 0
-	}
 	return err
 }
 
@@ -955,9 +865,9 @@ func (authority *PersonalAuthority) AcquireWriter(_ context.Context, instanceID 
 	if err != nil {
 		return commerce.WriterFence{}, err
 	}
-	fence, err := commerce.SignWriterFence(commerce.WriterFenceBody{SchemaVersion: 1, OwnerID: next.OwnerID, AgentID: next.AgentID,
+	fence, err := authority.signWriterFence(commerce.WriterFenceBody{SchemaVersion: 1, OwnerID: next.OwnerID, AgentID: next.AgentID,
 		InstanceID: instanceID, LeaseID: leaseID, WriterGeneration: next.WriterGeneration, IssuedAtUnix: uint64(now.Unix()),
-		ExpiresAtUnix: uint64(now.Add(ttl).Unix()), AuthorityID: next.AuthorityID, Scope: scope}, authority.key)
+		ExpiresAtUnix: uint64(now.Add(ttl).Unix()), AuthorityID: next.AuthorityID, Scope: scope})
 	if err != nil {
 		return commerce.WriterFence{}, err
 	}
@@ -987,7 +897,7 @@ func (authority *PersonalAuthority) Admit(action commerce.AuthorizedAction, fiel
 		fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.ActionResolution{}, errors.New("stale writer cannot admit an action")
 	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if err := commerce.VerifyAuthorizedAction(action, fields, request, fence, resolver, now); err != nil {
 		return commerce.ActionResolution{}, err
 	}
@@ -1051,7 +961,7 @@ func (authority *PersonalAuthority) AdmitRelaySponsorshipPayment(action commerce
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, errors.New("stale writer cannot admit relay sponsorship exposure")
 	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if commerce.VerifyAuthorizedAction(action, fields, canonicalRequest, fence, resolver, authority.now().UTC()) != nil ||
 		!exactRelaySponsorshipCustodyPurpose(action, payment, purpose) {
 		return commerce.ActionResolution{}, SponsorshipCustodyBinding{}, errors.New("relay sponsorship payment purpose is not exactly authorized")
@@ -1367,7 +1277,7 @@ func (authority *PersonalAuthority) releaseReservation(action commerce.Authorize
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID || !authority.now().UTC().Before(time.Unix(int64(fence.Body.ExpiresAtUnix), 0)) {
 		return commerce.ActionResolution{}, errors.New("stale writer cannot release a reservation")
 	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if action.ActionKind != "portfolio.release" || commerce.VerifyAuthorizedAction(action, fields, request, fence, resolver, authority.now().UTC()) != nil {
 		return commerce.ActionResolution{}, errors.New("portfolio release action is not authorized")
 	}
@@ -1476,7 +1386,8 @@ func (authority *PersonalAuthority) releaseReservation(action commerce.Authorize
 }
 
 func validateExpiredCustodyAuthorization(document authorityDocument, tombstone expiredCustodyAuthorization,
-	marker uint64, reservationID, sponsorshipAdmissionID string, key ed25519.PrivateKey, now time.Time) error {
+	marker uint64, reservationID, sponsorshipAdmissionID string,
+	verifyProof func(commerce.CustodyActionAuthorization) error, now time.Time) error {
 	// Kept as a separate validator because an expired bearer is no longer in
 	// IssuedCustodyPayments, yet it remains the sole durable proof that a signed
 	// offline capability once owned the released hold.
@@ -1484,7 +1395,10 @@ func validateExpiredCustodyAuthorization(document authorityDocument, tombstone e
 	paymentDigest, paymentErr := commerce.AgreementPaymentRequestDigest(issued.Payment)
 	authorizationDigest, authorizationErr := codec.Digest(
 		"tos.openfox.issued-native-custody-authorization.v1", issued.Authorization)
-	resigned, signatureErr := commerce.SignCustodyActionAuthorization(issued.Authorization, key)
+	signatureErr := errors.New("custody authorization proof verifier is unavailable")
+	if verifyProof != nil {
+		signatureErr = verifyProof(issued.Authorization)
+	}
 	reservation, reservationFound := document.Reservations[reservationID]
 	resolution, resolutionFound := document.Actions[issued.Payment.StableActionID]
 	if marker == 0 || tombstone.ExpiredAtUnix != marker || issued.ReleaseAfterUnix == 0 ||
@@ -1492,7 +1406,7 @@ func validateExpiredCustodyAuthorization(document authorityDocument, tombstone e
 		issued.FinalityGraceSeconds != document.Limits.CustodyFinalityGraceSeconds ||
 		uint64(now.Unix()) < issued.ReleaseAfterUnix || paymentErr != nil || authorizationErr != nil ||
 		signatureErr != nil || issued.PaymentRequestDigest != paymentDigest ||
-		issued.AuthorizationDigest != authorizationDigest || !sameJSON(resigned, issued.Authorization) ||
+		issued.AuthorizationDigest != authorizationDigest ||
 		issued.ReservationID != reservationID || !reservationFound || !reservation.Released ||
 		!resolutionFound || resolution.ExactRequestDigest != issued.Authorization.ExactRequestDigest ||
 		issued.Authorization.SchemaVersion != 3 || issued.Payment.SchemaVersion != 3 ||
@@ -1563,6 +1477,9 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 		document.AuthorityID != authorityID || document.PortfolioRevision == 0 || document.NextInstanceSequence == 0 || document.Actions == nil ||
 		document.AuthorityInstances == nil || document.Reservations == nil {
 		return errors.New("personal authority journal is invalid")
+	}
+	if !sameAuthorityPins(document, authority.keys) {
+		return errors.New("personal authority journal was created under other Action Authority or custody keys")
 	}
 	if exceeds(document.ConsumedMaximumLossAtomic, document.RetainedDefaultLiabilityAtomic,
 		document.Limits.MaximumLossAtomic) {
@@ -1666,8 +1583,8 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 		if digestErr != nil || computed != lookupDigest || body.OwnerID != document.OwnerID ||
 			body.AgentID != document.AgentID || body.AuthorityID != document.AuthorityID ||
 			body.AdmissionSequence == 0 ||
-			receipt.PublicKey != "ed25519:"+hex.EncodeToString(authority.key.Public().(ed25519.PublicKey)) ||
-			agentrelay.VerifyRelaySideEffectAdmissionReceiptSignature(receipt) != nil {
+			receipt.KeyID != document.ActionAuthorityKeyID ||
+			authority.verifyStoredRelayAdmissionReceipt(receipt) != nil {
 			return errors.New("personal authority relay admission ledger is invalid")
 		}
 		if _, duplicate := relayAdmissionSequences[body.AdmissionSequence]; duplicate {
@@ -1693,7 +1610,7 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 		for index := range route {
 			chain[index] = route[index].receipt
 		}
-		if agentrelay.ValidateRelaySideEffectAdmissionRouteChain(chain) != nil {
+		if agentrelay.ValidateRelaySideEffectAdmissionRouteChain(chain, authority.actionAuthorityResolver()) != nil {
 			return errors.New("personal authority relay admission route chain is invalid")
 		}
 		expectedRelayAdmissionBindings[bindingKey] = route[len(route)-1].lookupDigest
@@ -1736,7 +1653,7 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 		if admission.ExpiredCustodyAuthorization != nil {
 			if err := validateExpiredCustodyAuthorization(document, *admission.ExpiredCustodyAuthorization,
 				admission.CustodyAuthorizationExpiredAtUnix, admission.Reservation.ReservationID,
-				admissionID, authority.key, authority.now().UTC()); err != nil {
+				admissionID, authority.verifyStoredCustodyAuthorization, authority.now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -1755,15 +1672,14 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 		computedPaymentDigest, paymentErr := commerce.AgreementPaymentRequestDigest(issued.Payment)
 		computedAuthorizationDigest, authorizationDigestErr := codec.Digest(
 			"tos.openfox.issued-native-custody-authorization.v1", issued.Authorization)
-		resigned, signatureErr := commerce.SignCustodyActionAuthorization(issued.Authorization, authority.key)
+		signatureErr := authority.verifyStoredCustodyAuthorization(issued.Authorization)
 		reservation, reservationFound := document.Reservations[issued.ReservationID]
 		actionResolution, actionFound := document.Actions[issued.Payment.StableActionID]
 		amount, amountErr := strconv.ParseUint(issued.Payment.Amount.AmountAtomic, 10, 64)
 		if paymentErr != nil || authorizationDigestErr != nil || signatureErr != nil || amountErr != nil || amount == 0 ||
 			paymentDigest != computedPaymentDigest || issued.PaymentRequestDigest != paymentDigest ||
 			issued.Payment.SchemaVersion != 3 || issued.Payment.SettlementAdapterURI != agentrelay.DirectPaymentAdapterURI ||
-			issued.AuthorizationDigest != computedAuthorizationDigest || !sameJSON(resigned, issued.Authorization) ||
-			!reservationFound || reservation.Released || !actionFound ||
+			issued.AuthorizationDigest != computedAuthorizationDigest || !reservationFound || reservation.Released || !actionFound ||
 			actionResolution.ExactRequestDigest != issued.Authorization.ExactRequestDigest ||
 			issued.Authorization.SchemaVersion != 3 || issued.Authorization.NetworkDomain == nil ||
 			issued.Authorization.AgreementPaymentRequestDigest != paymentDigest ||
@@ -1844,7 +1760,7 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 		if engagement.ExpiredCustodyAuthorization != nil {
 			if err := validateExpiredCustodyAuthorization(document, *engagement.ExpiredCustodyAuthorization,
 				engagement.CustodyAuthorizationExpiredAtUnix, engagement.ReservationID, "",
-				authority.key, authority.now().UTC()); err != nil {
+				authority.verifyStoredCustodyAuthorization, authority.now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -1973,27 +1889,27 @@ func (authority *PersonalAuthority) persist(document authorityDocument) error {
 	return nil
 }
 
-type localFenceResolver struct {
-	authorityID string
-	key         ed25519.PublicKey
-}
-
-// AuthorizeFenceKey and ConfirmCurrentWriterFence let independent local sinks
-// verify both cryptographic authority and the current high-water lease. They
-// expose no signing key or mutation surface.
-func (authority *PersonalAuthority) AuthorizeFenceKey(authorityID string, publicKey ed25519.PublicKey, _ time.Time) error {
+// ResolveActionAuthorityKey, Verify and ConfirmCurrentWriterFence let
+// independent local sinks verify both cryptographic authority and the current
+// high-water lease. They expose no signing or mutation surface.
+func (authority *PersonalAuthority) ResolveActionAuthorityKey(authorityID string, keyID [mldsa44.KeyIDSize]byte,
+	at time.Time) ([]byte, error) {
 	if authority == nil {
-		return errors.New("writer authority is unavailable")
+		return nil, errors.New("writer authority is unavailable")
 	}
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
 	if err := authority.ensureStorageIdentityLocked(); err != nil {
-		return err
+		return nil, err
 	}
-	if authorityID != authority.doc.AuthorityID || !authority.key.Public().(ed25519.PublicKey).Equal(publicKey) {
-		return errors.New("writer fence key is not the owner authority key")
+	return authority.actionAuthorityResolver().ResolveActionAuthorityKey(authorityID, keyID, at)
+}
+
+func (authority *PersonalAuthority) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+	if authority == nil || authority.keys.Custody == nil {
+		return mldsa44.ErrUnavailable
 	}
-	return nil
+	return authority.keys.Custody.Verify(ctx, use, payload, publicKey, signature)
 }
 
 func (authority *PersonalAuthority) ConfirmCurrentWriterFence(fence commerce.WriterFence, now time.Time) error {
@@ -2052,8 +1968,7 @@ func (authority *PersonalAuthority) admitRelaySideEffects(ctx context.Context,
 	if wantedErr != nil || gotErr != nil || wantedFence != gotFence {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("relay admission does not carry the current writer fence")
 	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID,
-		key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if err := agentrelay.ValidateRelaySideEffectAdmissionDescriptor(descriptor, resolver, now); err != nil {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
 	}
@@ -2067,7 +1982,7 @@ func (authority *PersonalAuthority) admitRelaySideEffects(ctx context.Context,
 	if existing, found := authority.doc.RelayAdmissions[lookupDigest]; found {
 		issuedAt := time.Unix(int64(existing.Body.IssuedAtUnix), 0).UTC()
 		if err := agentrelay.VerifyRelaySideEffectAdmissionReceiptForDescriptor(existing, descriptor,
-			agentrelay.RelayExecutionRequest{}, issuedAt); err != nil {
+			agentrelay.RelayExecutionRequest{}, authority.actionAuthorityResolver(), issuedAt); err != nil {
 			return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("stored relay admission conflicts with exact retry")
 		}
 		return cloneRelayAdmissionReceipt(existing), nil
@@ -2083,7 +1998,7 @@ func (authority *PersonalAuthority) admitRelaySideEffects(ctx context.Context,
 		}
 	} else {
 		predecessor, found := authority.doc.RelayAdmissions[boundLookup]
-		if !found || agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(predecessor, descriptor) != nil {
+		if !found || agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(predecessor, descriptor, authority.actionAuthorityResolver()) != nil {
 			return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, agentrelay.ErrRelayConflict
 		}
 	}
@@ -2100,7 +2015,7 @@ func (authority *PersonalAuthority) admitRelaySideEffects(ctx context.Context,
 	if err != nil {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
 	}
-	receipt, err := agentrelay.SignRelaySideEffectAdmissionReceipt(body, authority.key)
+	receipt, err := authority.signRelayAdmissionReceipt(body)
 	if err != nil {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
 	}
@@ -2186,14 +2101,7 @@ func (authority *PersonalAuthority) SignAction(action commerce.AuthorizedAction,
 		!now.Before(time.Unix(int64(fence.Body.ExpiresAtUnix), 0).UTC()) {
 		return commerce.AuthorizedAction{}, errors.New("stale writer cannot sign an action")
 	}
-	return commerce.SignAuthorizedAction(action, authority.key)
-}
-
-func (resolver localFenceResolver) AuthorizeFenceKey(authorityID string, publicKey ed25519.PublicKey, _ time.Time) error {
-	if authorityID != resolver.authorityID || !resolver.key.Equal(publicKey) {
-		return errors.New("writer fence key is not the local authority key")
-	}
-	return nil
+	return authority.signAuthorizedAction(action)
 }
 
 func admitReservation(document authorityDocument, candidate ExposureReservation) error {

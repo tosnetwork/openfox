@@ -27,11 +27,11 @@ func (resolver outcomeOperationResolver) AuthorizeAgentOperationKey(agentID stri
 
 func TestOutcomeJournalCrashGapReplayAndWriterTakeover(t *testing.T) {
 	now := time.Unix(1_900_000_000, 0).UTC()
-	_, authorityKey, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:outcome", "agent:outcome", "authority:outcome", authorityKey, PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:outcome", "agent:outcome", "authority:outcome", testAuthorityKeys(), PortfolioLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}

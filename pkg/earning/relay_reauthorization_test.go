@@ -91,7 +91,7 @@ func newRelayReauthorizationHarness(t *testing.T) *relayReauthorizationHarness {
 	harness := &relayReauthorizationHarness{clock: first.now, first: first}
 	authorityDir := privateTempDir(t)
 	authority, err := OpenPersonalAuthority(authorityDir, "owner:client", "agent:client", "authority:client",
-		first.authorityKey, PortfolioLimits{})
+		testAuthorityKeys(), PortfolioLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func newRelayReauthorizationHarness(t *testing.T) *relayReauthorizationHarness {
 	second.resolver = relayTestResolver{agents: map[string]ed25519.PublicKey{
 		"agent:client":                 first.clientKey.Public().(ed25519.PublicKey),
 		second.profile.ProviderAgentID: secondKey.Public().(ed25519.PublicKey)},
-		authorityKey: first.authorityKey.Public().(ed25519.PublicKey), current: first.resolver.current}
+		authorityKey: testAuthorityCustody.PublicKey(first.authorityKey), current: first.resolver.current}
 
 	firstService := first.service(agentrelay.NewMemoryJournal(), &relayTestBroadcaster{})
 	firstTransport := relayFunctionTransport{quote: firstService.Quote,
@@ -187,7 +187,7 @@ func newRelayReauthorizationHarness(t *testing.T) *relayReauthorizationHarness {
 	if err := os.Mkdir(routeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := OpenDurableRelayRouteJournal(routeDir)
+	routes, err := OpenDurableRelayRouteJournal(routeDir, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func (harness *relayReauthorizationHarness) restartRoutes(t *testing.T) {
 	if err := harness.routes.Close(); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := OpenDurableRelayRouteJournal(harness.routeDir)
+	routes, err := OpenDurableRelayRouteJournal(harness.routeDir, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,8 +361,7 @@ func TestRelaySuccessorReauthorizationAfterStartedAuthoritativeNotFound(t *testi
 func TestRelaySuccessorReceiptFoundAfterTakeoverNeverRebases(t *testing.T) {
 	harness := newRelayReauthorizationHarness(t)
 	oldDraft := harness.preparePending(t, true)
-	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(oldDraft.Execution,
-		oldDraft.Execution.QuoteRequest.Body.RequesterAgentID, harness.plan.Attempt.Execution.AdmissionReceipt)
+	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(oldDraft.Execution, oldDraft.Execution.QuoteRequest.Body.RequesterAgentID, harness.plan.Attempt.Execution.AdmissionReceipt, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,8 +459,7 @@ func TestRelayAdmissionReauthorizationExpiryCannotExtendOldAction(t *testing.T) 
 func TestPersonalRelayAdmissionCapabilityIsBoundToExactCurrentWriter(t *testing.T) {
 	harness := newRelayReauthorizationHarness(t)
 	oldDraft := harness.preparePending(t, true)
-	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(oldDraft.Execution,
-		oldDraft.Execution.QuoteRequest.Body.RequesterAgentID, harness.plan.Attempt.Execution.AdmissionReceipt)
+	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(oldDraft.Execution, oldDraft.Execution.QuoteRequest.Body.RequesterAgentID, harness.plan.Attempt.Execution.AdmissionReceipt, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,16 +480,15 @@ func TestPersonalRelayAdmissionCapabilityIsBoundToExactCurrentWriter(t *testing.
 	rebasedAttempt := oldDraft
 	rebasedAttempt.Execution = rebasedExecution
 	predecessor := harness.plan.Attempt.Execution.AdmissionReceipt
-	if err := verifyRelayAdmissionReauthorization(authorization, oldDraft, rebasedAttempt, predecessor); err != nil {
+	if err := verifyRelayAdmissionReauthorization(authorization, oldDraft, rebasedAttempt, predecessor, testRelayRouteAuthority()); err != nil {
 		t.Fatalf("canonical relay reauthorization did not verify: %v", err)
 	}
 	withoutSignaturePrefix := authorization
-	withoutSignaturePrefix.Signature = withoutSignaturePrefix.Signature[len("ed25519:"):]
-	if err := verifyRelayAdmissionReauthorization(withoutSignaturePrefix, oldDraft, rebasedAttempt, predecessor); err == nil {
+	withoutSignaturePrefix.Signature = withoutSignaturePrefix.Signature[len("mldsa44:"):]
+	if err := verifyRelayAdmissionReauthorization(withoutSignaturePrefix, oldDraft, rebasedAttempt, predecessor, testRelayRouteAuthority()); err == nil {
 		t.Fatal("relay reauthorization accepted a non-canonical signature encoding")
 	}
-	rebasedDescriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(rebasedExecution,
-		rebasedExecution.QuoteRequest.Body.RequesterAgentID, predecessor)
+	rebasedDescriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(rebasedExecution, rebasedExecution.QuoteRequest.Body.RequesterAgentID, predecessor, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,8 +573,7 @@ func TestSharedAuthorityReauthorizationIsBoundToTakeoverMTLSInstance(t *testing.
 	harness := newRelayReauthorizationHarness(t)
 	oldDraft := harness.preparePending(t, true)
 	harness.takeover(t)
-	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(oldDraft.Execution,
-		oldDraft.Execution.QuoteRequest.Body.RequesterAgentID, harness.plan.Attempt.Execution.AdmissionReceipt)
+	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(oldDraft.Execution, oldDraft.Execution.QuoteRequest.Body.RequesterAgentID, harness.plan.Attempt.Execution.AdmissionReceipt, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,8 +618,7 @@ func TestSharedAuthorityReauthorizationIsBoundToTakeoverMTLSInstance(t *testing.
 		if clientErr != nil {
 			t.Fatal(clientErr)
 		}
-		client, clientErr := NewSharedAuthorityClient(testServer.URL+"/v1/economic-authority", httpClient,
-			"authority:client", harness.first.authorityKey.Public().(ed25519.PublicKey))
+		client, clientErr := NewSharedAuthorityClient(t.Context(), testServer.URL+"/v1/economic-authority", httpClient, "authority:client", testAuthorityKeys().ActionKeyID, testAuthorityCustody)
 		if clientErr != nil {
 			t.Fatal(clientErr)
 		}
@@ -643,8 +638,7 @@ func TestSharedAuthorityReauthorizationIsBoundToTakeoverMTLSInstance(t *testing.
 func TestPersonalAuthorityAdmissionTakeoverRaceHasOneLinearizationPath(t *testing.T) {
 	harness := newRelayReauthorizationHarness(t)
 	oldDraft := harness.preparePending(t, true)
-	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(oldDraft.Execution,
-		oldDraft.Execution.QuoteRequest.Body.RequesterAgentID, harness.plan.Attempt.Execution.AdmissionReceipt)
+	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(oldDraft.Execution, oldDraft.Execution.QuoteRequest.Body.RequesterAgentID, harness.plan.Attempt.Execution.AdmissionReceipt, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}

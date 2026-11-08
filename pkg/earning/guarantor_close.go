@@ -688,8 +688,7 @@ func (coordinator *GuarantorProviderCoordinator) buildGuarantorStage(terms guara
 	if coordinator.ActionAuthoritySigner == nil {
 		return guarantor.PortableStageActionAdmissionEvidenceV1{}, errors.New("Agreement-bound Guarantor action authority signer is unavailable")
 	}
-	authorization, err := coordinator.ActionAuthoritySigner.SignObject("stage-action-admission-evidence", bodyDigest,
-		"tos.service.agent-guarantor-stage-action-admission-signature.v1", at)
+	authorization, err := coordinator.ActionAuthoritySigner.SignStageActionAdmission(bodyDigest, at)
 	if err != nil {
 		return guarantor.PortableStageActionAdmissionEvidenceV1{}, err
 	}

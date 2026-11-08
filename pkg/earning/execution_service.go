@@ -16,13 +16,6 @@ type ExecutionPrerequisiteVerifier interface {
 	VerifyExecutionPrerequisites(context.Context, EngagementRecord) (required bool, evidenceDigests []string, err error)
 }
 
-// NativeExecutionAdmission is an optional chain-profile Gate. It runs after
-// the deterministic local execution identity has been derived and before the
-// local start ticket is issued.
-type NativeExecutionAdmission interface {
-	AdmitNativeExecution(context.Context, EngagementRecord, commercegate.Plan) (required bool, evidenceDigests []string, err error)
-}
-
 // TrustedCapabilityExecutionAdmission is the mandatory repository-wide
 // cutover fence. It must validate CapabilityUseBindingV1 at the actual sink
 // immediately before any execution start. Legacy runners may not bypass it.
@@ -54,7 +47,6 @@ type ExecutionService struct {
 	Engine       *Engine
 	Gate         *commercegate.Gate
 	Prerequisite ExecutionPrerequisiteVerifier
-	Native       NativeExecutionAdmission
 	Capability   TrustedCapabilityExecutionAdmission
 	Runner       AgreementRunner
 	Credentials  commercegate.CredentialResolver
@@ -152,21 +144,11 @@ func (service ExecutionService) Execute(ctx context.Context, agreementDigest str
 		if record.State == EngagementReserved {
 			_, _ = service.Engine.Authority.transitionEngagement(agreementDigest, EngagementReserved, EngagementFundingPending, "", nil)
 		}
-		return EngagementRecord{}, errors.New("required prepayment or finalized escrow funding is unresolved")
+		return EngagementRecord{}, errors.New("required prepayment is unresolved")
 	}
 	preparedPlan, prepareRequest, prepareFields, err := commercegate.PrepareAuthorizationMaterial(plan, fence)
 	if err != nil {
 		return EngagementRecord{}, err
-	}
-	if service.Native != nil {
-		nativeRequired, nativeEvidence, nativeErr := service.Native.AdmitNativeExecution(ctx, record, preparedPlan)
-		if nativeErr != nil || nativeRequired && len(nativeEvidence) == 0 {
-			if nativeErr == nil {
-				nativeErr = errors.New("native execution Gate returned no authority evidence")
-			}
-			return EngagementRecord{}, nativeErr
-		}
-		fundingEvidence = appendUniqueSorted(fundingEvidence, nativeEvidence...)
 	}
 	prepareAction, err := commerce.BuildAuthorizedAction(service.Engine.OwnerID, service.Engine.AgentID, "execution.prepare", prepareFields,
 		prepareRequest, fence, policyRevision, service.Engine.MandateDigest, "", "reserved", minUint64(record.Agreement.Body.ExpiresAtUnix, fence.Body.ExpiresAtUnix))

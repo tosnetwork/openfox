@@ -2,7 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"reflect"
 	"sort"
@@ -295,7 +294,7 @@ func (authority *PersonalAuthority) AdmitScheduleTransition(action commerce.Auth
 		"schedule_entry_id": commerce.ID(target.ScheduleEntryID), "agreement_body_digest": commerce.Digest32(target.AgreementBodyDigest),
 		"execution_id": commerce.Digest32(target.ExecutionID), "expected_state_revision": commerce.U64(transition.ExpectedStateRevision),
 		"target_state": commerce.State(string(transition.TargetState)), "target_dispatch_generation": commerce.U64(transition.TargetDispatchGeneration)}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if action.ActionKind != "schedule.entry.transition" || commerce.VerifyAuthorizedAction(action, fields, request, fence, resolver, now) != nil {
 		return commerce.ActionResolution{}, errors.New("schedule transition is not an exact authorized action")
 	}
@@ -343,7 +342,7 @@ func (authority *PersonalAuthority) AdmitDependencyTransition(action commerce.Au
 		"downstream_obligation_id":    commerce.ID(request.Dependency.DownstreamObligationID), "dependency_type": commerce.Kind(request.Dependency.DependencyType),
 		"dependency_class": commerce.Kind(request.Dependency.DependencyClass), "transition_kind": commerce.Kind(request.TransitionKind),
 		"graph_base_revision": commerce.U64(request.GraphBaseRevision)}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if action.ActionKind != "schedule.dependency.transition" || !reflect.DeepEqual(fields, expected) ||
 		commerce.VerifyAuthorizedAction(action, expected, canonicalRequest, fence, resolver, now) != nil {
 		return commerce.ActionResolution{}, errors.New("dependency action is not exact or authorized")

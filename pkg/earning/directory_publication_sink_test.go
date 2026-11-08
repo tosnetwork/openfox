@@ -15,8 +15,7 @@ func TestDirectoryPublicationIsWriterFencedAndDiscoverable(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
 	issuerPublic, issuerKey, _ := ed25519.GenerateKey(rand.Reader)
 	intent := earningIntent(t, now, issuerKey)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:test", intent.Body.IssuerAgentID, "authority:test", authorityKey,
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:test", intent.Body.IssuerAgentID, "authority:test", testAuthorityKeys(),
 		PortfolioLimits{ComputeUnits: 10})
 	if err != nil {
 		t.Fatal(err)

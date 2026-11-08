@@ -226,12 +226,6 @@ type DemandApplicationNegotiator struct {
 	Inventory    InventorySource
 	Compiler     DemandAgreementCompiler
 	Fence        WriterFenceProvider
-	Profiles     map[string]DemandApplicationProfileHandler
-}
-
-type DemandApplicationProfileHandler interface {
-	HandleDemandApplication(context.Context, commerce.SignedAgentIntent, commerce.IntentApplication,
-		commerce.AgentAgreementBody, InventorySnapshot, commerce.WriterFence) error
 }
 
 func (negotiator DemandApplicationNegotiator) HandleIntentApplication(ctx context.Context, event ClaimedAgreementEvent) error {
@@ -271,18 +265,6 @@ func (negotiator DemandApplicationNegotiator) HandleIntentApplication(ctx contex
 	}
 	if resolution.State != commerce.ActionAccepted && resolution.State != commerce.ActionTerminal {
 		return errors.New("Agreement proposal remains unresolved")
-	}
-	handledProfiles := map[string]bool{}
-	for _, obligation := range body.Obligations {
-		if obligation.Amount == nil {
-			continue
-		}
-		if profile := negotiator.Profiles[obligation.SettlementAdapterURI]; profile != nil && !handledProfiles[obligation.SettlementAdapterURI] {
-			if err := profile.HandleDemandApplication(ctx, intent, application, body, inventory, fence); err != nil {
-				return err
-			}
-			handledProfiles[obligation.SettlementAdapterURI] = true
-		}
 	}
 	return nil
 }

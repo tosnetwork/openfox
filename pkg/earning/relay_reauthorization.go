@@ -2,10 +2,7 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"reflect"
 	"time"
@@ -59,7 +56,7 @@ type relayAdmissionReauthorization struct {
 	Body             relayAdmissionReauthorizationBody `json:"body"`
 	AuthorizedAction commerce.AuthorizedAction         `json:"authorized_action"`
 	WriterFence      commerce.WriterFence              `json:"writer_fence"`
-	PublicKey        string                            `json:"public_key"`
+	KeyID            string                            `json:"key_id"`
 	Signature        string                            `json:"signature"`
 }
 
@@ -201,15 +198,14 @@ func (authority *PersonalAuthority) reauthorizeUnlinearizedRelayAdmissionForCapa
 		descriptor.Mode != agentrelay.ModeRelayExact {
 		return relayAdmissionReauthorization{}, errors.New("relay admission reauthorization context is invalid")
 	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID,
-		key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	oldExecutionDigest, digestErr := agentrelay.RelayExecutionRequestDigest(execution)
 	if digestErr != nil || oldExecutionDigest != descriptor.RelayExecutionDigest ||
 		execution.AdmissionReceipt.Body.SchemaVersion != 0 {
 		return relayAdmissionReauthorization{}, errors.New("old relay execution does not match its admission descriptor")
 	}
 	reconstructed, reconstructErr := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(execution,
-		descriptor.AuthenticatedPrincipal, predecessorForRelayDescriptor(authority.doc, descriptor))
+		descriptor.AuthenticatedPrincipal, predecessorForRelayDescriptor(authority.doc, descriptor), authority.actionAuthorityResolver())
 	if reconstructErr != nil || !reflect.DeepEqual(reconstructed, descriptor) {
 		return relayAdmissionReauthorization{}, errors.New("old relay execution cannot reconstruct its admission descriptor")
 	}
@@ -237,7 +233,7 @@ func (authority *PersonalAuthority) reauthorizeUnlinearizedRelayAdmissionForCapa
 	boundLookup, found := authority.doc.RelayAdmissionBindings[bindingKey]
 	predecessor, predecessorFound := authority.doc.RelayAdmissions[boundLookup]
 	if !found || !predecessorFound ||
-		agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(predecessor, descriptor) != nil {
+		agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(predecessor, descriptor, authority.actionAuthorityResolver()) != nil {
 		return relayAdmissionReauthorization{}, agentrelay.ErrRelayConflict
 	}
 	currentFence := *authority.doc.CurrentFence
@@ -268,7 +264,7 @@ func (authority *PersonalAuthority) reauthorizeUnlinearizedRelayAdmissionForCapa
 	if err != nil {
 		return relayAdmissionReauthorization{}, err
 	}
-	newAction, err = commerce.SignAuthorizedAction(newAction, authority.key)
+	newAction, err = authority.signAuthorizedAction(newAction)
 	if err != nil {
 		return relayAdmissionReauthorization{}, err
 	}
@@ -284,7 +280,7 @@ func (authority *PersonalAuthority) reauthorizeUnlinearizedRelayAdmissionForCapa
 	rebasedExecution.AuthorizedAction = newAction
 	rebasedExecution.WriterFence = currentFence
 	rebasedDescriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(rebasedExecution,
-		descriptor.AuthenticatedPrincipal, predecessor)
+		descriptor.AuthenticatedPrincipal, predecessor, authority.actionAuthorityResolver())
 	if err != nil || rebasedDescriptor.RelayExecutionDigest != descriptor.RelayExecutionDigest {
 		return relayAdmissionReauthorization{}, errors.New("rebased relay execution changes immutable execution identity")
 	}
@@ -309,7 +305,7 @@ func (authority *PersonalAuthority) reauthorizeUnlinearizedRelayAdmissionForCapa
 		OldActionExpiresAtUnix: oldAction.ExpiresAtUnix, NewActionExpiresAtUnix: newActionExpiry,
 		PolicyRevision: oldAction.PolicyRevision, MandateDigest: oldAction.MandateDigest,
 		ApprovalDigest: oldAction.ApprovalDigest, ResolvedNotFoundAtUnix: uint64(now.Unix())}
-	return signRelayAdmissionReauthorization(body, newAction, currentFence, authority.key)
+	return authority.signRelayAdmissionReauthorization(body, newAction, currentFence)
 }
 
 func predecessorForRelayDescriptor(document authorityDocument,
@@ -332,24 +328,37 @@ func relayAdmissionReauthorizationExpiry(execution agentrelay.RelayExecutionRequ
 	return result
 }
 
-func signRelayAdmissionReauthorization(body relayAdmissionReauthorizationBody, action commerce.AuthorizedAction,
-	fence commerce.WriterFence, key ed25519.PrivateKey) (relayAdmissionReauthorization, error) {
-	if len(key) != ed25519.PrivateKeySize || body.ResolvedNotFoundAtUnix == 0 {
+func (authority *PersonalAuthority) signRelayAdmissionReauthorization(body relayAdmissionReauthorizationBody,
+	action commerce.AuthorizedAction, fence commerce.WriterFence) (relayAdmissionReauthorization, error) {
+	if body.ResolvedNotFoundAtUnix == 0 {
 		return relayAdmissionReauthorization{}, errors.New("relay admission reauthorization is invalid")
 	}
 	canonical, err := codec.Marshal(body)
 	if err != nil {
 		return relayAdmissionReauthorization{}, err
 	}
-	message := relayAdmissionReauthorizationMessage(canonical)
-	public := key.Public().(ed25519.PublicKey)
+	keyID, signature, err := commerce.SignActionAuthorityMessage(context.Background(), authority.keys.Custody,
+		ActionAuthorityController, relayAdmissionReauthorizationMessage(canonical))
+	if err != nil {
+		return relayAdmissionReauthorization{}, err
+	}
+	if keyID != authority.keys.ActionKeyID {
+		return relayAdmissionReauthorization{}, errors.New(
+			"custody signed the relay reauthorization with a key other than the pinned Action Authority key")
+	}
 	return relayAdmissionReauthorization{Body: body, AuthorizedAction: action, WriterFence: fence,
-		PublicKey: "ed25519:" + hex.EncodeToString(public),
-		Signature: "ed25519:" + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, message))}, nil
+		KeyID: keyID, Signature: signature}, nil
 }
 
+// verifyRelayAdmissionReauthorization proves a takeover rebase: the exact
+// execution identity is unchanged and the owner Action Authority key that
+// signed the predecessor receipt and both writer envelopes signed it.
 func verifyRelayAdmissionReauthorization(authorization relayAdmissionReauthorization,
-	oldAttempt, newAttempt RelayAttempt, predecessor agentrelay.SignedRelaySideEffectAdmissionReceipt) error {
+	oldAttempt, newAttempt RelayAttempt, predecessor agentrelay.SignedRelaySideEffectAdmissionReceipt,
+	authority commerce.FenceAuthorityResolver) error {
+	if authority == nil {
+		return errors.New("relay admission reauthorization has no Action Authority resolver")
+	}
 	body := authorization.Body
 	if body.SchemaVersion != 1 || body.Mode != agentrelay.ModeRelayExact ||
 		body.AssuranceLevel != agentrelay.AssuranceAutonomousDecentralized || body.RouteAttempt <= 1 ||
@@ -372,12 +381,12 @@ func verifyRelayAdmissionReauthorization(authorization relayAdmissionReauthoriza
 		return errors.New("relay admission reauthorization cannot replace an issued receipt")
 	}
 	oldDescriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(oldExecution,
-		oldExecution.QuoteRequest.Body.RequesterAgentID, predecessor)
+		oldExecution.QuoteRequest.Body.RequesterAgentID, predecessor, authority)
 	if err != nil {
 		return err
 	}
 	newDescriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(newExecution,
-		newExecution.QuoteRequest.Body.RequesterAgentID, predecessor)
+		newExecution.QuoteRequest.Body.RequesterAgentID, predecessor, authority)
 	if err != nil {
 		return err
 	}
@@ -438,26 +447,19 @@ func verifyRelayAdmissionReauthorization(authorization relayAdmissionReauthoriza
 		!reflect.DeepEqual(authorization.WriterFence, newExecution.WriterFence) ||
 		newExecution.WriterFence.Body.WriterGeneration <= oldExecution.WriterFence.Body.WriterGeneration ||
 		newExecution.WriterFence.Body.LeaseID == oldExecution.WriterFence.Body.LeaseID ||
-		authorization.PublicKey != predecessor.PublicKey || authorization.PublicKey != oldExecution.AuthorizedAction.AuthorityPublicKey ||
-		authorization.PublicKey != newExecution.AuthorizedAction.AuthorityPublicKey ||
-		authorization.PublicKey != oldExecution.WriterFence.PublicKey || authorization.PublicKey != newExecution.WriterFence.PublicKey {
+		authorization.KeyID != predecessor.KeyID || authorization.KeyID != oldExecution.AuthorizedAction.AuthorityKeyID ||
+		authorization.KeyID != newExecution.AuthorizedAction.AuthorityKeyID ||
+		authorization.KeyID != oldExecution.WriterFence.KeyID || authorization.KeyID != newExecution.WriterFence.KeyID {
 		return errors.New("relay admission reauthorization changes the exact execution")
 	}
-	const keyPrefix = "ed25519:"
-	if len(authorization.PublicKey) <= len(keyPrefix) || authorization.PublicKey[:len(keyPrefix)] != keyPrefix ||
-		len(authorization.Signature) <= len(keyPrefix) || authorization.Signature[:len(keyPrefix)] != keyPrefix {
+	canonical, err := codec.Marshal(body)
+	if err != nil || body.ResolvedNotFoundAtUnix > uint64(1<<63-1) {
 		return errors.New("relay admission reauthorization signature is invalid")
 	}
-	publicRaw, err := hex.DecodeString(authorization.PublicKey[len(keyPrefix):])
-	signatureRaw, signatureErr := base64.RawURLEncoding.DecodeString(authorization.Signature[len(keyPrefix):])
-	canonical, canonicalErr := codec.Marshal(body)
-	if err != nil || signatureErr != nil || canonicalErr != nil || len(publicRaw) != ed25519.PublicKeySize ||
-		len(signatureRaw) != ed25519.SignatureSize ||
-		authorization.PublicKey != keyPrefix+hex.EncodeToString(publicRaw) ||
-		authorization.Signature != keyPrefix+base64.RawURLEncoding.EncodeToString(signatureRaw) ||
-		!ed25519.Verify(ed25519.PublicKey(publicRaw),
-			relayAdmissionReauthorizationMessage(canonical), signatureRaw) {
-		return errors.New("relay admission reauthorization signature is invalid")
+	resolvedAt := time.Unix(int64(body.ResolvedNotFoundAtUnix), 0).UTC()
+	if err := commerce.VerifyActionAuthoritySignature(authority, body.AuthorityID, authorization.KeyID,
+		authorization.Signature, relayAdmissionReauthorizationMessage(canonical), resolvedAt); err != nil {
+		return errors.New("relay admission reauthorization signature is invalid: " + err.Error())
 	}
 	return nil
 }
@@ -470,12 +472,12 @@ func relayAdmissionReauthorizationMessage(canonical []byte) []byte {
 }
 
 func relayPendingAdmissionEnvelopeDigest(attempt RelayAttempt,
-	predecessor agentrelay.SignedRelaySideEffectAdmissionReceipt) (string, error) {
+	predecessor agentrelay.SignedRelaySideEffectAdmissionReceipt, authority commerce.FenceAuthorityResolver) (string, error) {
 	if !relayAttemptHasNoAdmissionReceipt(attempt) {
 		return "", errors.New("pending relay admission already has a receipt")
 	}
 	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(attempt.Execution,
-		attempt.Execution.QuoteRequest.Body.RequesterAgentID, predecessor)
+		attempt.Execution.QuoteRequest.Body.RequesterAgentID, predecessor, authority)
 	if err != nil {
 		return "", err
 	}

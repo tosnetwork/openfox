@@ -2,8 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,8 +13,7 @@ import (
 )
 
 func TestDurableSchedulerIsWriterFencedAndExactlyOnce(t *testing.T) {
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", key, PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", testAuthorityKeys(), PortfolioLimits{ComputeUnits: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +79,7 @@ func TestDurableSchedulerIsWriterFencedAndExactlyOnce(t *testing.T) {
 }
 
 func TestSchedulerServiceDurablyStagesOneExecution(t *testing.T) {
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", key, PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", testAuthorityKeys(), PortfolioLimits{ComputeUnits: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,8 +113,7 @@ func TestSchedulerServiceDurablyStagesOneExecution(t *testing.T) {
 }
 
 func TestSchedulerDependencyAdmissionIsAtomicAndCycleSafe(t *testing.T) {
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", key, PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", testAuthorityKeys(), PortfolioLimits{ComputeUnits: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,8 +189,7 @@ func TestSchedulerDependencyAdmissionIsAtomicAndCycleSafe(t *testing.T) {
 }
 
 func TestSchedulerPropagatesFailureWithoutCancellingAgreementAuthority(t *testing.T) {
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", key, PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", testAuthorityKeys(), PortfolioLimits{ComputeUnits: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

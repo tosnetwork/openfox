@@ -68,7 +68,7 @@ func TestTOSCTLPaymentSinkThreeNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:three-node-e2e", "agent:payer",
-		"authority:openfox-three-node-e2e", key,
+		"authority:openfox-three-node-e2e", testAuthorityKeys(),
 		PortfolioLimits{SpendAtomic: 10_000_000_000, MaximumLossAtomic: 10_000_000_000})
 	if err != nil {
 		t.Fatal(err)

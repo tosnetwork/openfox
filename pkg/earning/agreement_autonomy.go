@@ -89,8 +89,7 @@ func (policy BoundedAgreementAdmissionPolicy) EvaluateAgreement(_ context.Contex
 		if subject.SubjectKind == "agent" && subject.SubjectIdentifier == policy.LocalAgentID || subject.RepresentedAgentID == policy.LocalAgentID {
 			localPredicate = true
 			if !containsString(allowedProfiles, predicate.EvidenceProfileURI) ||
-				predicate.EvidenceProfileURI == commerce.EvidenceProfileAgentSignature && predicate.EvidenceProfileDigest != commerce.AgentSignatureProfileDigest() ||
-				predicate.EvidenceProfileURI == commerce.EvidenceProfilePaidDemandQuote && predicate.EvidenceProfileDigest != commerce.PaidDemandQuoteProfileDigest() {
+				predicate.EvidenceProfileURI == commerce.EvidenceProfileAgentSignature && predicate.EvidenceProfileDigest != commerce.AgentSignatureProfileDigest() {
 				return AgreementAdmissionDecision{Reason: "local authorization requires an unsupported evidence profile"}, nil
 			}
 		}
@@ -279,8 +278,7 @@ func (service AgreementAutonomy) Process(ctx context.Context, max uint32) (uint3
 		retainedLocalEvidence := hasAgentEvidence(record, service.Engine.AgentID)
 		if !hasLocalAgentSignaturePredicate(record, service.Engine.AgentID) {
 			// Non-generic body-bound profiles are driven by their installed
-			// Adapter (for Paid Demand: reserved Provider Offer or wallet accept),
-			// never substituted with an Agent chat signature.
+			// Adapter, never substituted with an Agent chat signature.
 			continue
 		}
 		if !retainedLocalEvidence {

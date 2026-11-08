@@ -54,7 +54,7 @@ func TestRelayClientFinalitySnapshotSurvivesConfigRotationAndRestart(t *testing.
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := OpenDurableRelayRouteJournal(directory)
+	routes, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestRelayClientFinalitySnapshotSurvivesConfigRotationAndRestart(t *testing.
 	if err := routes.Close(); err != nil {
 		t.Fatal(err)
 	}
-	routes, err = OpenDurableRelayRouteJournal(directory)
+	routes, err = OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +563,7 @@ func TestDecentralizedRelayRecoversReceiptChainedSuccessorAfterCrashAndSourceLos
 	second.resolver = relayTestResolver{agents: map[string]ed25519.PublicKey{
 		"agent:client":       first.clientKey.Public().(ed25519.PublicKey),
 		"agent:provider-two": secondProviderKey.Public().(ed25519.PublicKey)},
-		authorityKey: first.authorityKey.Public().(ed25519.PublicKey), current: first.resolver.current}
+		authorityKey: testAuthorityCustody.PublicKey(first.authorityKey), current: first.resolver.current}
 	// Provider routes share the requester's one Action Authority. A second
 	// provider is not a second writer/high-water domain.
 	second.admission = first.admission
@@ -609,7 +609,7 @@ func TestDecentralizedRelayRecoversReceiptChainedSuccessorAfterCrashAndSourceLos
 	if err := os.Mkdir(routeDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routeJournal, err := OpenDurableRelayRouteJournal(routeDirectory)
+	routeJournal, err := OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +690,7 @@ func TestDecentralizedRelayRecoversReceiptChainedSuccessorAfterCrashAndSourceLos
 	if err := routeJournal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopenedRoutes, err := OpenDurableRelayRouteJournal(routeDirectory)
+	reopenedRoutes, err := OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,7 +760,7 @@ func TestDecentralizedRelayExactQueryFailoverSurvivesCrashRestartAndProviderRemo
 	second.clientKey, second.authorityKey = first.clientKey, first.authorityKey
 	second.resolver = relayTestResolver{agents: map[string]ed25519.PublicKey{
 		"agent:client": first.clientKey.Public().(ed25519.PublicKey), "agent:sponsor-two": secondKey.Public().(ed25519.PublicKey)},
-		authorityKey: first.authorityKey.Public().(ed25519.PublicKey), current: first.resolver.current}
+		authorityKey: testAuthorityCustody.PublicKey(first.authorityKey), current: first.resolver.current}
 	second.admission = first.admission
 	secondService := second.service(agentrelay.NewMemoryJournal(), &relayTestBroadcaster{})
 	secondSubmits := 0
@@ -793,7 +793,7 @@ func TestDecentralizedRelayExactQueryFailoverSurvivesCrashRestartAndProviderRemo
 	if err := os.Mkdir(routeDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := OpenDurableRelayRouteJournal(routeDirectory)
+	routes, err := OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -879,7 +879,7 @@ func TestDecentralizedRelayExactQueryFailoverSurvivesCrashRestartAndProviderRemo
 	if err != nil || os.WriteFile(filepath.Join(tamperedDirectory, relayRouteJournalFile), tamperedRaw, 0o600) != nil {
 		t.Fatalf("write tampered relay route: %v", err)
 	}
-	tamperedRoutes, err := OpenDurableRelayRouteJournal(tamperedDirectory)
+	tamperedRoutes, err := OpenDurableRelayRouteJournal(tamperedDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatalf("shape-valid tampered query should reach historical authorization verification: %v", err)
 	}
@@ -896,7 +896,7 @@ func TestDecentralizedRelayExactQueryFailoverSurvivesCrashRestartAndProviderRemo
 	if err := tamperedRoutes.Close(); err != nil {
 		t.Fatal(err)
 	}
-	routes, err = OpenDurableRelayRouteJournal(routeDirectory)
+	routes, err = OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -955,7 +955,7 @@ func TestDecentralizedRelayFailoverRejectsCumulativeFeeBeforeAgreement(t *testin
 	second.clientKey, second.authorityKey = first.clientKey, first.authorityKey
 	second.resolver = relayTestResolver{agents: map[string]ed25519.PublicKey{
 		"agent:client": first.clientKey.Public().(ed25519.PublicKey), "agent:sponsor-two": secondKey.Public().(ed25519.PublicKey)},
-		authorityKey: first.authorityKey.Public().(ed25519.PublicKey), current: first.resolver.current}
+		authorityKey: testAuthorityCustody.PublicKey(first.authorityKey), current: first.resolver.current}
 	second.admission = first.admission
 	secondService := second.service(agentrelay.NewMemoryJournal(), &relayTestBroadcaster{})
 	secondService.QuotePolicy = relayTestQuotePolicy{fee: "8", intent: second.verified.IntentDigest()}
@@ -984,7 +984,7 @@ func TestDecentralizedRelayFailoverRejectsCumulativeFeeBeforeAgreement(t *testin
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := OpenDurableRelayRouteJournal(directory)
+	routes, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1031,7 +1031,7 @@ func TestDecentralizedRelayFailoverRejectsCumulativeFeeBeforeAgreement(t *testin
 	if err := os.Mkdir(singleDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	singleRoutes, err := OpenDurableRelayRouteJournal(singleDirectory)
+	singleRoutes, err := OpenDurableRelayRouteJournal(singleDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1049,7 +1049,7 @@ func TestDecentralizedRelayFailoverRejectsCumulativeFeeBeforeAgreement(t *testin
 	if err := singleRoutes.Close(); err != nil {
 		t.Fatal(err)
 	}
-	singleRoutes, err = OpenDurableRelayRouteJournal(singleDirectory)
+	singleRoutes, err = OpenDurableRelayRouteJournal(singleDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1113,7 +1113,7 @@ func TestDecentralizedRelaySponsorshipLostResponseRestartAndBlocksUnsafeSuccesso
 			second.clientKey, second.authorityKey = first.clientKey, first.authorityKey
 			second.resolver = relayTestResolver{agents: map[string]ed25519.PublicKey{
 				"agent:client": first.clientKey.Public().(ed25519.PublicKey), "agent:sponsor-two": secondProviderKey.Public().(ed25519.PublicKey)},
-				authorityKey: first.authorityKey.Public().(ed25519.PublicKey), current: first.resolver.current}
+				authorityKey: testAuthorityCustody.PublicKey(first.authorityKey), current: first.resolver.current}
 			second.admission = first.admission
 			secondService := second.service(agentrelay.NewMemoryJournal(), &relayTestBroadcaster{})
 			secondSubmits := 0
@@ -1145,7 +1145,7 @@ func TestDecentralizedRelaySponsorshipLostResponseRestartAndBlocksUnsafeSuccesso
 			if err := os.Mkdir(routeDirectory, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			routes, err := OpenDurableRelayRouteJournal(routeDirectory)
+			routes, err := OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1164,7 +1164,7 @@ func TestDecentralizedRelaySponsorshipLostResponseRestartAndBlocksUnsafeSuccesso
 			if err := routes.Close(); err != nil {
 				t.Fatal(err)
 			}
-			routes, err = OpenDurableRelayRouteJournal(routeDirectory)
+			routes, err = OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1209,7 +1209,7 @@ func TestDecentralizedRelaySponsorshipLostResponseRestartAndBlocksUnsafeSuccesso
 				t.Fatal(err)
 			}
 			providerLost = true
-			routes, err = OpenDurableRelayRouteJournal(routeDirectory)
+			routes, err = OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 			if err != nil {
 				t.Fatal(err)
 			}

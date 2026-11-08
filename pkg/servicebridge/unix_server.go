@@ -1,4 +1,4 @@
-package nativeimpl
+package servicebridge
 
 import (
 	"context"
@@ -34,7 +34,7 @@ func OpenAgentPacketUnixServer(path string, handler http.Handler) (*AgentPacketU
 		if info.Mode()&os.ModeSocket == 0 || info.Mode()&os.ModeSymlink != 0 {
 			return nil, errors.New("Agent Packet Unix socket path is occupied by a non-socket")
 		}
-		if err := os.Remove(path); err != nil {
+		if err = os.Remove(path); err != nil {
 			return nil, err
 		}
 	} else if !errors.Is(statErr, os.ErrNotExist) {

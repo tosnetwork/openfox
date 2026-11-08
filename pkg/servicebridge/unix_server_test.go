@@ -1,4 +1,4 @@
-package nativeimpl
+package servicebridge
 
 import (
 	"context"

@@ -28,7 +28,6 @@ const (
 var (
 	ErrApprovalRequired = errors.New("Messenger owner approval is required")
 	ErrRefused          = errors.New("Messenger refused the action")
-	ErrQuoteUnverified  = errors.New("Messenger did not verify the finalized Accepted Quote")
 )
 
 type Client struct {
@@ -50,15 +49,11 @@ func NewClient(socket string, timeout time.Duration) (*Client, error) {
 }
 
 type request struct {
-	Schema             string                    `json:"schema"`
-	Op                 string                    `json:"op"`
-	Action             *proposedAction           `json:"action,omitempty"`
-	ActionID           string                    `json:"action_id,omitempty"`
-	MandateID          string                    `json:"mandate_id,omitempty"`
-	QuoteCommitment    string                    `json:"quote_commitment,omitempty"`
-	EscrowAddress      string                    `json:"escrow_address,omitempty"`
-	CapabilityClass    string                    `json:"capability_class,omitempty"`
-	ExpectedQuoteTerms *actionauth.PurchaseTerms `json:"expected_quote_terms,omitempty"`
+	Schema    string          `json:"schema"`
+	Op        string          `json:"op"`
+	Action    *proposedAction `json:"action,omitempty"`
+	ActionID  string          `json:"action_id,omitempty"`
+	MandateID string          `json:"mandate_id,omitempty"`
 }
 
 type proposedAction struct {
@@ -71,48 +66,14 @@ type proposedAction struct {
 }
 
 type response struct {
-	Schema         string                  `json:"schema"`
-	OK             bool                    `json:"ok"`
-	Code           string                  `json:"code,omitempty"`
-	Detail         string                  `json:"detail,omitempty"`
-	ActionID       string                  `json:"action_id,omitempty"`
-	Decision       string                  `json:"decision,omitempty"`
-	Authorized     bool                    `json:"authorised,omitempty"` //nolint:misspell // Protocol spelling is frozen.
-	State          string                  `json:"approval_state,omitempty"`
-	FinalizedQuote *finalizedQuoteEvidence `json:"finalized_quote,omitempty"`
-}
-
-type finalizedQuoteEvidence struct {
-	Commitment          string `json:"quote_commitment"`
-	EscrowAccount       string `json:"escrow_account"`
-	TransactionHash     string `json:"transaction_hash"`
-	ContractCodeHash    string `json:"contract_code_hash"`
-	FinalizedCheckpoint uint64 `json:"finalized_checkpoint"`
-	FinalizedAtUnix     uint64 `json:"finalized_at_unix"`
-}
-
-// VerifyAcceptedQuote uses Messenger's chain resolver as a read-only second
-// authority after escrow funding. Success does not authorize another action;
-// it proves only that the finalized Accepted Quote exactly matches expected.
-func (c *Client) VerifyAcceptedQuote(
-	ctx context.Context,
-	commitment, escrowAddress string,
-	expected actionauth.PurchaseTerms,
-) error {
-	verified, err := c.call(ctx, request{
-		Op: "quotes.verify", QuoteCommitment: commitment, EscrowAddress: escrowAddress,
-		CapabilityClass: expected.CapabilityClass, ExpectedQuoteTerms: &expected,
-	})
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrQuoteUnverified, err)
-	}
-	evidence := verified.FinalizedQuote
-	if evidence == nil || evidence.Commitment != commitment || evidence.EscrowAccount != escrowAddress ||
-		evidence.TransactionHash == "" || evidence.ContractCodeHash == "" ||
-		evidence.FinalizedCheckpoint == 0 || evidence.FinalizedAtUnix == 0 {
-		return fmt.Errorf("%w: Messenger returned incomplete evidence", ErrQuoteUnverified)
-	}
-	return nil
+	Schema     string `json:"schema"`
+	OK         bool   `json:"ok"`
+	Code       string `json:"code,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	ActionID   string `json:"action_id,omitempty"`
+	Decision   string `json:"decision,omitempty"`
+	Authorized bool   `json:"authorised,omitempty"` //nolint:misspell // Protocol spelling is frozen.
+	State      string `json:"approval_state,omitempty"`
 }
 
 func (c *Client) Authorize(ctx context.Context, action actionauth.Action) error {

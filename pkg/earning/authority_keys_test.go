@@ -91,7 +91,7 @@ func TestPersonalAuthorityJournalRefusesChangedPinnedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if checkErr := authority.Close(); checkErr != nil {
-		t.Fatal(err)
+		t.Fatal(checkErr)
 	}
 	for name, keys := range map[string]AuthorityKeys{
 		"another Action Authority key":      testAuthorityKeysFor("rotated-action", CustodyAuthorizationController),
@@ -243,7 +243,7 @@ func TestPersonalAuthorityRefusesFencesUnderOtherContextsAndTextForms(t *testing
 	now := time.Now().UTC()
 	valid := fenceUnderUse(t, authority, mldsa44.UseActionAuthority, ActionAuthorityController)
 	if checkErr := commerce.VerifyWriterFence(valid, authority, now, "payment.direct"); checkErr != nil {
-		t.Fatalf("an Action Authority fence did not verify: %v", err)
+		t.Fatalf("an Action Authority fence did not verify: %v", checkErr)
 	}
 	for name, use := range map[string]mldsa44.Use{
 		"custody authorization context": mldsa44.UseCustodyAuthorization,
@@ -269,7 +269,7 @@ func TestPersonalAuthorityRefusesFencesUnderOtherContextsAndTextForms(t *testing
 		checkErr,
 		commerce.ErrEd25519ActionAuthority,
 	) {
-		t.Fatalf("an Ed25519 proof was not refused with the protocol diagnostic: %v", err)
+		t.Fatalf("an Ed25519 proof was not refused with the protocol diagnostic: %v", checkErr)
 	}
 	padded := valid
 	raw, decodeErr := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(valid.Proof, "mldsa44:"))
@@ -306,7 +306,7 @@ func TestStoredCustodyAuthorizationRefusesActionAuthorityContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if checkErr := authority.verifyStoredCustodyAuthorization(signed); checkErr != nil {
-		t.Fatalf("a custody authorization did not verify: %v", err)
+		t.Fatalf("a custody authorization did not verify: %v", checkErr)
 	}
 	preimage, err := commerce.CustodyActionAuthorizationPreimage(signed)
 	if err != nil {
@@ -390,11 +390,11 @@ func newRealCustody(t *testing.T, names ...string) (TOSCTLAuthorityHelper, map[s
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(directory) })
 	if checkErr := os.Chmod(directory, 0o700); checkErr != nil {
-		t.Fatal(err)
+		t.Fatal(checkErr)
 	}
 	master := make([]byte, 32)
 	if _, checkErr := rand.Read(master); checkErr != nil {
-		t.Fatal(err)
+		t.Fatal(checkErr)
 	}
 	helper.VaultURL = "file://" + filepath.Join(directory, "vault.json") + "?master_key=" + hex.EncodeToString(master)
 	helper.ConfigPath = filepath.Join(directory, "tosctl-config.json")
@@ -415,7 +415,7 @@ func newRealCustody(t *testing.T, names ...string) (TOSCTLAuthorityHelper, map[s
 		}
 		if checkErr := json.Unmarshal(run("agent", "native-registry", "new-controller", "--config", helper.ConfigPath,
 			"--name", name, "--format", "json"), &created); checkErr != nil {
-			t.Fatal(err)
+			t.Fatal(checkErr)
 		}
 		ids[name] = "mldsa44:" + created.KeyID
 	}
@@ -475,7 +475,7 @@ func TestControllerKeyReadThroughRealTOSCTL(t *testing.T) {
 		t.Fatalf("real custody did not sign a writer fence: %v", err)
 	}
 	if checkErr := commerce.VerifyWriterFence(fence, authority, time.Now(), "payment.direct"); checkErr != nil {
-		t.Fatalf("a real ML-DSA-44 writer fence did not verify: %v", err)
+		t.Fatalf("a real ML-DSA-44 writer fence did not verify: %v", checkErr)
 	}
 }
 

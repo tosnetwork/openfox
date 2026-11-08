@@ -246,7 +246,7 @@ func TestSharedAuthorityClientPinsTheServedActionAuthorityKey(t *testing.T) {
 	}
 	if _, checkErr := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1",
 		"ed25519:"+strings.Repeat("a", 64), testAuthorityCustody); !errors.Is(checkErr, commerce.ErrEd25519ActionAuthority) {
-		t.Fatalf("an Ed25519 key reference was not refused with the protocol diagnostic: %v", err)
+		t.Fatalf("an Ed25519 key reference was not refused with the protocol diagnostic: %v", checkErr)
 	}
 	client, err := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1", keys.ActionKeyID, testAuthorityCustody)
 	if err != nil {

@@ -137,6 +137,9 @@ func (staticGuarantorEvidenceVerifier) VerifyGuarantorEvidence(context.Context, 
 type guarantorTestPaymentSink struct {
 	submissions int
 	evidence    map[string]commerce.AgreementPaymentEvidence
+	// now is the clock the payment resolves on: the test's authority
+	// clock, so evidence is never resolved after the verifier's present.
+	now func() time.Time
 }
 
 type guarantorEventSink struct {
@@ -211,7 +214,7 @@ func (sink *guarantorTestPaymentSink) SubmitPayment(_ context.Context, _ commerc
 	requestDigest, _ := commerce.AgreementPaymentRequestDigest(request)
 	evidence := commerce.AgreementPaymentEvidence{PaymentRequestDigest: requestDigest, StableActionID: request.StableActionID,
 		ExactTransferReference: "transfer:guarantor-payout", AdapterEvidenceProfile: "tos.test.payment-evidence.v1",
-		ResolvedState: "finalized", ResolvedAtUnix: uint64(time.Now().UTC().Unix()), FinalityReference: "finality:test",
+		ResolvedState: "finalized", ResolvedAtUnix: uint64(sink.now().UTC().Unix()), FinalityReference: "finality:test",
 		Evidence: []byte("finalized-payment-evidence")}
 	if sink.evidence == nil {
 		sink.evidence = map[string]commerce.AgreementPaymentEvidence{}
@@ -1000,7 +1003,7 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 	if err != nil || len(applicationWire) > guarantor.MaxCanonicalObjectBytes {
 		t.Fatalf("portable decision application exceeds the complete-object ceiling: bytes=%d err=%v", len(applicationWire), err)
 	}
-	paymentSink := &guarantorTestPaymentSink{}
+	paymentSink := &guarantorTestPaymentSink{now: func() time.Time { return authority.now() }}
 	payoutService := GuarantorPayoutService{Coordinator: &coordinator,
 		Sink: paymentSink, Verifier: validPaymentEvidence{}, Enabled: true,
 		FailureInjector: func(point string) error {

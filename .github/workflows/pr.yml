@@ -8,8 +8,11 @@ jobs:
     name: Linter
     runs-on: ubuntu-latest
     steps:
+      # Full history so golangci-lint can find the merge base itself.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -26,8 +29,10 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.10.1
-          args: --build-tags=goolm,stdjson
-          only-new-issues: true
+          # The action's only-new-issues mode fetches the PR patch through the
+          # API, which refuses diffs over 20,000 lines and then silently lints
+          # the whole tree. Compare against the merge base locally instead.
+          args: --build-tags=goolm,stdjson --new-from-merge-base=origin/${{ github.base_ref }}
 
   vuln_check:
     name: Security Check

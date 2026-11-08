@@ -178,7 +178,6 @@ arrays sorted where the validator treats them as policy sets.
       "execution": false,
       "direct_payment": false,
       "external_settlement": false,
-      "tos_escrow": false,
       "agent_relay": false,
       "agent_guarantor": false
     },
@@ -239,6 +238,35 @@ pay. Inspect these fields in each assessment:
 
 Malformed or unavailable AI economic output fails closed. OpenFox does not
 replace it with a synthetic owner estimate.
+
+## Owner authority keys
+
+The owner economic authority signs with two ML-DSA-44 controllers held in
+tosctl custody; OpenFox never holds their private keys. `action-authority`
+signs Authorized Actions, Writer Fences and relay admission receipts;
+`custody-authorization` signs the custody authorizations the tosctl custody
+host checks. Once any side-effect gate is enabled, `earning.authority` names
+both by key ID and pins the helper that reaches them:
+
+```json
+"authority": {
+  "mode": "personal",
+  "authority_key_id": "mldsa44:<64-lowercase-hex>",
+  "custody_authorization_key_id": "mldsa44:<64-lowercase-hex>",
+  "tosctl": {
+    "binary": "/opt/tos/bin/tosctl",
+    "sha256": "<64-lowercase-hex>",
+    "config_path": "/etc/openfox/tosctl-config.json",
+    "vault_url_environment": "OPENFOX_VAULT_URL"
+  }
+}
+```
+
+The public keys are read from custody (`tosctl agent native-registry
+controller`) and pinned in the authority journal; a journal created under
+other keys is refused. Ed25519 key references are refused. A shared authority
+client sets `authority_key_id` and a verify-only `tosctl` (binary and
+`sha256` only), and pins the key the shared authority serves.
 
 ## Progress through authority modes
 

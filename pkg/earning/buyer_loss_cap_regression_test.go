@@ -139,7 +139,14 @@ func TestBuyerLossCapSharedEvidenceCannotBypassBackingHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer httpClient.CloseIdleConnections()
-	client, err := NewSharedAuthorityClient(t.Context(), testServer.URL+"/v1/economic-authority", httpClient, "authority:shared-cap", testAuthorityKeys().ActionKeyID, testAuthorityCustody)
+	client, err := NewSharedAuthorityClient(
+		t.Context(),
+		testServer.URL+"/v1/economic-authority",
+		httpClient,
+		"authority:shared-cap",
+		testAuthorityKeys().ActionKeyID,
+		testAuthorityCustody,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

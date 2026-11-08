@@ -31,7 +31,14 @@ func TestOutcomeJournalCrashGapReplayAndWriterTakeover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:outcome", "agent:outcome", "authority:outcome", testAuthorityKeys(), PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner:outcome",
+		"agent:outcome",
+		"authority:outcome",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

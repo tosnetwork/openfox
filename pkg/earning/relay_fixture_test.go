@@ -45,7 +45,8 @@ func (resolver relayTestResolver) AuthorizeIntentKey(agentID string, key ed25519
 }
 
 func (resolver relayTestResolver) ResolveActionAuthorityKey(authorityID string, keyID [mldsa44.KeyIDSize]byte,
-	_ time.Time) ([]byte, error) {
+	_ time.Time,
+) ([]byte, error) {
 	derived, err := mldsa44.KeyID(resolver.authorityKey)
 	if authorityID != "authority:client" || err != nil || derived != keyID {
 		return nil, errors.New("unknown fence authority")
@@ -53,7 +54,11 @@ func (resolver relayTestResolver) ResolveActionAuthorityKey(authorityID string, 
 	return append([]byte(nil), resolver.authorityKey...), nil
 }
 
-func (resolver relayTestResolver) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+func (resolver relayTestResolver) Verify(
+	ctx context.Context,
+	use mldsa44.Use,
+	payload, publicKey, signature []byte,
+) error {
 	return testAuthorityCustody.Verify(ctx, use, payload, publicKey, signature)
 }
 
@@ -123,7 +128,12 @@ func (authority *relayTestAdmissionAuthority) AdmitRelaySideEffects(_ context.Co
 		}
 	} else {
 		predecessor, found := authority.receipts[priorLookup]
-		if !found || agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(predecessor, descriptor, authority.resolver) != nil {
+		if !found ||
+			agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(
+				predecessor,
+				descriptor,
+				authority.resolver,
+			) != nil {
 			return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, agentrelay.ErrRelayConflict
 		}
 	}
@@ -140,7 +150,12 @@ func (authority *relayTestAdmissionAuthority) AdmitRelaySideEffects(_ context.Co
 	if err != nil {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
 	}
-	receipt, err := agentrelay.SignRelaySideEffectAdmissionReceipt(context.Background(), body, testAuthorityCustody, authority.key)
+	receipt, err := agentrelay.SignRelaySideEffectAdmissionReceipt(
+		context.Background(),
+		body,
+		testAuthorityCustody,
+		authority.key,
+	)
 	if err != nil {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, err
 	}
@@ -500,7 +515,8 @@ func newRelayTestFixture(t *testing.T, providerID string, providerKey ed25519.Pr
 	fence, err := commerce.SignWriterFence(context.Background(), commerce.WriterFenceBody{SchemaVersion: 1, OwnerID: "owner:client", AgentID: "agent:client",
 		InstanceID: "instance:client", LeaseID: "lease:client", WriterGeneration: 1,
 		IssuedAtUnix: uint64(now.Add(-time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix()),
-		AuthorityID: "authority:client", Scope: []string{"payment.direct"}}, testAuthorityCustody, authorityKey)
+		AuthorityID: "authority:client", Scope: []string{"payment.direct"},
+	}, testAuthorityCustody, authorityKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -837,7 +853,10 @@ func testRelayRouteAuthority() relayTestResolver {
 // fixture Action Authority. A receipt that does not verify yields the zero
 // value, which every journal admission refuses.
 func testVerifiedRelayReceipt(request agentrelay.RelayExecutionRequest) agentrelay.VerifiedRelayAdmissionReceipt {
-	verified, err := agentrelay.VerifyRelaySideEffectAdmissionReceiptAuthority(request.AdmissionReceipt, testRelayRouteAuthority())
+	verified, err := agentrelay.VerifyRelaySideEffectAdmissionReceiptAuthority(
+		request.AdmissionReceipt,
+		testRelayRouteAuthority(),
+	)
 	if err != nil {
 		return agentrelay.VerifiedRelayAdmissionReceipt{}
 	}

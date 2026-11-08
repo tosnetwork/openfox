@@ -84,8 +84,14 @@ func TestEngineContactsOnlyCorroboratedProfitableIntentExactlyOnce(t *testing.T)
 	_, issuerKey, _ := ed25519.GenerateKey(rand.Reader)
 	intent := earningIntent(t, now, issuerKey)
 	digest, _ := commerce.IntentBodyDigest(intent.Body)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner", "agent:worker", "authority", testAuthorityKeys(),
-		PortfolioLimits{ComputeUnits: 10, SpendAtomic: 100})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner",
+		"agent:worker",
+		"authority",
+		testAuthorityKeys(),
+		PortfolioLimits{ComputeUnits: 10, SpendAtomic: 100},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

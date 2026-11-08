@@ -153,7 +153,10 @@ func (policy AdapterPrerequisitePolicy) ValidateSettlementPrerequisite(_ context
 // VerifyExecutionPrerequisites admits execution only when every paid
 // obligation the local Agent receives settles after delivery through an
 // installed postpaid Adapter. There is no prepaid funding path.
-func (policy AdapterPrerequisitePolicy) VerifyExecutionPrerequisites(_ context.Context, record EngagementRecord) (bool, []string, error) {
+func (policy AdapterPrerequisitePolicy) VerifyExecutionPrerequisites(
+	_ context.Context,
+	record EngagementRecord,
+) (bool, []string, error) {
 	for _, obligation := range record.Agreement.Body.Obligations {
 		if obligation.Amount == nil || obligation.BeneficiaryAgentID != policy.LocalAgentID {
 			continue

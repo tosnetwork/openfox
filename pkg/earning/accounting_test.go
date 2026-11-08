@@ -10,7 +10,14 @@ import (
 )
 
 func TestGiftAccountingIsDurableButCannotCloseAgreement(t *testing.T) {
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", testAuthorityKeys(), PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner-1",
+		"agent-1",
+		"authority-1",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

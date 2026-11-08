@@ -233,7 +233,11 @@ func (authority *PersonalAuthority) reauthorizeUnlinearizedRelayAdmissionForCapa
 	boundLookup, found := authority.doc.RelayAdmissionBindings[bindingKey]
 	predecessor, predecessorFound := authority.doc.RelayAdmissions[boundLookup]
 	if !found || !predecessorFound ||
-		agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(predecessor, descriptor, authority.actionAuthorityResolver()) != nil {
+		agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(
+			predecessor,
+			descriptor,
+			authority.actionAuthorityResolver(),
+		) != nil {
 		return relayAdmissionReauthorization{}, agentrelay.ErrRelayConflict
 	}
 	currentFence := *authority.doc.CurrentFence
@@ -329,7 +333,8 @@ func relayAdmissionReauthorizationExpiry(execution agentrelay.RelayExecutionRequ
 }
 
 func (authority *PersonalAuthority) signRelayAdmissionReauthorization(body relayAdmissionReauthorizationBody,
-	action commerce.AuthorizedAction, fence commerce.WriterFence) (relayAdmissionReauthorization, error) {
+	action commerce.AuthorizedAction, fence commerce.WriterFence,
+) (relayAdmissionReauthorization, error) {
 	if body.ResolvedNotFoundAtUnix == 0 {
 		return relayAdmissionReauthorization{}, errors.New("relay admission reauthorization is invalid")
 	}
@@ -355,7 +360,8 @@ func (authority *PersonalAuthority) signRelayAdmissionReauthorization(body relay
 // signed the predecessor receipt and both writer envelopes signed it.
 func verifyRelayAdmissionReauthorization(authorization relayAdmissionReauthorization,
 	oldAttempt, newAttempt RelayAttempt, predecessor agentrelay.SignedRelaySideEffectAdmissionReceipt,
-	authority commerce.FenceAuthorityResolver) error {
+	authority commerce.FenceAuthorityResolver,
+) error {
 	if authority == nil {
 		return errors.New("relay admission reauthorization has no Action Authority resolver")
 	}
@@ -472,7 +478,8 @@ func relayAdmissionReauthorizationMessage(canonical []byte) []byte {
 }
 
 func relayPendingAdmissionEnvelopeDigest(attempt RelayAttempt,
-	predecessor agentrelay.SignedRelaySideEffectAdmissionReceipt, authority commerce.FenceAuthorityResolver) (string, error) {
+	predecessor agentrelay.SignedRelaySideEffectAdmissionReceipt, authority commerce.FenceAuthorityResolver,
+) (string, error) {
 	if !relayAttemptHasNoAdmissionReceipt(attempt) {
 		return "", errors.New("pending relay admission already has a receipt")
 	}

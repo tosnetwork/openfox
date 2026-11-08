@@ -330,7 +330,10 @@ func (*DurableRelayRouteJournal) HasRollbackResistantRelayRouteHighWater() bool 
 // OpenDurableRelayRouteJournal opens the client route journal. authority
 // resolves the owner Action Authority key that every stored admission receipt
 // and takeover reauthorization must verify under.
-func OpenDurableRelayRouteJournal(directory string, authority commerce.FenceAuthorityResolver) (*DurableRelayRouteJournal, error) {
+func OpenDurableRelayRouteJournal(
+	directory string,
+	authority commerce.FenceAuthorityResolver,
+) (*DurableRelayRouteJournal, error) {
 	if authority == nil {
 		return nil, errors.New("relay route journal needs the owner Action Authority resolver")
 	}
@@ -425,7 +428,8 @@ func OpenDurableRelayRouteJournal(directory string, authority commerce.FenceAuth
 		_ = directoryHandle.close()
 		return nil, errors.New("relay terminal artifact registry must be owner-private")
 	}
-	journal := &DurableRelayRouteJournal{authority: authority, directory: directory, path: filepath.Join(directory, relayRouteJournalFile),
+	journal := &DurableRelayRouteJournal{
+		authority: authority, directory: directory, path: filepath.Join(directory, relayRouteJournalFile),
 		effectDirectory: effectDirectory, terminalDirectory: terminalDirectory,
 		terminalArtifactDirectory: terminalArtifactDirectory,
 		directoryHandle:           directoryHandle, effectDirectoryHandle: effectHandle,
@@ -1253,7 +1257,11 @@ func (journal *DurableRelayRouteJournal) PrepareSwitch(stableActionID, exactRequ
 	if nowUnix <= 0 || uint64(nowUnix) < record.UpdatedAtUnix {
 		return cloneRelayRouteRecord(record), agentrelay.ErrRelayInvalidState
 	}
-	envelopeDigest, envelopeErr := relayPendingAdmissionEnvelopeDigest(draft, current.Attempt.Execution.AdmissionReceipt, journal.authority)
+	envelopeDigest, envelopeErr := relayPendingAdmissionEnvelopeDigest(
+		draft,
+		current.Attempt.Execution.AdmissionReceipt,
+		journal.authority,
+	)
 	if envelopeErr != nil {
 		return cloneRelayRouteRecord(record), envelopeErr
 	}
@@ -1370,8 +1378,18 @@ func (journal *DurableRelayRouteJournal) RebasePendingAdmission(stableActionID, 
 		return cloneRelayRouteRecord(record), agentrelay.ErrRelayConflict
 	}
 	predecessor := current.Attempt.Execution.AdmissionReceipt
-	if err := verifyRelayAdmissionReauthorization(authorization, pending.Attempt, rebased, predecessor, journal.authority); err != nil {
-		return cloneRelayRouteRecord(record), errors.New("relay admission reauthorization does not match pending route: " + err.Error())
+	if err := verifyRelayAdmissionReauthorization(
+		authorization,
+		pending.Attempt,
+		rebased,
+		predecessor,
+		journal.authority,
+	); err != nil {
+		return cloneRelayRouteRecord(
+				record,
+			), errors.New(
+				"relay admission reauthorization does not match pending route: " + err.Error(),
+			)
 	}
 	serviceFee, feeAsset, feeErr := relayAttemptServiceFee(rebased)
 	cumulativeAfter, cumulativeErr := addRelayAtomic(record.CumulativeServiceFeeAtomic, serviceFee)
@@ -1450,7 +1468,11 @@ func (journal *DurableRelayRouteJournal) Switch(stableActionID, exactRequestDige
 		pending.RelayExecutionDigest == "" || !sameRelayAttemptWithoutAdmission(pending.Attempt, attempt) ||
 		!(pending.Rebase == nil && sameRelayExecutionBaseIdentityWithCredentials(current.Attempt.Execution, attempt.Execution) ||
 			pending.Rebase != nil && sameRelayExecutionBaseIdentity(current.Attempt.Execution, attempt.Execution)) ||
-		!validRelayAdmissionSuccessor(current.Attempt.Execution.AdmissionReceipt, attempt.Execution, journal.authority) {
+		!validRelayAdmissionSuccessor(
+			current.Attempt.Execution.AdmissionReceipt,
+			attempt.Execution,
+			journal.authority,
+		) {
 		return cloneRelayRouteRecord(record), agentrelay.ErrRelayConflict
 	}
 	for _, hop := range record.Hops {
@@ -1653,7 +1675,10 @@ func (journal *DurableRelayRouteJournal) validateTerminalTombstoneRegistry() err
 	return journal.ensureStorageIdentity()
 }
 
-func relayTerminalRecordIsMonotonicSuccessor(active, terminal RelayRouteRecord, authority commerce.FenceAuthorityResolver) bool {
+func relayTerminalRecordIsMonotonicSuccessor(
+	active, terminal RelayRouteRecord,
+	authority commerce.FenceAuthorityResolver,
+) bool {
 	if !validRelayRouteRecord(active, authority) || relayRouteRecordIsTerminal(active, authority) ||
 		!relayRouteRecordIsTerminal(terminal, authority) || active.StableActionID != terminal.StableActionID ||
 		active.ExactRequestDigest != terminal.ExactRequestDigest || len(active.Hops) != len(terminal.Hops) ||
@@ -1810,7 +1835,10 @@ func validRelayTerminalRouteTombstone(tombstone relayTerminalRouteTombstone) boo
 		canonicalSHA256(tombstone.ProtectedArtifactDigest) && tombstone.CompletedAtUnix > 0
 }
 
-func relayTerminalHandoffReference(record RelayRouteRecord, authority commerce.FenceAuthorityResolver) (RelayTerminalHandoffReference, error) {
+func relayTerminalHandoffReference(
+	record RelayRouteRecord,
+	authority commerce.FenceAuthorityResolver,
+) (RelayTerminalHandoffReference, error) {
 	if !relayRouteRecordIsTerminal(record, authority) {
 		return RelayTerminalHandoffReference{}, agentrelay.ErrRelayInvalidState
 	}
@@ -1832,7 +1860,9 @@ func relayTerminalHandoffReference(record RelayRouteRecord, authority commerce.F
 
 // TerminalHandoffReference returns the exact protected-artifact
 // and evidence identities that a durable accounting entry must acknowledge.
-func (journal *DurableRelayRouteJournal) TerminalHandoffReference(record RelayRouteRecord) (RelayTerminalHandoffReference, error) {
+func (journal *DurableRelayRouteJournal) TerminalHandoffReference(
+	record RelayRouteRecord,
+) (RelayTerminalHandoffReference, error) {
 	if journal == nil {
 		return RelayTerminalHandoffReference{}, errors.New("relay route journal is unavailable")
 	}
@@ -1846,8 +1876,11 @@ func validRelayTerminalHandoffReference(reference RelayTerminalHandoffReference)
 		canonicalSHA256(reference.TerminalResolutionDigest) && canonicalSHA256(reference.TerminalEvidenceDigest)
 }
 
-func terminalRouteTombstoneMatchesRecord(authority commerce.FenceAuthorityResolver, tombstone relayTerminalRouteTombstone,
-	record RelayRouteRecord) bool {
+func terminalRouteTombstoneMatchesRecord(
+	authority commerce.FenceAuthorityResolver,
+	tombstone relayTerminalRouteTombstone,
+	record RelayRouteRecord,
+) bool {
 	reference, err := relayTerminalHandoffReference(record, authority)
 	if err != nil || reference.StableActionID != tombstone.StableActionID ||
 		reference.ExactRequestDigest != tombstone.ExactRequestDigest ||
@@ -1870,7 +1903,11 @@ func terminalRouteTombstoneMatchesRecord(authority commerce.FenceAuthorityResolv
 	return reflect.DeepEqual(expected, tombstone)
 }
 
-func terminalRouteTombstone(record RelayRouteRecord, artifactDigest string, authority commerce.FenceAuthorityResolver) (relayTerminalRouteTombstone, error) {
+func terminalRouteTombstone(
+	record RelayRouteRecord,
+	artifactDigest string,
+	authority commerce.FenceAuthorityResolver,
+) (relayTerminalRouteTombstone, error) {
 	if !relayRouteRecordIsTerminal(record, authority) || !canonicalSHA256(artifactDigest) {
 		return relayTerminalRouteTombstone{}, agentrelay.ErrRelayInvalidState
 	}
@@ -2789,7 +2826,11 @@ func relayHopFailoverGate(record RelayRouteRecord, hop RelayRouteHop) (string, s
 	return relayFailoverGateQuery, hop.FailoverQueryAttemptDigest, true
 }
 
-func validRelayPendingSwitch(record RelayRouteRecord, used map[string]bool, authority commerce.FenceAuthorityResolver) bool {
+func validRelayPendingSwitch(
+	record RelayRouteRecord,
+	used map[string]bool,
+	authority commerce.FenceAuthorityResolver,
+) bool {
 	pending := record.PendingSwitch
 	current := record.Hops[len(record.Hops)-1]
 	digest, err := agentrelay.RelayExecutionRequestDigest(pending.Attempt.Execution)
@@ -3035,13 +3076,15 @@ func sameRelayAttemptWithoutAdmission(draft, admitted RelayAttempt) bool {
 }
 
 func validRelayAdmissionSuccessor(predecessor agentrelay.SignedRelaySideEffectAdmissionReceipt,
-	execution agentrelay.RelayExecutionRequest, authority commerce.FenceAuthorityResolver) bool {
+	execution agentrelay.RelayExecutionRequest, authority commerce.FenceAuthorityResolver,
+) bool {
 	receipt := execution.AdmissionReceipt
 	if receipt.Body.IssuedAtUnix == 0 || receipt.Body.IssuedAtUnix > uint64(^uint64(0)>>1) {
 		return false
 	}
-	return authority != nil && agentrelay.VerifyRelaySideEffectAdmissionSuccessorReceipt(receipt, execution, predecessor,
-		authority, time.Unix(int64(receipt.Body.IssuedAtUnix), 0).UTC()) == nil
+	return authority != nil &&
+		agentrelay.VerifyRelaySideEffectAdmissionSuccessorReceipt(receipt, execution, predecessor,
+			authority, time.Unix(int64(receipt.Body.IssuedAtUnix), 0).UTC()) == nil
 }
 
 func cloneRelayAttempt(attempt RelayAttempt) RelayAttempt {

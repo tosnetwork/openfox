@@ -441,9 +441,9 @@ func TestControllerKeyReadThroughRealTOSCTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("controller keys did not read through tosctl: %v", err)
 	}
-	if derived, err := mldsa44.KeyID(
+	if derived, checkErr := mldsa44.KeyID(
 		keys.ActionPublicKey,
-	); err != nil ||
+	); checkErr != nil ||
 		mldsa44.KeyIDText(derived) != ids[ActionAuthorityController] {
 		t.Fatal("tosctl returned another Action Authority key")
 	}

@@ -16,12 +16,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tosnetwork/openfox/pkg/fileutil"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
+
+	"github.com/tosnetwork/openfox/pkg/fileutil"
 )
 
 const (
@@ -696,8 +697,13 @@ func (authority *PersonalAuthority) AuthorityNow() time.Time {
 // OpenPersonalAuthority opens the owner's personal economic authority. keys
 // pins the Action Authority and custody authorization keys held in custody;
 // a journal created under other keys is refused rather than re-keyed.
-func OpenPersonalAuthority(directory, ownerID, agentID, authorityID string, keys AuthorityKeys, limits PortfolioLimits) (*PersonalAuthority, error) {
-	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || ownerID == "" || agentID == "" || authorityID == "" {
+func OpenPersonalAuthority(
+	directory, ownerID, agentID, authorityID string,
+	keys AuthorityKeys,
+	limits PortfolioLimits,
+) (*PersonalAuthority, error) {
+	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || ownerID == "" || agentID == "" ||
+		authorityID == "" {
 		return nil, errors.New("personal authority configuration is invalid")
 	}
 	if err := keys.validate(); err != nil {
@@ -865,9 +871,18 @@ func (authority *PersonalAuthority) AcquireWriter(_ context.Context, instanceID 
 	if err != nil {
 		return commerce.WriterFence{}, err
 	}
-	fence, err := authority.signWriterFence(commerce.WriterFenceBody{SchemaVersion: 1, OwnerID: next.OwnerID, AgentID: next.AgentID,
-		InstanceID: instanceID, LeaseID: leaseID, WriterGeneration: next.WriterGeneration, IssuedAtUnix: uint64(now.Unix()),
-		ExpiresAtUnix: uint64(now.Add(ttl).Unix()), AuthorityID: next.AuthorityID, Scope: scope})
+	fence, err := authority.signWriterFence(commerce.WriterFenceBody{
+		SchemaVersion:    1,
+		OwnerID:          next.OwnerID,
+		AgentID:          next.AgentID,
+		InstanceID:       instanceID,
+		LeaseID:          leaseID,
+		WriterGeneration: next.WriterGeneration,
+		IssuedAtUnix:     uint64(now.Unix()),
+		ExpiresAtUnix:    uint64(now.Add(ttl).Unix()),
+		AuthorityID:      next.AuthorityID,
+		Scope:            scope,
+	})
 	if err != nil {
 		return commerce.WriterFence{}, err
 	}
@@ -1388,7 +1403,8 @@ func (authority *PersonalAuthority) releaseReservation(action commerce.Authorize
 
 func validateExpiredCustodyAuthorization(document authorityDocument, tombstone expiredCustodyAuthorization,
 	marker uint64, reservationID, sponsorshipAdmissionID string,
-	verifyProof func(commerce.CustodyActionAuthorization) error, now time.Time) error {
+	verifyProof func(commerce.CustodyActionAuthorization) error, now time.Time,
+) error {
 	// Kept as a separate validator because an expired bearer is no longer in
 	// IssuedCustodyPayments, yet it remains the sole durable proof that a signed
 	// offline capability once owned the released hold.
@@ -1680,7 +1696,10 @@ func (authority *PersonalAuthority) load(ownerID, agentID, authorityID string) e
 		if paymentErr != nil || authorizationDigestErr != nil || signatureErr != nil || amountErr != nil || amount == 0 ||
 			paymentDigest != computedPaymentDigest || issued.PaymentRequestDigest != paymentDigest ||
 			issued.Payment.SchemaVersion != 3 || issued.Payment.SettlementAdapterURI != agentrelay.DirectPaymentAdapterURI ||
-			issued.AuthorizationDigest != computedAuthorizationDigest || !reservationFound || reservation.Released || !actionFound ||
+			issued.AuthorizationDigest != computedAuthorizationDigest ||
+			!reservationFound ||
+			reservation.Released ||
+			!actionFound ||
 			actionResolution.ExactRequestDigest != issued.Authorization.ExactRequestDigest ||
 			issued.Authorization.SchemaVersion != 3 || issued.Authorization.NetworkDomain == nil ||
 			issued.Authorization.AgreementPaymentRequestDigest != paymentDigest ||
@@ -1894,7 +1913,8 @@ func (authority *PersonalAuthority) persist(document authorityDocument) error {
 // independent local sinks verify both cryptographic authority and the current
 // high-water lease. They expose no signing or mutation surface.
 func (authority *PersonalAuthority) ResolveActionAuthorityKey(authorityID string, keyID [mldsa44.KeyIDSize]byte,
-	at time.Time) ([]byte, error) {
+	at time.Time,
+) ([]byte, error) {
 	if authority == nil {
 		return nil, errors.New("writer authority is unavailable")
 	}
@@ -1906,7 +1926,11 @@ func (authority *PersonalAuthority) ResolveActionAuthorityKey(authorityID string
 	return authority.actionAuthorityResolver().ResolveActionAuthorityKey(authorityID, keyID, at)
 }
 
-func (authority *PersonalAuthority) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+func (authority *PersonalAuthority) Verify(
+	ctx context.Context,
+	use mldsa44.Use,
+	payload, publicKey, signature []byte,
+) error {
 	if authority == nil || authority.keys.Custody == nil {
 		return mldsa44.ErrUnavailable
 	}
@@ -1999,7 +2023,12 @@ func (authority *PersonalAuthority) admitRelaySideEffects(ctx context.Context,
 		}
 	} else {
 		predecessor, found := authority.doc.RelayAdmissions[boundLookup]
-		if !found || agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(predecessor, descriptor, authority.actionAuthorityResolver()) != nil {
+		if !found ||
+			agentrelay.ValidateRelaySideEffectAdmissionRouteTransition(
+				predecessor,
+				descriptor,
+				authority.actionAuthorityResolver(),
+			) != nil {
 			return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, agentrelay.ErrRelayConflict
 		}
 	}

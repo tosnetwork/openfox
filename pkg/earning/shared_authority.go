@@ -818,7 +818,8 @@ func NewSharedAuthorityHTTPClient(certificate tls.Certificate, serverRoots *x509
 // 1,312-byte ML-DSA-44 key, which must derive the configured key ID. verifier
 // is the ML-DSA-44 verification boundary (the pinned tosctl helper).
 func NewSharedAuthorityClient(ctx context.Context, endpoint string, client *http.Client, authorityID, keyID string,
-	verifier mldsa44.Verifier) (*SharedAuthorityClient, error) {
+	verifier mldsa44.Verifier,
+) (*SharedAuthorityClient, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "/v1/economic-authority" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || client == nil || authorityID == "" || verifier == nil || ctx == nil {
@@ -1092,14 +1093,19 @@ func (client *SharedAuthorityClient) ReleaseGuarantorReservation(action commerce
 	return out, err
 }
 func (client *SharedAuthorityClient) ResolveActionAuthorityKey(authorityID string, keyID [mldsa44.KeyIDSize]byte,
-	at time.Time) ([]byte, error) {
+	at time.Time,
+) ([]byte, error) {
 	if client == nil {
 		return nil, errors.New("writer fence key is not the shared authority key")
 	}
 	return client.pin.ResolveActionAuthorityKey(authorityID, keyID, at)
 }
 
-func (client *SharedAuthorityClient) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+func (client *SharedAuthorityClient) Verify(
+	ctx context.Context,
+	use mldsa44.Use,
+	payload, publicKey, signature []byte,
+) error {
 	if client == nil {
 		return mldsa44.ErrUnavailable
 	}
@@ -1107,7 +1113,8 @@ func (client *SharedAuthorityClient) Verify(ctx context.Context, use mldsa44.Use
 }
 
 func sharedReceiptAuthorityVerifies(receipt agentrelay.SignedRelaySideEffectAdmissionReceipt,
-	resolver commerce.FenceAuthorityResolver) bool {
+	resolver commerce.FenceAuthorityResolver,
+) bool {
 	_, err := agentrelay.VerifyRelaySideEffectAdmissionReceiptAuthority(receipt, resolver)
 	return err == nil
 }

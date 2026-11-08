@@ -132,15 +132,30 @@ func TestAgreementAutonomyRejectsMaximumLossBeforeSignature(t *testing.T) {
 	}
 	resolver := PinnedIntentAuthorities{"agent:buyer": buyerPublic, "agent:seller": sellerPublic}
 	verifier := AgreementEvidenceRouter{AgentAuthority: resolver}
-	sink := &exactSink{now: now,
-		resolutions: map[string]commerce.ActionResolution{}}
-	engine := &Engine{OwnerID: "owner:buyer", AgentID: "agent:buyer", MandateDigest: testDigest,
-		Gates: FeatureGates{Agreement: true}, Authority: authority, Sink: sink, Now: func() time.Time { return now }}
-	service := AgreementAutonomy{Coordinator: AgreementCoordinator{Inbox: AgreementInbox{Client: emptyMessengerCaller{}},
-		Authority: authority, Verifier: verifier}, Engine: engine, Inventory: CurrentInventory{SnapshotValue: inventory},
-		Policy: BoundedAgreementAdmissionPolicy{LocalAgentID: "agent:buyer", MaximumOutgoingPaymentAtomic: "1000",
-			MaximumLossAtomic: "100", Portfolio: authority}, IdentityKey: buyerIdentity, Verifier: verifier,
-		Fence: func(context.Context) (commerce.WriterFence, error) { return fence, nil }, Now: func() time.Time { return now }}
+	sink := &exactSink{
+		now:         now,
+		resolutions: map[string]commerce.ActionResolution{},
+	}
+	engine := &Engine{
+		OwnerID: "owner:buyer", AgentID: "agent:buyer", MandateDigest: testDigest,
+		Gates: FeatureGates{Agreement: true}, Authority: authority, Sink: sink, Now: func() time.Time { return now },
+	}
+	service := AgreementAutonomy{
+		Coordinator: AgreementCoordinator{
+			Inbox:     AgreementInbox{Client: emptyMessengerCaller{}},
+			Authority: authority, Verifier: verifier,
+		},
+		Engine:    engine,
+		Inventory: CurrentInventory{SnapshotValue: inventory},
+		Policy: BoundedAgreementAdmissionPolicy{
+			LocalAgentID: "agent:buyer", MaximumOutgoingPaymentAtomic: "1000",
+			MaximumLossAtomic: "100", Portfolio: authority,
+		},
+		IdentityKey: buyerIdentity,
+		Verifier:    verifier,
+		Fence:       func(context.Context) (commerce.WriterFence, error) { return fence, nil },
+		Now:         func() time.Time { return now },
+	}
 	if processed, err := service.Process(t.Context(), 10); err != nil || processed != 0 {
 		t.Fatalf("processed=%d err=%v", processed, err)
 	}

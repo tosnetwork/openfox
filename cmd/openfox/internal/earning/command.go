@@ -34,8 +34,25 @@ import (
 
 func NewCommand() *cobra.Command {
 	command := &cobra.Command{Use: "earning", Short: "Inspect autonomous earning safety state", Args: cobra.NoArgs}
-	command.AddCommand(statusCommand(), registryCommand(), scoutCommand(), runCommand(), intentCommand(), reconcileCommand(), operationsCommand(), authorityCommand(), relayCommand(), guarantorCommand(), serviceCommand(), modeCommand("pause", openfoxearning.OperationalPaused),
-		modeCommand("drain", openfoxearning.OperationalDraining), modeCommand("resume", openfoxearning.OperationalRunning))
+	command.AddCommand(
+		statusCommand(),
+		registryCommand(),
+		scoutCommand(),
+		runCommand(),
+		intentCommand(),
+		reconcileCommand(),
+		operationsCommand(),
+		authorityCommand(),
+		relayCommand(),
+		guarantorCommand(),
+		serviceCommand(),
+		modeCommand("pause", openfoxearning.OperationalPaused),
+		modeCommand(
+			"drain",
+			openfoxearning.OperationalDraining,
+		),
+		modeCommand("resume", openfoxearning.OperationalRunning),
+	)
 	return command
 }
 

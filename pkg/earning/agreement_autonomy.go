@@ -89,8 +89,11 @@ func (policy BoundedAgreementAdmissionPolicy) EvaluateAgreement(_ context.Contex
 		if subject.SubjectKind == "agent" && subject.SubjectIdentifier == policy.LocalAgentID || subject.RepresentedAgentID == policy.LocalAgentID {
 			localPredicate = true
 			if !containsString(allowedProfiles, predicate.EvidenceProfileURI) ||
-				predicate.EvidenceProfileURI == commerce.EvidenceProfileAgentSignature && predicate.EvidenceProfileDigest != commerce.AgentSignatureProfileDigest() {
-				return AgreementAdmissionDecision{Reason: "local authorization requires an unsupported evidence profile"}, nil
+				predicate.EvidenceProfileURI == commerce.EvidenceProfileAgentSignature &&
+					predicate.EvidenceProfileDigest != commerce.AgentSignatureProfileDigest() {
+				return AgreementAdmissionDecision{
+					Reason: "local authorization requires an unsupported evidence profile",
+				}, nil
 			}
 		}
 	}

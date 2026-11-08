@@ -16,13 +16,25 @@ import (
 
 func TestTwoDirectoryOutcomeCarrierInstancesRecoverAfterDatabaseLoss(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:source-loss", "agent:source-loss", "authority:source-loss", testAuthorityKeys(), PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner:source-loss",
+		"agent:source-loss",
+		"authority:source-loss",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(context.Background(), "runtime:source-loss", []string{"operation.publish"}, time.Hour)
+	fence, err := authority.AcquireWriter(
+		context.Background(),
+		"runtime:source-loss",
+		[]string{"operation.publish"},
+		time.Hour,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,13 +111,25 @@ func TestTwoDirectoryOutcomeCarrierInstancesRecoverAfterDatabaseLoss(t *testing.
 
 func TestEnginePrivateOutcomeUsesTypedNonChatMessengerEffect(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:private-outcome", "agent:source-loss", "authority", testAuthorityKeys(), PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner:private-outcome",
+		"agent:source-loss",
+		"authority",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(context.Background(), "runtime:private-outcome", []string{"operation.private-send"}, time.Hour)
+	fence, err := authority.AcquireWriter(
+		context.Background(),
+		"runtime:private-outcome",
+		[]string{"operation.private-send"},
+		time.Hour,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

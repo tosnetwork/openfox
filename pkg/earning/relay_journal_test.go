@@ -197,7 +197,7 @@ func TestDurableRelayJournalFreezesBytesCASAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := journal.Admit(mutated, testVerifiedRelayReceipt(mutated), fixture.now); err == nil {
+	if _, _, checkErr := journal.Admit(mutated, testVerifiedRelayReceipt(mutated), fixture.now); checkErr == nil {
 		t.Fatal("same semantic action with different signed bytes bypassed its admission receipt")
 	}
 	crossNetwork := attempt.Execution
@@ -207,7 +207,11 @@ func TestDurableRelayJournalFreezesBytesCASAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := journal.Admit(crossNetwork, testVerifiedRelayReceipt(crossNetwork), fixture.now); err == nil {
+	if _, _, checkErr := journal.Admit(
+		crossNetwork,
+		testVerifiedRelayReceipt(crossNetwork),
+		fixture.now,
+	); checkErr == nil {
 		t.Fatal("provider-wide stable action was admitted on a second network without a matching receipt")
 	}
 
@@ -261,7 +265,13 @@ func TestDurableRelayJournalPersistsReceiptAndAllowsPreTakeoverDrain(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	postTakeoverAction, err = commerce.SignAuthorizedAction(context.Background(), postTakeoverAction, testAuthorityCustody.KeyID(fixture.authorityKey), testAuthorityCustody, fixture.authorityKey)
+	postTakeoverAction, err = commerce.SignAuthorizedAction(
+		context.Background(),
+		postTakeoverAction,
+		testAuthorityCustody.KeyID(fixture.authorityKey),
+		testAuthorityCustody,
+		fixture.authorityKey,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,23 +297,47 @@ func TestDurableRelayJournalPersistsReceiptAndAllowsPreTakeoverDrain(t *testing.
 		postTakeover.Execution.ProviderQuote, fixture.now); err != nil || !created {
 		t.Fatalf("post-takeover quote reservation: created=%v err=%v", created, err)
 	}
-	newer, created, err := journal.Admit(postTakeover.Execution, testVerifiedRelayReceipt(postTakeover.Execution), fixture.now)
+	newer, created, err := journal.Admit(
+		postTakeover.Execution,
+		testVerifiedRelayReceipt(postTakeover.Execution),
+		fixture.now,
+	)
 	if err != nil || !created {
 		t.Fatalf("post-takeover admission: created=%v err=%v", created, err)
 	}
-	older, created, err := journal.Admit(preTakeover.Execution, testVerifiedRelayReceipt(preTakeover.Execution), fixture.now.Add(time.Second))
+	older, created, err := journal.Admit(
+		preTakeover.Execution,
+		testVerifiedRelayReceipt(preTakeover.Execution),
+		fixture.now.Add(time.Second),
+	)
 	if err != nil || !created {
-		t.Fatalf("receipt issued before takeover did not drain after higher generation: created=%v err=%v", created, err)
+		t.Fatalf(
+			"receipt issued before takeover did not drain after higher generation: created=%v err=%v",
+			created,
+			err,
+		)
 	}
 	alternateReceipt := preTakeover.Execution
 	alternateBody := alternateReceipt.AdmissionReceipt.Body
 	alternateBody.AdmissionSequence += 100
-	alternateReceipt.AdmissionReceipt, err = agentrelay.SignRelaySideEffectAdmissionReceipt(context.Background(), alternateBody, testAuthorityCustody, fixture.authorityKey)
+	alternateReceipt.AdmissionReceipt, err = agentrelay.SignRelaySideEffectAdmissionReceipt(
+		context.Background(),
+		alternateBody,
+		testAuthorityCustody,
+		fixture.authorityKey,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := journal.Admit(alternateReceipt, testVerifiedRelayReceipt(alternateReceipt), fixture.now.Add(2*time.Second)); !errors.Is(err, agentrelay.ErrRelayConflict) {
-		t.Fatalf("same action with a different admission receipt was not conflict: %v", err)
+	if _, _, checkErr := journal.Admit(
+		alternateReceipt,
+		testVerifiedRelayReceipt(alternateReceipt),
+		fixture.now.Add(2*time.Second),
+	); !errors.Is(
+		checkErr,
+		agentrelay.ErrRelayConflict,
+	) {
+		t.Fatalf("same action with a different admission receipt was not conflict: %v", checkErr)
 	}
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
@@ -313,7 +347,12 @@ func TestDurableRelayJournalPersistsReceiptAndAllowsPreTakeoverDrain(t *testing.
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if retry, created, err := reopened.Admit(preTakeover.Execution, testVerifiedRelayReceipt(preTakeover.Execution), fixture.now.Add(3*time.Second)); err != nil || created || retry.AdmissionReceiptDigest != older.AdmissionReceiptDigest {
+	if retry, created, err := reopened.Admit(
+		preTakeover.Execution,
+		testVerifiedRelayReceipt(preTakeover.Execution),
+		fixture.now.Add(3*time.Second),
+	); err != nil || created ||
+		retry.AdmissionReceiptDigest != older.AdmissionReceiptDigest {
 		t.Fatalf("restart did not preserve the exact pre-takeover receipt: created=%v digest=%q err=%v",
 			created, retry.AdmissionReceiptDigest, err)
 	}
@@ -1009,8 +1048,12 @@ func TestDurableRelayJournalEnforcesOwnerStricterAdmissionLimits(t *testing.T) {
 		second.Execution.ProviderQuote, fixture.now); !errors.Is(err, agentrelay.ErrRelayAdmissionLimit) {
 		t.Fatalf("owner quote-reservation ceiling was not atomic: %v", err)
 	}
-	if _, _, err := journal.Admit(first.Execution, testVerifiedRelayReceipt(first.Execution), fixture.now); err != nil {
-		t.Fatal(err)
+	if _, _, checkErr := journal.Admit(
+		first.Execution,
+		testVerifiedRelayReceipt(first.Execution),
+		fixture.now,
+	); checkErr != nil {
+		t.Fatal(checkErr)
 	}
 	// Consuming the first quote frees reservation capacity, but the persisted
 	// per-requester window remains exhausted across restart.
@@ -1059,10 +1102,22 @@ func TestDurableRelayJournalAppliesTightenedOwnerWorkLimitToReservedQuotesAfterR
 		t.Fatal(err)
 	}
 	defer journal.Close()
-	if _, created, err := journal.Admit(first.Execution, testVerifiedRelayReceipt(first.Execution), fixture.now); err != nil || !created {
+	if _, created, err := journal.Admit(
+		first.Execution,
+		testVerifiedRelayReceipt(first.Execution),
+		fixture.now,
+	); err != nil ||
+		!created {
 		t.Fatalf("first previously reserved execution: created=%v err=%v", created, err)
 	}
-	if _, _, err := journal.Admit(second.Execution, testVerifiedRelayReceipt(second.Execution), fixture.now); !errors.Is(err, agentrelay.ErrRelayAdmissionLimit) {
+	if _, _, err := journal.Admit(
+		second.Execution,
+		testVerifiedRelayReceipt(second.Execution),
+		fixture.now,
+	); !errors.Is(
+		err,
+		agentrelay.ErrRelayAdmissionLimit,
+	) {
 		t.Fatalf("reserved quote bypassed tightened owner active-work limit: %v", err)
 	}
 }
@@ -1123,7 +1178,14 @@ func TestDurableRelayJournalCompactsBeyondActiveCapacityWithoutIdentityReuse(t *
 		first.Execution.AuthorizedAction.ExactRequestDigest); !errors.Is(err, ErrRelayRetired) {
 		t.Fatalf("retired identity did not survive restart: %v", err)
 	}
-	if _, _, err := reopened.Admit(first.Execution, testVerifiedRelayReceipt(first.Execution), fixture.now.Add(20*time.Second)); !errors.Is(err, ErrRelayRetired) {
+	if _, _, err := reopened.Admit(
+		first.Execution,
+		testVerifiedRelayReceipt(first.Execution),
+		fixture.now.Add(20*time.Second),
+	); !errors.Is(
+		err,
+		ErrRelayRetired,
+	) {
 		t.Fatalf("retired exact execution was reusable after restart: %v", err)
 	}
 }
@@ -1148,7 +1210,13 @@ func relayDistinctAttempt(t *testing.T, fixture *relayTestFixture, label string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	action, err = commerce.SignAuthorizedAction(context.Background(), action, testAuthorityCustody.KeyID(fixture.authorityKey), testAuthorityCustody, fixture.authorityKey)
+	action, err = commerce.SignAuthorizedAction(
+		context.Background(),
+		action,
+		testAuthorityCustody.KeyID(fixture.authorityKey),
+		testAuthorityCustody,
+		fixture.authorityKey,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -85,7 +85,7 @@ func TestDurableRelayRouteJournalFailsClosedAfterDirectoryReplacement(t *testing
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if replacement, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority()); err == nil {
+	if replacement, checkErr := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority()); checkErr == nil {
 		_ = replacement.Close()
 		t.Fatal("replacement directory created a concurrent logical route authority")
 	}
@@ -218,7 +218,7 @@ func TestDurableRelayRouteJournalPinsSelectionBeforeSubmitAndAcrossRestart(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority()); err == nil {
+	if _, checkErr := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority()); checkErr == nil {
 		t.Fatal("second process opened owner relay route journal")
 	}
 	record, created, err := journal.Bind(fixture.prepared, []RelayProviderProvenance{second, first}, first,
@@ -610,7 +610,10 @@ func TestRelayRouteTerminalSupersedesUnstartedQuerySuccessorAcrossRestart(t *tes
 	if err := os.WriteFile(filepath.Join(tamperedDirectory, relayRouteJournalFile), tamperedRaw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if compromised, err := OpenDurableRelayRouteJournal(tamperedDirectory, testRelayRouteAuthority()); err == nil {
+	if compromised, checkErr := OpenDurableRelayRouteJournal(
+		tamperedDirectory,
+		testRelayRouteAuthority(),
+	); checkErr == nil {
 		_ = compromised.Close()
 		t.Fatal("journal recovery accepted a pending fee reservation inconsistent with its successor quote")
 	}

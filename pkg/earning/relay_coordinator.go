@@ -433,7 +433,13 @@ func (coordinator RelayCoordinator) reauthorizePendingAttempt(ctx context.Contex
 	rebased := cloneRelayAttempt(draft)
 	rebased.Execution.AuthorizedAction = authorization.AuthorizedAction
 	rebased.Execution.WriterFence = authorization.WriterFence
-	if err := verifyRelayAdmissionReauthorization(authorization, draft, rebased, predecessor, coordinator.FenceResolver); err != nil {
+	if err := verifyRelayAdmissionReauthorization(
+		authorization,
+		draft,
+		rebased,
+		predecessor,
+		coordinator.FenceResolver,
+	); err != nil {
 		return RelayAttempt{}, relayAdmissionReauthorization{}, err
 	}
 	now := coordinator.now()

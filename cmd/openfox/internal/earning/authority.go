@@ -196,7 +196,11 @@ func openPersonalAuthority(settings config.EarningSettings, create bool) (*openf
 // configuredAuthorityHelper resolves the pinned tosctl helper. The vault URL
 // is read from its named environment variable at use and never stored.
 func configuredAuthorityHelper(settings config.EarningTOSCTLHelperSettings) openfoxearning.TOSCTLAuthorityHelper {
-	helper := openfoxearning.TOSCTLAuthorityHelper{Binary: settings.Binary, SHA256: settings.SHA256, ConfigPath: settings.ConfigPath}
+	helper := openfoxearning.TOSCTLAuthorityHelper{
+		Binary:     settings.Binary,
+		SHA256:     settings.SHA256,
+		ConfigPath: settings.ConfigPath,
+	}
 	if settings.VaultURLEnvironment != "" {
 		helper.VaultURL = os.Getenv(settings.VaultURLEnvironment)
 	}

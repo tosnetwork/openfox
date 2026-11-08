@@ -63,7 +63,14 @@ func TestSharedAuthorityMutualTLSAndCrossHostTakeoverFence(t *testing.T) {
 		if clientErr != nil {
 			t.Fatal(clientErr)
 		}
-		client, clientErr := NewSharedAuthorityClient(t.Context(), testServer.URL+"/v1/economic-authority", httpClient, "authority-1", testAuthorityKeys().ActionKeyID, testAuthorityCustody)
+		client, clientErr := NewSharedAuthorityClient(
+			t.Context(),
+			testServer.URL+"/v1/economic-authority",
+			httpClient,
+			"authority-1",
+			testAuthorityKeys().ActionKeyID,
+			testAuthorityCustody,
+		)
 		if clientErr != nil {
 			t.Fatal(clientErr)
 		}
@@ -205,8 +212,24 @@ func issueTestCertificate(t *testing.T, parent *x509.Certificate, parentKey ed25
 func TestSharedAuthorityClientPinsTheServedActionAuthorityKey(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	caCert, caKey, _ := issueTestCertificate(t, nil, nil, "authority-test-ca", true, nil, now)
-	_, _, serverCert := issueTestCertificate(t, caCert, caKey, "authority.test", false, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, now)
-	clientCert, _, clientTLS := issueTestCertificate(t, caCert, caKey, "runtime", false, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, now)
+	_, _, serverCert := issueTestCertificate(
+		t,
+		caCert,
+		caKey,
+		"authority.test",
+		false,
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		now,
+	)
+	clientCert, _, clientTLS := issueTestCertificate(
+		t,
+		caCert,
+		caKey,
+		"runtime",
+		false,
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		now,
+	)
 	backing, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", testAuthorityKeys(),
 		PortfolioLimits{ComputeUnits: 100})
 	if err != nil {
@@ -215,8 +238,11 @@ func TestSharedAuthorityClientPinsTheServedActionAuthorityKey(t *testing.T) {
 	defer backing.Close()
 	digest := sha256.Sum256(clientCert.RawSubjectPublicKeyInfo)
 	server := &SharedAuthorityServer{Backing: backing, ClientsBySPKI: map[string]SharedAuthorityClientGrant{
-		"sha256:" + hex.EncodeToString(digest[:]): {OwnerID: "owner-1", AgentID: "agent-1", InstanceID: "runtime",
-			Scopes: []string{"payment.direct"}}}}
+		"sha256:" + hex.EncodeToString(digest[:]): {
+			OwnerID: "owner-1", AgentID: "agent-1", InstanceID: "runtime",
+			Scopes: []string{"payment.direct"},
+		},
+	}}
 	testServer := httptest.NewUnstartedServer(server.Handler())
 	clientRoots := x509.NewCertPool()
 	clientRoots.AddCert(caCert)
@@ -244,16 +270,37 @@ func TestSharedAuthorityClientPinsTheServedActionAuthorityKey(t *testing.T) {
 		testAuthorityCustody); checkErr == nil {
 		t.Fatal("client accepted a shared authority serving another authority ID")
 	}
-	if _, checkErr := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1",
-		"ed25519:"+strings.Repeat("a", 64), testAuthorityCustody); !errors.Is(checkErr, commerce.ErrEd25519ActionAuthority) {
+	if _, checkErr := NewSharedAuthorityClient(
+		t.Context(),
+		endpoint,
+		httpClient,
+		"authority-1",
+		"ed25519:"+strings.Repeat(
+			"a",
+			64,
+		),
+		testAuthorityCustody,
+	); !errors.Is(checkErr, commerce.ErrEd25519ActionAuthority) {
 		t.Fatalf("an Ed25519 key reference was not refused with the protocol diagnostic: %v", checkErr)
 	}
-	client, err := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1", keys.ActionKeyID, testAuthorityCustody)
+	client, err := NewSharedAuthorityClient(
+		t.Context(),
+		endpoint,
+		httpClient,
+		"authority-1",
+		keys.ActionKeyID,
+		testAuthorityCustody,
+	)
 	if err != nil {
 		t.Fatalf("client did not pin the configured key: %v", err)
 	}
 	actionID, _ := mldsa44.ParseKeyIDText(keys.ActionKeyID)
-	if key, err := client.ResolveActionAuthorityKey("authority-1", actionID, now); err != nil || string(key) != string(keys.ActionPublicKey) {
+	if key, err := client.ResolveActionAuthorityKey(
+		"authority-1",
+		actionID,
+		now,
+	); err != nil ||
+		string(key) != string(keys.ActionPublicKey) {
 		t.Fatalf("client did not resolve its pinned key: %v", err)
 	}
 	if _, checkErr := client.ResolveActionAuthorityKey("authority-2", actionID, now); checkErr == nil {

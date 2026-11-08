@@ -147,9 +147,22 @@ func OpenOutcomeJournal(directory, ownerID, agentID, authorityID, purpose, cohor
 		_ = root.Close()
 		return nil, err
 	}
-	journal := &OutcomeJournal{authority: resolver, directory: directory, root: root, lock: lock, head: OutcomeJournalHead{Schema: outcomeJournalSchema,
-		OwnerID: ownerID, AgentID: agentID, AuthorityID: authorityID, OrderingDomain: domain, CohortScopeDigest: cohortScopeDigest,
-		WriterGeneration: fence.Body.WriterGeneration, GapSequences: []uint64{}}}
+	journal := &OutcomeJournal{
+		authority: resolver,
+		directory: directory,
+		root:      root,
+		lock:      lock,
+		head: OutcomeJournalHead{
+			Schema:            outcomeJournalSchema,
+			OwnerID:           ownerID,
+			AgentID:           agentID,
+			AuthorityID:       authorityID,
+			OrderingDomain:    domain,
+			CohortScopeDigest: cohortScopeDigest,
+			WriterGeneration:  fence.Body.WriterGeneration,
+			GapSequences:      []uint64{},
+		},
+	}
 	if err := journal.recoverHead(fence.Body.WriterGeneration); err != nil {
 		_ = releaseAuthorityLock(lock)
 		_ = root.Close()

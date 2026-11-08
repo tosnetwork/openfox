@@ -87,7 +87,14 @@ func TestReconciliationDoesNotGuessOrphanOwnership(t *testing.T) {
 	if err := os.Chmod(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	authority, err := OpenPersonalAuthority(directory, "owner:r", "agent:r", "authority:r", testAuthorityKeys(), PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(
+		directory,
+		"owner:r",
+		"agent:r",
+		"authority:r",
+		testAuthorityKeys(),
+		PortfolioLimits{ComputeUnits: 10},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

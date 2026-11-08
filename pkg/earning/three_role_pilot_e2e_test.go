@@ -87,9 +87,18 @@ func TestThreeOpenFoxRoleEarningPilot(t *testing.T) {
 	tosctl := mustEnv(t, "OPENFOX_TOSCTL")
 	primary := mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG")
 	vaultURL := mustEnv(t, "OPENFOX_TOS_VAULT_URL")
-	payerKeys, err := OpenTOSCTLAuthorityKeys(t.Context(), TOSCTLAuthorityHelper{Binary: tosctl,
-		SHA256: mustEnv(t, "OPENFOX_TOSCTL_SHA256"), ConfigPath: primary, VaultURL: vaultURL},
-		mustEnv(t, "OPENFOX_PILOT_PAYER_ACTION_AUTHORITY_KEY_ID"), mustEnv(t, "OPENFOX_PILOT_PAYER_CUSTODY_AUTHORIZATION_KEY_ID"))
+	payerKeys, err := OpenTOSCTLAuthorityKeys(
+		t.Context(),
+		TOSCTLAuthorityHelper{
+			Binary: tosctl,
+			SHA256: mustEnv(t, "OPENFOX_TOSCTL_SHA256"), ConfigPath: primary, VaultURL: vaultURL,
+		},
+		mustEnv(
+			t,
+			"OPENFOX_PILOT_PAYER_ACTION_AUTHORITY_KEY_ID",
+		),
+		mustEnv(t, "OPENFOX_PILOT_PAYER_CUSTODY_AUTHORIZATION_KEY_ID"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,8 +171,10 @@ func runThreeRoleSeller(t *testing.T, spec threeRolePilotSpec, outputDirectory s
 	state := cfg.Earning.StateDir
 	identityKey := readPilotPrivateKey(t, filepath.Join(state, "identity/agent-ed25519.key"))
 	authority, err := OpenPersonalAuthority(filepath.Join(state, "authority"), cfg.Earning.OwnerID, cfg.Earning.AgentID,
-		cfg.Earning.AuthorityID, campaignAuthorityKeys(t, cfg), PortfolioLimits{ComputeUnits: cfg.Earning.Resources.CPUUnits,
-			ReceivableAtomic: 1_000_000_000, MaximumLossAtomic: 1_000_000_000})
+		cfg.Earning.AuthorityID, campaignAuthorityKeys(t, cfg), PortfolioLimits{
+			ComputeUnits:     cfg.Earning.Resources.CPUUnits,
+			ReceivableAtomic: 1_000_000_000, MaximumLossAtomic: 1_000_000_000,
+		})
 	if err != nil {
 		t.Fatal(err)
 	}

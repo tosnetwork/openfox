@@ -19,14 +19,25 @@ func TestPublicationManagerEnforcesPricingRevisionAndWithdrawal(t *testing.T) {
 	intent.Body.Payload.DiscoveryCard.ValueHints[0].MinimumDecimal = "150"
 	intent.Body.Payload.DiscoveryCard.ValueHints[0].MaximumDecimal = "150"
 	intent.Body.Payload.DiscoveryCard.ValueHints[0].Unit = "atomic"
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:test", intent.Body.IssuerAgentID, "authority:test", testAuthorityKeys(),
-		PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner:test",
+		intent.Body.IssuerAgentID,
+		"authority:test",
+		testAuthorityKeys(),
+		PortfolioLimits{ComputeUnits: 10},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(context.Background(), "publisher", []string{"publication.publish", "publication.withdraw"}, time.Hour)
+	fence, err := authority.AcquireWriter(
+		context.Background(),
+		"publisher",
+		[]string{"publication.publish", "publication.withdraw"},
+		time.Hour,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,10 @@ type GuarantorObjectSigner interface {
 // carry Action Authority evidence rather than native Agent evidence.
 type GuarantorActionAuthoritySigner interface {
 	GuarantorObjectSigner
-	SignStageActionAdmission(bodyDigest string, validationTime time.Time) (guarantor.StageActionAdmissionAuthorizationV1, error)
+	SignStageActionAdmission(
+		bodyDigest string,
+		validationTime time.Time,
+	) (guarantor.StageActionAdmissionAuthorizationV1, error)
 }
 
 // LocalGuarantorObjectSigner signs Guarantor objects with one ML-DSA-44
@@ -38,26 +41,43 @@ type LocalGuarantorObjectSigner struct {
 	historicalProof []byte
 }
 
-func NewLocalGuarantorObjectSigner(subject string, profile commerce.ProfileRefV1, signer mldsa44.Signer, controller string,
-	historicalProof []byte) (*LocalGuarantorObjectSigner, error) {
+func NewLocalGuarantorObjectSigner(
+	subject string,
+	profile commerce.ProfileRefV1,
+	signer mldsa44.Signer,
+	controller string,
+	historicalProof []byte,
+) (*LocalGuarantorObjectSigner, error) {
 	if subject == "" || commerce.ValidateProfileRefV1(profile) != nil || signer == nil || controller == "" ||
 		len(historicalProof) == 0 || len(historicalProof) > 64<<10 {
 		return nil, errors.New("local Guarantor object signer is invalid")
 	}
-	return &LocalGuarantorObjectSigner{subject: subject, profile: profile, signer: signer, controller: controller,
-		historicalProof: append([]byte(nil), historicalProof...)}, nil
+	return &LocalGuarantorObjectSigner{
+		subject: subject, profile: profile, signer: signer, controller: controller,
+		historicalProof: append([]byte(nil), historicalProof...),
+	}, nil
 }
 
-func (signer *LocalGuarantorObjectSigner) statement(kind, bodyDigest string, validationTime time.Time) guarantor.AuthorizationStatementV1 {
-	return guarantor.AuthorizationStatementV1{SchemaVersion: 1,
-		AuthoritySubject: signer.subject, ProfileURI: signer.profile.ProfileURI, ProfileVersion: signer.profile.ProfileVersion,
-		ProfileDigest: signer.profile.ProfileDigest, AuthorizedObjectKind: kind, AuthorizedBodyDigest: bodyDigest,
-		ValidationTimeUnix: uint64(validationTime.UTC().Unix())}
+func (signer *LocalGuarantorObjectSigner) statement(
+	kind, bodyDigest string,
+	validationTime time.Time,
+) guarantor.AuthorizationStatementV1 {
+	return guarantor.AuthorizationStatementV1{
+		SchemaVersion:        1,
+		AuthoritySubject:     signer.subject,
+		ProfileURI:           signer.profile.ProfileURI,
+		ProfileVersion:       signer.profile.ProfileVersion,
+		ProfileDigest:        signer.profile.ProfileDigest,
+		AuthorizedObjectKind: kind,
+		AuthorizedBodyDigest: bodyDigest,
+		ValidationTimeUnix:   uint64(validationTime.UTC().Unix()),
+	}
 }
 
 func (signer *LocalGuarantorObjectSigner) SignObject(kind, bodyDigest, signatureDomain string,
 	validationTime time.Time) (guarantor.ProfileQualifiedObjectAuthorizationV1, error) {
-	if signer == nil || kind == "" || !canonicalSHA256(bodyDigest) || signatureDomain == "" || validationTime.IsZero() ||
+	if signer == nil || kind == "" || !canonicalSHA256(bodyDigest) || signatureDomain == "" ||
+		validationTime.IsZero() ||
 		validationTime.Unix() < 0 {
 		return guarantor.ProfileQualifiedObjectAuthorizationV1{}, errors.New("Guarantor signing request is invalid")
 	}
@@ -68,25 +88,41 @@ func (signer *LocalGuarantorObjectSigner) SignObject(kind, bodyDigest, signature
 // SignStageActionAdmission signs a portable stage admission with the Action
 // Authority controller under the stage admission domain.
 func (signer *LocalGuarantorObjectSigner) SignStageActionAdmission(bodyDigest string,
-	validationTime time.Time) (guarantor.StageActionAdmissionAuthorizationV1, error) {
+	validationTime time.Time,
+) (guarantor.StageActionAdmissionAuthorizationV1, error) {
 	if signer == nil || !canonicalSHA256(bodyDigest) || validationTime.IsZero() || validationTime.Unix() < 0 {
-		return guarantor.StageActionAdmissionAuthorizationV1{}, errors.New("Guarantor stage admission signing request is invalid")
+		return guarantor.StageActionAdmissionAuthorizationV1{}, errors.New(
+			"Guarantor stage admission signing request is invalid",
+		)
 	}
 	statement := signer.statement(guarantor.StageActionAdmissionObjectKind, bodyDigest, validationTime)
 	message, err := guarantor.NativeAuthorizationMessage(guarantor.StageActionAdmissionSignatureDomain, statement)
 	if err != nil {
 		return guarantor.StageActionAdmissionAuthorizationV1{}, err
 	}
-	keyID, signature, err := commerce.SignActionAuthorityMessage(context.Background(), signer.signer, signer.controller, message)
+	keyID, signature, err := commerce.SignActionAuthorityMessage(
+		context.Background(),
+		signer.signer,
+		signer.controller,
+		message,
+	)
 	if err != nil {
 		return guarantor.StageActionAdmissionAuthorizationV1{}, err
 	}
-	return guarantor.StageActionAdmissionAuthorizationV1{AuthoritySubject: statement.AuthoritySubject,
-		ProfileURI: statement.ProfileURI, ProfileVersion: statement.ProfileVersion, ProfileDigest: statement.ProfileDigest,
-		AuthorizedObjectKind: statement.AuthorizedObjectKind, AuthorizedBodyDigest: statement.AuthorizedBodyDigest,
-		ValidationTimeUnix: statement.ValidationTimeUnix, EvidenceContentType: guarantor.ActionAuthorityEvidenceContentType,
-		Evidence: guarantor.ActionAuthorityMLDSA44EvidenceV1{KeyID: keyID, Signature: signature,
-			HistoricalAuthorityProof: append([]byte(nil), signer.historicalProof...)}}, nil
+	return guarantor.StageActionAdmissionAuthorizationV1{
+		AuthoritySubject:     statement.AuthoritySubject,
+		ProfileURI:           statement.ProfileURI,
+		ProfileVersion:       statement.ProfileVersion,
+		ProfileDigest:        statement.ProfileDigest,
+		AuthorizedObjectKind: statement.AuthorizedObjectKind,
+		AuthorizedBodyDigest: statement.AuthorizedBodyDigest,
+		ValidationTimeUnix:   statement.ValidationTimeUnix,
+		EvidenceContentType:  guarantor.ActionAuthorityEvidenceContentType,
+		Evidence: guarantor.ActionAuthorityMLDSA44EvidenceV1{
+			KeyID: keyID, Signature: signature,
+			HistoricalAuthorityProof: append([]byte(nil), signer.historicalProof...),
+		},
+	}, nil
 }
 
 type GuarantorIssueOfferInput struct {

@@ -42,7 +42,12 @@ func newGuarantorPinnedResolver(keys map[string]ed25519.PublicKey) guarantorPinn
 	return resolver
 }
 
-func (resolver guarantorPinnedResolver) ResolveGuarantorAuthority(scope guarantor.AuthorityResolutionScopeV1, keyID string, _ time.Time, proof []byte) error {
+func (resolver guarantorPinnedResolver) ResolveGuarantorAuthority(
+	scope guarantor.AuthorityResolutionScopeV1,
+	keyID string,
+	_ time.Time,
+	proof []byte,
+) error {
 	controller, found := resolver.controllers[scope.AuthoritySubject]
 	if !found || keyID != testAuthorityCustody.KeyID(controller) || len(proof) == 0 ||
 		scope.ProfileURI == "" || scope.ProfileVersion == 0 || scope.ProfileDigest == "" ||
@@ -53,7 +58,8 @@ func (resolver guarantorPinnedResolver) ResolveGuarantorAuthority(scope guaranto
 }
 
 func (resolver guarantorPinnedResolver) ResolveNativeAgentKey(scope guarantor.AuthorityResolutionScopeV1,
-	keyID [mldsa44.KeyIDSize]byte, at time.Time, proof []byte) ([]byte, error) {
+	keyID [mldsa44.KeyIDSize]byte, at time.Time, proof []byte,
+) ([]byte, error) {
 	controller := resolver.controllers[scope.AuthoritySubject]
 	if err := resolver.ResolveGuarantorAuthority(scope, mldsa44.KeyIDText(keyID), at, proof); err != nil {
 		return nil, err
@@ -61,7 +67,11 @@ func (resolver guarantorPinnedResolver) ResolveNativeAgentKey(scope guarantor.Au
 	return testAuthorityCustody.PublicKey(controller), nil
 }
 
-func (resolver guarantorPinnedResolver) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+func (resolver guarantorPinnedResolver) Verify(
+	ctx context.Context,
+	use mldsa44.Use,
+	payload, publicKey, signature []byte,
+) error {
 	return testAuthorityCustody.Verify(ctx, use, payload, publicKey, signature)
 }
 
@@ -440,15 +450,26 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 		SelectedDecisionProfile: decisionProfile, SelectedPayoutAdapterProfile: payoutAdapter,
 		CreatedAtUnix: uint64(now.Unix()), ExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix())}
 	requestBodyDigest, _ := codec.Digest("tos.service.agent-guarantor-quote-request-body.v1", requestBody)
-	coveredAuthorization, err := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{SchemaVersion: 1,
-		AuthoritySubject: "agent:covered", ProfileURI: ref("d", "request-authority").ProfileURI, ProfileVersion: 1,
-		ProfileDigest: ref("d", "request-authority").ProfileDigest, AuthorizedObjectKind: "coverage-quote-request",
-		AuthorizedBodyDigest: requestBodyDigest, ValidationTimeUnix: uint64(now.Unix())}, "tos.service.agent-guarantor-quote-request-signature.v1", testAuthorityCustody, testGuarantorController(coveredKey.Public().(ed25519.PublicKey)), []byte("covered-history"))
+	coveredAuthorization, err := guarantor.SignObjectAuthorization(
+		context.Background(),
+		guarantor.AuthorizationStatementV1{
+			SchemaVersion:    1,
+			AuthoritySubject: "agent:covered", ProfileURI: ref("d", "request-authority").ProfileURI, ProfileVersion: 1,
+			ProfileDigest: ref("d", "request-authority").ProfileDigest, AuthorizedObjectKind: "coverage-quote-request",
+			AuthorizedBodyDigest: requestBodyDigest, ValidationTimeUnix: uint64(now.Unix()),
+		},
+		"tos.service.agent-guarantor-quote-request-signature.v1",
+		testAuthorityCustody,
+		testGuarantorController(coveredKey.Public().(ed25519.PublicKey)),
+		[]byte("covered-history"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	quote := guarantor.AuthorizedCoverageQuoteRequestV1{Body: requestBody, RequestedTerms: requested,
-		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{coveredAuthorization}}
+	quote := guarantor.AuthorizedCoverageQuoteRequestV1{
+		Body: requestBody, RequestedTerms: requested,
+		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{coveredAuthorization},
+	}
 	agreementProfile := commerce.AgentSignatureProfileDigest()
 	firmOfferEvidenceProfile := guarantor.FirmOfferAgreementEvidenceProfileV1()
 	agreement := commerce.AgentAgreementBody{SchemaVersion: 1, AgreementID: "agreement:coverage", Version: 1,
@@ -601,10 +622,30 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 	}
 	authorizationProfile := ref("c", "authority")
 	guarantorController := testGuarantorController(guarantorPublic)
-	signer, _ := NewLocalGuarantorObjectSigner("agent:guarantor", authorizationProfile, testAuthorityCustody, guarantorController, []byte("guarantor-history"))
-	actionSigner, _ := NewLocalGuarantorObjectSigner("authority:owner", authorizationProfile, testAuthorityCustody, ActionAuthorityController, []byte("action-authority-history"))
-	fallbackSigner, _ := NewLocalGuarantorObjectSigner("agent:guarantor", fallback.FallbackProfile, testAuthorityCustody, guarantorController, []byte("fallback-history"))
-	resolver := newGuarantorPinnedResolver(map[string]ed25519.PublicKey{"agent:guarantor": guarantorPublic, "agent:covered": coveredPublic})
+	signer, _ := NewLocalGuarantorObjectSigner(
+		"agent:guarantor",
+		authorizationProfile,
+		testAuthorityCustody,
+		guarantorController,
+		[]byte("guarantor-history"),
+	)
+	actionSigner, _ := NewLocalGuarantorObjectSigner(
+		"authority:owner",
+		authorizationProfile,
+		testAuthorityCustody,
+		ActionAuthorityController,
+		[]byte("action-authority-history"),
+	)
+	fallbackSigner, _ := NewLocalGuarantorObjectSigner(
+		"agent:guarantor",
+		fallback.FallbackProfile,
+		testAuthorityCustody,
+		guarantorController,
+		[]byte("fallback-history"),
+	)
+	resolver := newGuarantorPinnedResolver(
+		map[string]ed25519.PublicKey{"agent:guarantor": guarantorPublic, "agent:covered": coveredPublic},
+	)
 	// The owner authority signs stage admissions and seals with its Action
 	// Authority controller.
 	resolver.controllers["authority:owner"] = ActionAuthorityController
@@ -673,10 +714,19 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 	requestBody2.RequestID = "request:coverage:expiry"
 	requestBody2.CreatedAtUnix = uint64(now.Add(time.Second).Unix())
 	requestBodyDigest2, _ := codec.Digest("tos.service.agent-guarantor-quote-request-body.v1", requestBody2)
-	coveredAuthorization2, signErr := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{SchemaVersion: 1,
-		AuthoritySubject: "agent:covered", ProfileURI: ref("d", "request-authority").ProfileURI, ProfileVersion: 1,
-		ProfileDigest: ref("d", "request-authority").ProfileDigest, AuthorizedObjectKind: "coverage-quote-request",
-		AuthorizedBodyDigest: requestBodyDigest2, ValidationTimeUnix: requestBody2.CreatedAtUnix}, "tos.service.agent-guarantor-quote-request-signature.v1", testAuthorityCustody, testGuarantorController(coveredKey.Public().(ed25519.PublicKey)), []byte("covered-history"))
+	coveredAuthorization2, signErr := guarantor.SignObjectAuthorization(
+		context.Background(),
+		guarantor.AuthorizationStatementV1{
+			SchemaVersion:    1,
+			AuthoritySubject: "agent:covered", ProfileURI: ref("d", "request-authority").ProfileURI, ProfileVersion: 1,
+			ProfileDigest: ref("d", "request-authority").ProfileDigest, AuthorizedObjectKind: "coverage-quote-request",
+			AuthorizedBodyDigest: requestBodyDigest2, ValidationTimeUnix: requestBody2.CreatedAtUnix,
+		},
+		"tos.service.agent-guarantor-quote-request-signature.v1",
+		testAuthorityCustody,
+		testGuarantorController(coveredKey.Public().(ed25519.PublicKey)),
+		[]byte("covered-history"),
+	)
 	if signErr != nil {
 		t.Fatal(signErr)
 	}
@@ -761,13 +811,26 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 			ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1, ProfileDigest: agreementProfile},
 		CreatedAtUnix: uint64(now.Add(time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(4 * time.Minute).Unix())}
 	acceptanceBodyDigest, _ := codec.Digest("tos.service.agent-guarantor-acceptance-request-body.v1", acceptanceBody)
-	acceptanceAuthorization, _ := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{SchemaVersion: 1,
-		AuthoritySubject: "agent:covered", ProfileURI: acceptanceBody.SubmissionAuthorizationProfile.ProfileURI,
-		ProfileVersion: 1, ProfileDigest: acceptanceBody.SubmissionAuthorizationProfile.ProfileDigest,
-		AuthorizedObjectKind: "coverage-acceptance-request", AuthorizedBodyDigest: acceptanceBodyDigest,
-		ValidationTimeUnix: uint64(now.Add(time.Minute).Unix())}, "tos.service.agent-guarantor-acceptance-request-signature.v1", testAuthorityCustody, testGuarantorController(coveredKey.Public().(ed25519.PublicKey)), []byte("covered-history"))
-	acceptance := guarantor.AuthorizedCoverageAcceptanceRequestV1{Body: acceptanceBody, CoverageAgreementBody: agreement,
-		AuthorizationEvidenceSet: evidenceSet, Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{acceptanceAuthorization}}
+	acceptanceAuthorization, _ := guarantor.SignObjectAuthorization(
+		context.Background(),
+		guarantor.AuthorizationStatementV1{
+			SchemaVersion:    1,
+			AuthoritySubject: "agent:covered", ProfileURI: acceptanceBody.SubmissionAuthorizationProfile.ProfileURI,
+			ProfileVersion: 1, ProfileDigest: acceptanceBody.SubmissionAuthorizationProfile.ProfileDigest,
+			AuthorizedObjectKind: "coverage-acceptance-request", AuthorizedBodyDigest: acceptanceBodyDigest,
+			ValidationTimeUnix: uint64(now.Add(time.Minute).Unix()),
+		},
+		"tos.service.agent-guarantor-acceptance-request-signature.v1",
+		testAuthorityCustody,
+		testGuarantorController(coveredKey.Public().(ed25519.PublicKey)),
+		[]byte("covered-history"),
+	)
+	acceptance := guarantor.AuthorizedCoverageAcceptanceRequestV1{
+		Body:                     acceptanceBody,
+		CoverageAgreementBody:    agreement,
+		AuthorizationEvidenceSet: evidenceSet,
+		Authorizations:           []guarantor.ProfileQualifiedObjectAuthorizationV1{acceptanceAuthorization},
+	}
 	authority.now = func() time.Time { return now.Add(time.Minute) }
 	acceptanceEvent, err := guarantor.BuildCommerceProfileEventV1(context.Background(), "acceptance-request", acceptance,
 		guarantor.CommerceEventContextV1{AgreementBodyDigest: agreementDigest, ObligationIDs: []string{"obligation:coverage"},
@@ -886,16 +949,32 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimAuthorization, err := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{SchemaVersion: 1,
-		AuthoritySubject: "agent:covered", ProfileURI: terms.ClaimantAuthorizationProfiles[0].ProfileURI,
-		ProfileVersion: terms.ClaimantAuthorizationProfiles[0].ProfileVersion,
-		ProfileDigest:  terms.ClaimantAuthorizationProfiles[0].ProfileDigest, AuthorizedObjectKind: "coverage-claim",
-		AuthorizedBodyDigest: claimBodyDigest, ValidationTimeUnix: uint64(now.Add(3 * time.Minute).Unix())}, "tos.service.agent-guarantor-claim-signature.v1", testAuthorityCustody, testGuarantorController(coveredKey.Public().(ed25519.PublicKey)), []byte("covered-history"))
+	claimAuthorization, err := guarantor.SignObjectAuthorization(
+		context.Background(),
+		guarantor.AuthorizationStatementV1{
+			SchemaVersion:        1,
+			AuthoritySubject:     "agent:covered",
+			ProfileURI:           terms.ClaimantAuthorizationProfiles[0].ProfileURI,
+			ProfileVersion:       terms.ClaimantAuthorizationProfiles[0].ProfileVersion,
+			ProfileDigest:        terms.ClaimantAuthorizationProfiles[0].ProfileDigest,
+			AuthorizedObjectKind: "coverage-claim",
+			AuthorizedBodyDigest: claimBodyDigest,
+			ValidationTimeUnix:   uint64(now.Add(3 * time.Minute).Unix()),
+		},
+		"tos.service.agent-guarantor-claim-signature.v1",
+		testAuthorityCustody,
+		testGuarantorController(coveredKey.Public().(ed25519.PublicKey)),
+		[]byte("covered-history"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := guarantor.AuthorizedCoverageClaimV1{Body: claimBody, EvidenceManifest: manifest,
-		OtherRecoveryDeclaration: recovery, Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{claimAuthorization}}
+	claim := guarantor.AuthorizedCoverageClaimV1{
+		Body:                     claimBody,
+		EvidenceManifest:         manifest,
+		OtherRecoveryDeclaration: recovery,
+		Authorizations:           []guarantor.ProfileQualifiedObjectAuthorizationV1{claimAuthorization},
+	}
 	claimResult, err := coordinator.AdmitClaim(context.Background(), agreementDigest, claim, fence)
 	if err != nil || claimResult.IngressResolution.State != commerce.ActionTerminal ||
 		claimResult.AdmissionResolution.State != commerce.ActionTerminal {
@@ -911,13 +990,29 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 	revisedBody.OtherRecoveryDeclarationDigest = revisedRecoveryDigest
 	revisedBody.CreatedAtUnix = uint64(now.Add(3*time.Minute + time.Second).Unix())
 	revisedBodyDigest, _ := guarantor.ClaimBodyDigest(revisedBody)
-	revisedAuthorization, _ := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{SchemaVersion: 1,
-		AuthoritySubject: "agent:covered", ProfileURI: terms.ClaimantAuthorizationProfiles[0].ProfileURI,
-		ProfileVersion: terms.ClaimantAuthorizationProfiles[0].ProfileVersion,
-		ProfileDigest:  terms.ClaimantAuthorizationProfiles[0].ProfileDigest, AuthorizedObjectKind: "coverage-claim",
-		AuthorizedBodyDigest: revisedBodyDigest, ValidationTimeUnix: revisedBody.CreatedAtUnix}, "tos.service.agent-guarantor-claim-signature.v1", testAuthorityCustody, testGuarantorController(coveredKey.Public().(ed25519.PublicKey)), []byte("covered-history"))
-	revisedClaim := guarantor.AuthorizedCoverageClaimV1{Body: revisedBody, EvidenceManifest: manifest,
-		OtherRecoveryDeclaration: revisedRecovery, Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{revisedAuthorization}}
+	revisedAuthorization, _ := guarantor.SignObjectAuthorization(
+		context.Background(),
+		guarantor.AuthorizationStatementV1{
+			SchemaVersion:        1,
+			AuthoritySubject:     "agent:covered",
+			ProfileURI:           terms.ClaimantAuthorizationProfiles[0].ProfileURI,
+			ProfileVersion:       terms.ClaimantAuthorizationProfiles[0].ProfileVersion,
+			ProfileDigest:        terms.ClaimantAuthorizationProfiles[0].ProfileDigest,
+			AuthorizedObjectKind: "coverage-claim",
+			AuthorizedBodyDigest: revisedBodyDigest,
+			ValidationTimeUnix:   revisedBody.CreatedAtUnix,
+		},
+		"tos.service.agent-guarantor-claim-signature.v1",
+		testAuthorityCustody,
+		testGuarantorController(coveredKey.Public().(ed25519.PublicKey)),
+		[]byte("covered-history"),
+	)
+	revisedClaim := guarantor.AuthorizedCoverageClaimV1{
+		Body:                     revisedBody,
+		EvidenceManifest:         manifest,
+		OtherRecoveryDeclaration: revisedRecovery,
+		Authorizations:           []guarantor.ProfileQualifiedObjectAuthorizationV1{revisedAuthorization},
+	}
 	revisionResult, err := coordinator.AdmitClaim(context.Background(), agreementDigest, revisedClaim, fence)
 	if err != nil || revisionResult.IngressResolution.State != commerce.ActionTerminal ||
 		revisionResult.AdmissionResolution.State != commerce.ActionTerminal {
@@ -960,14 +1055,28 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 			ExpiresAfterTerminalCloseSeconds: 90}}, ChallengeWindowSeconds: 60,
 		DecidedAtUnix: uint64(now.Add(3 * time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix())}
 	decisionBodyDigest, _ := guarantor.ClaimDecisionBodyDigestV1(decisionBody, terms)
-	decisionAuthorization, err := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{SchemaVersion: 1,
-		AuthoritySubject: "agent:guarantor", ProfileURI: decisionProfile.ProfileURI, ProfileVersion: decisionProfile.ProfileVersion,
-		ProfileDigest: decisionProfile.ProfileDigest, AuthorizedObjectKind: "claim-decision", AuthorizedBodyDigest: decisionBodyDigest,
-		ValidationTimeUnix: uint64(now.Add(3 * time.Minute).Unix())}, "tos.service.agent-guarantor-claim-decision-signature.v1", testAuthorityCustody, testGuarantorController(guarantorKey.Public().(ed25519.PublicKey)), []byte("guarantor-history"))
+	decisionAuthorization, err := guarantor.SignObjectAuthorization(
+		context.Background(),
+		guarantor.AuthorizationStatementV1{
+			SchemaVersion:        1,
+			AuthoritySubject:     "agent:guarantor",
+			ProfileURI:           decisionProfile.ProfileURI,
+			ProfileVersion:       decisionProfile.ProfileVersion,
+			ProfileDigest:        decisionProfile.ProfileDigest,
+			AuthorizedObjectKind: "claim-decision",
+			AuthorizedBodyDigest: decisionBodyDigest,
+			ValidationTimeUnix:   uint64(now.Add(3 * time.Minute).Unix()),
+		},
+		"tos.service.agent-guarantor-claim-decision-signature.v1",
+		testAuthorityCustody,
+		testGuarantorController(guarantorKey.Public().(ed25519.PublicKey)),
+		[]byte("guarantor-history"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision := guarantor.AuthorizedClaimDecisionV1{Body: decisionBody, PolicyApplication: policyApplication,
+	decision := guarantor.AuthorizedClaimDecisionV1{
+		Body: decisionBody, PolicyApplication: policyApplication,
 		DecisionReason: decisionReason, DecisionEvidenceSet: decisionEvidence,
 		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{decisionAuthorization}}
 	decisionAdmission, err := coordinator.AdmitClaimDecision(context.Background(), GuarantorAdmitDecisionInput{
@@ -1285,14 +1394,24 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 		EffectiveNotAfterUnix: uint64(cancelCreated.Add(30 * time.Second).Unix()), CreatedAtUnix: uint64(cancelCreated.Unix()),
 		ExpiresAtUnix: uint64(cancelCreated.Add(45 * time.Second).Unix())}
 	cancelBodyDigest, _ := codec.Digest("tos.service.agent-guarantor-cancellation-request-body.v1", cancelBody)
-	cancelAuthorization, err := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{SchemaVersion: 1,
-		AuthoritySubject: "agent:covered", ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1,
-		ProfileDigest: agreementProfile, AuthorizedObjectKind: "coverage-cancellation-request",
-		AuthorizedBodyDigest: cancelBodyDigest, ValidationTimeUnix: uint64(cancelCreated.Unix())}, "tos.service.agent-guarantor-cancellation-request-signature.v1", testAuthorityCustody, testGuarantorController(coveredKey.Public().(ed25519.PublicKey)), []byte("covered-history"))
+	cancelAuthorization, err := guarantor.SignObjectAuthorization(
+		context.Background(),
+		guarantor.AuthorizationStatementV1{
+			SchemaVersion:    1,
+			AuthoritySubject: "agent:covered", ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1,
+			ProfileDigest: agreementProfile, AuthorizedObjectKind: "coverage-cancellation-request",
+			AuthorizedBodyDigest: cancelBodyDigest, ValidationTimeUnix: uint64(cancelCreated.Unix()),
+		},
+		"tos.service.agent-guarantor-cancellation-request-signature.v1",
+		testAuthorityCustody,
+		testGuarantorController(coveredKey.Public().(ed25519.PublicKey)),
+		[]byte("covered-history"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelRequest := guarantor.AuthorizedCoverageCancellationRequestV1{Body: cancelBody,
+	cancelRequest := guarantor.AuthorizedCoverageCancellationRequestV1{
+		Body:                  cancelBody,
 		CoverageAgreementBody: cancellationAgreement,
 		Authorizations:        []guarantor.ProfileQualifiedObjectAuthorizationV1{cancelAuthorization}}
 	cancelInput := GuarantorCancelCoverageInput{Request: cancelRequest, AdmittedAtUnix: uint64(cancelCreated.Add(5 * time.Second).Unix())}
@@ -1359,15 +1478,23 @@ func signGuarantorTestQuote(t *testing.T, body guarantor.CoverageQuoteRequestBod
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorization, err := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{SchemaVersion: 1,
-		AuthoritySubject: body.RequesterAgentID, ProfileURI: profile.ProfileURI, ProfileVersion: profile.ProfileVersion,
-		ProfileDigest: profile.ProfileDigest, AuthorizedObjectKind: "coverage-quote-request", AuthorizedBodyDigest: bodyDigest,
-		ValidationTimeUnix: body.CreatedAtUnix}, "tos.service.agent-guarantor-quote-request-signature.v1", testAuthorityCustody, testGuarantorController(key.Public().(ed25519.PublicKey)), []byte("covered-history"))
+	authorization, err := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{
+		SchemaVersion:        1,
+		AuthoritySubject:     body.RequesterAgentID,
+		ProfileURI:           profile.ProfileURI,
+		ProfileVersion:       profile.ProfileVersion,
+		ProfileDigest:        profile.ProfileDigest,
+		AuthorizedObjectKind: "coverage-quote-request",
+		AuthorizedBodyDigest: bodyDigest,
+		ValidationTimeUnix:   body.CreatedAtUnix,
+	}, "tos.service.agent-guarantor-quote-request-signature.v1", testAuthorityCustody, testGuarantorController(key.Public().(ed25519.PublicKey)), []byte("covered-history"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return guarantor.AuthorizedCoverageQuoteRequestV1{Body: body, RequestedTerms: requested,
-		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
+	return guarantor.AuthorizedCoverageQuoteRequestV1{
+		Body: body, RequestedTerms: requested,
+		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization},
+	}
 }
 
 func signGuarantorTestAcceptance(t *testing.T, agreement commerce.AgentAgreementBody,
@@ -1423,15 +1550,21 @@ func signGuarantorTestAcceptance(t *testing.T, agreement commerce.AgentAgreement
 		AcceptingSubject: acceptingSubject, SubmissionAuthorizationProfile: profile,
 		CreatedAtUnix: uint64(createdAt.Unix()), ExpiresAtUnix: uint64(expiresAt.Unix())}
 	bodyDigest, _ := codec.Digest("tos.service.agent-guarantor-acceptance-request-body.v1", body)
-	authorization, err := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{SchemaVersion: 1,
+	authorization, err := guarantor.SignObjectAuthorization(context.Background(), guarantor.AuthorizationStatementV1{
+		SchemaVersion:    1,
 		AuthoritySubject: acceptingSubject, ProfileURI: profile.ProfileURI, ProfileVersion: profile.ProfileVersion,
 		ProfileDigest: profile.ProfileDigest, AuthorizedObjectKind: "coverage-acceptance-request",
-		AuthorizedBodyDigest: bodyDigest, ValidationTimeUnix: uint64(createdAt.Unix())}, "tos.service.agent-guarantor-acceptance-request-signature.v1", testAuthorityCustody, testGuarantorController(keys[acceptingSubject].Public().(ed25519.PublicKey)), []byte("covered-history"))
+		AuthorizedBodyDigest: bodyDigest, ValidationTimeUnix: uint64(createdAt.Unix()),
+	}, "tos.service.agent-guarantor-acceptance-request-signature.v1", testAuthorityCustody, testGuarantorController(keys[acceptingSubject].Public().(ed25519.PublicKey)), []byte("covered-history"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return guarantor.AuthorizedCoverageAcceptanceRequestV1{Body: body, CoverageAgreementBody: agreement,
-		AuthorizationEvidenceSet: evidenceSet, Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
+	return guarantor.AuthorizedCoverageAcceptanceRequestV1{
+		Body:                     body,
+		CoverageAgreementBody:    agreement,
+		AuthorizationEvidenceSet: evidenceSet,
+		Authorizations:           []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization},
+	}
 }
 
 func mustGuarantorQuoteDigest(t *testing.T, request guarantor.AuthorizedCoverageQuoteRequestV1) string {

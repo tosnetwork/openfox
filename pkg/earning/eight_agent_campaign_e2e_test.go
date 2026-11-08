@@ -6055,8 +6055,10 @@ func campaignTOSCTLNetworkPreflight(sink *TOSCTLPaymentSink, directory string) f
 func campaignAuthorityKeys(t *testing.T, cfg *config.Config) AuthorityKeys {
 	t.Helper()
 	helper := cfg.Earning.Authority.TOSCTL
-	keys, err := OpenTOSCTLAuthorityKeys(t.Context(), TOSCTLAuthorityHelper{Binary: helper.Binary, SHA256: helper.SHA256,
-		ConfigPath: helper.ConfigPath, VaultURL: mustEnv(t, "OPENFOX_TOS_VAULT_URL")},
+	keys, err := OpenTOSCTLAuthorityKeys(t.Context(), TOSCTLAuthorityHelper{
+		Binary: helper.Binary, SHA256: helper.SHA256,
+		ConfigPath: helper.ConfigPath, VaultURL: mustEnv(t, "OPENFOX_TOS_VAULT_URL"),
+	},
 		cfg.Earning.Authority.AuthorityKeyID, cfg.Earning.Authority.CustodyAuthorizationKeyID)
 	if err != nil {
 		t.Fatalf("open campaign authority keys: %v", err)
@@ -8565,8 +8567,10 @@ func TestCampaignCounterOfferRetainsExactPredecessorBeforeAdmission(t *testing.T
 			maximumLoss = 1_000
 		}
 		authority, err := OpenPersonalAuthority(privateTempDir(t), definition.OwnerID, definition.AgentID,
-			definition.AuthorityID, testAuthorityKeys(), PortfolioLimits{SpendAtomic: 1_000, MaximumLossAtomic: maximumLoss,
-				CustodyNativeAsset: &nativeAsset})
+			definition.AuthorityID, testAuthorityKeys(), PortfolioLimits{
+				SpendAtomic: 1_000, MaximumLossAtomic: maximumLoss,
+				CustodyNativeAsset: &nativeAsset,
+			})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -8649,8 +8653,10 @@ func TestCampaignBuyerAgreementAdmissionUsesManifestMaximumLoss(t *testing.T) {
 	sellerDefinition := eightAgentManifestEntry{Name: "seller", AgentID: "agent:seller", Target: "tos1seller", Price: 101}
 	nativeAsset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos"}
 	authority, err := OpenPersonalAuthority(privateTempDir(t), buyerDefinition.OwnerID, buyerDefinition.AgentID,
-		"authority:buyer", testAuthorityKeys(), PortfolioLimits{SpendAtomic: 1_000,
-			MaximumLossAtomic: buyerDefinition.MaximumLoss, CustodyNativeAsset: &nativeAsset})
+		"authority:buyer", testAuthorityKeys(), PortfolioLimits{
+			SpendAtomic:       1_000,
+			MaximumLossAtomic: buyerDefinition.MaximumLoss, CustodyNativeAsset: &nativeAsset,
+		})
 	if err != nil {
 		t.Fatal(err)
 	}

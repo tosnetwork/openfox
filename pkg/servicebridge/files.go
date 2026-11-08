@@ -32,31 +32,45 @@ func checkPrivateDirectory(directory string) error {
 	return nil
 }
 
-// writeSynced creates a new owner-only file (never replacing one) and syncs
-// it and its directory before returning.
+// writeSynced creates path holding data, refusing to replace an existing
+// file. The data is written and synced in a temporary file first and then
+// linked into place, so a crash never leaves path empty or truncated: it
+// either does not exist or holds all of data.
 func writeSynced(path string, data []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	directory := filepath.Dir(path)
+	if _, err := os.Lstat(path); err == nil {
+		return os.ErrExist
+	}
+	temporary, err := os.CreateTemp(directory, stateUpdatePrefix)
 	if err != nil {
+		return errors.New("servicebridge: create state file")
+	}
+	name := temporary.Name()
+	defer os.Remove(name)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return errors.New("servicebridge: protect state file")
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return errors.New("servicebridge: write state file")
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return errors.New("servicebridge: sync state file")
+	}
+	if err := temporary.Close(); err != nil {
+		return errors.New("servicebridge: close state file")
+	}
+	// A hard link publishes the complete file and, unlike a rename, fails
+	// rather than replacing a file that already exists.
+	if err := os.Link(name, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return os.ErrExist
 		}
-		return errors.New("servicebridge: create state file")
+		return errors.New("servicebridge: publish state file")
 	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return errors.New("servicebridge: write state file")
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return errors.New("servicebridge: sync state file")
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return errors.New("servicebridge: close state file")
-	}
-	return syncDirectory(filepath.Dir(path))
+	return syncDirectory(directory)
 }
 
 // replaceSynced atomically replaces path with data.

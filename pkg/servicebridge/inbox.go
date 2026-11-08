@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -200,6 +201,12 @@ func (inbox *Inbox) assemble(key string) (*Message, bool, error) {
 	for _, entry := range entries {
 		name := entry.Name()
 		if name == senderFile || name == doneMarker || name == attemptsFile {
+			continue
+		}
+		// A crash between creating and renaming a counter update leaves its
+		// temporary file behind. It never holds a frame, so it must not make
+		// the assembly unreadable and block dispatch of every other message.
+		if strings.HasPrefix(name, stateUpdatePrefix) && entry.Type().IsRegular() {
 			continue
 		}
 		index, indexErr := strconv.Atoi(name)

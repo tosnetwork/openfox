@@ -60,9 +60,13 @@ func writeSynced(path string, data []byte) error {
 }
 
 // replaceSynced atomically replaces path with data.
+// stateUpdatePrefix names the temporary file replaceSynced writes before it
+// renames it over the target.
+const stateUpdatePrefix = ".tmp-"
+
 func replaceSynced(path string, data []byte) error {
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".tmp-")
+	temporary, err := os.CreateTemp(directory, stateUpdatePrefix)
 	if err != nil {
 		return errors.New("servicebridge: create state update")
 	}

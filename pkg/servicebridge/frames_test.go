@@ -336,6 +336,58 @@ func TestInboxRetriesAFailedMessageAndThenGivesUp(t *testing.T) {
 	}
 }
 
+func TestInboxIgnoresACounterUpdateLeftByAnInterruptedFailure(t *testing.T) {
+	inbox, directory := openTestInbox(t, 2, 4)
+	frames, err := SplitMessage(FrameResult, testActor, 2, testRequest, fill(100, 6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, message, err := inbox.Put(testSeller, frames[0])
+	if err != nil || message == nil {
+		t.Fatal(err)
+	}
+	if err = inbox.Failed(message.Key); err != nil {
+		t.Fatal(err)
+	}
+	// The temporary file replaceSynced writes before its rename, left as a
+	// crash between the two would leave it.
+	leftover, err := os.CreateTemp(filepath.Join(directory, message.Key), stateUpdatePrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = leftover.WriteString("2"); err != nil {
+		t.Fatal(err)
+	}
+	if err = leftover.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := inbox.Pending()
+	if err != nil || len(pending) != 1 || pending[0].Key != message.Key {
+		t.Fatalf("a leftover counter update blocks dispatch: %d %v", len(pending), err)
+	}
+	if err := inbox.Failed(message.Key); err != nil {
+		t.Fatalf("the next failure cannot be recorded beside a leftover update: %v", err)
+	}
+}
+
+func TestInboxStillRejectsAnUnexpectedDirectoryNamedLikeAnUpdate(t *testing.T) {
+	inbox, directory := openTestInbox(t, 2, 4)
+	frames, err := SplitMessage(FrameResult, testActor, 2, testRequest, fill(100, 7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, message, err := inbox.Put(testSeller, frames[0])
+	if err != nil || message == nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(directory, message.Key, stateUpdatePrefix+"x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inbox.Pending(); err == nil {
+		t.Fatal("an unexpected directory inside an assembly is accepted")
+	}
+}
+
 func TestInboxPruneKeepsProcessedMessagesLongerThanIncompleteOnes(t *testing.T) {
 	inbox, directory := openTestInbox(t, 4, 8)
 	partial, err := SplitMessage(FrameTask, testActor, 1, testRequest, fill(2*MaxChunkData, 1))

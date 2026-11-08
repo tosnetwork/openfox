@@ -100,10 +100,29 @@ type ProviderConfig struct {
 	Now                func() time.Time
 }
 
+// preRespondChecker is the part of the gate the delivery loop uses to recheck
+// a request before it responds.
+type preRespondChecker interface {
+	Lookup(key railgate.SlotKey) (railgate.Slot, bool, error)
+	Recheck(ctx context.Context, slot railgate.Slot, claim railgate.Claim, verified *railgate.Verified) error
+}
+
 // Provider executes admitted tasks, attests them and delivers results.
 type Provider struct {
 	config ProviderConfig
-	mutex  sync.Mutex
+	// checker replaces the gate's pre-respond check when set.
+	checker preRespondChecker
+	mutex   sync.Mutex
+}
+
+func (p *Provider) preRespond() preRespondChecker {
+	if p.checker != nil {
+		return p.checker
+	}
+	if p.config.Gate != nil {
+		return p.config.Gate
+	}
+	return nil
 }
 
 // NewProvider refuses an incomplete configuration.
@@ -289,8 +308,10 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 		return err
 	}
 	if err := p.config.Gate.Recheck(ctx, slot, claim, verified); err != nil {
-		// The request left its window or changed: it is never attested.
-		return fmt.Errorf("servicebridge: not responding: %w", err)
+		// The record stays executed: the delivery loop repeats the check
+		// while the window is open and responds once it passes, without
+		// executing again. A request that left its window is never attested.
+		return fmt.Errorf("servicebridge: not responding yet: %w", err)
 	}
 	record.State, record.RespondedAtUnix = ProviderResponding, p.config.Now().Unix()
 	if err := p.store(key, record, false); err != nil {
@@ -419,6 +440,11 @@ func (p *Provider) Tick(ctx context.Context) error {
 	var failures []error
 	for path, record := range records {
 		switch record.State {
+		case ProviderExecuted:
+			if err := p.resumeExecuted(ctx, path, record, now); err != nil {
+				failures = append(failures, err)
+			}
+			continue
 		case ProviderResponding:
 			done, err := p.respondFinalized(ctx, record)
 			if err != nil {
@@ -484,6 +510,33 @@ func (p *Provider) Tick(ctx context.Context) error {
 		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
+}
+
+// resumeExecuted advances work that ran and was attested locally but whose
+// pre-respond check did not pass, for example during an RPC outage. The check
+// is repeated while the response window is open; once it passes the record
+// moves to responding before the respond is sent, so an ambiguous send is
+// retried by the responding path. The work is never executed again.
+func (p *Provider) resumeExecuted(ctx context.Context, path string, record ProviderRecord, now time.Time) error {
+	if uint64(now.Unix()) >= record.ResponseDeadline {
+		record.State = ProviderAbandoned
+		record.Schema, record.UpdatedUnix = providerRecordSchema, now.Unix()
+		return writeJSON(path, record, false)
+	}
+	var responseHash [32]byte
+	if err := decodeHex32(record.ResponseHash, &responseHash); err != nil {
+		return err
+	}
+	if err := p.recheck(ctx, record); err != nil {
+		return fmt.Errorf("servicebridge: not responding yet: %w", err)
+	}
+	record.State, record.RespondedAtUnix = ProviderResponding, now.Unix()
+	record.Schema, record.UpdatedUnix = providerRecordSchema, now.Unix()
+	if err := writeJSON(path, record, false); err != nil {
+		return err
+	}
+	// Ambiguous: the responding path reads finalized history for it.
+	return p.config.Lifecycle.Respond(ctx, record.Actor, record.RequestID, responseHash, p.config.AttestorController)
 }
 
 func (p *Provider) deliver(ctx context.Context, record ProviderRecord) error {
@@ -558,12 +611,16 @@ func (p *Provider) recheck(ctx context.Context, record ProviderRecord) error {
 		return errors.New("servicebridge: the record holds no request price")
 	}
 	expected.Price = price
-	slot, found, err := p.config.Gate.Lookup(expected.SlotKey())
+	checker := p.preRespond()
+	if checker == nil {
+		return errors.New("servicebridge: no gate to recheck the request with")
+	}
+	slot, found, err := checker.Lookup(expected.SlotKey())
 	if err != nil {
 		return err
 	}
 	if !found {
 		return errors.New("servicebridge: the request has no execution slot")
 	}
-	return p.config.Gate.Recheck(ctx, slot, claim, expected)
+	return checker.Recheck(ctx, slot, claim, expected)
 }

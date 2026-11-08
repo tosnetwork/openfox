@@ -82,7 +82,7 @@ func (service GuarantorPayoutService) Pay(ctx context.Context, agreementDigest, 
 	}
 	actionRequest := guarantor.GuarantorAgreementPaymentActionBodyV1{SchemaVersion: 1, PaymentRequest: request,
 		SettlementObligation: obligation, MaterializedPayoutObligationSet: materialized}
-	canonical, err := codec.Marshal(actionRequest)
+	canonical, err := guarantor.Canonical(actionRequest)
 	if err != nil {
 		return commerce.AgreementPaymentEvidence{}, commerce.ActionResolution{}, guarantor.ClaimRecord{}, err
 	}
@@ -257,7 +257,7 @@ func (service GuarantorPayoutService) RecordDefault(ctx context.Context, agreeme
 	}
 	actionRequest := guarantor.GuarantorAgreementPaymentActionBodyV1{SchemaVersion: 1, PaymentRequest: request,
 		SettlementObligation: obligation, MaterializedPayoutObligationSet: materialized}
-	canonical, err := codec.Marshal(actionRequest)
+	canonical, err := guarantor.Canonical(actionRequest)
 	if err != nil {
 		return commerce.ActionResolution{}, guarantor.ClaimRecord{}, err
 	}

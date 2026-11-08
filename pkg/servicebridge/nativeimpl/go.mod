@@ -4,8 +4,8 @@ go 1.26.6
 
 require (
 	github.com/tosnetwork/openfox v0.0.0
-	github.com/tosnetwork/tos-messenger v0.0.0-20261108064913-050c66234942
-	github.com/tosnetwork/tos-service-protocol v0.0.0-20261108063330-1e95a4a6a7e8
+	github.com/tosnetwork/tos-messenger v0.0.0-20261108093725-c04f384f1344
+	github.com/tosnetwork/tos-service-protocol v0.0.0-20261108093450-a774da4b9766
 	github.com/tosnetwork/tosutils-go v1.18.2-0.20260820143526-4d1a10d94bef
 	google.golang.org/protobuf v1.36.11
 )

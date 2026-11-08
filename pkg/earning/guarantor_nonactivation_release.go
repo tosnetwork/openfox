@@ -7,7 +7,6 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 // ReleaseNonActivatedExposure closes the provider's private reservation after
@@ -54,7 +53,7 @@ func (coordinator *GuarantorProviderCoordinator) ReleaseNonActivatedExposure(ctx
 	requestBody := guarantor.ExposureReleaseActionBodyV1{ReservationID: position.Record.ReservationID,
 		AgreementDigest: agreementDigest, TargetPortfolioRevision: portfolioRevision + 1,
 		TerminalEvidenceSetDigest: nonActivationDigest}
-	request, err := codec.Marshal(requestBody)
+	request, err := guarantor.Canonical(requestBody)
 	if err != nil {
 		return guarantor.AuthorizedNonActivationExposureReleaseReceiptV1{}, commerce.ActionResolution{}, err
 	}
@@ -95,7 +94,7 @@ func (coordinator *GuarantorProviderCoordinator) ReleaseNonActivatedExposure(ctx
 		WriterFenceDigest: action.WriterFenceDigest, BaseReleaseStateRevision: portfolioRevision,
 		ReleasedReleaseStateRevision: portfolioRevision + 1, ReleasedExposure: offer.ExposureAdmissionReceipt.Body.ReservedExposure,
 		RemainingReservedExposure: zero, State: "released", ReleasedAtUnix: uint64(now.Unix())}
-	bodyDigest, err := codec.Digest("tos.service.agent-guarantor-non-activation-exposure-release-body.v1", body)
+	bodyDigest, err := guarantor.Digest("tos.service.agent-guarantor-non-activation-exposure-release-body.v1", body)
 	if err != nil {
 		return guarantor.AuthorizedNonActivationExposureReleaseReceiptV1{}, resolution, err
 	}

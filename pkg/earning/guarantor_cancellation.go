@@ -8,7 +8,6 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 type GuarantorCancelCoverageInput struct {
@@ -92,8 +91,8 @@ func (coordinator *GuarantorProviderCoordinator) CancelCoverage(ctx context.Cont
 		{EvidenceRole: "prior_coverage_end_commitment", DigestKind: "canonical_object", ObjectDigest: priorCommitmentDigest},
 	}
 	sort.Slice(refs, func(i, j int) bool {
-		left, _ := codec.Marshal(refs[i])
-		right, _ := codec.Marshal(refs[j])
+		left, _ := guarantor.Canonical(refs[i])
+		right, _ := guarantor.Canonical(refs[j])
 		return string(left) < string(right)
 	})
 	projection := guarantor.TransitionEvidenceProjectionV1{SchemaVersion: 1, Purpose: "coverage-cancellation",
@@ -104,7 +103,7 @@ func (coordinator *GuarantorProviderCoordinator) CancelCoverage(ctx context.Cont
 		AuthorizedCancellationRequest: input.Request, ExpectedCoverageEndCommitment: priorCommitment,
 		TransitionEvidenceProjection: projection, ExpectedCoverageRevision: position.Record.CoverageRevision,
 		TargetCoverageRevision: position.Record.CoverageRevision + 1, TargetCoverageState: "coverage_ended"}
-	canonicalRequest, err := codec.Marshal(requestBody)
+	canonicalRequest, err := guarantor.Canonical(requestBody)
 	if err != nil {
 		return guarantor.AuthorizedCoverageCancellationReceiptV1{}, commerce.ActionResolution{}, err
 	}
@@ -121,7 +120,7 @@ func (coordinator *GuarantorProviderCoordinator) CancelCoverage(ctx context.Cont
 	if err != nil {
 		return guarantor.AuthorizedCoverageCancellationReceiptV1{}, commerce.ActionResolution{}, err
 	}
-	domainID, _ := codec.Digest("tos.service.agent-guarantor-cancellation-admission-domain.v1", struct {
+	domainID, _ := guarantor.Digest("tos.service.agent-guarantor-cancellation-admission-domain.v1", struct {
 		CoverageAgreementBodyDigest string `json:"coverage_agreement_body_digest"`
 	}{agreementDigest})
 	entry, err := coordinator.Journal.BeginAdmission(domainID, action.StableActionID, action.ExactRequestDigest, admittedAt)
@@ -159,7 +158,7 @@ func (coordinator *GuarantorProviderCoordinator) CancelCoverage(ctx context.Cont
 		PriorCoverageRevision: position.Record.CoverageRevision, EndedCoverageRevision: position.Record.CoverageRevision + 1,
 		State: "coverage_ended", AdmittedAtUnix: input.AdmittedAtUnix,
 		AuthorityAdmissionEligibilityProofSetDigest: proofDigest}
-	bodyDigest, _ := codec.Digest("tos.service.agent-guarantor-cancellation-receipt-body.v1", body)
+	bodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-cancellation-receipt-body.v1", body)
 	if resolution.State == commerce.ActionPrepared {
 		resolution, err = coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
 			commerce.ActionTerminal, bodyDigest, []string{bodyDigest})

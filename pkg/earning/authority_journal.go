@@ -1295,7 +1295,8 @@ func (authority *PersonalAuthority) releaseReservation(action commerce.Authorize
 	var release PortfolioReleaseRequest
 	if err := codec.Unmarshal(request, &release); err != nil {
 		var guarantorRelease guarantor.PreAcceptanceExposureReleaseActionBodyV1
-		if decodeErr := codec.Unmarshal(request, &guarantorRelease); decodeErr != nil ||
+		// The Guarantor release body is encoded under the Guarantor limits.
+		if decodeErr := guarantor.Unmarshal(request, &guarantorRelease); decodeErr != nil ||
 			guarantorRelease.SchemaVersion != 1 || guarantorRelease.ReleaseVariant != "pre_acceptance" ||
 			guarantorRelease.TargetPortfolioRevision != guarantorRelease.ExpectedPortfolioRevision+1 {
 			return commerce.ActionResolution{}, errors.New("portfolio release request is invalid")

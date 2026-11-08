@@ -9,7 +9,6 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 type GuarantorAdmitInitialFallbackInput struct {
@@ -197,7 +196,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		ExpectedNonterminalRoundsUsed: position.NonterminalRoundsUsed[input.ClaimID], TriggerCutoffUnix: cutoff, DecisionSequence: decisionSequence}
 	actionBody := guarantor.ClaimDecisionAdmissionActionBodyV1{SchemaVersion: 1, AdmissionMode: "deterministic_fallback",
 		DeterministicFallbackVariant: &variant}
-	request, err := codec.Marshal(actionBody)
+	request, err := guarantor.Canonical(actionBody)
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
@@ -292,7 +291,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		}
 		body.AggregatePendingDecisionReserveAfter.AmountAtomic = remaining
 	}
-	bodyDigest, _ := codec.Digest("tos.service.agent-guarantor-claim-decision-admission-receipt-body.v1", body)
+	bodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-claim-decision-admission-receipt-body.v1", body)
 	receiptAuthorization, err := coordinator.Signer.SignObject("claim-decision-admission-receipt", bodyDigest,
 		"tos.service.agent-guarantor-claim-decision-admission-signature.v1", now)
 	if err != nil {
@@ -335,8 +334,8 @@ func fallbackDecisionEvidenceSet(claim guarantor.AuthorizedCoverageClaimV1, clai
 				RetrievalPolicyDigest: item.DisclosurePolicyDigest}}
 	}
 	sort.Slice(items, func(i, j int) bool {
-		left, _ := codec.Marshal(items[i])
-		right, _ := codec.Marshal(items[j])
+		left, _ := guarantor.Canonical(items[i])
+		right, _ := guarantor.Canonical(items[j])
 		return string(left) < string(right)
 	})
 	return guarantor.CanonicalGuarantorEvidenceSetV1{SchemaVersion: 1, Purpose: "claim-decision-evidence", ContextDigest: claimDigest, Items: items}

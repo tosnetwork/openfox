@@ -9,7 +9,6 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 // resumeCoverageClosureFromTerminalSet completes the two remaining economic
@@ -58,7 +57,7 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 			requestBody := guarantor.ExposureReleaseActionBodyV1{ReservationID: position.Record.ReservationID,
 				AgreementDigest: agreementDigest, TargetPortfolioRevision: portfolioRevision + 1,
 				TerminalEvidenceSetDigest: terminalDigest}
-			request, encodeErr := codec.Marshal(requestBody)
+			request, encodeErr := guarantor.Canonical(requestBody)
 			if encodeErr != nil {
 				return GuarantorCloseCoverageResult{}, encodeErr
 			}
@@ -123,7 +122,7 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 			PortfolioDisposition: disposition.PortfolioDisposition, ReturnedToAvailableExposure: disposition.ReturnedToAvailableExposure,
 			RealizedLoss: disposition.RealizedLoss, RetainedDefaultedLiability: disposition.RetainedDefaultedLiability,
 			State: "released", ReleasedAtUnix: plan.CreatedAtUnix}
-		bodyDigest, _ := codec.Digest("tos.service.agent-guarantor-exposure-release-receipt-body.v1", body)
+		bodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-exposure-release-receipt-body.v1", body)
 		authorization, signErr := coordinator.Signer.SignObject("exposure-release-receipt", bodyDigest,
 			"tos.service.agent-guarantor-exposure-release-receipt-signature.v1", at)
 		if signErr != nil {
@@ -156,7 +155,7 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 		requestBody := guarantor.CoverageResolutionActionBodyV1{SchemaVersion: 1,
 			ExposureReleaseReceiptDigest: releaseDigest, ExpectedRevision: position.Record.CoverageRevision,
 			TargetRevision: position.Record.CoverageRevision + 1}
-		request, encodeErr := codec.Marshal(requestBody)
+		request, encodeErr := guarantor.Canonical(requestBody)
 		if encodeErr != nil {
 			return GuarantorCloseCoverageResult{}, encodeErr
 		}
@@ -219,7 +218,7 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 		AuthorizedActionDigest: mustActionDigest(plan.Action), StableActionID: plan.Action.StableActionID,
 		ExactRequestDigest: plan.Action.ExactRequestDigest, WriterGeneration: plan.Action.WriterGeneration,
 		WriterFenceDigest: plan.Action.WriterFenceDigest, ResolvedAtUnix: plan.CreatedAtUnix}
-	bodyDigest, _ := codec.Digest("tos.service.agent-guarantor-resolution-body.v1", body)
+	bodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-resolution-body.v1", body)
 	authorization, err := coordinator.Signer.SignObject("coverage-resolution", bodyDigest,
 		"tos.service.agent-guarantor-resolution-signature.v1", at)
 	if err != nil {

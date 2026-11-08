@@ -8,7 +8,6 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 type GuarantorConfirmNonActivationInput struct {
@@ -107,8 +106,8 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 		{EvidenceRole: "non_activation_reason", DigestKind: "canonical_object", ObjectDigest: reasonDigest},
 	}
 	sort.Slice(refs, func(i, j int) bool {
-		left, _ := codec.Marshal(refs[i])
-		right, _ := codec.Marshal(refs[j])
+		left, _ := guarantor.Canonical(refs[i])
+		right, _ := guarantor.Canonical(refs[j])
 		return string(left) < string(right)
 	})
 	projection := guarantor.TransitionEvidenceProjectionV1{SchemaVersion: 1, Purpose: "coverage-non-activation",
@@ -122,7 +121,7 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 		TargetCoverageState: "not_activated_confirmed", ExpectedClaimFilingState: "not_open",
 		TargetClaimFilingState: "not_open", ExpectedClaimFilingStateRevision: position.Record.FilingStateRevision,
 		TargetClaimFilingStateRevision: position.Record.FilingStateRevision}
-	canonicalRequest, err := codec.Marshal(requestBody)
+	canonicalRequest, err := guarantor.Canonical(requestBody)
 	if err != nil {
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
@@ -139,7 +138,7 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 	if err != nil {
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
-	actionDomainID, err := codec.Digest("tos.service.agent-guarantor-non-activation-admission-domain.v1", struct {
+	actionDomainID, err := guarantor.Digest("tos.service.agent-guarantor-non-activation-admission-domain.v1", struct {
 		CoverageAgreementBodyDigest string `json:"coverage_agreement_body_digest"`
 	}{agreementDigest})
 	if err != nil {
@@ -183,7 +182,7 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 		PriorClaimFilingStateRevision:     position.Record.FilingStateRevision,
 		ResultingClaimFilingStateRevision: position.Record.FilingStateRevision, ResolvedAtUnix: input.ResolvedAtUnix,
 		AuthorityAdmissionEligibilityProofSetDigest: eligibilityDigest}
-	bodyDigest, _ := codec.Digest("tos.service.agent-guarantor-non-activation-evidence-body.v1", body)
+	bodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-non-activation-evidence-body.v1", body)
 	if resolution.State == commerce.ActionPrepared {
 		resolution, err = coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
 			commerce.ActionTerminal, bodyDigest, []string{bodyDigest})

@@ -258,6 +258,10 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The closure objects carry the claims' authorized decision receipts,
+	// about 1.07 MB each under ML-DSA-44, so their negotiated ceilings take
+	// the Guarantor object limit rather than 1 MiB.
+	closureCeiling := uint64(guarantor.MaxCanonicalObjectBytes)
 	capacity := guarantor.ClaimClosureCapacityV1{MaximumClaims: 2, MaximumClaimIngressActions: 4,
 		MaximumClaimRevisionsPerClaim: 2, MaximumDecisionAdmissionsPerClaim: 4, MaximumClaimStateTransitionsPerClaim: 8,
 		MaximumChallengeRoundsPerClaim: 1, MaximumNonterminalRoundsPerClaim: 1, MaximumPayoutLinesPerClaim: 2,
@@ -265,15 +269,15 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 		MaximumClaimIngressCutProofBytes: 1 << 20, MaximumAcceptanceRequestEnvelopeBytes: 1 << 20,
 		MaximumAcceptanceReceiptEnvelopeBytes: 1 << 20, MaximumActivationEvidenceEnvelopeBytes: 1 << 20,
 		MaximumNonActivationEvidenceEnvelopeBytes: 1 << 20, MaximumCancellationReceiptEnvelopeBytes: 1 << 20,
-		MaximumClaimFilingCloseReceiptEnvelopeBytes: 1 << 20, MaximumTerminalClaimSetEnvelopeBytes: 1 << 20,
-		MaximumExposureReleaseRequestBytes: 1 << 20, MaximumExposureReleaseReceiptBytes: 1 << 20,
-		MaximumCoverageResolutionRequestBytes: 1 << 20, MaximumCoverageResolutionEnvelopeBytes: 1 << 20,
+		MaximumClaimFilingCloseReceiptEnvelopeBytes: 1 << 20, MaximumTerminalClaimSetEnvelopeBytes: closureCeiling,
+		MaximumExposureReleaseRequestBytes: closureCeiling, MaximumExposureReleaseReceiptBytes: closureCeiling,
+		MaximumCoverageResolutionRequestBytes: closureCeiling, MaximumCoverageResolutionEnvelopeBytes: closureCeiling,
 		ComputedWorstCaseAcceptanceRequestEnvelopeBytes: 1 << 20, ComputedWorstCaseAcceptanceReceiptEnvelopeBytes: 1 << 20,
 		ComputedWorstCaseActivationEvidenceEnvelopeBytes: 1 << 20, ComputedWorstCaseNonActivationEvidenceEnvelopeBytes: 1 << 20,
 		ComputedWorstCaseCancellationReceiptEnvelopeBytes: 1 << 20, ComputedWorstCaseClaimFilingCloseReceiptEnvelopeBytes: 1 << 20,
-		ComputedWorstCaseTerminalClaimSetBytes: 1 << 20, ComputedWorstCaseExposureReleaseRequestBytes: 1 << 20,
-		ComputedWorstCaseExposureReleaseReceiptBytes: 1 << 20, ComputedWorstCaseCoverageResolutionRequestBytes: 1 << 20,
-		ComputedWorstCaseCoverageResolutionEnvelopeBytes: 1 << 20,
+		ComputedWorstCaseTerminalClaimSetBytes: closureCeiling, ComputedWorstCaseExposureReleaseRequestBytes: closureCeiling,
+		ComputedWorstCaseExposureReleaseReceiptBytes: closureCeiling, ComputedWorstCaseCoverageResolutionRequestBytes: closureCeiling,
+		ComputedWorstCaseCoverageResolutionEnvelopeBytes: closureCeiling,
 		ContinuationBudgetProfile:                        ref("f", "continuation-budget"), ContinuationBudgetEntries: continuationEntries,
 		TerminalFallback: fallback}
 	trigger, evidence, decisionProfile := ref("1", "trigger"), ref("2", "evidence"), ref("3", "decision")
@@ -977,8 +981,12 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 		terminalTransition.Receipt.Body.ResultingClaimState != "final_approved" {
 		t.Fatalf("close claim challenge: result=%#v err=%v", terminalTransition, err)
 	}
-	admissionWire, _ := codec.Marshal(decisionAdmission.Receipt)
-	transitionWire, _ := codec.Marshal(terminalTransition.Receipt)
+	// Guarantor objects are measured under the Guarantor codec limits.
+	admissionWire, admissionErr := guarantor.Canonical(decisionAdmission.Receipt)
+	transitionWire, transitionErr := guarantor.Canonical(terminalTransition.Receipt)
+	if admissionErr != nil || transitionErr != nil {
+		t.Fatalf("encode portable Guarantor decision: %v %v", admissionErr, transitionErr)
+	}
 	t.Logf("portable Guarantor decision admission=%d transition=%d bytes", len(admissionWire), len(transitionWire))
 	application, err := coordinator.ApplyClaimDecision(context.Background(), GuarantorApplyDecisionInput{
 		AgreementDigest: agreementDigest, DecisionAdmissionReceipt: decisionAdmission.Receipt,
@@ -988,7 +996,7 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 		payouts.Obligations[0].Amount.AmountAtomic != "400" || application.Receipt.Body.ResultingApplicationTokenState != "consumed" {
 		t.Fatalf("apply claim decision: result=%#v err=%v", application, err)
 	}
-	applicationWire, err := codec.Marshal(application.Receipt)
+	applicationWire, err := guarantor.Canonical(application.Receipt)
 	if err != nil || len(applicationWire) > guarantor.MaxCanonicalObjectBytes {
 		t.Fatalf("portable decision application exceeds the complete-object ceiling: bytes=%d err=%v", len(applicationWire), err)
 	}
@@ -1075,7 +1083,7 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 	}
 	for name, envelope := range map[string]any{"terminal claim set": closed.TerminalClaimSet,
 		"exposure release": closed.ExposureRelease, "coverage resolution": closed.CoverageResolution} {
-		wire, encodeErr := codec.Marshal(envelope)
+		wire, encodeErr := guarantor.Canonical(envelope)
 		t.Logf("portable %s=%d bytes", name, len(wire))
 		if encodeErr != nil || len(wire) > guarantor.MaxCanonicalObjectBytes {
 			t.Fatalf("portable %s exceeds the complete-object ceiling: bytes=%d err=%v", name, len(wire), encodeErr)

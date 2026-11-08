@@ -7,7 +7,6 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 type GuarantorAdmitDecisionInput struct {
@@ -51,7 +50,7 @@ func currentCoverageEndCommitment(position GuarantorCoveragePosition) (guarantor
 }
 
 func mustGuarantorDigest(domain string, value any) string {
-	digest, _ := codec.Digest(domain, value)
+	digest, _ := guarantor.Digest(domain, value)
 	return digest
 }
 
@@ -138,7 +137,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 	}
 	actionBody := guarantor.ClaimDecisionAdmissionActionBodyV1{SchemaVersion: 1, AdmissionMode: "authorized_decision",
 		AuthorizedDecisionVariant: &variant}
-	request, err := codec.Marshal(actionBody)
+	request, err := guarantor.Canonical(actionBody)
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
@@ -265,7 +264,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 	if targetStatus == guarantor.ClaimEvidenceRequired || targetStatus == guarantor.ClaimDisputed {
 		body.ResultingApplicationToken = nil
 	}
-	bodyDigest, err := codec.Digest("tos.service.agent-guarantor-claim-decision-admission-receipt-body.v1", body)
+	bodyDigest, err := guarantor.Digest("tos.service.agent-guarantor-claim-decision-admission-receipt-body.v1", body)
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{Resolution: resolution}, err
 	}
@@ -338,7 +337,7 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err
 	}
-	sealDigest, err := codec.Digest(guarantor.ClaimDecisionAdmissionReceiptSealDomainV1, sealBody)
+	sealDigest, err := guarantor.Digest(guarantor.ClaimDecisionAdmissionReceiptSealDomainV1, sealBody)
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err
 	}
@@ -354,7 +353,7 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	}
 	evidenceSet := input.TransitionEvidenceSet
 	if len(evidenceSet.Items) == 0 {
-		admissionBytes, marshalErr := codec.Marshal(decisionAdmission)
+		admissionBytes, marshalErr := guarantor.Canonical(decisionAdmission)
 		if marshalErr != nil {
 			return GuarantorClaimTransitionResult{}, marshalErr
 		}
@@ -420,7 +419,7 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 		TargetNonterminalRoundsUsed: targetNonterminal, SuccessorDecisionDueAtUnix: successorDue,
 		AuthorizedClaimDecisionAdmissionReceiptDigest: decisionAdmissionDigest, TransitionEvidenceProjection: projection,
 		TransitionEvidenceSet: evidenceSet}
-	request, err := codec.Marshal(requestBody)
+	request, err := guarantor.Canonical(requestBody)
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err
 	}
@@ -469,7 +468,7 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 		NonterminalRoundsUsedBefore: position.NonterminalRoundsUsed[claimID], NonterminalRoundsUsedAfter: targetNonterminal,
 		SuccessorDecisionDueAtUnix: successorDue, TransitionedAtUnix: uint64(now.Unix()),
 		AuthorityAdmissionEligibilityProofSetDigest: proofDigest}
-	bodyDigest, err := codec.Digest("tos.service.agent-guarantor-claim-state-transition-receipt-body.v1", body)
+	bodyDigest, err := guarantor.Digest("tos.service.agent-guarantor-claim-state-transition-receipt-body.v1", body)
 	if err != nil {
 		return GuarantorClaimTransitionResult{Resolution: resolution}, err
 	}

@@ -80,7 +80,7 @@ func revisionAuthority(t *testing.T, now time.Time) (*PersonalAuthority, ed25519
 	}
 	authorityID := "authority:" + hex.EncodeToString(publicKey[:8])
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:revision", revisionProvider, authorityID,
-		privateKey, PortfolioLimits{ComputeUnits: 10, SpendAtomic: 100})
+		testAuthorityKeys(), PortfolioLimits{ComputeUnits: 10, SpendAtomic: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,9 +149,9 @@ func TestUniqueUnforkedAgreementLeafTopology(t *testing.T) {
 	}
 }
 
-func TestForkedAgreementCannotEnterPaidDemandEconomicPaths(t *testing.T) {
+func TestForkedAgreementCannotEnterPortfolioReservation(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	body, _ := paidProviderAgreement(t, now)
+	body := revisionAgreement(t, now, "agreement:fork")
 	digest, err := commerce.AgreementBodyDigest(body)
 	if err != nil {
 		t.Fatal(err)
@@ -163,9 +163,9 @@ func TestForkedAgreementCannotEnterPaidDemandEconomicPaths(t *testing.T) {
 	if engagementEligibleForReservation(record, revisionProvider) {
 		t.Fatal("forked Agreement remained eligible for Portfolio reservation")
 	}
-	record.State = EngagementProposed
-	if paidDemandBuyerCandidate(record, revisionBuyer) {
-		t.Fatal("forked Agreement remained eligible for Paid Demand buyer funding")
+	record.NegotiationAmbiguous = false
+	if !engagementEligibleForReservation(record, revisionProvider) {
+		t.Fatal("the same Agreement without a fork is not eligible; the fork guard was not what refused it")
 	}
 }
 
@@ -245,7 +245,7 @@ func TestAgreementLedgerRejectsWrongAndSkippedPredecessors(t *testing.T) {
 
 func TestAgreementLedgerRejectsForkAndMakesUnfinishedPredecessorStale(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	authority, authorityKey := revisionAuthority(t, now)
+	authority, _ := revisionAuthority(t, now)
 	root := revisionAgreement(t, now, "agreement:fork")
 	rootRecord, err := authority.RecordAgreementProposal(root, revisionBuyer, "event:root", "sha256:"+strings.Repeat("4", 64))
 	if err != nil {
@@ -306,7 +306,7 @@ func TestAgreementLedgerRejectsForkAndMakesUnfinishedPredecessorStale(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink := &exactSink{key: authorityKey.Public().(ed25519.PublicKey), now: now, resolutions: map[string]commerce.ActionResolution{}}
+	sink := &exactSink{now: now, resolutions: map[string]commerce.ActionResolution{}}
 	engine := &Engine{OwnerID: "owner:revision", AgentID: revisionProvider, MandateDigest: testDigest,
 		Gates: FeatureGates{Agreement: true}, Authority: authority, Sink: sink, Now: func() time.Time { return now }}
 	if _, err := engine.ProposeAgreement(context.Background(), second, []string{revisionBuyer}, 1, fence); err == nil {
@@ -449,12 +449,12 @@ func TestConcurrentAgreementForkIsRejectedBeforeSecondMessengerSideEffect(t *tes
 
 func TestAgreementProposalPreflightRejectsExpiredAndUnknownLineageBeforeSend(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	authority, authorityKey := revisionAuthority(t, now)
+	authority, _ := revisionAuthority(t, now)
 	fence, err := authority.AcquireWriter(context.Background(), "proposal-runtime", []string{"agreement.propose"}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink := &exactSink{key: authorityKey.Public().(ed25519.PublicKey), now: now, resolutions: map[string]commerce.ActionResolution{}}
+	sink := &exactSink{now: now, resolutions: map[string]commerce.ActionResolution{}}
 	engine := &Engine{OwnerID: "owner:revision", AgentID: revisionProvider, MandateDigest: testDigest,
 		Gates: FeatureGates{Agreement: true}, Authority: authority, Sink: sink, Now: func() time.Time { return now }}
 	expired := revisionAgreement(t, now, "agreement:expired")

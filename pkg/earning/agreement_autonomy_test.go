@@ -23,8 +23,7 @@ func TestAgreementAutonomyAuthorizesOnlyAfterDeterministicPolicy(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
 	localPublic, localIdentity, _ := ed25519.GenerateKey(rand.Reader)
 	remotePublic, _, _ := ed25519.GenerateKey(rand.Reader)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner", "agent:a", "authority", authorityKey,
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner", "agent:a", "authority", testAuthorityKeys(),
 		PortfolioLimits{ComputeUnits: 10, SpendAtomic: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +57,7 @@ func TestAgreementAutonomyAuthorizesOnlyAfterDeterministicPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink := &exactSink{key: authorityKey.Public().(ed25519.PublicKey), now: now, resolutions: map[string]commerce.ActionResolution{}}
+	sink := &exactSink{now: now, resolutions: map[string]commerce.ActionResolution{}}
 	resolver := PinnedIntentAuthorities{"agent:a": localPublic, "agent:b": remotePublic}
 	verifier := AgreementEvidenceRouter{AgentAuthority: resolver}
 	engine := &Engine{OwnerID: "owner", AgentID: "agent:a", MandateDigest: testDigest, Gates: FeatureGates{Agreement: true}, Authority: authority, Sink: sink, Now: func() time.Time { return now }}
@@ -114,9 +113,8 @@ func TestAgreementAutonomyRejectsMaximumLossBeforeSignature(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
 	buyerPublic, buyerIdentity, _ := ed25519.GenerateKey(rand.Reader)
 	sellerPublic, _, _ := ed25519.GenerateKey(rand.Reader)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:buyer", "agent:buyer", "authority:buyer",
-		authorityKey, PortfolioLimits{SpendAtomic: 100, MaximumLossAtomic: 100})
+		testAuthorityKeys(), PortfolioLimits{SpendAtomic: 100, MaximumLossAtomic: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,15 +132,30 @@ func TestAgreementAutonomyRejectsMaximumLossBeforeSignature(t *testing.T) {
 	}
 	resolver := PinnedIntentAuthorities{"agent:buyer": buyerPublic, "agent:seller": sellerPublic}
 	verifier := AgreementEvidenceRouter{AgentAuthority: resolver}
-	sink := &exactSink{key: authorityKey.Public().(ed25519.PublicKey), now: now,
-		resolutions: map[string]commerce.ActionResolution{}}
-	engine := &Engine{OwnerID: "owner:buyer", AgentID: "agent:buyer", MandateDigest: testDigest,
-		Gates: FeatureGates{Agreement: true}, Authority: authority, Sink: sink, Now: func() time.Time { return now }}
-	service := AgreementAutonomy{Coordinator: AgreementCoordinator{Inbox: AgreementInbox{Client: emptyMessengerCaller{}},
-		Authority: authority, Verifier: verifier}, Engine: engine, Inventory: CurrentInventory{SnapshotValue: inventory},
-		Policy: BoundedAgreementAdmissionPolicy{LocalAgentID: "agent:buyer", MaximumOutgoingPaymentAtomic: "1000",
-			MaximumLossAtomic: "100", Portfolio: authority}, IdentityKey: buyerIdentity, Verifier: verifier,
-		Fence: func(context.Context) (commerce.WriterFence, error) { return fence, nil }, Now: func() time.Time { return now }}
+	sink := &exactSink{
+		now:         now,
+		resolutions: map[string]commerce.ActionResolution{},
+	}
+	engine := &Engine{
+		OwnerID: "owner:buyer", AgentID: "agent:buyer", MandateDigest: testDigest,
+		Gates: FeatureGates{Agreement: true}, Authority: authority, Sink: sink, Now: func() time.Time { return now },
+	}
+	service := AgreementAutonomy{
+		Coordinator: AgreementCoordinator{
+			Inbox:     AgreementInbox{Client: emptyMessengerCaller{}},
+			Authority: authority, Verifier: verifier,
+		},
+		Engine:    engine,
+		Inventory: CurrentInventory{SnapshotValue: inventory},
+		Policy: BoundedAgreementAdmissionPolicy{
+			LocalAgentID: "agent:buyer", MaximumOutgoingPaymentAtomic: "1000",
+			MaximumLossAtomic: "100", Portfolio: authority,
+		},
+		IdentityKey: buyerIdentity,
+		Verifier:    verifier,
+		Fence:       func(context.Context) (commerce.WriterFence, error) { return fence, nil },
+		Now:         func() time.Time { return now },
+	}
 	if processed, err := service.Process(t.Context(), 10); err != nil || processed != 0 {
 		t.Fatalf("processed=%d err=%v", processed, err)
 	}
@@ -155,10 +168,9 @@ func TestAgreementAutonomyRejectsMaximumLossBeforeSignature(t *testing.T) {
 
 func TestReserveAgreementRejectsUnpinnedDirectPaymentAssetBeforeSignature(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	nativeAsset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos"}
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:buyer", "agent:buyer", "authority:buyer",
-		authorityKey, PortfolioLimits{SpendAtomic: 100, MaximumLossAtomic: 100, CustodyNativeAsset: &nativeAsset})
+		testAuthorityKeys(), PortfolioLimits{SpendAtomic: 100, MaximumLossAtomic: 100, CustodyNativeAsset: &nativeAsset})
 	if err != nil {
 		t.Fatal(err)
 	}

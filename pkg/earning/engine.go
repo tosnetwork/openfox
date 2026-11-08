@@ -19,7 +19,6 @@ type FeatureGates struct {
 	Execution          bool `json:"execution"`
 	DirectPayment      bool `json:"direct_payment"`
 	ExternalSettlement bool `json:"external_settlement"`
-	TOSEscrow          bool `json:"tos_escrow"`
 	AgentGuarantor     bool `json:"agent_guarantor"`
 	Prediction         bool `json:"prediction"`
 }

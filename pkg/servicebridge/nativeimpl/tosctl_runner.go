@@ -17,7 +17,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/tosnetwork/tosutils-go/address"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 )
 
@@ -189,24 +188,6 @@ func secureConfigFile(path string) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return filepath.IsAbs(path) && filepath.Clean(path) == path && info.Mode().IsRegular() &&
 		info.Mode().Perm()&0o077 == 0 && ok && stat.Uid == uint32(os.Geteuid())
-}
-
-func isRawWorkchainZero(value string) bool {
-	parsed, err := address.ParseRawAddr(value)
-	return err == nil && parsed != nil && parsed.Workchain() == 0 && parsed.StringRaw() == value
-}
-
-func sameAddress(left, right string) bool {
-	a, errA := parseAnyAddress(left)
-	b, errB := parseAnyAddress(right)
-	return errA == nil && errB == nil && a.Workchain() == b.Workchain() && bytes.Equal(a.Data(), b.Data())
-}
-
-func parseAnyAddress(value string) (*address.Address, error) {
-	if parsed, err := address.ParseRawAddr(value); err == nil {
-		return parsed, nil
-	}
-	return address.ParseAddr(value)
 }
 
 func decodeStrictJSON(encoded []byte, target any) error {

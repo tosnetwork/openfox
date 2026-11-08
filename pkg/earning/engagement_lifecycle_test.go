@@ -78,14 +78,13 @@ func (validPaymentEvidence) VerifyPaymentEvidence(commerce.AgreementPaymentReque
 
 func TestAuthorizedAgreementReservesAndExecutesAtMostOnce(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	_, ownerAuthorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	pubA, keyA, _ := ed25519.GenerateKey(rand.Reader)
 	pubB, keyB, _ := ed25519.GenerateKey(rand.Reader)
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	authority, err := OpenPersonalAuthority(root, "owner-1", "agent-a", "authority-1", ownerAuthorityKey,
+	authority, err := OpenPersonalAuthority(root, "owner-1", "agent-a", "authority-1", testAuthorityKeys(),
 		PortfolioLimits{ComputeUnits: 100, ReceivableAtomic: 1_000, MaximumLossAtomic: 1_000})
 	if err != nil {
 		t.Fatal(err)

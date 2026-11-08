@@ -70,7 +70,7 @@ func relayCapabilitySingleDependencies(t *testing.T,
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := OpenDurableRelayRouteJournal(directory)
+	routes, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestLowerRelayExactLostResponseRestartsFromOwnerRouteAndAccountsOnce(t *tes
 	if err := os.Mkdir(routeDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := OpenDurableRelayRouteJournal(routeDirectory)
+	routes, err := OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestLowerRelayExactLostResponseRestartsFromOwnerRouteAndAccountsOnce(t *tes
 	if err := routes.Close(); err != nil {
 		t.Fatal(err)
 	}
-	routes, err = OpenDurableRelayRouteJournal(routeDirectory)
+	routes, err = OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +314,7 @@ func TestLowerRelayExactLostResponseRestartsFromOwnerRouteAndAccountsOnce(t *tes
 		t.Fatal(err)
 	}
 	providerLost = true
-	routes, err = OpenDurableRelayRouteJournal(routeDirectory)
+	routes, err = OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestRelayAutonomousCapabilityRequiresConcreteDecentralizedCoordinator(t *te
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	journal, err := OpenDurableRelayRouteJournal(directory)
+	journal, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestRelayAutonomousSponsorshipUsesDecentralizedSelectionWithoutSuccessorFai
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	journal, err := OpenDurableRelayRouteJournal(directory)
+	journal, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +594,7 @@ func TestRelayClientObservedSponsorshipIsExplicitAndNeverUpgradesAutonomousAssur
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routeJournal, err := OpenDurableRelayRouteJournal(directory)
+	routeJournal, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,7 +661,7 @@ func TestEnabledSingleProviderSponsorshipFirstDispatchAndRestartNeverCreatesSeco
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := OpenDurableRelayRouteJournal(directory)
+	routes, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,7 +685,7 @@ func TestEnabledSingleProviderSponsorshipFirstDispatchAndRestartNeverCreatesSeco
 	if err := routes.Close(); err != nil {
 		t.Fatal(err)
 	}
-	routes, err = OpenDurableRelayRouteJournal(directory)
+	routes, err = OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +728,7 @@ func TestEnabledSingleProviderSponsorshipCrashAfterRouteMarkBeforeSocketIsQueryO
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := OpenDurableRelayRouteJournal(directory)
+	routes, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +793,7 @@ func TestLowerRelayExactCrashAfterRouteMarkRebroadcastsOnlyTheFrozenBOC(t *testi
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := OpenDurableRelayRouteJournal(directory)
+	routes, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -825,7 +825,7 @@ func TestLowerRelayExactCrashAfterRouteMarkRebroadcastsOnlyTheFrozenBOC(t *testi
 	if err := routes.Close(); err != nil {
 		t.Fatal(err)
 	}
-	routes, err = OpenDurableRelayRouteJournal(directory)
+	routes, err = OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}

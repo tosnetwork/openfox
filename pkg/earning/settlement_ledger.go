@@ -1,7 +1,6 @@
 package earning
 
 import (
-	"crypto/ed25519"
 	"errors"
 	"reflect"
 	"sort"
@@ -59,7 +58,7 @@ func (authority *PersonalAuthority) ResolveSettlementState(action commerce.Autho
 	expectedFields := map[string]commerce.SemanticValue{"owner_id": commerce.ID(authority.doc.OwnerID), "agent_id": commerce.ID(authority.doc.AgentID),
 		"obligation_instance_id": commerce.Digest32(request.ObligationInstanceID), "target_state": commerce.State(string(request.TargetState)),
 		"evidence_set_digest": commerce.Digest32(evidenceSetDigest)}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if action.ActionKind != "billing.resolve" || !reflect.DeepEqual(fields, expectedFields) ||
 		commerce.VerifyAuthorizedAction(action, expectedFields, canonicalRequest, fence, resolver, authority.now().UTC()) != nil {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("settlement transition action is not exact or authorized")
@@ -170,7 +169,7 @@ func (authority *PersonalAuthority) MaterializeSettlement(action commerce.Author
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, errors.New("stale writer cannot materialize billing")
 	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if action.ActionKind != "billing.materialize" || commerce.VerifyAuthorizedAction(action, fields, canonicalRequest, fence, resolver, authority.now().UTC()) != nil {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, errors.New("billing materialization action is not authorized")
 	}
@@ -243,7 +242,7 @@ func (authority *PersonalAuthority) ApplySettlementPayment(action commerce.Autho
 	if authority.doc.CurrentFence == nil || fence.Body.WriterGeneration != authority.doc.WriterGeneration || fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("stale writer cannot resolve billing")
 	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if action.ActionKind != "billing.resolve" || commerce.VerifyAuthorizedAction(action, fields, canonicalRequest, fence, resolver, authority.now().UTC()) != nil {
 		return commerce.ActionResolution{}, SettlementLedgerRecord{}, EngagementRecord{}, errors.New("billing resolution action is not authorized")
 	}

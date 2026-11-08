@@ -1065,7 +1065,7 @@ func (client *EnabledRelayClient) commitTerminalAccountingHandoff(ctx context.Co
 	// terminal hop from that journal; otherwise hop A's Agreement/Provider
 	// identities could be paired with hop B's terminal result after takeover.
 	attempt = terminalHop.Attempt
-	reference, err := RelayTerminalHandoffReferenceForRecord(record)
+	reference, err := journal.TerminalHandoffReference(record)
 	if err != nil {
 		return errors.New("derive terminal accounting handoff reference: " + err.Error())
 	}

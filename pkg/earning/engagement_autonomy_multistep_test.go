@@ -30,11 +30,10 @@ func (milestoneRunnerFactory) RunnerForObligation(_ EngagementRecord, obligation
 
 func TestEngagementAutonomyExecutesAndBillsMultipleDependentObligations(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	providerPublic, providerKey, _ := ed25519.GenerateKey(rand.Reader)
 	buyerPublic, buyerKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-provider", "agent-provider", "authority-provider",
-		authorityKey, PortfolioLimits{ComputeUnits: 100, ReceivableAtomic: 1_000, MaximumLossAtomic: 1_000})
+		testAuthorityKeys(), PortfolioLimits{ComputeUnits: 100, ReceivableAtomic: 1_000, MaximumLossAtomic: 1_000})
 	if err != nil {
 		t.Fatal(err)
 	}

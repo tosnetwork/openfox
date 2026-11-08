@@ -2,7 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
 	"time"
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
@@ -22,15 +21,13 @@ type EconomicAuthority interface {
 	Snapshot() (uint64, PortfolioLimits, []ExposureReservation)
 	ReleaseReservation(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte, commerce.WriterFence) (commerce.ActionResolution, error)
 	ReleaseGuarantorReservation(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte, commerce.WriterFence, uint64, uint64) (commerce.ActionResolution, error)
-	AuthorizeFenceKey(string, ed25519.PublicKey, time.Time) error
+	commerce.FenceAuthorityResolver
 	ConfirmCurrentWriterFence(commerce.WriterFence, time.Time) error
 	AuthorityNow() time.Time
 	SignAction(commerce.AuthorizedAction, commerce.WriterFence) (commerce.AuthorizedAction, error)
 	AuthorizeCustodyPayment(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte, commerce.WriterFence,
 		commerce.AgreementPaymentRequest, string, commerce.CustodyNetworkDomain,
 		*SponsorshipCustodyBinding) (commerce.CustodyActionAuthorization, error)
-	AuthorizeCustodyEffect(commerce.AuthorizedAction, map[string]commerce.SemanticValue, []byte, commerce.WriterFence,
-		commerce.CustodyEffectAuthorization) (commerce.CustodyEffectAuthorization, error)
 
 	RecordAgreementProposal(commerce.AgentAgreementBody, string, string, string) (EngagementRecord, error)
 	ObserveAgreementWithdrawal(string, string, string, string) (EngagementRecord, error)

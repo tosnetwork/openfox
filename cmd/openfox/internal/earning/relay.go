@@ -63,7 +63,15 @@ func relayClientCheckCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			routeJournal, err := openfoxearning.OpenDurableRelayRouteJournal(settings.AgentRelay.ClientRouteJournalDirectory)
+			// The route journal re-verifies every stored admission receipt
+			// under the owner Action Authority key.
+			authority, closeAuthority, err := openConfiguredAuthority(settings, false)
+			if err != nil {
+				return err
+			}
+			defer closeAuthority()
+			routeJournal, err := openfoxearning.OpenDurableRelayRouteJournal(
+				settings.AgentRelay.ClientRouteJournalDirectory, authority)
 			if err != nil {
 				return err
 			}

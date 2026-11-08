@@ -3,13 +3,13 @@ package earning
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -19,6 +19,7 @@ import (
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
 )
 
 const sharedAuthorityMaximumRequestBytes = 8 << 20
@@ -357,6 +358,12 @@ func (server *SharedAuthorityServer) dispatch(ctx context.Context, grant SharedA
 			return nil, err
 		}
 		return struct{}{}, backing.ConfirmCurrentWriterFence(input.Fence, time.Unix(0, input.AtUnixNano).UTC())
+	case "action-authority-key":
+		if err := decodeSharedBody(raw, &struct{}{}); err != nil {
+			return nil, err
+		}
+		keyID, publicKey := backing.ActionAuthorityKey()
+		return sharedAuthorityKey{AuthorityID: backing.AuthorityID(), KeyID: keyID, PublicKey: publicKey}, nil
 	case "now":
 		return struct {
 			UnixNano int64 `json:"unix_nano"`
@@ -421,25 +428,6 @@ func (server *SharedAuthorityServer) dispatch(ctx context.Context, grant SharedA
 		}
 		return backing.AuthorizeCustodyPayment(input.Action, fields, input.Request, input.Fence, input.Payment,
 			input.SourceAccount, input.NetworkDomain, input.Sponsorship)
-	case "authorize-custody-effect":
-		var input struct {
-			Action   commerce.AuthorizedAction           `json:"action"`
-			Fields   []commerce.SemanticFieldValue       `json:"fields"`
-			Request  []byte                              `json:"request"`
-			Fence    commerce.WriterFence                `json:"fence"`
-			Template commerce.CustodyEffectAuthorization `json:"template"`
-		}
-		if err := decodeSharedBody(raw, &input); err != nil {
-			return nil, err
-		}
-		if err := validateFence(input.Fence); err != nil {
-			return nil, err
-		}
-		fields, err := commerce.ImportSemanticFields(input.Action.ActionKind, input.Fields)
-		if err != nil {
-			return nil, err
-		}
-		return backing.AuthorizeCustodyEffect(input.Action, fields, input.Request, input.Fence, input.Template)
 	case "authorize-prediction-custody-effect":
 		var input struct {
 			Action   commerce.AuthorizedAction                       `json:"action"`
@@ -797,8 +785,10 @@ type SharedAuthorityClient struct {
 	Endpoint      string
 	HTTPClient    *http.Client
 	AuthorityID   string
-	AuthorityKey  ed25519.PublicKey
 	LocalVerifier commerce.AgreementEvidenceVerifier
+	// pin is the shared authority's Action Authority key: the configured key
+	// ID, with the key the server returned and the client checked derives it.
+	pin pinnedActionAuthority
 }
 
 func NewSharedAuthorityServerTLSConfig(certificate tls.Certificate, clientRoots *x509.CertPool) (*tls.Config, error) {
@@ -823,15 +813,42 @@ func NewSharedAuthorityHTTPClient(certificate tls.Certificate, serverRoots *x509
 	}}, nil
 }
 
-func NewSharedAuthorityClient(endpoint string, client *http.Client, authorityID string,
-	authorityKey ed25519.PublicKey) (*SharedAuthorityClient, error) {
+// NewSharedAuthorityClient connects to a shared owner authority over mutually
+// authenticated TLS and pins its Action Authority key: the server returns its
+// 1,312-byte ML-DSA-44 key, which must derive the configured key ID. verifier
+// is the ML-DSA-44 verification boundary (the pinned tosctl helper).
+func NewSharedAuthorityClient(ctx context.Context, endpoint string, client *http.Client, authorityID, keyID string,
+	verifier mldsa44.Verifier,
+) (*SharedAuthorityClient, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "/v1/economic-authority" ||
-		parsed.RawQuery != "" || parsed.Fragment != "" || client == nil || authorityID == "" || len(authorityKey) != ed25519.PublicKeySize {
+		parsed.RawQuery != "" || parsed.Fragment != "" || client == nil || authorityID == "" || verifier == nil || ctx == nil {
 		return nil, errors.New("shared authority client configuration is invalid")
 	}
-	return &SharedAuthorityClient{Endpoint: parsed.String(), HTTPClient: client, AuthorityID: authorityID,
-		AuthorityKey: append(ed25519.PublicKey(nil), authorityKey...)}, nil
+	if _, parseErr := commerce.ParseActionAuthorityKeyID(keyID); parseErr != nil {
+		return nil, parseErr
+	}
+	shared := &SharedAuthorityClient{Endpoint: parsed.String(), HTTPClient: client, AuthorityID: authorityID}
+	var key sharedAuthorityKey
+	if callErr := shared.call(ctx, "action-authority-key", struct{}{}, &key); callErr != nil {
+		return nil, callErr
+	}
+	if key.AuthorityID != authorityID {
+		return nil, errors.New("shared authority serves another Action Authority than the configured one")
+	}
+	pin, err := newPinnedActionAuthority(authorityID, keyID, key.PublicKey, verifier)
+	if err != nil {
+		return nil, fmt.Errorf("shared authority key: %w", err)
+	}
+	shared.pin = pin
+	return shared, nil
+}
+
+// sharedAuthorityKey is the shared authority's public Action Authority key.
+type sharedAuthorityKey struct {
+	AuthorityID string `json:"authority_id"`
+	KeyID       string `json:"key_id"`
+	PublicKey   []byte `json:"public_key"`
 }
 
 func (client *SharedAuthorityClient) call(ctx context.Context, operation string, input, output any) error {
@@ -968,10 +985,10 @@ func (client *SharedAuthorityClient) AdmitRelaySideEffects(ctx context.Context,
 	}{wireBytes}, &receipt); err != nil {
 		return receipt, err
 	}
-	if receipt.PublicKey != "ed25519:"+hex.EncodeToString(client.AuthorityKey) ||
+	if receipt.KeyID != client.pin.keyIDText() ||
 		receipt.Body.IssuedAtUnix == 0 || receipt.Body.IssuedAtUnix > uint64(^uint64(0)>>1) ||
 		agentrelay.VerifyRelaySideEffectAdmissionReceiptForDescriptor(receipt, descriptor,
-			agentrelay.RelayExecutionRequest{}, time.Unix(int64(receipt.Body.IssuedAtUnix), 0).UTC()) != nil {
+			agentrelay.RelayExecutionRequest{}, client.pin, time.Unix(int64(receipt.Body.IssuedAtUnix), 0).UTC()) != nil {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("shared authority returned an invalid relay admission receipt")
 	}
 	return receipt, nil
@@ -983,8 +1000,8 @@ func (client *SharedAuthorityClient) ResolveRelaySideEffectAdmission(ctx context
 	if err := client.call(ctx, "resolve-relay-side-effects", lookup, &receipt); err != nil {
 		return receipt, err
 	}
-	if receipt.PublicKey != "ed25519:"+hex.EncodeToString(client.AuthorityKey) ||
-		agentrelay.VerifyRelaySideEffectAdmissionReceiptSignature(receipt) != nil ||
+	if receipt.KeyID != client.pin.keyIDText() ||
+		!sharedReceiptAuthorityVerifies(receipt, client.pin) ||
 		!relayAdmissionReceiptMatchesLookup(receipt, lookup) {
 		return agentrelay.SignedRelaySideEffectAdmissionReceipt{}, errors.New("shared authority resolved a conflicting relay admission receipt")
 	}
@@ -1009,7 +1026,7 @@ func (client *SharedAuthorityClient) reauthorizeUnlinearizedRelayAdmission(ctx c
 	}{wireBytes, execution}, &authorization); err != nil {
 		return relayAdmissionReauthorization{}, err
 	}
-	if authorization.PublicKey != "ed25519:"+hex.EncodeToString(client.AuthorityKey) {
+	if authorization.KeyID != client.pin.keyIDText() {
 		return relayAdmissionReauthorization{}, errors.New("shared authority returned an untrusted relay reauthorization")
 	}
 	return authorization, nil
@@ -1075,11 +1092,31 @@ func (client *SharedAuthorityClient) ReleaseGuarantorReservation(action commerce
 	}{action, wireFields, request, fence, realizedLossAtomic, retainedDefaultLiabilityAtomic}, &out)
 	return out, err
 }
-func (client *SharedAuthorityClient) AuthorizeFenceKey(id string, key ed25519.PublicKey, _ time.Time) error {
-	if id != client.AuthorityID || !client.AuthorityKey.Equal(key) {
-		return errors.New("writer fence key is not the shared authority key")
+func (client *SharedAuthorityClient) ResolveActionAuthorityKey(authorityID string, keyID [mldsa44.KeyIDSize]byte,
+	at time.Time,
+) ([]byte, error) {
+	if client == nil {
+		return nil, errors.New("writer fence key is not the shared authority key")
 	}
-	return nil
+	return client.pin.ResolveActionAuthorityKey(authorityID, keyID, at)
+}
+
+func (client *SharedAuthorityClient) Verify(
+	ctx context.Context,
+	use mldsa44.Use,
+	payload, publicKey, signature []byte,
+) error {
+	if client == nil {
+		return mldsa44.ErrUnavailable
+	}
+	return client.pin.Verify(ctx, use, payload, publicKey, signature)
+}
+
+func sharedReceiptAuthorityVerifies(receipt agentrelay.SignedRelaySideEffectAdmissionReceipt,
+	resolver commerce.FenceAuthorityResolver,
+) bool {
+	_, err := agentrelay.VerifyRelaySideEffectAdmissionReceiptAuthority(receipt, resolver)
+	return err == nil
 }
 func (client *SharedAuthorityClient) ConfirmCurrentWriterFence(fence commerce.WriterFence, now time.Time) error {
 	return client.call(context.Background(), "confirm-fence", struct {
@@ -1148,22 +1185,6 @@ func (client *SharedAuthorityClient) AuthorizeCustodyPayment(action commerce.Aut
 	}{action, wireFields, request, fence, payment, source, network, sponsorship}, &out)
 	return out, err
 }
-func (client *SharedAuthorityClient) AuthorizeCustodyEffect(action commerce.AuthorizedAction, fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence, template commerce.CustodyEffectAuthorization) (commerce.CustodyEffectAuthorization, error) {
-	var out commerce.CustodyEffectAuthorization
-	wireFields, err := commerce.ExportSemanticFields(action.ActionKind, fields)
-	if err != nil {
-		return out, err
-	}
-	err = client.call(context.Background(), "authorize-custody-effect", struct {
-		Action   commerce.AuthorizedAction           `json:"action"`
-		Fields   []commerce.SemanticFieldValue       `json:"fields"`
-		Request  []byte                              `json:"request"`
-		Fence    commerce.WriterFence                `json:"fence"`
-		Template commerce.CustodyEffectAuthorization `json:"template"`
-	}{action, wireFields, request, fence, template}, &out)
-	return out, err
-}
-
 func (client *SharedAuthorityClient) AuthorizePredictionCustodyEffect(
 	action commerce.AuthorizedAction,
 	fields map[string]commerce.SemanticValue,

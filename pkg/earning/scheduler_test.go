@@ -2,8 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,8 +13,14 @@ import (
 )
 
 func TestDurableSchedulerIsWriterFencedAndExactlyOnce(t *testing.T) {
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", key, PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner-1",
+		"agent-1",
+		"authority-1",
+		testAuthorityKeys(),
+		PortfolioLimits{ComputeUnits: 10},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,20 +86,41 @@ func TestDurableSchedulerIsWriterFencedAndExactlyOnce(t *testing.T) {
 }
 
 func TestSchedulerServiceDurablyStagesOneExecution(t *testing.T) {
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", key, PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner-1",
+		"agent-1",
+		"authority-1",
+		testAuthorityKeys(),
+		PortfolioLimits{ComputeUnits: 10},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
 	now := time.Unix(1_900_000_000, 0).UTC()
 	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(context.Background(), "runtime", []string{"schedule.entry.transition"}, time.Hour)
+	fence, err := authority.AcquireWriter(
+		context.Background(),
+		"runtime",
+		[]string{"schedule.entry.transition"},
+		time.Hour,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := SchedulerService{Authority: authority, OwnerID: "owner-1", AgentID: "agent-1", MandateDigest: testDigest, PolicyRevision: 1}
-	plan := commercegate.Plan{OwnerID: "owner-1", AgentID: "agent-1", AgreementBodyDigest: testDigest, ExecutionObligationID: "work",
+	service := SchedulerService{
+		Authority:      authority,
+		OwnerID:        "owner-1",
+		AgentID:        "agent-1",
+		MandateDigest:  testDigest,
+		PolicyRevision: 1,
+	}
+	plan := commercegate.Plan{
+		OwnerID:                             "owner-1",
+		AgentID:                             "agent-1",
+		AgreementBodyDigest:                 testDigest,
+		ExecutionObligationID:               "work",
 		AcceptedInputManifestDigest:         "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 		PredecessorTerminalResolutionDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 		ReservationID:                       "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", PolicyRevision: 1,
@@ -117,19 +142,36 @@ func TestSchedulerServiceDurablyStagesOneExecution(t *testing.T) {
 }
 
 func TestSchedulerDependencyAdmissionIsAtomicAndCycleSafe(t *testing.T) {
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", key, PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner-1",
+		"agent-1",
+		"authority-1",
+		testAuthorityKeys(),
+		PortfolioLimits{ComputeUnits: 10},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
 	now := time.Unix(1_900_000_000, 0).UTC()
 	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(context.Background(), "runtime", []string{"schedule.dependency.transition"}, time.Hour)
+	fence, err := authority.AcquireWriter(
+		context.Background(),
+		"runtime",
+		[]string{"schedule.dependency.transition"},
+		time.Hour,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := SchedulerService{Authority: authority, OwnerID: "owner-1", AgentID: "agent-1", MandateDigest: testDigest, PolicyRevision: 1}
+	service := SchedulerService{
+		Authority:      authority,
+		OwnerID:        "owner-1",
+		AgentID:        "agent-1",
+		MandateDigest:  testDigest,
+		PolicyRevision: 1,
+	}
 	a := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	b := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	first := commerce.PortfolioDependency{SchemaVersion: 1, UpstreamAgreementDigest: a, UpstreamObligationID: "one",
@@ -194,8 +236,14 @@ func TestSchedulerDependencyAdmissionIsAtomicAndCycleSafe(t *testing.T) {
 }
 
 func TestSchedulerPropagatesFailureWithoutCancellingAgreementAuthority(t *testing.T) {
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", key, PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner-1",
+		"agent-1",
+		"authority-1",
+		testAuthorityKeys(),
+		PortfolioLimits{ComputeUnits: 10},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -801,7 +801,6 @@ type eightAgentManifestEntry struct {
 	Taxonomy        string `json:"taxonomy"`
 	ModelKind       string `json:"model_kind"`
 	ConfigDirectory string `json:"config_directory"`
-	AuthorityPin    string `json:"authority_pin"`
 	IdentityPin     string `json:"identity_pin"`
 	MinimumPrice    uint64 `json:"minimum_price_nanotos,omitempty"`
 	Price           uint64 `json:"price_nanotos"`
@@ -1771,18 +1770,10 @@ func TestPrepareEightOpenFoxCampaign(t *testing.T) {
 		if os.Getenv("OPENFOX_CAMPAIGN_NATIVE_STRATEGY") == "1" && templateRoot != root {
 			copyCampaignKeyIfAbsent(
 				t,
-				filepath.Join(
-					templateRoot, "agents", definition.Name, "state", "campaign-authority-v2", "authority-ed25519.key",
-				),
-				filepath.Join(state, "campaign-authority-v3", "authority-ed25519.key"),
-			)
-			copyCampaignKeyIfAbsent(
-				t,
 				filepath.Join(templateRoot, "agents", definition.Name, "state", "identity", "agent-ed25519.key"),
 				filepath.Join(state, "identity", "agent-ed25519.key"),
 			)
 		}
-		authority := ensureCampaignKey(t, filepath.Join(state, "campaign-authority-v3", "authority-ed25519.key"))
 		identity := ensureCampaignKey(t, filepath.Join(state, "identity", "agent-ed25519.key"))
 		target, ok := targets[definition.Wallet]
 		if !ok {
@@ -1819,15 +1810,12 @@ func TestPrepareEightOpenFoxCampaign(t *testing.T) {
 			Taxonomy:        definition.Taxonomy,
 			ModelKind:       modelKind,
 			ConfigDirectory: directory,
-			AuthorityPin: "ed25519:" + hex.EncodeToString(
-				authority.Public().(ed25519.PublicKey),
-			),
-			IdentityPin:  identityPins[campaignAgentID],
-			MinimumPrice: definition.MinimumPrice,
-			Price:        definition.Price,
-			MaximumCost:  definition.MaximumCost,
-			MaximumLoss:  maximumLoss,
-			Tasks:        append([]string(nil), definition.Tasks...),
+			IdentityPin:     identityPins[campaignAgentID],
+			MinimumPrice:    definition.MinimumPrice,
+			Price:           definition.Price,
+			MaximumCost:     definition.MaximumCost,
+			MaximumLoss:     maximumLoss,
+			Tasks:           append([]string(nil), definition.Tasks...),
 		})
 	}
 	for index, definition := range definitions {
@@ -5672,7 +5660,7 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 			t.Fatalf("preflight Round 5 Agent configs before runtime construction: %v", err)
 		}
 	}
-	round5AuthorityKeys := make([]ed25519.PrivateKey, len(manifest.Agents))
+	round5AuthorityKeys := make([]AuthorityKeys, len(manifest.Agents))
 	bootstrapExecutable, bootstrapVaultURL := "", ""
 	if round5 {
 		bootstrapExecutable = mustEnv(t, "OPENFOX_TOSCTL")
@@ -5690,10 +5678,7 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 			if bootstrap != nil {
 				for index, entry := range manifest.Agents {
 					cfg := round5Configs[index]
-					authorityKey := readPilotPrivateKey(
-						t,
-						filepath.Join(cfg.Earning.StateDir, "campaign-authority-v3", "authority-ed25519.key"),
-					)
+					authorityKey := campaignAuthorityKeys(t, cfg)
 					round5AuthorityKeys[index] = authorityKey
 					custodyDirectory := filepath.Join(root, "campaign", "custody", entry.Name)
 					if err := os.MkdirAll(custodyDirectory, 0o700); err != nil {
@@ -5737,14 +5722,11 @@ func openCampaignRuntimes(t *testing.T, root string, manifest eightAgentManifest
 				}
 				contextBuilder := openfoxagent.NewContextBuilder(cfg.WorkspacePath())
 				agentContext := contextBuilder.BuildSystemPromptWithCache
-				var authorityKey ed25519.PrivateKey
+				var authorityKey AuthorityKeys
 				if round5 {
 					authorityKey = round5AuthorityKeys[index]
 				} else {
-					authorityKey = readPilotPrivateKey(
-						t,
-						filepath.Join(cfg.Earning.StateDir, "campaign-authority-v3", "authority-ed25519.key"),
-					)
+					authorityKey = campaignAuthorityKeys(t, cfg)
 				}
 				identityKey := readPilotPrivateKey(t, filepath.Join(cfg.Earning.StateDir, "identity", "agent-ed25519.key"))
 				pinnedNetwork := agentrelay.NetworkDomain{NetworkID: cfg.Earning.TOSPayment.Network.NetworkID,
@@ -6068,7 +6050,23 @@ func campaignTOSCTLNetworkPreflight(sink *TOSCTLPaymentSink, directory string) f
 	}
 }
 
-func bindCampaignPayer(t *testing.T, entry eightAgentManifestEntry, key ed25519.PrivateKey, journal string,
+// campaignAuthorityKeys opens an Agent's owner authority keys from its
+// configured tosctl custody controllers.
+func campaignAuthorityKeys(t *testing.T, cfg *config.Config) AuthorityKeys {
+	t.Helper()
+	helper := cfg.Earning.Authority.TOSCTL
+	keys, err := OpenTOSCTLAuthorityKeys(t.Context(), TOSCTLAuthorityHelper{
+		Binary: helper.Binary, SHA256: helper.SHA256,
+		ConfigPath: helper.ConfigPath, VaultURL: mustEnv(t, "OPENFOX_TOS_VAULT_URL"),
+	},
+		cfg.Earning.Authority.AuthorityKeyID, cfg.Earning.Authority.CustodyAuthorizationKeyID)
+	if err != nil {
+		t.Fatalf("open campaign authority keys: %v", err)
+	}
+	return keys
+}
+
+func bindCampaignPayer(t *testing.T, entry eightAgentManifestEntry, key AuthorityKeys, journal string,
 	bootstrap *TOSCTLPaymentSink,
 ) error {
 	t.Helper()
@@ -6085,7 +6083,7 @@ func bindCampaignPayer(t *testing.T, entry eightAgentManifestEntry, key ed25519.
 		"--economic-authority-id",
 		entry.AuthorityID,
 		"--economic-authority-public-key",
-		hex.EncodeToString(key.Public().(ed25519.PublicKey)),
+		hex.EncodeToString(key.CustodyPublicKey),
 		"--economic-custody-journal-directory",
 		journal,
 		"-c",
@@ -8560,7 +8558,7 @@ func TestCampaignCounterOfferRetainsExactPredecessorBeforeAdmission(t *testing.T
 	nativeAsset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos"}
 	openAuthority := func(definition eightAgentManifestEntry) *PersonalAuthority {
 		t.Helper()
-		_, key, err := ed25519.GenerateKey(rand.Reader)
+		_, _, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -8569,8 +8567,10 @@ func TestCampaignCounterOfferRetainsExactPredecessorBeforeAdmission(t *testing.T
 			maximumLoss = 1_000
 		}
 		authority, err := OpenPersonalAuthority(privateTempDir(t), definition.OwnerID, definition.AgentID,
-			definition.AuthorityID, key, PortfolioLimits{SpendAtomic: 1_000, MaximumLossAtomic: maximumLoss,
-				CustodyNativeAsset: &nativeAsset})
+			definition.AuthorityID, testAuthorityKeys(), PortfolioLimits{
+				SpendAtomic: 1_000, MaximumLossAtomic: maximumLoss,
+				CustodyNativeAsset: &nativeAsset,
+			})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -8644,7 +8644,7 @@ func TestCampaignCounterOfferRetainsExactPredecessorBeforeAdmission(t *testing.T
 
 func TestCampaignBuyerAgreementAdmissionUsesManifestMaximumLoss(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	_, authorityKey, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8653,8 +8653,10 @@ func TestCampaignBuyerAgreementAdmissionUsesManifestMaximumLoss(t *testing.T) {
 	sellerDefinition := eightAgentManifestEntry{Name: "seller", AgentID: "agent:seller", Target: "tos1seller", Price: 101}
 	nativeAsset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos"}
 	authority, err := OpenPersonalAuthority(privateTempDir(t), buyerDefinition.OwnerID, buyerDefinition.AgentID,
-		"authority:buyer", authorityKey, PortfolioLimits{SpendAtomic: 1_000,
-			MaximumLossAtomic: buyerDefinition.MaximumLoss, CustodyNativeAsset: &nativeAsset})
+		"authority:buyer", testAuthorityKeys(), PortfolioLimits{
+			SpendAtomic:       1_000,
+			MaximumLossAtomic: buyerDefinition.MaximumLoss, CustodyNativeAsset: &nativeAsset,
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8858,12 +8860,12 @@ func openCampaignCapacityTestAuthority(t *testing.T, now time.Time, definition e
 	limits PortfolioLimits,
 ) *PersonalAuthority {
 	t.Helper()
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	authority, err := OpenPersonalAuthority(privateTempDir(t), definition.OwnerID, definition.AgentID,
-		definition.AuthorityID, key, limits)
+		definition.AuthorityID, testAuthorityKeys(), limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -9111,17 +9113,15 @@ func newCampaignRecoveryFixture(t *testing.T) *campaignRecoveryFixture {
 			AssetIdentifier: "native", Unit: "nanotos"}, SpendAtomic: 80, MaximumLossAtomic: 80}
 	sellerReservation := ExposureReservation{ReservationID: campaignDigest("seller-live-hold"),
 		AgreementDigest: digest, ComputeUnits: 1, ReceivableAtomic: 80, MaximumLossAtomic: 80}
-	_, buyerKey, _ := ed25519.GenerateKey(rand.Reader)
-	_, sellerKey, _ := ed25519.GenerateKey(rand.Reader)
 	buyerAuthority, err := OpenPersonalAuthority(privateTempDir(t), buyerDefinition.OwnerID,
-		buyerDefinition.AgentID, buyerDefinition.AuthorityID, buyerKey,
+		buyerDefinition.AgentID, buyerDefinition.AuthorityID, testAuthorityKeys(),
 		PortfolioLimits{SpendAtomic: 1_000, MaximumLossAtomic: 1_000})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = buyerAuthority.Close() })
 	sellerAuthority, err := OpenPersonalAuthority(privateTempDir(t), sellerDefinition.OwnerID,
-		sellerDefinition.AgentID, sellerDefinition.AuthorityID, sellerKey,
+		sellerDefinition.AgentID, sellerDefinition.AuthorityID, testAuthorityKeys(),
 		PortfolioLimits{ComputeUnits: 10, ReceivableAtomic: 1_000, MaximumLossAtomic: 1_000})
 	if err != nil {
 		t.Fatal(err)

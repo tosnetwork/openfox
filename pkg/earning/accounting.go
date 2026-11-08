@@ -2,7 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"reflect"
 	"sort"
@@ -140,7 +139,7 @@ func (authority *PersonalAuthority) RecordAccounting(action commerce.AuthorizedA
 		fence.Body.LeaseID != authority.doc.CurrentFence.Body.LeaseID || !authority.now().UTC().Before(time.Unix(int64(fence.Body.ExpiresAtUnix), 0).UTC()) {
 		return commerce.ActionResolution{}, AccountingEntry{}, errors.New("stale writer cannot record accounting")
 	}
-	resolver := localFenceResolver{authorityID: authority.doc.AuthorityID, key: authority.key.Public().(ed25519.PublicKey)}
+	resolver := authority.actionAuthorityResolver()
 	if action.ActionKind != "accounting.record" || commerce.VerifyAuthorizedAction(action, expected, canonicalRequest, fence, resolver, authority.now().UTC()) != nil {
 		return commerce.ActionResolution{}, AccountingEntry{}, errors.New("accounting action is not authorized")
 	}

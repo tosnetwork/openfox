@@ -10,7 +10,6 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 type GuarantorCloseCoverageInput struct {
@@ -140,8 +139,8 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 				guarantor.TransitionEvidenceDigestRefV1{EvidenceRole: "coverage_cancellation", DigestKind: "authorized_envelope", ObjectDigest: cancellationDigest})
 		}
 		sort.Slice(filingProjection.EvidenceDigests, func(i, j int) bool {
-			left, _ := codec.Marshal(filingProjection.EvidenceDigests[i])
-			right, _ := codec.Marshal(filingProjection.EvidenceDigests[j])
+			left, _ := guarantor.Canonical(filingProjection.EvidenceDigests[i])
+			right, _ := guarantor.Canonical(filingProjection.EvidenceDigests[j])
 			return string(left) < string(right)
 		})
 		filingProjectionDigest, err := guarantor.TransitionEvidenceProjectionDigestV1(filingProjection)
@@ -162,7 +161,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		if input.CancellationReceipt != nil {
 			filingRequest.CoverageCancellationReceiptDigest, _ = guarantor.CoverageCancellationReceiptDigestV1(*input.CancellationReceipt)
 		}
-		canonicalFiling, err := codec.Marshal(filingRequest)
+		canonicalFiling, err := guarantor.Canonical(filingRequest)
 		if err != nil {
 			return GuarantorCloseCoverageResult{}, fmt.Errorf("encode filing-close request: %w", err)
 		}
@@ -231,7 +230,10 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		if input.CancellationReceipt != nil {
 			filingBody.CoverageCancellationReceiptDigest, _ = guarantor.CoverageCancellationReceiptDigestV1(*input.CancellationReceipt)
 		}
-		filingBodyDigest, err := codec.Digest("tos.service.agent-guarantor-claim-filing-close-receipt-body.v1", filingBody)
+		filingBodyDigest, err := guarantor.Digest(
+			"tos.service.agent-guarantor-claim-filing-close-receipt-body.v1",
+			filingBody,
+		)
 		if err != nil {
 			return GuarantorCloseCoverageResult{}, fmt.Errorf("digest filing-close receipt body: %w", err)
 		}
@@ -308,7 +310,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		return GuarantorCloseCoverageResult{}, err
 	}
 	closureItems := make([]guarantor.CanonicalGuarantorEvidenceItemV1, 0, len(bundles)+1)
-	filingBytes, _ := codec.Marshal(filingReceipt)
+	filingBytes, _ := guarantor.Canonical(filingReceipt)
 	closureItems = append(closureItems, guarantor.CanonicalGuarantorEvidenceItemV1{
 		ContentType:            "application/vnd.tos.service.agent-guarantor-claim-filing-close-envelope.v1+cbor",
 		EvidenceProfileDigest:  position.Terms.ClaimAdmissionProfile.ProfileDigest,
@@ -318,8 +320,11 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 			ContentDigest: filingReceiptDigest, ContentSize: uint64(len(filingBytes)),
 			RetrievalPolicyDigest: position.Terms.ClaimAdmissionProfile.ProfileDigest}})
 	for _, bundle := range bundles {
-		bundleBytes, encodeErr := codec.Marshal(bundle)
-		bundleDigest, digestErr := codec.Digest("tos.service.agent-guarantor-claim-terminal-resolution-bundle.v1", bundle)
+		bundleBytes, encodeErr := guarantor.Canonical(bundle)
+		bundleDigest, digestErr := guarantor.Digest(
+			"tos.service.agent-guarantor-claim-terminal-resolution-bundle.v1",
+			bundle,
+		)
 		if encodeErr != nil {
 			return GuarantorCloseCoverageResult{}, fmt.Errorf("encode terminal claim resolution bundle: %w", encodeErr)
 		}
@@ -336,8 +341,8 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 				RetrievalPolicyDigest: position.Terms.ClaimAdmissionProfile.ProfileDigest}})
 	}
 	sort.Slice(closureItems, func(i, j int) bool {
-		left, _ := codec.Marshal(closureItems[i])
-		right, _ := codec.Marshal(closureItems[j])
+		left, _ := guarantor.Canonical(closureItems[i])
+		right, _ := guarantor.Canonical(closureItems[j])
 		return string(left) < string(right)
 	})
 	closureEvidenceSet := guarantor.CanonicalGuarantorEvidenceSetV1{SchemaVersion: 1,
@@ -353,8 +358,8 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 			{EvidenceRole: "claim-resolution-set", DigestKind: "canonical_set", ObjectDigest: refSetDigest},
 			{EvidenceRole: "closure-evidence-set", DigestKind: "canonical_set", ObjectDigest: closureEvidenceSetDigest}}}
 	sort.Slice(transitionProjection.EvidenceDigests, func(i, j int) bool {
-		left, _ := codec.Marshal(transitionProjection.EvidenceDigests[i])
-		right, _ := codec.Marshal(transitionProjection.EvidenceDigests[j])
+		left, _ := guarantor.Canonical(transitionProjection.EvidenceDigests[i])
+		right, _ := guarantor.Canonical(transitionProjection.EvidenceDigests[j])
 		return string(left) < string(right)
 	})
 	transitionProjectionDigest, err := guarantor.TransitionEvidenceProjectionDigestV1(transitionProjection)
@@ -369,7 +374,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		TargetCoverageState: "release_pending", ExpectedClaimSetRevision: 0, TargetClaimSetRevision: 1,
 		CoverageClosureEvidenceContext: contextValue, TerminalPrerequisiteEvidenceSet: closureEvidenceSet,
 		TransitionEvidenceProjection: transitionProjection}
-	canonicalClosure, err := codec.Marshal(closureRequest)
+	canonicalClosure, err := guarantor.Canonical(closureRequest)
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, fmt.Errorf("encode coverage-closure request: %w", err)
 	}
@@ -433,7 +438,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		WriterFenceDigest: closureAction.WriterFenceDigest, CreatedAtUnix: uint64(now.Unix()),
 		RequiredExtensions: append([]guarantor.ProfileRefV1(nil), position.Terms.RequiredExtensions...),
 		OptionalExtensions: append([]guarantor.ProfileRefV1(nil), position.Terms.OptionalExtensions...)}
-	terminalBodyDigest, err := codec.Digest("tos.service.agent-guarantor-terminal-claim-set-body.v1", terminalBody)
+	terminalBodyDigest, err := guarantor.Digest("tos.service.agent-guarantor-terminal-claim-set-body.v1", terminalBody)
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, fmt.Errorf("digest terminal claim set body: %w", err)
 	}
@@ -477,7 +482,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 	portfolioRevision, _, _ := coordinator.Authority.Snapshot()
 	releaseRequest := guarantor.ExposureReleaseActionBodyV1{ReservationID: position.Record.ReservationID, AgreementDigest: agreementDigest,
 		TargetPortfolioRevision: portfolioRevision + 1, TerminalEvidenceSetDigest: terminalSetDigest}
-	canonicalRelease, err := codec.Marshal(releaseRequest)
+	canonicalRelease, err := guarantor.Canonical(releaseRequest)
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, fmt.Errorf("encode exposure-release request: %w", err)
 	}
@@ -534,7 +539,10 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		ReturnedToAvailableExposure: disposition.ReturnedToAvailableExposure, RealizedLoss: disposition.RealizedLoss,
 		RetainedDefaultedLiability: disposition.RetainedDefaultedLiability,
 		State:                      "released", ReleasedAtUnix: uint64(now.Unix())}
-	releaseBodyDigest, err := codec.Digest("tos.service.agent-guarantor-exposure-release-receipt-body.v1", releaseBody)
+	releaseBodyDigest, err := guarantor.Digest(
+		"tos.service.agent-guarantor-exposure-release-receipt-body.v1",
+		releaseBody,
+	)
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, fmt.Errorf("digest exposure release receipt body: %w", err)
 	}
@@ -557,7 +565,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 
 	resolutionRequest := guarantor.CoverageResolutionActionBodyV1{SchemaVersion: 1, ExposureReleaseReceiptDigest: releaseReceiptDigest,
 		ExpectedRevision: releasePending.Record.CoverageRevision, TargetRevision: releasePending.Record.CoverageRevision + 1}
-	canonicalResolution, err := codec.Marshal(resolutionRequest)
+	canonicalResolution, err := guarantor.Canonical(resolutionRequest)
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, fmt.Errorf("encode coverage-resolution request: %w", err)
 	}
@@ -618,7 +626,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		TerminalState: targetTerminalState, AuthorizedActionDigest: mustActionDigest(resolutionAction), StableActionID: resolutionAction.StableActionID,
 		ExactRequestDigest: resolutionAction.ExactRequestDigest, WriterGeneration: resolutionAction.WriterGeneration,
 		WriterFenceDigest: resolutionAction.WriterFenceDigest, ResolvedAtUnix: uint64(now.Unix())}
-	resolutionBodyDigest, err := codec.Digest("tos.service.agent-guarantor-resolution-body.v1", resolutionBody)
+	resolutionBodyDigest, err := guarantor.Digest("tos.service.agent-guarantor-resolution-body.v1", resolutionBody)
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, fmt.Errorf("digest coverage resolution body: %w", err)
 	}
@@ -684,12 +692,11 @@ func (coordinator *GuarantorProviderCoordinator) buildGuarantorStage(terms guara
 		OperationBindingDigest: bound.OperationBindingDigest, AdmittedAtUnix: uint64(at.Unix()), CanonicalRequestDigest: action.ExactRequestDigest,
 		AuthorizedActionDigest: actionDigest, WriterFenceDigest: action.WriterFenceDigest, AdmissionState: "accepted",
 		AdmissionStateRevision: resolution.StateRevision}
-	bodyDigest, _ := codec.Digest("tos.service.agent-guarantor-stage-action-admission.v1", body)
+	bodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-stage-action-admission.v1", body)
 	if coordinator.ActionAuthoritySigner == nil {
 		return guarantor.PortableStageActionAdmissionEvidenceV1{}, errors.New("Agreement-bound Guarantor action authority signer is unavailable")
 	}
-	authorization, err := coordinator.ActionAuthoritySigner.SignObject("stage-action-admission-evidence", bodyDigest,
-		"tos.service.agent-guarantor-stage-action-admission-signature.v1", at)
+	authorization, err := coordinator.ActionAuthoritySigner.SignStageActionAdmission(bodyDigest, at)
 	if err != nil {
 		return guarantor.PortableStageActionAdmissionEvidenceV1{}, err
 	}
@@ -742,25 +749,26 @@ func terminalClaimBundles(coordinator *GuarantorProviderCoordinator, position Gu
 				return nil, nil, nil, nil, errors.New("Guarantor payout lacks terminal evidence")
 			}
 			executionDigest, digestErr := guarantor.GuarantorPayoutExecutionEvidenceDigestV1(execution)
-			executionBytes, encodeErr := codec.Marshal(execution)
+			executionBytes, encodeErr := guarantor.Canonical(execution)
 			if digestErr != nil || encodeErr != nil {
 				return nil, nil, nil, nil, errors.New("Guarantor payout execution evidence cannot be encoded")
 			}
 			executions = append(executions, execution)
-			settlementItems = append(settlementItems, guarantor.CanonicalGuarantorEvidenceItemV1{
-				ContentType:            "application/vnd.tos.service.agent-guarantor-payout-execution-evidence.v1+cbor",
-				EvidenceProfileDigest:  position.Terms.SelectedPayoutAdapterProfile.ProfileDigest,
-				EvidenceEnvelopeDigest: executionDigest, Representation: "inline", CanonicalEnvelopeBytes: executionBytes})
+			// The execution evidence travels in the terminal payout set, so the
+			// settlement item names it by descriptor instead of repeating it.
+			settlementItems = append(settlementItems, carriedGuarantorEvidenceItem(
+				guarantor.GuarantorPayoutExecutionContentTypeV1, executionDigest, executionBytes,
+				position.Terms.SelectedPayoutAdapterProfile.ProfileDigest))
 		}
 		sort.Slice(settlementItems, func(i, j int) bool {
-			left, _ := codec.Marshal(settlementItems[i])
-			right, _ := codec.Marshal(settlementItems[j])
+			left, _ := guarantor.Canonical(settlementItems[i])
+			right, _ := guarantor.Canonical(settlementItems[j])
 			return string(left) < string(right)
 		})
 		claim := finalAdmission.AuthorizedClaimIngressReceipt.AuthorizedClaim
 		claimDigest, _ := guarantor.ClaimEnvelopeDigest(claim)
 		decisionDigest, _ := guarantor.ClaimDecisionDigestV1(decision)
-		payoutDigest, _ := codec.Digest(guarantor.PayoutSetDomain, payouts)
+		payoutDigest, _ := guarantor.Digest(guarantor.PayoutSetDomain, payouts)
 		claimPaid, claimDefaulted := new(big.Int), new(big.Int)
 		amount, _ := new(big.Int).SetString(decision.Body.ApprovedAmount.AmountAtomic, 10)
 		approved.Add(approved, amount)
@@ -785,11 +793,19 @@ func terminalClaimBundles(coordinator *GuarantorProviderCoordinator, position Gu
 			markerValue := guarantor.GuarantorNoPayoutMarkerV1{SchemaVersion: 1,
 				CoverageAgreementBodyDigest: position.Record.CoverageAgreementBodyDigest, ClaimID: item.claimID,
 				AuthorizedClaimDecisionDigest: decisionDigest, MaterializedPayoutObligationSetDigest: payoutDigest}
-			marker, _ := codec.Marshal(markerValue)
-			markerDigest, _ := codec.Digest("tos.service.agent-guarantor-no-payout-marker.v1", markerValue)
-			settlementItems = []guarantor.CanonicalGuarantorEvidenceItemV1{{ContentType: "application/vnd.tos.service.agent-guarantor-no-payout.v1+cbor",
-				EvidenceProfileDigest:  position.Terms.SelectedPayoutAdapterProfile.ProfileDigest,
-				EvidenceEnvelopeDigest: markerDigest, Representation: "inline", CanonicalEnvelopeBytes: marker}}
+			marker, markerErr := guarantor.Canonical(markerValue)
+			markerDigest, markerDigestErr := guarantor.Digest(
+				"tos.service.agent-guarantor-no-payout-marker.v1",
+				markerValue,
+			)
+			if markerErr != nil || markerDigestErr != nil {
+				return nil, nil, nil, nil, errors.New("Guarantor no-payout marker cannot be encoded")
+			}
+			// The marker is recomputed from the decision and the payout set, so
+			// it is named by descriptor, never carried inline.
+			settlementItems = []guarantor.CanonicalGuarantorEvidenceItemV1{carriedGuarantorEvidenceItem(
+				guarantor.GuarantorNoPayoutMarkerContentTypeV1, markerDigest, marker,
+				position.Terms.SelectedPayoutAdapterProfile.ProfileDigest)}
 		} else if claimDefaulted.Sign() > 0 {
 			disposition = "defaulted"
 		}
@@ -829,7 +845,7 @@ func terminalClaimBundles(coordinator *GuarantorProviderCoordinator, position Gu
 			if sealErr != nil {
 				return guarantor.ClaimAdmissionReceiptProofV1{}, sealErr
 			}
-			sealDigest, digestErr := codec.Digest(guarantor.ClaimAdmissionReceiptSealDomainV1, seal)
+			sealDigest, digestErr := guarantor.Digest(guarantor.ClaimAdmissionReceiptSealDomainV1, seal)
 			if digestErr != nil {
 				return guarantor.ClaimAdmissionReceiptProofV1{}, digestErr
 			}
@@ -869,7 +885,7 @@ func terminalClaimBundles(coordinator *GuarantorProviderCoordinator, position Gu
 		if proofErr != nil {
 			return nil, nil, nil, nil, proofErr
 		}
-		applicationSealDigest, _ := codec.Digest(guarantor.DecisionApplicationReceiptSealDomainV1, applicationSeal)
+		applicationSealDigest, _ := guarantor.Digest(guarantor.DecisionApplicationReceiptSealDomainV1, applicationSeal)
 		applicationSealAuthorization, proofErr := coordinator.ActionAuthoritySigner.SignObject("decision-application-receipt-seal",
 			applicationSealDigest, "tos.service.agent-guarantor-decision-application-receipt-seal-signature.v1", now)
 		if proofErr != nil {
@@ -895,4 +911,27 @@ func terminalClaimBundles(coordinator *GuarantorProviderCoordinator, position Gu
 func mustActionDigest(action commerce.AuthorizedAction) string {
 	digest, _ := commerce.AuthorizedActionDigest(action)
 	return digest
+}
+
+// carriedGuarantorEvidenceItem names a Guarantor object whose canonical bytes
+// the verifier already holds: a content-addressed descriptor with the item's
+// media type and digest, the exact length and the payout adapter profile as
+// its retrieval policy. Guarantor evidence is never carried inline.
+func carriedGuarantorEvidenceItem(
+	contentType, envelopeDigest string,
+	canonical []byte,
+	payoutAdapterProfileDigest string,
+) guarantor.CanonicalGuarantorEvidenceItemV1 {
+	return guarantor.CanonicalGuarantorEvidenceItemV1{
+		ContentType:            contentType,
+		EvidenceProfileDigest:  payoutAdapterProfileDigest,
+		EvidenceEnvelopeDigest: envelopeDigest,
+		Representation:         "content_addressed",
+		ImmutableDescriptor: &guarantor.ImmutableEvidenceDescriptorV1{
+			ContentType:           contentType,
+			ContentDigest:         envelopeDigest,
+			ContentSize:           uint64(len(canonical)),
+			RetrievalPolicyDigest: payoutAdapterProfileDigest,
+		},
+	}
 }

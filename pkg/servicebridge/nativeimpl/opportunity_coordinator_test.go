@@ -1,6 +1,7 @@
 package nativeimpl
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -56,11 +57,12 @@ func opportunityCoordinatorFixture(t *testing.T) (*OpportunityCoordinator, oppor
 		NetworkPolicy: "none", Limits: nativecore.SoftwareWorkLimitsV1{CPUMillis: 1000, MemoryBytes: 16 << 20,
 			ScratchBytes: 1 << 20, OutputBytes: 1 << 20, WallClockMillis: 1000},
 		ArtifactMediaTypes: []string{"application/octet-stream"}, ReportMediaTypes: []string{"application/json"},
-		SuccessCondition: "exit-code-zero-and-valid-reports", RefundConditions: []string{"not-started-before-deadline"},
-		EndpointCommitment: "sha256:" + strings.Repeat("4", 64), ExecutionSignerAuthorization: "sha256:" + strings.Repeat("5", 64),
-		RetentionSeconds: 3600, SupportedAssets: []nativecore.SoftwareWorkAssetIdentityV1{{Workchain: 0,
-			MasterAccount: strings.Repeat("6", 64), MasterCodeHash: "tvm-cell-sha256:" + strings.Repeat("7", 64),
-			WalletCodeHash: "tvm-cell-sha256:" + strings.Repeat("8", 64), Decimals: 9}}}
+		SuccessCondition: "exit-code-zero-and-valid-reports", RefundConditions: []string{nativecore.NoAttestedResponseRefund},
+		EndpointCommitment: "sha256:" + strings.Repeat("4", 64), ExecutionSignerAuthorization: nativecore.SettlementAttestorAuthorization("mldsa44:" + strings.Repeat("8c", 32)),
+		RetentionSeconds: 3600, SupportedAssets: []nativecore.SoftwareWorkAssetV1{{Kind: nativecore.NativeTOSAsset}},
+		Settlement: nativecore.SoftwareWorkSettlementV1{Rail: nativecore.ServiceActorRail, ActorWorkchain: 0,
+			ActorAccountID: bytes.Repeat([]byte{0x6a}, 32), ActorCodeHash: bytes.Repeat([]byte{0x7b}, 32),
+			AttestorKey: "mldsa44:" + strings.Repeat("8c", 32)}}
 	manifestRaw, manifestDigest, err := nativecore.CanonicalSoftwareWorkManifest(manifest)
 	if err != nil {
 		t.Fatal(err)

@@ -56,18 +56,39 @@ func TestOutcomeRecordingAuthorityRetainsTransitionResolutionReturnedWithError(t
 
 func TestJournalOutcomeRecorderCapturesNegativeResolution(t *testing.T) {
 	now := time.Unix(1_900_000_000, 0).UTC()
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:recorder", "agent:recorder", "authority:recorder", authorityKey, PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner:recorder",
+		"agent:recorder",
+		"authority:recorder",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(context.Background(), "runtime:recorder", []string{"accounting.record", outcomeJournalScope}, time.Hour)
+	fence, err := authority.AcquireWriter(
+		context.Background(),
+		"runtime:recorder",
+		[]string{"accounting.record", outcomeJournalScope},
+		time.Hour,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	journal, err := OpenOutcomeJournal(privateTempDir(t), "owner:recorder", "agent:recorder", "authority:recorder", "economic_attempts", zeroSHA256Digest(), fence, authority, now)
+	journal, err := OpenOutcomeJournal(
+		privateTempDir(t),
+		"owner:recorder",
+		"agent:recorder",
+		"authority:recorder",
+		"economic_attempts",
+		zeroSHA256Digest(),
+		fence,
+		authority,
+		now,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,8 +198,14 @@ func TestJournalOutcomeRecorderCapturesNegativeResolution(t *testing.T) {
 
 func TestOutcomeRecordingAuthorityCapturesEveryRevisionExactlyOnce(t *testing.T) {
 	now := time.Unix(1_900_000_000, 0).UTC()
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
-	base, err := OpenPersonalAuthority(privateTempDir(t), "owner:managed", "agent:managed", "authority:managed", authorityKey, PortfolioLimits{})
+	base, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner:managed",
+		"agent:managed",
+		"authority:managed",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,18 +288,35 @@ func TestOutcomeRecordingAuthorityCapturesEveryRevisionExactlyOnce(t *testing.T)
 
 func TestOutcomeJournalAppendAuthorityRejectsCrossHostFork(t *testing.T) {
 	now := time.Unix(1_900_000_000, 0).UTC()
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:fork", "agent:fork", "authority:fork", key, PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner:fork",
+		"agent:fork",
+		"authority:fork",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(context.Background(), "runtime:fork", []string{outcomeJournalScope}, time.Hour)
+	fence, err := authority.AcquireWriter(
+		context.Background(),
+		"runtime:fork",
+		[]string{outcomeJournalScope},
+		time.Hour,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	domain, err := OutcomeOrderingDomainV1("owner:fork", "agent:fork", "authority:fork", "economic-side-effects", zeroSHA256Digest())
+	domain, err := OutcomeOrderingDomainV1(
+		"owner:fork",
+		"agent:fork",
+		"authority:fork",
+		"economic-side-effects",
+		zeroSHA256Digest(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

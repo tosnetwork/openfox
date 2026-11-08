@@ -2,8 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"os"
@@ -114,13 +112,12 @@ func TestTOSCTLRelaySponsorOnlyAbsenceResolvesThroughProcessor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authorityDirectory := filepath.Join(root, "authority")
 	if err := os.Mkdir(authorityDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:provider",
-		fixture.profile.ProviderAgentID, "authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
+		fixture.profile.ProviderAgentID, "authority:provider", testAuthorityKeys(), relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,13 +333,12 @@ func TestTOSCTLRelayDualAbsencePreservesFrozenComponentAndUsesQueryOnlyPromotion
 	fixture.prepared.QuoteBody.SponsorshipReleaseProfileDigest = policy.ProfileDigest
 	execution, agreement, obligation := relaySponsorshipFixture(t, fixture)
 
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authorityDirectory := filepath.Join(root, "authority")
 	if err := os.Mkdir(authorityDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:provider",
-		fixture.profile.ProviderAgentID, "authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
+		fixture.profile.ProviderAgentID, "authority:provider", testAuthorityKeys(), relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}

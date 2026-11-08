@@ -77,23 +77,12 @@ boundary is enabled. A production daemon channel must populate
 `AuthenticatedMessagingOrigin` only after the daemon has authenticated and
 admitted the event.
 
-## Custody boundary
+## Paid work on the Service Actor rail
 
-`servicebridge.AuthorizedCustodySigner` wraps the existing custody signer.
-Before escrow funding it sends the exact canonical quote surface—provider,
-capability/version/class, manifest, transport binding, network and asset code
-identity, decimal atomic amount, escrow/dispute digests, expiry, and mandate—to
-Messenger as a `spend`. Settlement signing separately requests `key-use`.
-Refusal or incomplete lineage leaves the wrapped signer unreachable.
-After the single funding lease, the buyer first resolves exact finalized
-funding and then calls the same Messenger client through `quotes.verify` with
-the commitment, deterministic escrow address, and those complete terms. The
-address is only a candidate locator: Messenger independently checks the exact
-finalized account's contract, canonical StateInit and held commitment, and does
-not persist a locator supplied by OpenFox. Task construction/dispatch remains
-blocked until Messenger independently matches the finalized Accepted Quote and
-its full network identity. This check runs again on crash recovery while the
-funding lease prevents a second payment.
+Paid software work no longer funds an escrow, so there is no custody wrapper
+and no Messenger `quotes.verify` step. The buyer's payment is the Service
+Actor `call` it signs in tosctl custody, and both sides re-derive everything
+from finalized state; see [Service Actor rail](service-actor-rail.md).
 
 ## Retired escrow version 1 purchase stack
 
@@ -103,7 +92,6 @@ escrow version 1 contract (`nativeimpl.NewNativeBuyer`,
 and `tos.openfox.chain-buyer-config.v1` artifacts, and the
 `tos-service-purchase` and `tos-service-provider` commands) was removed on
 2026-10-05 together with escrow version 1 support. The opportunity
-coordinator no longer accepts a `purchase` section. Paid Demand purchases and
-settlements go through `pkg/earning` and the escrow version 2 contract, whose
-code hash `nativecore.EscrowV2CodeHash` is the only escrow code OpenFox
-deploys or settles against.
+coordinator no longer accepts a `purchase` section. The escrow-backed Paid
+Demand product has also been retired; paid software work settles on the
+Service Actor rail.

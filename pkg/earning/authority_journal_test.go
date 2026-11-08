@@ -27,11 +27,18 @@ func TestPersonalAuthorityFailsClosedAcrossPathReplacement(t *testing.T) {
 		t.Skip("Windows does not permit renaming this open directory")
 	}
 	directory := privateTempDir(t)
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		directory,
+		"owner",
+		"agent",
+		"authority",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +57,14 @@ func TestPersonalAuthorityFailsClosedAcrossPathReplacement(t *testing.T) {
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if replacement, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, PortfolioLimits{}); err == nil {
+	if replacement, checkErr := OpenPersonalAuthority(
+		directory,
+		"owner",
+		"agent",
+		"authority",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	); checkErr == nil {
 		_ = replacement.Close()
 		t.Fatal("replacement directory acquired the same live logical authority")
 	}
@@ -85,7 +99,14 @@ func TestPersonalAuthorityFailsClosedAcrossPathReplacement(t *testing.T) {
 	if bound.HasLinearizableRelayAdmission() {
 		t.Fatal("closed authority continued advertising linearizable admission")
 	}
-	replacement, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, PortfolioLimits{})
+	replacement, err := OpenPersonalAuthority(
+		directory,
+		"owner",
+		"agent",
+		"authority",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatalf("replacement authority did not become available after clean close: %v", err)
 	}
@@ -96,11 +117,18 @@ func TestPersonalAuthorityFailsClosedAcrossPathReplacement(t *testing.T) {
 
 func TestPersonalAuthorityRejectsRelayAdmissionLedgerAbovePermanentCapacity(t *testing.T) {
 	directory := privateTempDir(t)
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		directory,
+		"owner",
+		"agent",
+		"authority",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +154,14 @@ func TestPersonalAuthorityRejectsRelayAdmissionLedgerAbovePermanentCapacity(t *t
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if reopened, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, PortfolioLimits{}); err == nil {
+	if reopened, err := OpenPersonalAuthority(
+		directory,
+		"owner",
+		"agent",
+		"authority",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	); err == nil {
 		_ = reopened.Close()
 		t.Fatal("oversized permanent relay admission ledger was accepted")
 	}
@@ -134,12 +169,12 @@ func TestPersonalAuthorityRejectsRelayAdmissionLedgerAbovePermanentCapacity(t *t
 
 func TestPersonalAuthorityFencesActionsAndPortfolio(t *testing.T) {
 	directory := privateTempDir(t)
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	limits := PortfolioLimits{ComputeUnits: 10, SpendAtomic: 100, LockedCapitalAtomic: 100, ReceivableAtomic: 200, MaximumLossAtomic: 50}
-	authority, err := OpenPersonalAuthority(directory, "owner-1", "agent-1", "authority-1", key, limits)
+	authority, err := OpenPersonalAuthority(directory, "owner-1", "agent-1", "authority-1", testAuthorityKeys(), limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,11 +259,11 @@ func TestPersonalAuthorityFencesActionsAndPortfolio(t *testing.T) {
 
 func TestPersonalAuthoritySeparatesMaximumLossByExactAsset(t *testing.T) {
 	directory := privateTempDir(t)
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority, err := OpenPersonalAuthority(directory, "owner-1", "agent-1", "authority-asset", key,
+	authority, err := OpenPersonalAuthority(directory, "owner-1", "agent-1", "authority-asset", testAuthorityKeys(),
 		PortfolioLimits{MaximumLossAtomic: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -271,22 +306,29 @@ func TestPersonalAuthoritySeparatesMaximumLossByExactAsset(t *testing.T) {
 
 func TestPersonalAuthorityProcessLockAndRecovery(t *testing.T) {
 	directory := privateTempDir(t)
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	limits := PortfolioLimits{ComputeUnits: 1}
-	first, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, limits)
+	first, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", testAuthorityKeys(), limits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, limits); err == nil {
+	if _, checkErr := OpenPersonalAuthority(
+		directory,
+		"owner",
+		"agent",
+		"authority",
+		testAuthorityKeys(),
+		limits,
+	); checkErr == nil {
 		t.Fatal("second process authority lock was admitted")
 	}
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	recovered, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", key, limits)
+	recovered, err := OpenPersonalAuthority(directory, "owner", "agent", "authority", testAuthorityKeys(), limits)
 	if err != nil {
 		t.Fatalf("recover authority: %v", err)
 	}
@@ -314,7 +356,7 @@ func TestPersonalAuthorityRecoversRelayAdmissionAcrossRestartAndTakeover(t *test
 	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
 	directory := privateTempDir(t)
 	authority, err := OpenPersonalAuthority(directory, "owner:client", "agent:client", "authority:client",
-		fixture.authorityKey, PortfolioLimits{})
+		testAuthorityKeys(), PortfolioLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +423,7 @@ func TestPersonalAuthorityRecoversRelayAdmissionAcrossRestartAndTakeover(t *test
 	}
 
 	reopened, err := OpenPersonalAuthority(directory, "owner:client", "agent:client", "authority:client",
-		fixture.authorityKey, PortfolioLimits{})
+		testAuthorityKeys(), PortfolioLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,8 +486,12 @@ func TestPersonalAuthorityRecoversRelayAdmissionAcrossRestartAndTakeover(t *test
 					continue
 				}
 				mutate(&receipt.Body)
-				resigned, signErr := agentrelay.SignRelaySideEffectAdmissionReceipt(receipt.Body,
-					fixture.authorityKey)
+				resigned, signErr := agentrelay.SignRelaySideEffectAdmissionReceipt(
+					context.Background(),
+					receipt.Body,
+					testAuthorityCustody,
+					fixture.authorityKey,
+				)
 				if signErr != nil {
 					t.Fatal(signErr)
 				}
@@ -456,7 +502,7 @@ func TestPersonalAuthorityRecoversRelayAdmissionAcrossRestartAndTakeover(t *test
 				t.Fatalf("write tampered authority journal: %v", err)
 			}
 			if recovered, err := OpenPersonalAuthority(directory, "owner:client", "agent:client", "authority:client",
-				fixture.authorityKey, PortfolioLimits{}); err == nil {
+				testAuthorityKeys(), PortfolioLimits{}); err == nil {
 				_ = recovered.Close()
 				t.Fatal("persisted receipt authorization-context substitution survived recovery")
 			}
@@ -466,7 +512,7 @@ func TestPersonalAuthorityRecoversRelayAdmissionAcrossRestartAndTakeover(t *test
 		})
 	}
 	reopened, err = OpenPersonalAuthority(directory, "owner:client", "agent:client", "authority:client",
-		fixture.authorityKey, PortfolioLimits{})
+		testAuthorityKeys(), PortfolioLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +543,7 @@ func TestPersonalAuthorityRecoversRelayAdmissionAcrossRestartAndTakeover(t *test
 }
 
 func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing.T) {
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+	_, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +558,14 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 	limits := PortfolioLimits{SpendAtomic: 25, MaximumLossAtomic: 25, CustodyNetworkDomainDigest: domainDigest,
 		CustodyNativeAsset: &nativeAsset, CustodySourceAccount: "0:source", CustodyFinalityGraceSeconds: 60}
 	directory := privateTempDir(t)
-	authority, err := OpenPersonalAuthority(directory, "owner-1", "agent:buyer", "authority-1", key, limits)
+	authority, err := OpenPersonalAuthority(
+		directory,
+		"owner-1",
+		"agent:buyer",
+		"authority-1",
+		testAuthorityKeys(),
+		limits,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +661,7 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 		t.Fatalf("custody authorization omitted the full network domain: %+v", authorization)
 	}
 	if err := commerce.VerifyRelayCustodyActionAuthorization(authorization,
-		custodyEffectPinnedKey{key: key.Public().(ed25519.PublicKey), agentID: "agent:buyer"}, now); err != nil {
+		testCustodyResolver("authority-1", "owner-1", "agent:buyer"), now); err != nil {
 		t.Fatal(err)
 	}
 	replayed, err := authority.AuthorizeCustodyPayment(action, fields, canonical, fence, payment,
@@ -696,7 +749,14 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 	if err := authority.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenPersonalAuthority(directory, "owner-1", "agent:buyer", "authority-1", key, limits)
+	reopened, err := OpenPersonalAuthority(
+		directory,
+		"owner-1",
+		"agent:buyer",
+		"authority-1",
+		testAuthorityKeys(),
+		limits,
+	)
 	if err != nil {
 		t.Fatalf("reopen exact expired custody lifecycle: %v", err)
 	}
@@ -717,7 +777,14 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 	if err != nil || os.WriteFile(filepath.Join(directory, authorityFile), raw, 0o600) != nil {
 		t.Fatal("write tampered custody tombstone")
 	}
-	if reopened, err := OpenPersonalAuthority(directory, "owner-1", "agent:buyer", "authority-1", key, limits); err == nil {
+	if reopened, err := OpenPersonalAuthority(
+		directory,
+		"owner-1",
+		"agent:buyer",
+		"authority-1",
+		testAuthorityKeys(),
+		limits,
+	); err == nil {
 		_ = reopened.Close()
 		t.Fatal("shortened custody finality grace survived restart")
 	}
@@ -725,11 +792,10 @@ func TestPersonalAuthorityCustodyPaymentV2BindsFullRelayNetworkDomain(t *testing
 
 func TestPersonalAuthorityEconomicInputsAndSnapshotsAreDetached(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	nativeAsset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nanotos"}
 	limits := PortfolioLimits{SpendAtomic: 25, MaximumLossAtomic: 25, CustodyNativeAsset: &nativeAsset}
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:aliases", "agent:buyer",
-		"authority:aliases", authorityKey, limits)
+		"authority:aliases", testAuthorityKeys(), limits)
 	if err != nil {
 		t.Fatal(err)
 	}

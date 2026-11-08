@@ -345,7 +345,7 @@ func (coordinator RelayCoordinator) admitAttempt(ctx context.Context, draft Rela
 		descriptor, err = agentrelay.BuildRelaySideEffectAdmissionDescriptor(execution)
 	} else {
 		descriptor, err = agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(execution,
-			execution.QuoteRequest.Body.RequesterAgentID, *predecessor)
+			execution.QuoteRequest.Body.RequesterAgentID, *predecessor, coordinator.FenceResolver)
 	}
 	if err != nil {
 		return RelayAttempt{}, err
@@ -360,7 +360,7 @@ func (coordinator RelayCoordinator) admitAttempt(ctx context.Context, draft Rela
 	execution.AdmissionReceipt = receipt
 	if predecessor != nil {
 		if err := agentrelay.VerifyRelaySideEffectAdmissionSuccessorReceipt(receipt, execution,
-			*predecessor, now); err != nil {
+			*predecessor, coordinator.FenceResolver, now); err != nil {
 			return RelayAttempt{}, errors.New("relay successor admission receipt is invalid: " + err.Error())
 		}
 	}
@@ -389,7 +389,7 @@ func (coordinator RelayCoordinator) resolveAttempt(ctx context.Context, draft Re
 		return RelayAttempt{}, errors.New("relay admission draft already carries a receipt")
 	}
 	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(execution,
-		execution.QuoteRequest.Body.RequesterAgentID, predecessor)
+		execution.QuoteRequest.Body.RequesterAgentID, predecessor, coordinator.FenceResolver)
 	if err != nil {
 		return RelayAttempt{}, err
 	}
@@ -400,7 +400,7 @@ func (coordinator RelayCoordinator) resolveAttempt(ctx context.Context, draft Re
 	execution.AdmissionReceipt = receipt
 	now := coordinator.now()
 	if err := agentrelay.VerifyRelaySideEffectAdmissionSuccessorReceipt(receipt, execution,
-		predecessor, now); err != nil {
+		predecessor, coordinator.FenceResolver, now); err != nil {
 		return RelayAttempt{}, errors.New("resolved relay successor admission receipt is invalid: " + err.Error())
 	}
 	attempt := RelayAttempt{Execution: execution, Agreement: draft.Agreement,
@@ -422,7 +422,7 @@ func (coordinator RelayCoordinator) reauthorizePendingAttempt(ctx context.Contex
 			errors.New("relay admission authority cannot prove an unlinearized takeover rebase")
 	}
 	descriptor, err := agentrelay.BuildRelaySideEffectAdmissionSuccessorDescriptor(draft.Execution,
-		draft.Execution.QuoteRequest.Body.RequesterAgentID, predecessor)
+		draft.Execution.QuoteRequest.Body.RequesterAgentID, predecessor, coordinator.FenceResolver)
 	if err != nil {
 		return RelayAttempt{}, relayAdmissionReauthorization{}, err
 	}
@@ -433,7 +433,13 @@ func (coordinator RelayCoordinator) reauthorizePendingAttempt(ctx context.Contex
 	rebased := cloneRelayAttempt(draft)
 	rebased.Execution.AuthorizedAction = authorization.AuthorizedAction
 	rebased.Execution.WriterFence = authorization.WriterFence
-	if err := verifyRelayAdmissionReauthorization(authorization, draft, rebased, predecessor); err != nil {
+	if err := verifyRelayAdmissionReauthorization(
+		authorization,
+		draft,
+		rebased,
+		predecessor,
+		coordinator.FenceResolver,
+	); err != nil {
 		return RelayAttempt{}, relayAdmissionReauthorization{}, err
 	}
 	now := coordinator.now()
@@ -494,7 +500,12 @@ func (coordinator RelayCoordinator) submit(ctx context.Context, attempt RelayAtt
 	if err != nil || !reflect.DeepEqual(reserved, attempt.Execution.ProviderQuote) {
 		return RelayExecutionResult{}, errors.New("relay attempt quote could not be durably reserved")
 	}
-	record, _, err := coordinator.AttemptJournal.Admit(attempt.Execution, now)
+	verified, err := agentrelay.VerifyRelaySideEffectAdmissionReceiptAuthority(attempt.Execution.AdmissionReceipt,
+		coordinator.FenceResolver)
+	if err != nil {
+		return RelayExecutionResult{}, err
+	}
+	record, _, err := coordinator.AttemptJournal.Admit(attempt.Execution, verified, now)
 	if err != nil {
 		return RelayExecutionResult{}, err
 	}
@@ -2022,7 +2033,7 @@ func attemptMatchesPrepared(attempt RelayAttempt, prepared PreparedRelayTransact
 		request.WriterFence.Body.OwnerID == prepared.WriterFence.Body.OwnerID &&
 		request.WriterFence.Body.AgentID == prepared.WriterFence.Body.AgentID &&
 		request.WriterFence.Body.AuthorityID == prepared.WriterFence.Body.AuthorityID &&
-		request.WriterFence.PublicKey == prepared.WriterFence.PublicKey &&
+		request.WriterFence.KeyID == prepared.WriterFence.KeyID &&
 		reflect.DeepEqual(request.SemanticFields, wireFields) &&
 		bytes.Equal(request.UnderlyingActionRequest, prepared.UnderlyingActionRequest) &&
 		bytes.Equal(request.SignedTransactionBytes, prepared.ExactSignedBOC)

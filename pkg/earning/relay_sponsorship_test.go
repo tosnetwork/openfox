@@ -2,8 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"strings"
 	"testing"
@@ -211,9 +209,8 @@ func TestAgreementSponsorshipRejectsStructurallyValidUnverifiedEvidenceBeforeCli
 	fixture.prepared.QuoteBody.AssuranceLevel = agentrelay.AssuranceAuthorizedSingleProvider
 	fixture.enableSponsorship(t, agentrelay.ModeSponsorAndRelay)
 	attempt := fixture.attempt(t)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
+		"authority:provider", testAuthorityKeys(), relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,9 +294,8 @@ func (sink *relaySponsorshipPaymentSink) VerifyPaymentEvidence(request commerce.
 func TestAgreementSponsorshipProcessorPersistsAndQueriesExactPaymentBeforeRetry(t *testing.T) {
 	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
 	execution, agreement, obligation := relaySponsorshipFixture(t, fixture)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
+		"authority:provider", testAuthorityKeys(), relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,10 +377,9 @@ func TestAgreementSponsorshipProcessorPersistsAndQueriesExactPaymentBeforeRetry(
 func TestAgreementSponsorshipAdmittedPaymentDrainsUnderSuccessorWriter(t *testing.T) {
 	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
 	execution, agreement, obligation := relaySponsorshipFixture(t, fixture)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	directory := privateTempDir(t)
 	authorityA, err := OpenPersonalAuthority(directory, "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
+		"authority:provider", testAuthorityKeys(), relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +439,7 @@ func TestAgreementSponsorshipAdmittedPaymentDrainsUnderSuccessorWriter(t *testin
 	}
 
 	authorityB, err := OpenPersonalAuthority(directory, "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
+		"authority:provider", testAuthorityKeys(), relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,9 +502,8 @@ func TestAgreementSponsorshipAdmittedPaymentDrainsUnderSuccessorWriter(t *testin
 func TestAgreementSponsorshipSubmittedAndUnresolvedNeverCallsCustodyAgain(t *testing.T) {
 	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
 	execution, agreement, obligation := relaySponsorshipFixture(t, fixture)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
+		"authority:provider", testAuthorityKeys(), relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,9 +556,8 @@ func TestAgreementSponsorshipResumesExactValidatorFinalityBroadcastWithoutSnapsh
 	fixture := newRelayTestFixture(t, "agent:provider", nil, "https://relay.example")
 	fixture.prepared.QuoteBody.AssuranceLevel = agentrelay.AssuranceAuthorizedSingleProvider
 	execution, agreement, obligation := relaySponsorshipFixture(t, fixture)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:provider", fixture.profile.ProviderAgentID,
-		"authority:provider", authorityKey, relaySponsorshipTestLimits(t, fixture))
+		"authority:provider", testAuthorityKeys(), relaySponsorshipTestLimits(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}

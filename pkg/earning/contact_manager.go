@@ -76,12 +76,6 @@ type ContactCandidateHandler struct {
 	Drafter            ContactDrafter
 	Fence              func(context.Context) (commerce.WriterFence, error)
 	PaymentDestination []byte
-	SupplyProfiles     map[string]SupplyAgreementProfileCompiler
-}
-
-type SupplyAgreementProfileCompiler interface {
-	CompileSupplyAgreement(context.Context, string, CandidateAssessment, commerce.IntentApplication,
-		time.Time) (commerce.AgentAgreementBody, []byte, error)
 }
 
 func (handler ContactCandidateHandler) HandleCandidate(ctx context.Context, candidate CandidateAssessment) error {
@@ -140,26 +134,9 @@ func (handler ContactCandidateHandler) HandleCandidate(ctx context.Context, cand
 		ExpiresAtUnix:      uint64(expires.Unix())}
 	if containsIntentMode(candidate.Intent.Body.Payload.DiscoveryCard.IntentModes, commerce.IntentOffer) ||
 		containsIntentMode(candidate.Intent.Body.Payload.DiscoveryCard.IntentModes, commerce.IntentSell) {
-		adapter := commonSettlementAdapter(candidate.Intent.Body.Payload.SettlementPreferences,
-			applicationBody.SettlementOffers, candidate.Inventory)
-		var proposal commerce.AgentAgreementBody
-		var packageBytes []byte
-		var buildErr error
-		if profile := handler.SupplyProfiles[adapter]; profile != nil {
-			proposal, packageBytes, buildErr = profile.CompileSupplyAgreement(ctx, handler.Engine.AgentID,
-				candidate, applicationBody, expires)
-		} else {
-			proposal, buildErr = buildSupplyAgreementProposal(handler.Engine.AgentID, candidate, applicationBody, expires)
-		}
+		proposal, buildErr := buildSupplyAgreementProposal(handler.Engine.AgentID, candidate, applicationBody, expires)
 		if buildErr != nil {
 			return buildErr
-		}
-		if len(packageBytes) != 0 {
-			for index := range applicationBody.SettlementOffers {
-				if applicationBody.SettlementOffers[index].AdapterURI == adapter {
-					applicationBody.SettlementOffers[index].Parameters = append([]byte(nil), packageBytes...)
-				}
-			}
 		}
 		applicationBody.SchemaVersion = 2
 		applicationBody.PaymentDestination = nil

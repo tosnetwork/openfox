@@ -2,8 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"strings"
 	"testing"
 	"time"
@@ -12,8 +10,14 @@ import (
 )
 
 func TestGiftAccountingIsDurableButCannotCloseAgreement(t *testing.T) {
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner-1", "agent-1", "authority-1", key, PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner-1",
+		"agent-1",
+		"authority-1",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

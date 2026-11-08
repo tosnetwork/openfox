@@ -2,7 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"math"
@@ -12,39 +11,118 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
 )
 
 type GuarantorObjectSigner interface {
 	SignObject(kind, bodyDigest, signatureDomain string, validationTime time.Time) (guarantor.ProfileQualifiedObjectAuthorizationV1, error)
 }
 
+// GuarantorActionAuthoritySigner also signs portable stage admissions, which
+// carry Action Authority evidence rather than native Agent evidence.
+type GuarantorActionAuthoritySigner interface {
+	GuarantorObjectSigner
+	SignStageActionAdmission(
+		bodyDigest string,
+		validationTime time.Time,
+	) (guarantor.StageActionAdmissionAuthorizationV1, error)
+}
+
+// LocalGuarantorObjectSigner signs Guarantor objects with one ML-DSA-44
+// controller held in custody. Native Agent authorizations use the
+// TOS-AGENT-GUARANTOR-V1 context; stage admissions use the Action Authority
+// context, so the controller must be the Action Authority controller when
+// this signer is the coordinator's ActionAuthoritySigner.
 type LocalGuarantorObjectSigner struct {
 	subject         string
 	profile         commerce.ProfileRefV1
-	key             ed25519.PrivateKey
+	signer          mldsa44.Signer
+	controller      string
 	historicalProof []byte
 }
 
-func NewLocalGuarantorObjectSigner(subject string, profile commerce.ProfileRefV1, key ed25519.PrivateKey,
-	historicalProof []byte) (*LocalGuarantorObjectSigner, error) {
-	if subject == "" || commerce.ValidateProfileRefV1(profile) != nil || len(key) != ed25519.PrivateKeySize ||
+func NewLocalGuarantorObjectSigner(
+	subject string,
+	profile commerce.ProfileRefV1,
+	signer mldsa44.Signer,
+	controller string,
+	historicalProof []byte,
+) (*LocalGuarantorObjectSigner, error) {
+	if subject == "" || commerce.ValidateProfileRefV1(profile) != nil || signer == nil || controller == "" ||
 		len(historicalProof) == 0 || len(historicalProof) > 64<<10 {
 		return nil, errors.New("local Guarantor object signer is invalid")
 	}
-	return &LocalGuarantorObjectSigner{subject: subject, profile: profile, key: append(ed25519.PrivateKey(nil), key...),
-		historicalProof: append([]byte(nil), historicalProof...)}, nil
+	return &LocalGuarantorObjectSigner{
+		subject: subject, profile: profile, signer: signer, controller: controller,
+		historicalProof: append([]byte(nil), historicalProof...),
+	}, nil
+}
+
+func (signer *LocalGuarantorObjectSigner) statement(
+	kind, bodyDigest string,
+	validationTime time.Time,
+) guarantor.AuthorizationStatementV1 {
+	return guarantor.AuthorizationStatementV1{
+		SchemaVersion:        1,
+		AuthoritySubject:     signer.subject,
+		ProfileURI:           signer.profile.ProfileURI,
+		ProfileVersion:       signer.profile.ProfileVersion,
+		ProfileDigest:        signer.profile.ProfileDigest,
+		AuthorizedObjectKind: kind,
+		AuthorizedBodyDigest: bodyDigest,
+		ValidationTimeUnix:   uint64(validationTime.UTC().Unix()),
+	}
 }
 
 func (signer *LocalGuarantorObjectSigner) SignObject(kind, bodyDigest, signatureDomain string,
 	validationTime time.Time) (guarantor.ProfileQualifiedObjectAuthorizationV1, error) {
-	if signer == nil || kind == "" || !canonicalSHA256(bodyDigest) || signatureDomain == "" || validationTime.IsZero() {
+	if signer == nil || kind == "" || !canonicalSHA256(bodyDigest) || signatureDomain == "" ||
+		validationTime.IsZero() ||
+		validationTime.Unix() < 0 {
 		return guarantor.ProfileQualifiedObjectAuthorizationV1{}, errors.New("Guarantor signing request is invalid")
 	}
-	return guarantor.SignObjectAuthorization(guarantor.AuthorizationStatementV1{SchemaVersion: 1,
-		AuthoritySubject: signer.subject, ProfileURI: signer.profile.ProfileURI, ProfileVersion: signer.profile.ProfileVersion,
-		ProfileDigest: signer.profile.ProfileDigest, AuthorizedObjectKind: kind, AuthorizedBodyDigest: bodyDigest,
-		ValidationTimeUnix: uint64(validationTime.UTC().Unix())}, signatureDomain, signer.key, signer.historicalProof)
+	return guarantor.SignObjectAuthorization(context.Background(), signer.statement(kind, bodyDigest, validationTime),
+		signatureDomain, signer.signer, signer.controller, signer.historicalProof)
+}
+
+// SignStageActionAdmission signs a portable stage admission with the Action
+// Authority controller under the stage admission domain.
+func (signer *LocalGuarantorObjectSigner) SignStageActionAdmission(bodyDigest string,
+	validationTime time.Time,
+) (guarantor.StageActionAdmissionAuthorizationV1, error) {
+	if signer == nil || !canonicalSHA256(bodyDigest) || validationTime.IsZero() || validationTime.Unix() < 0 {
+		return guarantor.StageActionAdmissionAuthorizationV1{}, errors.New(
+			"Guarantor stage admission signing request is invalid",
+		)
+	}
+	statement := signer.statement(guarantor.StageActionAdmissionObjectKind, bodyDigest, validationTime)
+	message, err := guarantor.NativeAuthorizationMessage(guarantor.StageActionAdmissionSignatureDomain, statement)
+	if err != nil {
+		return guarantor.StageActionAdmissionAuthorizationV1{}, err
+	}
+	keyID, signature, err := commerce.SignActionAuthorityMessage(
+		context.Background(),
+		signer.signer,
+		signer.controller,
+		message,
+	)
+	if err != nil {
+		return guarantor.StageActionAdmissionAuthorizationV1{}, err
+	}
+	return guarantor.StageActionAdmissionAuthorizationV1{
+		AuthoritySubject:     statement.AuthoritySubject,
+		ProfileURI:           statement.ProfileURI,
+		ProfileVersion:       statement.ProfileVersion,
+		ProfileDigest:        statement.ProfileDigest,
+		AuthorizedObjectKind: statement.AuthorizedObjectKind,
+		AuthorizedBodyDigest: statement.AuthorizedBodyDigest,
+		ValidationTimeUnix:   statement.ValidationTimeUnix,
+		EvidenceContentType:  guarantor.ActionAuthorityEvidenceContentType,
+		Evidence: guarantor.ActionAuthorityMLDSA44EvidenceV1{
+			KeyID: keyID, Signature: signature,
+			HistoricalAuthorityProof: append([]byte(nil), signer.historicalProof...),
+		},
+	}, nil
 }
 
 type GuarantorIssueOfferInput struct {
@@ -70,7 +148,7 @@ type GuarantorProviderCoordinator struct {
 	Authority                       EconomicAuthority
 	Journal                         *GuarantorJournal
 	Signer                          GuarantorObjectSigner
-	ActionAuthoritySigner           GuarantorObjectSigner
+	ActionAuthoritySigner           GuarantorActionAuthoritySigner
 	FallbackSigner                  GuarantorObjectSigner
 	Resolver                        guarantor.AuthorityKeyResolver
 	PublicationResolver             commerce.AgentOperationAuthorityResolver
@@ -268,8 +346,8 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 			DigestKind: "authorized_envelope", ObjectDigest: collateralEvidenceDigest})
 	}
 	sort.Slice(refs, func(i, j int) bool {
-		left, _ := codec.Marshal(refs[i])
-		right, _ := codec.Marshal(refs[j])
+		left, _ := guarantor.Canonical(refs[i])
+		right, _ := guarantor.Canonical(refs[j])
 		return string(left) < string(right)
 	})
 	projection := guarantor.TransitionEvidenceProjectionV1{SchemaVersion: 1, Purpose: "coverage-activation",
@@ -287,7 +365,7 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 		ExpectedClaimFilingState: "not_open", TargetClaimFilingState: "open",
 		ExpectedClaimFilingStateRevision: coverage.Record.FilingStateRevision,
 		TargetClaimFilingStateRevision:   coverage.Record.FilingStateRevision + 1}
-	canonicalRequest, err := codec.Marshal(actionBody)
+	canonicalRequest, err := guarantor.Canonical(actionBody)
 	if err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
@@ -368,7 +446,7 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 		ActivatedClaimFilingStateRevision:    coverage.Record.FilingStateRevision + 1,
 		ResultingCoverageEndCommitmentDigest: endDigest, ActivatedAtUnix: input.ActivatedAtUnix,
 		CoverageEndsAtUnix: terms.CoverageEndsAtUnix, AuthorityAdmissionEligibilityProofSetDigest: eligibilityDigest}
-	bodyDigest, _ := codec.Digest("tos.service.agent-guarantor-activation-evidence-body.v1", body)
+	bodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-activation-evidence-body.v1", body)
 	authorization, err := coordinator.Signer.SignObject("activation-evidence", bodyDigest,
 		"tos.service.agent-guarantor-activation-evidence-signature.v1", activatedAt)
 	if err != nil {
@@ -421,7 +499,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 	if err != nil {
 		return GuarantorClaimAdmissionResult{}, err
 	}
-	canonicalClaimEnvelope, err := codec.Marshal(claim)
+	canonicalClaimEnvelope, err := guarantor.Canonical(claim)
 	if err != nil || uint64(len(canonicalClaimEnvelope)) > coverage.Terms.ClaimClosureCapacity.MaximumAdmittedClaimEnvelopeBytes {
 		if err == nil {
 			err = errors.New("Guarantor claim exceeds the accepted envelope bound")
@@ -430,7 +508,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 	}
 	ingressRequest := guarantor.ClaimSubmissionIngressActionBodyV1{SchemaVersion: 1,
 		AuthorizedClaim: claim, TargetIngressState: "received"}
-	canonicalClaim, err := codec.Marshal(ingressRequest)
+	canonicalClaim, err := guarantor.Canonical(ingressRequest)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{}, err
 	}
@@ -528,7 +606,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		StableActionID: ingressAction.StableActionID, ExactRequestDigest: ingressAction.ExactRequestDigest,
 		WriterGeneration: ingressAction.WriterGeneration, WriterFenceDigest: ingressAction.WriterFenceDigest,
 		ReceivedAtUnix: uint64(now.Unix()), AuthorityAdmissionEligibilityProofSetDigest: ingressEligibilityDigest}
-	ingressBodyDigest, err := codec.Digest("tos.service.agent-guarantor-claim-ingress-receipt-body.v1", ingressBody)
+	ingressBodyDigest, err := guarantor.Digest("tos.service.agent-guarantor-claim-ingress-receipt-body.v1", ingressBody)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
 	}
@@ -557,7 +635,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		AuthorizedClaimIngressReceipt: ingressReceipt, AuthorizedCoverageActivationEvidence: *coverage.ActivationEvidence,
 		ExpectedCoverageEndCommitment: coverage.ActivationEvidence.CoverageEndCommitment,
 		ExpectedCoverageRevision:      preview.PriorCoverageRevision}
-	canonicalEffect, err := codec.Marshal(effect)
+	canonicalEffect, err := guarantor.Canonical(effect)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, IngressResolution: ingressResolution}, err
 	}
@@ -575,7 +653,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 	admissionRequestBody := guarantor.ClaimSubmissionActionBodyV1{SchemaVersion: 1,
 		AuthorityInstanceID: instance.AuthorityInstanceID, AuthorityInstanceRecord: instance,
 		AuthorityInstanceEffect: effect}
-	admissionRequest, err := codec.Marshal(admissionRequestBody)
+	admissionRequest, err := guarantor.Canonical(admissionRequestBody)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, IngressResolution: ingressResolution}, err
 	}
@@ -668,7 +746,10 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		AdmittedClaimRevisionLogRoot:              preview.AdmittedClaimRevisionLogRoot,
 		WriterGeneration:                          admissionAction.WriterGeneration, WriterFenceDigest: admissionAction.WriterFenceDigest,
 		AdmittedAtUnix: uint64(now.Unix()), AuthorityAdmissionEligibilityProofSetDigest: admissionEligibilityDigest}
-	admissionBodyDigest, err := codec.Digest("tos.service.agent-guarantor-claim-admission-receipt-body.v1", admissionBody)
+	admissionBodyDigest, err := guarantor.Digest(
+		"tos.service.agent-guarantor-claim-admission-receipt-body.v1",
+		admissionBody,
+	)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, IngressResolution: ingressResolution,
 			AdmissionResolution: admissionResolution}, err
@@ -799,7 +880,7 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 		ExpectedApplicationTokenRevision: token.TokenRevision, ExpectedClaimStateRevision: record.ClaimStateRevision,
 		TargetClaimState: transition.Body.ResultingClaimState, ExpectedNextPayoutSequence: coverage.NextPayoutSequence,
 		ExpectedMaterializedPayoutLineDigest: coverage.MaterializedPayoutLineDigest}
-	canonicalRequest, err := codec.Marshal(requestBody)
+	canonicalRequest, err := guarantor.Canonical(requestBody)
 	if err != nil {
 		return GuarantorDecisionApplicationResult{}, err
 	}
@@ -825,11 +906,11 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 			firstError(err, errors.New("Guarantor decision application action was not prepared"))
 	}
 	tokenDigest, _ := guarantor.DecisionApplicationTokenDigestV1(token)
-	payoutDigest, _ := codec.Digest(guarantor.PayoutSetDomain, payouts)
+	payoutDigest, _ := guarantor.Digest(guarantor.PayoutSetDomain, payouts)
 	actionDigest, _ := commerce.AuthorizedActionDigest(action)
 	resultingLineDigest := coverage.MaterializedPayoutLineDigest
 	if len(payouts.MaterializedLines) > 0 {
-		resultingLineDigest, _ = codec.Digest("tos.service.agent-guarantor-materialized-payout-line.v1",
+		resultingLineDigest, _ = guarantor.Digest("tos.service.agent-guarantor-materialized-payout-line.v1",
 			payouts.MaterializedLines[len(payouts.MaterializedLines)-1])
 	}
 	cumulativeAfter, err := atomicAdd(coverage.CumulativeAppliedApprovedAtomic, token.ReservedApprovedAmount.AmountAtomic)
@@ -857,7 +938,7 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 		CumulativeApprovedAfter:               commerce.AtomicAmountV1{Asset: coverage.Terms.CoverageAsset, AmountAtomic: cumulativeAfter},
 		AggregatePendingDecisionReserveBefore: requestBody.ExpectedAggregatePendingDecisionReserve,
 		AggregatePendingDecisionReserveAfter:  targetPending, AppliedAtUnix: uint64(now.Unix())}
-	bodyDigest, err := codec.Digest("tos.service.agent-guarantor-claim-decision-application-receipt-body.v1", body)
+	bodyDigest, err := guarantor.Digest("tos.service.agent-guarantor-claim-decision-application-receipt-body.v1", body)
 	if err != nil {
 		return GuarantorDecisionApplicationResult{Payouts: payouts, Resolution: resolution}, err
 	}
@@ -958,7 +1039,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseExpiredOffer(ctx context.C
 		offerPosition.OfferEnvelopeDigest != offerDigest {
 		return GuarantorCloseExpiredOfferResult{}, errors.New("Guarantor offer is not an exact live issued offer")
 	}
-	acceptanceDomainID, _ := codec.Digest("tos.service.agent-guarantor-acceptance-admission-domain.v1", struct {
+	acceptanceDomainID, _ := guarantor.Digest("tos.service.agent-guarantor-acceptance-admission-domain.v1", struct {
 		OfferID string `json:"offer_id"`
 	}{input.Offer.Body.OfferID})
 	cut, err := coordinator.Journal.FreezeAdmissionCut(acceptanceDomainID, input.Offer.Body.AcceptByUnix)
@@ -1002,7 +1083,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseExpiredOffer(ctx context.C
 			IssuanceActionResolution: issuance, ReleaseReason: "acceptance_window_closed",
 			AcceptanceCutoffUnix: input.Offer.Body.AcceptByUnix, ExpectedReservationRevision: offerPosition.Record.StateRevision,
 			ExpectedOfferStateRevision: offerPosition.Record.StateRevision, TargetOfferStateRevision: offerPosition.Record.StateRevision + 1}
-		expiryRequest, marshalErr := codec.Marshal(expiryBody)
+		expiryRequest, marshalErr := guarantor.Canonical(expiryBody)
 		if marshalErr != nil {
 			return result, marshalErr
 		}
@@ -1033,7 +1114,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseExpiredOffer(ctx context.C
 			AuthorizedActionDigest: actionDigest, StableActionID: expiryAction.StableActionID,
 			ExactRequestDigest: expiryAction.ExactRequestDigest, WriterGeneration: expiryAction.WriterGeneration,
 			WriterFenceDigest: expiryAction.WriterFenceDigest, ResolvedAtUnix: uint64(now.Unix())}
-		bodyDigest, _ := codec.Digest("tos.service.agent-guarantor-offer-non-acceptance-body.v1", nonAcceptanceBody)
+		bodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-offer-non-acceptance-body.v1", nonAcceptanceBody)
 		authorization, signErr := coordinator.Signer.SignObject("offer-non-acceptance", bodyDigest,
 			"tos.service.agent-guarantor-offer-non-acceptance-signature.v1", now)
 		if signErr != nil {
@@ -1064,7 +1145,10 @@ func (coordinator *GuarantorProviderCoordinator) CloseExpiredOffer(ctx context.C
 		AuthorityInstanceID: input.Offer.Body.OfferID, ReservationID: input.Offer.Body.ReservationID,
 		ExposureReceiptDigest: exposureReceiptDigest, AuthorizedFirmOfferEnvelopeDigest: offerDigest,
 		ReleaseReason: "acceptance_window_closed", NonAcceptanceEvidenceDigest: nonAcceptanceDigest}
-	projectionDigest, _ := codec.Digest("tos.service.agent-guarantor-pre-acceptance-release-evidence-projection.v1", projection)
+	projectionDigest, _ := guarantor.Digest(
+		"tos.service.agent-guarantor-pre-acceptance-release-evidence-projection.v1",
+		projection,
+	)
 	var plan GuarantorPreAcceptanceReleasePlan
 	if offerPosition.PreAcceptanceReleasePlan != nil {
 		plan = *offerPosition.PreAcceptanceReleasePlan
@@ -1074,7 +1158,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseExpiredOffer(ctx context.C
 			AuthorizedNonAcceptanceEvidence: result.NonAcceptanceEvidence, ReleaseEvidenceProjection: projection,
 			ExpectedPortfolioRevision: portfolioRevision, TargetPortfolioRevision: portfolioRevision + 1,
 			ExpectedReservedExposure: input.Offer.ExposureAdmissionReceipt.Body.ReservedExposure}
-		releaseBytes, marshalErr := codec.Marshal(releaseBody)
+		releaseBytes, marshalErr := guarantor.Canonical(releaseBody)
 		if marshalErr != nil {
 			return result, marshalErr
 		}
@@ -1135,7 +1219,10 @@ func (coordinator *GuarantorProviderCoordinator) CloseExpiredOffer(ctx context.C
 		RemainingReservedExposure: commerce.AtomicAmountV1{Asset: input.Offer.ExposureAdmissionReceipt.Body.ReservedExposure.Asset, AmountAtomic: "0"},
 		State:                     "released_unaccepted", ReleasedAtUnix: plan.ReleasedAtUnix}
 	releaseBody.AuthorizedActionDigest, _ = commerce.AuthorizedActionDigest(effectiveReleaseAction)
-	releaseBodyDigest, _ := codec.Digest("tos.service.agent-guarantor-pre-acceptance-release-receipt-body.v1", releaseBody)
+	releaseBodyDigest, _ := guarantor.Digest(
+		"tos.service.agent-guarantor-pre-acceptance-release-receipt-body.v1",
+		releaseBody,
+	)
 	releaseAuthorization, err := coordinator.Signer.SignObject("pre-acceptance-exposure-release", releaseBodyDigest,
 		"tos.service.agent-guarantor-pre-acceptance-release-receipt-signature.v1", time.Unix(int64(plan.ReleasedAtUnix), 0).UTC())
 	if err != nil {
@@ -1237,7 +1324,7 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 		ExpectedOfferStateRevision:  priorOfferRevision, TargetOfferStateRevision: priorOfferRevision + 1,
 		ExpectedCoverageRevision: 0, TargetCoverageRevision: 1, ExpectedClaimFilingState: "uninitialized",
 		TargetClaimFilingState: "not_open", ExpectedClaimFilingStateRevision: 0, TargetClaimFilingStateRevision: 1}
-	canonicalRequest, err := codec.Marshal(actionRequest)
+	canonicalRequest, err := guarantor.Canonical(actionRequest)
 	if err != nil {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
 	}
@@ -1315,7 +1402,7 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 		PriorClaimFilingStateRevision: 0, AcceptedClaimFilingStateRevision: 1,
 		ReceivedAtUnix: input.ReceivedAtUnix, AcceptedAtUnix: input.ReceivedAtUnix,
 		AuthorityAdmissionEligibilityProofSetDigest: proofDigest}
-	bodyDigest, _ := codec.Digest("tos.service.agent-guarantor-acceptance-receipt-body.v1", receiptBody)
+	bodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-acceptance-receipt-body.v1", receiptBody)
 	authorization, err := coordinator.Signer.SignObject("coverage-acceptance-receipt", bodyDigest,
 		"tos.service.agent-guarantor-acceptance-receipt-signature.v1", receivedAt)
 	if err != nil {
@@ -1488,8 +1575,8 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 			PredicateID: predicate.PredicateID, TargetProjectionDigest: predicate.EvidenceTargetProjectionDigest})
 	}
 	sort.Slice(guarantorTargets, func(i, j int) bool {
-		left, _ := codec.Marshal(guarantorTargets[i])
-		right, _ := codec.Marshal(guarantorTargets[j])
+		left, _ := guarantor.Canonical(guarantorTargets[i])
+		right, _ := guarantor.Canonical(guarantorTargets[j])
 		return string(left) < string(right)
 	})
 	if len(guarantorTargets) == 0 || commerce.ValidateProfileRefV1(guarantorEvidenceProfile) != nil {
@@ -1568,7 +1655,7 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 	if err := guarantor.ValidateFirmOfferIssuanceActionBodyV1(requestBody); err != nil {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
 	}
-	canonicalRequest, err := codec.Marshal(requestBody)
+	canonicalRequest, err := guarantor.Canonical(requestBody)
 	if err != nil {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
 	}
@@ -1585,7 +1672,7 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 	if err != nil {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
 	}
-	offerAdmissionDomain, err := codec.Digest("tos.service.agent-guarantor-firm-offer-admission-domain.v1", struct {
+	offerAdmissionDomain, err := guarantor.Digest("tos.service.agent-guarantor-firm-offer-admission-domain.v1", struct {
 		AuthorityInstanceID string `json:"authority_instance_id"`
 	}{instance.AuthorityInstanceID})
 	if err != nil {
@@ -1620,7 +1707,7 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 		AdmittedPortfolioRevision: baseRevision + 1, ReservedExposure: input.Terms.MaximumAggregatePayout, State: "reserved",
 		AdmittedAtUnix: input.IssuedAtUnix, ExpiresAtUnix: input.ReservationExpiresAtUnix,
 		AuthorityAdmissionEligibilityProofSetDigest: proofDigest}
-	receiptBodyDigest, _ := codec.Digest("tos.service.agent-guarantor-exposure-receipt-body.v1", receiptBody)
+	receiptBodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-exposure-receipt-body.v1", receiptBody)
 	receiptAuthorization, err := coordinator.Signer.SignObject("exposure-admission-receipt", receiptBodyDigest,
 		"tos.service.agent-guarantor-exposure-receipt-signature.v1", issuedAt)
 	if err != nil {
@@ -1635,7 +1722,7 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 	}
 	offerBody := unsignedTemplate
 	offerBody.ExposureAdmissionReceiptDigest = receiptDigest
-	offerBodyDigest, _ := codec.Digest("tos.service.agent-guarantor-firm-offer-body.v1", offerBody)
+	offerBodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-firm-offer-body.v1", offerBody)
 	offerAuthorization, err := coordinator.Signer.SignObject("firm-coverage-offer", offerBodyDigest,
 		"tos.service.agent-guarantor-firm-offer-signature.v1", issuedAt)
 	if err != nil {
@@ -1815,8 +1902,8 @@ func firstError(primary, fallback error) error {
 
 func sortGuarantorAuthorizations(values []guarantor.ProfileQualifiedObjectAuthorizationV1) {
 	sort.Slice(values, func(i, j int) bool {
-		left, _ := codec.Marshal(values[i])
-		right, _ := codec.Marshal(values[j])
+		left, _ := guarantor.Canonical(values[i])
+		right, _ := guarantor.Canonical(values[j])
 		return string(left) < string(right)
 	})
 }

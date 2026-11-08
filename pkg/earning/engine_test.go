@@ -13,7 +13,6 @@ import (
 )
 
 type exactSink struct {
-	key         ed25519.PublicKey
 	now         time.Time
 	calls       int
 	resolutions map[string]commerce.ActionResolution
@@ -23,7 +22,7 @@ type exactSink struct {
 
 func (sink *exactSink) Submit(_ context.Context, action commerce.AuthorizedAction, fence commerce.WriterFence,
 	fields map[string]commerce.SemanticValue, request []byte, message OutboundMessage) (commerce.ActionResolution, error) {
-	if err := commerce.VerifyAuthorizedAction(action, fields, request, fence, localFenceResolver{authorityID: "authority", key: sink.key}, sink.now); err != nil {
+	if err := commerce.VerifyAuthorizedAction(action, fields, request, fence, testActionAuthorityResolver("authority"), sink.now); err != nil {
 		return commerce.ActionResolution{}, err
 	}
 	sink.calls++
@@ -37,8 +36,7 @@ func (sink *exactSink) Submit(_ context.Context, action commerce.AuthorizedActio
 
 func TestEngineSendsRawCanonicalCommerceEventToMessengerBoundary(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner", "agent:a", "authority", authorityKey,
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner", "agent:a", "authority", testAuthorityKeys(),
 		PortfolioLimits{})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +53,7 @@ func TestEngineSendsRawCanonicalCommerceEventToMessengerBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink := &exactSink{key: authorityKey.Public().(ed25519.PublicKey), now: now,
+	sink := &exactSink{now: now,
 		resolutions: map[string]commerce.ActionResolution{}}
 	engine := &Engine{OwnerID: "owner", AgentID: "agent:a", MandateDigest: testDigest,
 		Gates: FeatureGates{AgentGuarantor: true}, Authority: authority, Sink: sink, Now: func() time.Time { return now }}
@@ -86,9 +84,14 @@ func TestEngineContactsOnlyCorroboratedProfitableIntentExactlyOnce(t *testing.T)
 	_, issuerKey, _ := ed25519.GenerateKey(rand.Reader)
 	intent := earningIntent(t, now, issuerKey)
 	digest, _ := commerce.IntentBodyDigest(intent.Body)
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner", "agent:worker", "authority", authorityKey,
-		PortfolioLimits{ComputeUnits: 10, SpendAtomic: 100})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner",
+		"agent:worker",
+		"authority",
+		testAuthorityKeys(),
+		PortfolioLimits{ComputeUnits: 10, SpendAtomic: 100},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +101,7 @@ func TestEngineContactsOnlyCorroboratedProfitableIntentExactlyOnce(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink := &exactSink{key: authorityKey.Public().(ed25519.PublicKey), now: now, resolutions: map[string]commerce.ActionResolution{}}
+	sink := &exactSink{now: now, resolutions: map[string]commerce.ActionResolution{}}
 	engine := &Engine{OwnerID: "owner", AgentID: "agent:worker", MandateDigest: testDigest, Gates: FeatureGates{Contact: true},
 		Authority: authority, Sink: sink, Now: func() time.Time { return now }}
 	candidate := CandidateAssessment{IntentDigest: digest, Intent: intent, Inventory: InventorySnapshot{PolicyRevision: 1},
@@ -126,8 +129,7 @@ func TestEngineContactsOnlyCorroboratedProfitableIntentExactlyOnce(t *testing.T)
 
 func TestProposerDurablyRecordsExactAgreementAfterMessengerAdmission(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner", "agent:a", "authority", authorityKey,
+	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner", "agent:a", "authority", testAuthorityKeys(),
 		PortfolioLimits{ComputeUnits: 10, SpendAtomic: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +140,7 @@ func TestProposerDurablyRecordsExactAgreementAfterMessengerAdmission(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink := &exactSink{key: authorityKey.Public().(ed25519.PublicKey), now: now, resolutions: map[string]commerce.ActionResolution{}}
+	sink := &exactSink{now: now, resolutions: map[string]commerce.ActionResolution{}}
 	profile := commerce.AgentSignatureProfileDigest()
 	body := commerce.AgentAgreementBody{SchemaVersion: 1, AgreementID: "agreement:proposal", Version: 1, NetworkContext: "tos:test",
 		Participants:     []commerce.AgreementParticipant{{AgentID: "agent:a", Roles: []string{"provider"}}, {AgentID: "agent:b", Roles: []string{"buyer"}}},

@@ -157,13 +157,12 @@ readable on the OpenFox host.
 
 ## Typed Agent Packet provider handoff
 
-`nativeimpl.OpenAgentPacketUnixServer` exposes an Agent Packet handler on an
-owner-private local socket. The parent directory must already exist with no
+`servicebridge.OpenAgentPacketUnixServer` exposes the rail packet receiver on
+an owner-private local socket. The parent directory must already exist with no
 group/world permissions. The server refuses a relative path, symlink,
-ordinary-file replacement or public directory, creates the socket as mode `0600`, and removes it on shutdown. Unix
-socket possession is only a delivery boundary: the received canonical Packet
-still passes the protocol's finalized sender/controller verification and replay
-guard before the purchase-bound adapter reaches the one shared Execution Gate.
-Packet bytes never become AgentLoop/model text. `tos-messenger` supplies the
-matching bounded Unix receiver; production daemon assembly remains separate
-from this channel until an admitted `agent.packet` route exists.
+ordinary-file replacement or public directory, creates the socket as mode
+`0600`, and removes it on shutdown. Unix socket possession is only a delivery
+boundary: every packet is verified again against finalized sender/controller
+state and stored durably before the socket answers, and the work it carries is
+admitted only through the Service Actor rail gate. Packet bytes never become
+AgentLoop/model text. See [Service Actor rail](service-actor-rail.md).

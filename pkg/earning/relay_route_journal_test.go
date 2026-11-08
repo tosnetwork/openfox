@@ -74,7 +74,7 @@ func TestDurableRelayRouteJournalFailsClosedAfterDirectoryReplacement(t *testing
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	journal, err := OpenDurableRelayRouteJournal(directory)
+	journal, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestDurableRelayRouteJournalFailsClosedAfterDirectoryReplacement(t *testing
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if replacement, err := OpenDurableRelayRouteJournal(directory); err == nil {
+	if replacement, checkErr := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority()); checkErr == nil {
 		_ = replacement.Close()
 		t.Fatal("replacement directory created a concurrent logical route authority")
 	}
@@ -118,7 +118,7 @@ func TestDurableRelayRouteJournalPinsProtectedChildDirectories(t *testing.T) {
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	journal, err := OpenDurableRelayRouteJournal(directory)
+	journal, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,11 +214,11 @@ func TestDurableRelayRouteJournalPinsSelectionBeforeSubmitAndAcrossRestart(t *te
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	journal, err := OpenDurableRelayRouteJournal(directory)
+	journal, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenDurableRelayRouteJournal(directory); err == nil {
+	if _, checkErr := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority()); checkErr == nil {
 		t.Fatal("second process opened owner relay route journal")
 	}
 	record, created, err := journal.Bind(fixture.prepared, []RelayProviderProvenance{second, first}, first,
@@ -301,7 +301,7 @@ func TestDurableRelayRouteJournalPinsSelectionBeforeSubmitAndAcrossRestart(t *te
 	if err := os.WriteFile(artifactPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if compromised, openErr := OpenDurableRelayRouteJournal(directory); openErr == nil {
+	if compromised, openErr := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority()); openErr == nil {
 		_, resolveErr := compromised.Resolve(record.StableActionID, record.ExactRequestDigest)
 		_ = compromised.Close()
 		if resolveErr == nil {
@@ -319,7 +319,7 @@ func TestDurableRelayRouteJournalPinsSelectionBeforeSubmitAndAcrossRestart(t *te
 	if err != nil || os.WriteFile(artifactPath, raw, 0o600) != nil {
 		t.Fatalf("write cumulative-fee tamper: %v", err)
 	}
-	if compromised, openErr := OpenDurableRelayRouteJournal(directory); openErr == nil {
+	if compromised, openErr := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority()); openErr == nil {
 		_, resolveErr := compromised.Resolve(record.StableActionID, record.ExactRequestDigest)
 		_ = compromised.Close()
 		if resolveErr == nil {
@@ -329,7 +329,7 @@ func TestDurableRelayRouteJournalPinsSelectionBeforeSubmitAndAcrossRestart(t *te
 	if err := os.WriteFile(artifactPath, untampered, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenDurableRelayRouteJournal(directory)
+	reopened, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestDurableRelayRouteJournalPinsSelectionBeforeSubmitAndAcrossRestart(t *te
 	if _, err := os.Lstat(artifactPath); err != nil {
 		t.Fatalf("crash-before-accounting terminal artifact was not preserved: %v", err)
 	}
-	reference, err := RelayTerminalHandoffReferenceForRecord(record)
+	reference, err := (&DurableRelayRouteJournal{authority: testRelayRouteAuthority()}).TerminalHandoffReference(record)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestDurableRelayRouteJournalReconcilesTerminalStorageCrashBoundaries(t *tes
 			if err := os.Mkdir(directory, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			journal, err := OpenDurableRelayRouteJournal(directory)
+			journal, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -459,7 +459,7 @@ func TestDurableRelayRouteJournalReconcilesTerminalStorageCrashBoundaries(t *tes
 			current.TerminalResolutionDigest, current.TerminalResolution = resolutionDigest, &resolution
 			current.TerminalFinalityEvidenceDigest, current.TerminalFinalityEvidence = evidenceDigest, &evidence
 			terminal.UpdatedAtUnix = uint64(fixture.now.Add(2 * time.Second).Unix())
-			if !relayTerminalRecordIsMonotonicSuccessor(active, terminal) {
+			if !relayTerminalRecordIsMonotonicSuccessor(active, terminal, testRelayRouteAuthority()) {
 				t.Fatal("test terminal record is not a valid monotonic successor")
 			}
 			if test.writeTombstone {
@@ -484,7 +484,7 @@ func TestDurableRelayRouteJournalReconcilesTerminalStorageCrashBoundaries(t *tes
 			if err := journal.Close(); err != nil {
 				t.Fatal(err)
 			}
-			reopened, err := OpenDurableRelayRouteJournal(directory)
+			reopened, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -540,7 +540,7 @@ func TestRelayRouteTerminalSupersedesUnstartedQuerySuccessorAcrossRestart(t *tes
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	journal, err := OpenDurableRelayRouteJournal(directory)
+	journal, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +610,10 @@ func TestRelayRouteTerminalSupersedesUnstartedQuerySuccessorAcrossRestart(t *tes
 	if err := os.WriteFile(filepath.Join(tamperedDirectory, relayRouteJournalFile), tamperedRaw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if compromised, err := OpenDurableRelayRouteJournal(tamperedDirectory); err == nil {
+	if compromised, checkErr := OpenDurableRelayRouteJournal(
+		tamperedDirectory,
+		testRelayRouteAuthority(),
+	); checkErr == nil {
 		_ = compromised.Close()
 		t.Fatal("journal recovery accepted a pending fee reservation inconsistent with its successor quote")
 	}
@@ -626,7 +629,7 @@ func TestRelayRouteTerminalSupersedesUnstartedQuerySuccessorAcrossRestart(t *tes
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenDurableRelayRouteJournal(directory)
+	reopened, err := OpenDurableRelayRouteJournal(directory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatalf("terminal-over-query transition did not survive restart: %v", err)
 	}

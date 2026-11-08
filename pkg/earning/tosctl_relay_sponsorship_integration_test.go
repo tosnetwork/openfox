@@ -2,8 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -41,13 +39,12 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	const providerSourceA = "0:sponsor-a"
 	const feeReserveA = uint64(1)
 
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
 	authorityDirectory := filepath.Join(root, "authority")
 	if err := os.Mkdir(authorityDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:provider",
-		fixture.profile.ProviderAgentID, "authority:provider", authorityKey,
+		fixture.profile.ProviderAgentID, "authority:provider", testAuthorityKeys(),
 		relaySponsorshipTestLimits(t, fixture, providerSourceA))
 	if err != nil {
 		t.Fatal(err)
@@ -351,7 +348,7 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	if err := os.Mkdir(registryDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	registry, err := OpenDurableRelayRouteJournal(registryDirectory)
+	registry, err := OpenDurableRelayRouteJournal(registryDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +362,7 @@ func TestObservedSponsorshipUsesFrozenCorroborationWithoutGenericFinalityLoop(t 
 	if err := registry.Close(); err != nil {
 		t.Fatal(err)
 	}
-	registry, err = OpenDurableRelayRouteJournal(registryDirectory)
+	registry, err = OpenDurableRelayRouteJournal(registryDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}

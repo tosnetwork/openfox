@@ -16,14 +16,25 @@ import (
 
 func TestTwoDirectoryOutcomeCarrierInstancesRecoverAfterDatabaseLoss(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:source-loss", "agent:source-loss", "authority:source-loss", authorityKey, PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner:source-loss",
+		"agent:source-loss",
+		"authority:source-loss",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(context.Background(), "runtime:source-loss", []string{"operation.publish"}, time.Hour)
+	fence, err := authority.AcquireWriter(
+		context.Background(),
+		"runtime:source-loss",
+		[]string{"operation.publish"},
+		time.Hour,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,14 +111,25 @@ func TestTwoDirectoryOutcomeCarrierInstancesRecoverAfterDatabaseLoss(t *testing.
 
 func TestEnginePrivateOutcomeUsesTypedNonChatMessengerEffect(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
-	_, authorityKey, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(privateTempDir(t), "owner:private-outcome", "agent:source-loss", "authority", authorityKey, PortfolioLimits{})
+	authority, err := OpenPersonalAuthority(
+		privateTempDir(t),
+		"owner:private-outcome",
+		"agent:source-loss",
+		"authority",
+		testAuthorityKeys(),
+		PortfolioLimits{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
 	authority.now = func() time.Time { return now }
-	fence, err := authority.AcquireWriter(context.Background(), "runtime:private-outcome", []string{"operation.private-send"}, time.Hour)
+	fence, err := authority.AcquireWriter(
+		context.Background(),
+		"runtime:private-outcome",
+		[]string{"operation.private-send"},
+		time.Hour,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +145,7 @@ func TestEnginePrivateOutcomeUsesTypedNonChatMessengerEffect(t *testing.T) {
 		ConversationScopeDigest: zeroSHA256Digest(), TransportProfile: commerce.ProfileRefV1{ProfileURI: "tos.messenger.operation-outcome.v1",
 			ProfileVersion: 1, ProfileDigest: testDigest}, OperationEnvelope: carrierRequest.OperationEnvelope,
 		EventPayload: carrierRequest.EventPayload, Artifacts: carrierRequest.Artifacts}
-	sink := &exactSink{key: authorityKey.Public().(ed25519.PublicKey), now: now, resolutions: map[string]commerce.ActionResolution{}}
+	sink := &exactSink{now: now, resolutions: map[string]commerce.ActionResolution{}}
 	engine := &Engine{OwnerID: "owner:private-outcome", AgentID: "agent:source-loss", MandateDigest: testDigest,
 		Gates: FeatureGates{Contact: true}, Authority: authority, Sink: sink, Now: func() time.Time { return now }}
 	resolution, err := engine.SendOutcomePrivate(context.Background(), request, 1, fence)

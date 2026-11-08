@@ -6,7 +6,6 @@ import (
 
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 // buildGuarantorEligibilityProofSet turns authority-finality evidence into the
@@ -23,7 +22,7 @@ func buildGuarantorEligibilityProofSet(raw []byte, action commerce.AuthorizedAct
 	if err != nil {
 		return guarantor.AuthorityAdmissionEligibilityProofSetV1{}, err
 	}
-	principalDigest, err := codec.Digest("tos.service.agent-guarantor-finalized-authority-principal.v1", raw)
+	principalDigest, err := guarantor.Digest("tos.service.agent-guarantor-finalized-authority-principal.v1", raw)
 	if err != nil {
 		return guarantor.AuthorityAdmissionEligibilityProofSetV1{}, err
 	}
@@ -44,8 +43,8 @@ func buildGuarantorEligibilityProofSet(raw []byte, action commerce.AuthorizedAct
 			EligibilityState: "eligible"})
 	}
 	sort.Slice(entries, func(i, j int) bool {
-		left, _ := codec.Marshal(entries[i])
-		right, _ := codec.Marshal(entries[j])
+		left, _ := guarantor.Canonical(entries[i])
+		right, _ := guarantor.Canonical(entries[j])
 		return string(left) < string(right)
 	})
 	set := guarantor.AuthorityAdmissionEligibilityProofSetV1{SchemaVersion: 1, AdmittedActionDigest: actionDigest,

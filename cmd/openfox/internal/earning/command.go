@@ -29,14 +29,30 @@ import (
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
-	"github.com/tosnetwork/tos-service-protocol/pkg/paiddemand"
 	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 func NewCommand() *cobra.Command {
 	command := &cobra.Command{Use: "earning", Short: "Inspect autonomous earning safety state", Args: cobra.NoArgs}
-	command.AddCommand(statusCommand(), registryCommand(), scoutCommand(), runCommand(), intentCommand(), reconcileCommand(), operationsCommand(), authorityCommand(), relayCommand(), guarantorCommand(), modeCommand("pause", openfoxearning.OperationalPaused),
-		modeCommand("drain", openfoxearning.OperationalDraining), modeCommand("resume", openfoxearning.OperationalRunning))
+	command.AddCommand(
+		statusCommand(),
+		registryCommand(),
+		scoutCommand(),
+		runCommand(),
+		intentCommand(),
+		reconcileCommand(),
+		operationsCommand(),
+		authorityCommand(),
+		relayCommand(),
+		guarantorCommand(),
+		serviceCommand(),
+		modeCommand("pause", openfoxearning.OperationalPaused),
+		modeCommand(
+			"drain",
+			openfoxearning.OperationalDraining,
+		),
+		modeCommand("resume", openfoxearning.OperationalRunning),
+	)
 	return command
 }
 
@@ -589,11 +605,9 @@ func runCommand() *cobra.Command {
 				return encoder.Encode(assessment)
 			})
 			var agreementAutonomy *openfoxearning.AgreementAutonomy
-			var paidDemandAutonomy *openfoxearning.PaidDemandBuyerAutonomy
 			var engagementAutonomy *openfoxearning.EngagementAutonomy
 			var publicationAutonomy *openfoxearning.PublicationAutonomy
 			var privateHandoffAutonomy *openfoxearning.PrivateHandoffAutonomy
-			var paidDemand *paidDemandRuntime
 			var contactHandler *openfoxearning.ContactCandidateHandler
 			if cfg.Earning.Gates.Contact || cfg.Earning.Gates.Publication {
 				var closeAuthority func()
@@ -653,20 +667,6 @@ func runCommand() *cobra.Command {
 				if cfg.Earning.Gates.Agreement {
 					verifier := openfoxearning.AgreementEvidenceRouter{AgentAuthority: authorities,
 						Profiles: map[string]openfoxearning.ExternalAgreementEvidenceVerifier{}}
-					if cfg.Earning.Gates.TOSEscrow {
-						paidDemand, err = openPaidDemandRuntime(cfg.Earning, engine, identityKey, fenceSource)
-						if err != nil {
-							return err
-						}
-						verifier.Profiles[commerce.EvidenceProfilePaidDemandQuote] = commerce.PaidDemandQuoteEvidenceVerifier{
-							Native: paidDemand.EvidenceVerifier}
-						if contactHandler != nil {
-							contactHandler.SupplyProfiles = map[string]openfoxearning.SupplyAgreementProfileCompiler{
-								"tos.escrow.paid-demand.v1": openfoxearning.PaidDemandSupplyAgreementCompiler{
-									Network: paidDemand.Network, BuyerWallet: cfg.Earning.TOSEscrow.BuyerAddress,
-									Store: paidDemand.Negotiations}}
-						}
-					}
 					agreementPostpaid := make([]string, 0, len(cfg.Earning.SettlementAdapters))
 					for _, adapter := range cfg.Earning.SettlementAdapters {
 						if adapter == "tos.payment.direct.v1" ||
@@ -676,33 +676,19 @@ func runCommand() *cobra.Command {
 					}
 					agreementPrerequisite := openfoxearning.AdapterPrerequisitePolicy{
 						LocalAgentID: cfg.Earning.AgentID, PostpaidAdapters: agreementPostpaid}
-					if paidDemand != nil {
-						agreementPrerequisite.PrepaidAdapters = []string{paiddemand.SettlementAdapterURI}
-						agreementPrerequisite.Funding = openfoxearning.PaidDemandFundingPrerequisite{
-							Resolver: paidDemand.EscrowResolver, Network: paidDemand.Network,
-							ProviderOffers: paidDemand.OfferAuthorities}
-					}
 					agreementPolicy := openfoxearning.BoundedAgreementAdmissionPolicy{
-						LocalAgentID: cfg.Earning.AgentID, MaximumOutgoingPaymentAtomic: effectiveOutgoingPayment(cfg.Earning.Policy.MaximumOutgoingPaymentAtomic),
+						LocalAgentID: cfg.Earning.AgentID,
+						MaximumOutgoingPaymentAtomic: effectiveOutgoingPayment(
+							cfg.Earning.Policy.MaximumOutgoingPaymentAtomic,
+						),
 						MaximumLossAtomic: cfg.Earning.Policy.MaximumLossAtomic, Portfolio: authority,
-						AllowedEvidenceProfiles: configuredAgreementEvidenceProfiles(cfg.Earning)}
+					}
 					agreementAutonomy = &openfoxearning.AgreementAutonomy{Coordinator: openfoxearning.AgreementCoordinator{
 						Inbox: openfoxearning.AgreementInbox{Client: messenger}, Authority: authority, Verifier: verifier},
 						Engine: engine, Inventory: collector.Inventory, Policy: agreementPolicy,
 						Planner: openfoxearning.BoundedEngagementPlanner{OwnerID: cfg.Earning.OwnerID,
 							AgentID: cfg.Earning.AgentID, ComputeUnitsPerExecution: 1}, Prerequisite: agreementPrerequisite,
 						IdentityKey: identityKey, Verifier: verifier, Fence: fenceSource}
-					if paidDemand != nil {
-						funding := openfoxearning.PaidDemandFundingPrerequisite{Resolver: paidDemand.EscrowResolver,
-							Network: paidDemand.Network, ProviderOffers: paidDemand.OfferAuthorities}
-						prerequisite := openfoxearning.AdapterPrerequisitePolicy{LocalAgentID: cfg.Earning.AgentID,
-							PrepaidAdapters: []string{paiddemand.SettlementAdapterURI}, Funding: funding}
-						buyerService := openfoxearning.PaidDemandBuyerService{Engine: engine, Runtime: paidDemand.Buyer,
-							Verifier: verifier, PolicyRevision: 1}
-						paidDemandAutonomy = &openfoxearning.PaidDemandBuyerAutonomy{Engine: engine, Inventory: collector.Inventory,
-							Policy: agreementPolicy, Store: paidDemand.Negotiations, Preparer: paidDemand.Buyer, Buyer: buyerService,
-							Network: paidDemand.Network, PublicTerms: paidDemand.PublicTerms, Prerequisite: prerequisite, Fence: fenceSource}
-					}
 				}
 				if cfg.Earning.PrivateHandoff.Enabled {
 					privateRuntime, privateErr := openPrivateHandoffRuntime(cfg.Earning, engine, messenger, identityKey, authorities, fenceSource)
@@ -729,11 +715,6 @@ func runCommand() *cobra.Command {
 						}
 					}
 					prerequisite := openfoxearning.AdapterPrerequisitePolicy{LocalAgentID: cfg.Earning.AgentID, PostpaidAdapters: postpaid}
-					if paidDemand != nil {
-						prerequisite.PrepaidAdapters = []string{"tos.escrow.paid-demand.v1"}
-						prerequisite.Funding = openfoxearning.PaidDemandFundingPrerequisite{Resolver: paidDemand.EscrowResolver,
-							Network: paidDemand.Network, ProviderOffers: paidDemand.OfferAuthorities}
-					}
 					outputDirectory := filepath.Join(cfg.Earning.StateDir, "deliverables")
 					engagementAutonomy = &openfoxearning.EngagementAutonomy{Engine: engine, Inventory: collector.Inventory,
 						Planner:      openfoxearning.BoundedEngagementPlanner{OwnerID: cfg.Earning.OwnerID, AgentID: cfg.Earning.AgentID, ComputeUnitsPerExecution: 1},
@@ -761,26 +742,6 @@ func runCommand() *cobra.Command {
 						learningAcquisitionFence = controlAuthority
 						engagementAutonomy.Capability = openfoxearning.ProductionTrustedCapabilityAdmission{Store: capabilityStore,
 							BundleDirectory: capabilitySettings.ExecutionBundleDirectory}
-					}
-					if paidDemand != nil {
-						engagementAutonomy.Native = openfoxearning.PaidDemandNativeGate{
-							Directory: filepath.Join(cfg.Earning.StateDir, "paid-demand-native-gate"), Store: paidDemand.Negotiations,
-							PublicTerms: paidDemand.PublicTerms, Network: paidDemand.Network, EscrowResolver: paidDemand.EscrowResolver,
-							NativeResolver: paidDemand.NativeResolver, RegistryCodeHash: cfg.Earning.TOSEscrow.RegistryCodeHash,
-							EscrowCode: paidDemand.EscrowCode, AssetWalletCode: paidDemand.AssetWalletCode,
-							OfferAuthorities: paidDemand.OfferAuthorities}
-						engagementAutonomy.Receivables = openfoxearning.PaidDemandProviderSettlement{
-							Engine: engine, Store: paidDemand.Negotiations, Network: paidDemand.Network,
-							PublicTerms: paidDemand.PublicTerms, EscrowResolver: paidDemand.EscrowResolver,
-							AssetResolver: paidDemand.AssetResolver, OfferAuthorities: paidDemand.OfferAuthorities,
-							EscrowCode: paidDemand.EscrowCode, AssetWalletCode: paidDemand.AssetWalletCode,
-							ExecutionKey: paidDemand.ExecutionKey, ActionSender: paidDemand.ProviderSender,
-							Authorizer: openfoxearning.PaidDemandCustodyAuthorizer{Engine: engine, FenceSource: fenceSource,
-								PolicyRevision: 1, NetworkDomain: configuredPaidDemandCustodyNetwork(cfg.Earning.TOSEscrow)},
-							NetworkGlobalID: cfg.Earning.TOSEscrow.NetworkGlobalID,
-							ActionNanoTOS:   cfg.Earning.TOSEscrow.ActionNanoTOS,
-							PollInterval:    time.Duration(cfg.Earning.TOSEscrow.PollIntervalMillis) * time.Millisecond,
-							FinalityTimeout: time.Duration(cfg.Earning.TOSEscrow.FinalityTimeoutSeconds) * time.Second}
 					}
 					paymentBuilder := openfoxearning.DirectPaymentRequestBuilder{OwnerID: cfg.Earning.OwnerID,
 						AgentID: cfg.Earning.AgentID, ExternalAdapters: map[string]openfoxearning.ExternalAdapterIdentity{}}
@@ -909,13 +870,6 @@ func runCommand() *cobra.Command {
 					}
 					defer manager.Close()
 					settlementParameters := configuredSettlementParameters(publication.SettlementParameters)
-					if paidDemand != nil {
-						canonicalTerms, termsErr := paiddemand.CanonicalPublicTerms(paidDemand.PublicTerms)
-						if termsErr != nil {
-							return termsErr
-						}
-						settlementParameters[paiddemand.SettlementAdapterURI] = canonicalTerms
-					}
 					manager.Drafter = openfoxearning.LLMSupplyDrafter{
 						Provider:             llm,
 						Model:                model,
@@ -931,19 +885,6 @@ func runCommand() *cobra.Command {
 							Engine: engine, Inventory: collector.Inventory, Fence: fenceSource,
 							Compiler: openfoxearning.DemandAgreementCompiler{LocalAgentID: cfg.Earning.AgentID,
 								MaximumTTL: time.Duration(publication.MaximumTTLSeconds) * time.Second}}
-						if paidDemand != nil {
-							providerService := &openfoxearning.PaidDemandProviderService{Engine: engine,
-								Signer: paidDemand.ProviderSigner, OfferResolver: paidDemand.OfferAuthorities,
-								Evidence: agreementAutonomy.Verifier, PolicyRevision: 1}
-							funding := openfoxearning.PaidDemandFundingPrerequisite{Resolver: paidDemand.EscrowResolver,
-								Network: paidDemand.Network, ProviderOffers: paidDemand.OfferAuthorities}
-							negotiator.Profiles = map[string]openfoxearning.DemandApplicationProfileHandler{
-								paiddemand.SettlementAdapterURI: openfoxearning.PaidDemandApplicationHandler{
-									Engine: engine, Provider: providerService, Network: paidDemand.Network,
-									Store: paidDemand.Negotiations, Prerequisite: openfoxearning.AdapterPrerequisitePolicy{
-										LocalAgentID: cfg.Earning.AgentID, PrepaidAdapters: []string{paiddemand.SettlementAdapterURI},
-										Funding: funding}, ComputeUnits: 1}}
-						}
 						agreementAutonomy.Coordinator.ApplicationHandler = negotiator
 					}
 					carrierIDs := make([]string, 0, len(cfg.Earning.Carriers))
@@ -963,7 +904,7 @@ func runCommand() *cobra.Command {
 				timeout = time.Minute
 			}
 			service := &openfoxearning.AutonomousService{Collector: collector, Handler: handler, Operations: operations,
-				Agreements: agreementAutonomy, PaidDemand: paidDemandAutonomy, PrivateHandoffs: privateHandoffAutonomy,
+				Agreements: agreementAutonomy, PrivateHandoffs: privateHandoffAutonomy,
 				Engagements: engagementAutonomy, Publications: publicationAutonomy,
 				Config: openfoxearning.AutonomousServiceConfig{Query: openfoxearning.IntentQuery{TaxonomyPrefix: taxonomy, Keywords: keywords, MaximumResults: limit},
 					Interval: interval, MaxJitter: time.Duration(cfg.Earning.JitterSeconds) * time.Second, CycleTimeout: timeout}}
@@ -990,7 +931,8 @@ func configuredFeatureGates(settings config.EarningSettings) openfoxearning.Feat
 	return openfoxearning.FeatureGates{ObserveOnly: settings.ObserveOnly, Publication: settings.Gates.Publication,
 		Contact: settings.Gates.Contact, Agreement: settings.Gates.Agreement, Execution: settings.Gates.Execution,
 		DirectPayment: settings.Gates.DirectPayment, ExternalSettlement: settings.Gates.ExternalSettlement,
-		TOSEscrow: settings.Gates.TOSEscrow, AgentGuarantor: settings.Gates.AgentGuarantor}
+		AgentGuarantor: settings.Gates.AgentGuarantor,
+	}
 }
 
 func effectiveOutgoingPayment(value string) string {
@@ -998,13 +940,6 @@ func effectiveOutgoingPayment(value string) string {
 		return "0"
 	}
 	return value
-}
-
-func configuredAgreementEvidenceProfiles(settings config.EarningSettings) []string {
-	if settings.Gates.TOSEscrow {
-		return []string{commerce.EvidenceProfilePaidDemandQuote}
-	}
-	return nil
 }
 
 func configuredWriterScopes(settings config.EarningSettings) []string {
@@ -1027,9 +962,6 @@ func configuredWriterScopes(settings config.EarningSettings) []string {
 	if settings.Gates.ExternalSettlement {
 		scopes = append(scopes, "billing.resolve", "settlement.external")
 	}
-	if settings.Gates.TOSEscrow {
-		scopes = append(scopes, "agreement.authorize", "escrow.transition", "portfolio.reserve", "provider.offer")
-	}
 	if settings.Gates.AgentGuarantor {
 		scopes = append(scopes, "commercial.quote.close", "commercial.quote.issue", "collateral.transition",
 			"conditional.claim-decision.admit", "conditional.claim-filing.close", "conditional.claim.decide",
@@ -1049,8 +981,8 @@ func configuredWriterScopes(settings config.EarningSettings) []string {
 }
 
 func earningHasSideEffects(settings config.EarningSettings) bool {
-	return settings.Gates.Publication || settings.Gates.Contact || settings.Gates.Agreement || settings.Gates.Execution ||
-		settings.Gates.DirectPayment || settings.Gates.ExternalSettlement || settings.Gates.TOSEscrow ||
+	return settings.Gates.Publication || settings.Gates.Contact || settings.Gates.Agreement ||
+		settings.Gates.Execution || settings.Gates.DirectPayment || settings.Gates.ExternalSettlement ||
 		settings.Gates.AgentRelay || settings.Gates.AgentGuarantor
 }
 
@@ -1081,9 +1013,6 @@ func configuredOutcomeRecorder(settings config.EarningSettings, authority openfo
 		return nil, err
 	}
 	networkID := settings.Publication.NetworkID
-	if networkID == "" {
-		networkID = settings.TOSEscrow.NetworkID
-	}
 	if networkID == "" {
 		networkID = settings.AgentRelay.TOS.Network.NetworkID
 	}
@@ -1214,17 +1143,13 @@ func configuredInventory(settings config.EarningSettings, authority openfoxearni
 		Available: available, SupportedSettlementAdapters: append([]string(nil), settings.SettlementAdapters...)}
 }
 
-func loadOrCreateAuthorityKey(directory string) (ed25519.PrivateKey, error) {
-	return loadOrCreateNamedKey(directory, "authority-ed25519.key")
-}
-
 func loadOrCreateNamedKey(directory, name string) (ed25519.PrivateKey, error) {
 	if name == "" || filepath.Base(name) != name {
 		return nil, errors.New("private key name is invalid")
 	}
 	path := filepath.Join(directory, name)
 	if info, err := os.Lstat(path); err == nil {
-		return readAuthorityKey(path, info)
+		return readNamedPrivateKey(path, info)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -1249,21 +1174,9 @@ func loadOrCreateNamedKey(directory, name string) (ed25519.PrivateKey, error) {
 	return key, nil
 }
 
-func loadAuthorityKey(directory string) (ed25519.PrivateKey, error) {
-	path := filepath.Join(directory, "authority-ed25519.key")
-	info, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, errors.New("economic authority has not been initialized")
-		}
-		return nil, err
-	}
-	return readAuthorityKey(path, info)
-}
-
-func readAuthorityKey(path string, info os.FileInfo) (ed25519.PrivateKey, error) {
+func readNamedPrivateKey(path string, info os.FileInfo) (ed25519.PrivateKey, error) {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 || info.Size() != ed25519.PrivateKeySize {
-		return nil, errors.New("economic authority key file is invalid")
+		return nil, errors.New("private key file is invalid")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {

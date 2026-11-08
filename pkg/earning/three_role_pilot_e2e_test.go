@@ -84,10 +84,27 @@ func TestThreeOpenFoxRoleEarningPilot(t *testing.T) {
 			Task: "Verify this release claim and return PASS or FAIL with missing evidence: source commit is pinned; Linux tests passed; Windows compile passed; artifact digest is absent; signer identity is pinned; no reproducible build command is recorded."},
 	}
 
-	payerKey := lifecycleKey("openfox-three-role-pilot-payer-authority")
+	tosctl := mustEnv(t, "OPENFOX_TOSCTL")
+	primary := mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG")
+	vaultURL := mustEnv(t, "OPENFOX_TOS_VAULT_URL")
+	payerKeys, err := OpenTOSCTLAuthorityKeys(
+		t.Context(),
+		TOSCTLAuthorityHelper{
+			Binary: tosctl,
+			SHA256: mustEnv(t, "OPENFOX_TOSCTL_SHA256"), ConfigPath: primary, VaultURL: vaultURL,
+		},
+		mustEnv(
+			t,
+			"OPENFOX_PILOT_PAYER_ACTION_AUTHORITY_KEY_ID",
+		),
+		mustEnv(t, "OPENFOX_PILOT_PAYER_CUSTODY_AUTHORIZATION_KEY_ID"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	payerDirectory := privateTempDir(t)
 	payerAuthority, err := OpenPersonalAuthority(payerDirectory, "owner:pilot-buyer", "agent:pilot-buyer",
-		"authority:pilot-buyer", payerKey, PortfolioLimits{SpendAtomic: 1_000_000_000, MaximumLossAtomic: 1_000_000_000})
+		"authority:pilot-buyer", payerKeys, PortfolioLimits{SpendAtomic: 1_000_000_000, MaximumLossAtomic: 1_000_000_000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,18 +113,15 @@ func TestThreeOpenFoxRoleEarningPilot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tosctl := mustEnv(t, "OPENFOX_TOSCTL")
-	primary := mustEnv(t, "OPENFOX_TOSCTL_PRIMARY_CONFIG")
 	quorum2 := mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_2")
 	quorum3 := mustEnv(t, "OPENFOX_TOSCTL_QUORUM_CONFIG_3")
-	vaultURL := mustEnv(t, "OPENFOX_TOS_VAULT_URL")
 	custodyDirectory := filepath.Join(outputDirectory, "payer-custody")
 	if err := os.MkdirAll(custodyDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	bindPilotPayer(t, tosctl, primary, vaultURL, payerKey, custodyDirectory)
+	bindPilotPayer(t, tosctl, primary, vaultURL, payerKeys, custodyDirectory)
 	paymentSink := &TOSCTLPaymentSink{Authority: payerAuthority, Executable: tosctl, ConfigPath: primary,
-		Wallet: "payer-agent", SourceAccount: threeNodeBuyerAccount, NetworkGlobalID: 3, FeeReserveNanoTOS: 50_000_000,
+		Wallet: "payer-agent", SourceAccount: pilotBuyerAccount, NetworkGlobalID: 3, FeeReserveNanoTOS: 50_000_000,
 		RelayNetworkDomain: liveTOSCustodyNetworkDomain(t, "tos:local-three-node", 3),
 		QuorumConfigPaths:  []string{quorum2, quorum3}, MaximumTransactions: 1000, VaultURL: vaultURL,
 		EvidenceDirectory: filepath.Join(outputDirectory, "payment-authorizations"), ResolveAttempts: 60, ResolveInterval: time.Second}
@@ -155,17 +169,18 @@ func runThreeRoleSeller(t *testing.T, spec threeRolePilotSpec, outputDirectory s
 		defer closeable.Close()
 	}
 	state := cfg.Earning.StateDir
-	authorityKey := readPilotPrivateKey(t, filepath.Join(state, "authority/authority-ed25519.key"))
 	identityKey := readPilotPrivateKey(t, filepath.Join(state, "identity/agent-ed25519.key"))
 	authority, err := OpenPersonalAuthority(filepath.Join(state, "authority"), cfg.Earning.OwnerID, cfg.Earning.AgentID,
-		cfg.Earning.AuthorityID, authorityKey, PortfolioLimits{ComputeUnits: cfg.Earning.Resources.CPUUnits,
-			ReceivableAtomic: 1_000_000_000, MaximumLossAtomic: 1_000_000_000})
+		cfg.Earning.AuthorityID, campaignAuthorityKeys(t, cfg), PortfolioLimits{
+			ComputeUnits:     cfg.Earning.Resources.CPUUnits,
+			ReceivableAtomic: 1_000_000_000, MaximumLossAtomic: 1_000_000_000,
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer authority.Close()
 	now := time.Now().UTC().Truncate(time.Second)
-	buyerKey := lifecycleKey("three-role-buyer:" + spec.Name)
+	buyerKey := pilotKey("three-role-buyer:" + spec.Name)
 	body := pilotAgreement(t, cfg.Earning.AgentID, spec, now)
 	digest, _ := commerce.AgreementBodyDigest(body)
 	if _, err = authority.RecordAgreementProposal(body, "agent:pilot-buyer", "evt_"+strings.TrimPrefix(threeNodeDigest("proposal:"+digest), "sha256:"),
@@ -340,12 +355,21 @@ func pilotRoleSelected(role, configured string) bool {
 	return false
 }
 
-func bindPilotPayer(t *testing.T, tosctl, configPath, vaultURL string, key ed25519.PrivateKey, journal string) {
+// pilotBuyerAccount is the funded buyer wallet of the local three-node pilot.
+const pilotBuyerAccount = "0:56ec4f04ad66184f4fecef3776a219745ac5d9acd3288129d28aa9e4c47e5670"
+
+// pilotKey derives a deterministic Agent identity key for a pilot role.
+func pilotKey(label string) ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte(label))
+	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+func bindPilotPayer(t *testing.T, tosctl, configPath, vaultURL string, keys AuthorityKeys, journal string) {
 	t.Helper()
 	command := exec.Command(tosctl, "agent", "wallet", "bind-runtime", "--name", "payer-agent",
 		"--runner-id", "openfox-three-role-pilot", "--endpoint", "local://openfox/three-role-pilot",
 		"--economic-authority-id", "authority:pilot-buyer", "--economic-authority-public-key",
-		hex.EncodeToString(key.Public().(ed25519.PublicKey)), "--economic-custody-journal-directory", journal,
+		hex.EncodeToString(keys.CustodyPublicKey), "--economic-custody-journal-directory", journal,
 		"-c", configPath, "--format", "json")
 	command.Env = append(os.Environ(), "VAULT_URL="+vaultURL)
 	if output, err := command.CombinedOutput(); err != nil {

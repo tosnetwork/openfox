@@ -135,47 +135,37 @@ func (planner BoundedEngagementPlanner) PlanEngagement(_ context.Context, record
 	return result, nil
 }
 
-type FundingEvidenceResolver interface {
-	ResolveFundingPrerequisite(context.Context, EngagementRecord, commerce.AgreementObligation) ([]string, error)
-}
-
 type AdapterPrerequisitePolicy struct {
 	LocalAgentID     string
 	PostpaidAdapters []string
-	PrepaidAdapters  []string
-	Funding          FundingEvidenceResolver
 }
 
 func (policy AdapterPrerequisitePolicy) ValidateSettlementPrerequisite(_ context.Context, _ string, obligation commerce.AgreementObligation) error {
 	if obligation.Amount == nil {
 		return nil
 	}
-	if containsString(policy.PostpaidAdapters, obligation.SettlementAdapterURI) ||
-		containsString(policy.PrepaidAdapters, obligation.SettlementAdapterURI) && policy.Funding != nil {
+	if containsString(policy.PostpaidAdapters, obligation.SettlementAdapterURI) {
 		return nil
 	}
 	return errors.New("settlement Adapter has no installed prerequisite verifier")
 }
 
-func (policy AdapterPrerequisitePolicy) VerifyExecutionPrerequisites(ctx context.Context, record EngagementRecord) (bool, []string, error) {
-	var evidence []string
+// VerifyExecutionPrerequisites admits execution only when every paid
+// obligation the local Agent receives settles after delivery through an
+// installed postpaid Adapter. There is no prepaid funding path.
+func (policy AdapterPrerequisitePolicy) VerifyExecutionPrerequisites(
+	_ context.Context,
+	record EngagementRecord,
+) (bool, []string, error) {
 	for _, obligation := range record.Agreement.Body.Obligations {
 		if obligation.Amount == nil || obligation.BeneficiaryAgentID != policy.LocalAgentID {
 			continue
 		}
-		if containsString(policy.PostpaidAdapters, obligation.SettlementAdapterURI) {
-			continue
-		}
-		if !containsString(policy.PrepaidAdapters, obligation.SettlementAdapterURI) || policy.Funding == nil {
+		if !containsString(policy.PostpaidAdapters, obligation.SettlementAdapterURI) {
 			return true, nil, errors.New("settlement Adapter has no exact funding verifier")
 		}
-		resolved, err := policy.Funding.ResolveFundingPrerequisite(ctx, record, obligation)
-		if err != nil {
-			return true, nil, err
-		}
-		evidence = append(evidence, resolved...)
 	}
-	return len(evidence) > 0, evidence, nil
+	return false, nil, nil
 }
 
 type AgreementRunnerFactory interface {
@@ -233,7 +223,6 @@ type EngagementAutonomy struct {
 	Inventory      InventorySource
 	Planner        EngagementPlanner
 	Prerequisite   AdapterPrerequisitePolicy
-	Native         NativeExecutionAdmission
 	Capability     TrustedCapabilityExecutionAdmission
 	Gate           *commercegate.Gate
 	Scheduler      *SchedulerService
@@ -241,7 +230,6 @@ type EngagementAutonomy struct {
 	Delivery       DeliverySink
 	Payment        *PaymentService
 	Payments       map[string]*PaymentService
-	Receivables    ReceivableSettlementService
 	PaymentBuilder AgreementPaymentRequestBuilder
 	Fence          WriterFenceProvider
 }
@@ -349,16 +337,6 @@ func (service EngagementAutonomy) processActiveEngagement(ctx context.Context, s
 	if len(created) != 0 || updated.StateRevision != snapshot.StateRevision {
 		return true, nil
 	}
-	if service.Receivables != nil {
-		settled, settleErr := service.Receivables.ResolveReceivable(ctx, snapshot, inventory.PolicyRevision, fence)
-		if settleErr != nil {
-			return false, settleErr
-		}
-		if settled {
-			return true, nil
-		}
-	}
-
 	ledgers := service.Engine.Authority.SettlementSnapshot(snapshot.AgreementDigest)
 	for _, ledger := range ledgers {
 		if ledger.Obligation.PayerAgentID != service.Engine.AgentID || ledger.State.State == commerce.SettlementPaid ||
@@ -523,7 +501,7 @@ func (service EngagementAutonomy) processActiveEngagement(ctx context.Context, s
 			return false, err
 		}
 		executor := ExecutionService{Engine: service.Engine, Gate: service.Gate, Prerequisite: service.Prerequisite,
-			Native: service.Native, Capability: service.Capability, Runner: runner}
+			Capability: service.Capability, Runner: runner}
 		executed, executeErr := executor.Execute(ctx, snapshot.AgreementDigest, execution.ExecutionPlan, inventory.PolicyRevision, fence)
 		if executeErr != nil {
 			target := commerce.ScheduleAmbiguous

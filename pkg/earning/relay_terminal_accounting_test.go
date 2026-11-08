@@ -191,7 +191,7 @@ func TestRelayTerminalAccountingCommitAndHandoffAreCrashIdempotent(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	routes, err := OpenDurableRelayRouteJournal(routeDirectory)
+	routes, err := OpenDurableRelayRouteJournal(routeDirectory, testRelayRouteAuthority())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestRelayTerminalAccountingCommitAndHandoffAreCrashIdempotent(t *testing.T)
 		executionDigest, result, fixture.now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	reference, err := RelayTerminalHandoffReferenceForRecord(record)
+	reference, err := (&DurableRelayRouteJournal{authority: testRelayRouteAuthority()}).TerminalHandoffReference(record)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestRelayTerminalAccountingBindsExactTerminalFailoverHop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reference, err := RelayTerminalHandoffReferenceForRecord(route)
+	reference, err := (&DurableRelayRouteJournal{authority: testRelayRouteAuthority()}).TerminalHandoffReference(route)
 	if err != nil {
 		t.Fatal(err)
 	}

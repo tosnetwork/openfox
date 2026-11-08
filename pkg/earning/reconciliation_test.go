@@ -2,8 +2,6 @@ package earning
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"os"
 	"strings"
 	"testing"
@@ -17,8 +15,7 @@ func TestReconciliationReleasesOnlyTerminalExactReservations(t *testing.T) {
 	if err := os.Chmod(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(directory, "owner:r", "agent:r", "authority:r", key,
+	authority, err := OpenPersonalAuthority(directory, "owner:r", "agent:r", "authority:r", testAuthorityKeys(),
 		PortfolioLimits{ComputeUnits: 10, ReceivableAtomic: 100, MaximumLossAtomic: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -90,8 +87,14 @@ func TestReconciliationDoesNotGuessOrphanOwnership(t *testing.T) {
 	if err := os.Chmod(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	authority, err := OpenPersonalAuthority(directory, "owner:r", "agent:r", "authority:r", key, PortfolioLimits{ComputeUnits: 10})
+	authority, err := OpenPersonalAuthority(
+		directory,
+		"owner:r",
+		"agent:r",
+		"authority:r",
+		testAuthorityKeys(),
+		PortfolioLimits{ComputeUnits: 10},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

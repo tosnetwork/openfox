@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -139,6 +140,9 @@ func NewBuyer(config BuyerConfig) (*Buyer, error) {
 	if err := ensurePrivateDirectory(config.Directory); err != nil {
 		return nil, err
 	}
+	if err := removePurchaseStaging(config.Directory); err != nil {
+		return nil, err
+	}
 	return &Buyer{config: config}, nil
 }
 
@@ -187,6 +191,78 @@ func (b *Buyer) loadPurchase(requestHash string) (PurchaseRecord, error) {
 func (b *Buyer) savePurchase(record PurchaseRecord, create bool) error {
 	record.Schema, record.UpdatedUnix = purchaseRecordSchema, b.config.Now().Unix()
 	return writeJSON(filepath.Join(b.purchaseDir(record.RequestHash), "record.json"), record, create)
+}
+
+// purchaseStagingPrefix names a purchase directory still being written. It
+// never matches a request hash, so Purchases does not see it.
+const purchaseStagingPrefix = ".staging-"
+
+// publishPurchase makes a new purchase visible only once its record and both
+// payloads are durable: it writes them into a staging directory and renames
+// that into place. A crash at any earlier point leaves no entry Purchases
+// would have to read, so it cannot block later purchases or duties.
+func (b *Buyer) publishPurchase(record PurchaseRecord, archive, packageBytes []byte) error {
+	if !hex64Pattern.MatchString(record.RequestHash) {
+		return errors.New("servicebridge: invalid request hash")
+	}
+	final := b.purchaseDir(record.RequestHash)
+	if _, err := os.Lstat(final); err == nil {
+		return os.ErrExist
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return errors.New("servicebridge: inspect purchase directory")
+	}
+	staging := filepath.Join(b.config.Directory, purchaseStagingPrefix+record.RequestHash)
+	if err := os.RemoveAll(staging); err != nil {
+		return errors.New("servicebridge: clear purchase staging")
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		return errors.New("servicebridge: create purchase staging")
+	}
+	if err := checkPrivateDirectory(staging); err != nil {
+		return err
+	}
+	if err := writeSynced(filepath.Join(staging, "source"), archive); err != nil {
+		return err
+	}
+	if err := writeSynced(filepath.Join(staging, "quote-package"), packageBytes); err != nil {
+		return err
+	}
+	record.Schema, record.UpdatedUnix = purchaseRecordSchema, b.config.Now().Unix()
+	if err := writeJSON(filepath.Join(staging, "record.json"), record, true); err != nil {
+		return err
+	}
+	if err := syncDirectory(staging); err != nil {
+		return err
+	}
+	if err := os.Rename(staging, final); err != nil {
+		return errors.New("servicebridge: publish purchase")
+	}
+	published = true
+	return syncDirectory(b.config.Directory)
+}
+
+// removePurchaseStaging deletes purchases whose preparation was interrupted.
+// Nothing in a staging directory was ever called or paid.
+func removePurchaseStaging(directory string) error {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return errors.New("servicebridge: read purchases")
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), purchaseStagingPrefix) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(directory, entry.Name())); err != nil {
+			return errors.New("servicebridge: remove interrupted purchase staging")
+		}
+	}
+	return nil
 }
 
 // Purchases lists every purchase, newest first.
@@ -321,20 +397,11 @@ func (b *Buyer) Buy(ctx context.Context, capabilityID, version string, archive [
 		Disclosure:       costs.Disclosure(),
 		CreatedUnix:      now.Unix(),
 	}
-	if err = ensurePrivateDirectory(b.purchaseDir(call.RequestHash)); err != nil {
-		return PurchaseRecord{}, err
-	}
-	if err = writeSynced(filepath.Join(b.purchaseDir(call.RequestHash), "source"), archive); err != nil {
-		return PurchaseRecord{}, err
-	}
 	packageBytes, err := base64.StdEncoding.Strict().DecodeString(call.PackageBase64)
 	if err != nil {
 		return PurchaseRecord{}, errors.New("servicebridge: the journaled Quote package does not decode")
 	}
-	if err = writeSynced(filepath.Join(b.purchaseDir(call.RequestHash), "quote-package"), packageBytes); err != nil {
-		return PurchaseRecord{}, err
-	}
-	if err = b.savePurchase(record, true); err != nil {
+	if err = b.publishPurchase(record, archive, packageBytes); err != nil {
 		return PurchaseRecord{}, err
 	}
 	// The policy is applied again at the send instant.

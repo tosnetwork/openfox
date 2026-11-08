@@ -1,7 +1,6 @@
 package earning
 
 import (
-	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,7 +18,6 @@ import (
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
-	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
 )
 
 const (
@@ -82,34 +80,10 @@ type OutcomeJournalAppendAdmission struct {
 	Fence   commerce.WriterFence
 }
 
-// historicalOutcomeFenceResolver admits only the Action Authority key the
-// retained append fence names, for that fence's authority, and resolves it
-// through the owner authority. A retained record cannot introduce its own key.
-type historicalOutcomeFenceResolver struct {
-	authorityID string
-	keyID       string
-	authority   commerce.FenceAuthorityResolver
-}
-
 type historicalOutcomeOperationSelfResolver struct{}
 
 func (historicalOutcomeOperationSelfResolver) AuthorizeAgentOperationKey(string, commerce.ProfileRefV1, ed25519.PublicKey, time.Time, []byte) error {
 	return nil
-}
-
-func (resolver historicalOutcomeFenceResolver) ResolveActionAuthorityKey(authorityID string,
-	keyID [mldsa44.KeyIDSize]byte, at time.Time) ([]byte, error) {
-	if resolver.authority == nil || authorityID != resolver.authorityID || mldsa44.KeyIDText(keyID) != resolver.keyID {
-		return nil, errors.New("historical outcome authority key differs from the retained fence")
-	}
-	return resolver.authority.ResolveActionAuthorityKey(authorityID, keyID, at)
-}
-
-func (resolver historicalOutcomeFenceResolver) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
-	if resolver.authority == nil {
-		return mldsa44.ErrUnavailable
-	}
-	return resolver.authority.Verify(ctx, use, payload, publicKey, signature)
 }
 
 type OutcomeJournal struct {
@@ -474,8 +448,7 @@ func (journal *OutcomeJournal) validateAppendAdmission(record OutcomeJournalReco
 	fenceDigest, fenceErr := commerce.WriterFenceDigest(*record.JournalAppendWriterFence)
 	verificationTime := time.Unix(int64(record.JournalAppendWriterFence.Body.IssuedAtUnix), 0).UTC()
 	authorityErr := commerce.VerifyAuthorizedActionAtAuthorityTime(*record.JournalAppendAction, fields, requestBytes,
-		*record.JournalAppendWriterFence, historicalOutcomeFenceResolver{authorityID: record.JournalAppendWriterFence.Body.AuthorityID,
-			keyID: record.JournalAppendWriterFence.KeyID, authority: journal.authority}, verificationTime, verificationTime)
+		*record.JournalAppendWriterFence, journal.authority, verificationTime, verificationTime)
 	gapsAtAppend := make([]uint64, 0, len(gapSequences))
 	for _, sequence := range gapSequences {
 		if sequence < record.Sequence {

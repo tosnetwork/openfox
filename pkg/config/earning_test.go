@@ -148,8 +148,9 @@ func TestSharedEarningAuthorityRequiresCompleteMTLSIdentity(t *testing.T) {
 		Policy:                  EarningPolicySettings{MinimumExpectedProfitAtomic: "1", MaximumLossAtomic: "10"},
 		Authority: EarningAuthoritySettings{Mode: "shared", Endpoint: "https://authority.example/v1/economic-authority",
 			ServerName: "authority.example", CAFile: "/etc/openfox/authority-ca.pem", ClientCertFile: "/etc/openfox/client.pem",
-			ClientKeyFile: "/etc/openfox/client.key",
-			InstanceID:    "worker-a", TimeoutMillis: 5000}}
+			ClientKeyFile: "/etc/openfox/client.key", InstanceID: "worker-a", TimeoutMillis: 5000,
+		},
+	}
 	if err := settings.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -362,10 +363,14 @@ func validAgentRelayEarningSettings(role string) EarningSettings {
 // for the Action Authority and custody authorization controllers and a pinned
 // tosctl helper that can sign.
 func testPersonalAuthority() EarningAuthoritySettings {
-	return EarningAuthoritySettings{AuthorityKeyID: "mldsa44:" + strings.Repeat("1", 64),
+	return EarningAuthoritySettings{
+		AuthorityKeyID:            "mldsa44:" + strings.Repeat("1", 64),
 		CustodyAuthorizationKeyID: "mldsa44:" + strings.Repeat("2", 64),
-		TOSCTL: EarningTOSCTLHelperSettings{Binary: "/opt/tos/bin/tosctl", SHA256: strings.Repeat("3", 64),
-			ConfigPath: "/etc/openfox/tosctl-config.json", VaultURLEnvironment: "OPENFOX_VAULT_URL"}}
+		TOSCTL: EarningTOSCTLHelperSettings{
+			Binary: "/opt/tos/bin/tosctl", SHA256: strings.Repeat("3", 64),
+			ConfigPath: "/etc/openfox/tosctl-config.json", VaultURLEnvironment: "OPENFOX_VAULT_URL",
+		},
+	}
 }
 
 func TestEarningAuthorityKeysArePostQuantumKeyIDs(t *testing.T) {
@@ -395,12 +400,14 @@ func TestEarningAuthorityKeysArePostQuantumKeyIDs(t *testing.T) {
 			t.Fatalf("earning authority accepted %s", name)
 		}
 	}
-	observe := EarningSettings{Enabled: true, Mode: "observe", ObserveOnly: true, StateDir: "/tmp/openfox-earning",
+	observe := EarningSettings{
+		Enabled: true, Mode: "observe", ObserveOnly: true, StateDir: "/tmp/openfox-earning",
 		OwnerID: "owner", AgentID: "agent", AuthorityID: "authority",
 		MandateDigest:           "sha256:" + strings.Repeat("a", 64),
 		TrustedIntentIssuerKeys: map[string]string{"agent:issuer": "ed25519:" + strings.Repeat("b", 64)},
 		Policy:                  EarningPolicySettings{MinimumExpectedProfitAtomic: "1", MaximumLossAtomic: "10"},
-		Authority:               testPersonalAuthority()}
+		Authority:               testPersonalAuthority(),
+	}
 	if err := observe.Validate(); err == nil {
 		t.Fatal("authority keys were accepted without a side-effect gate")
 	}

@@ -236,16 +236,16 @@ func TestSharedAuthorityClientPinsTheServedActionAuthorityKey(t *testing.T) {
 	defer httpClient.CloseIdleConnections()
 	endpoint := testServer.URL + "/v1/economic-authority"
 	keys := testAuthorityKeys()
-	if _, err := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1", keys.CustodyKeyID,
-		testAuthorityCustody); err == nil {
+	if _, checkErr := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1", keys.CustodyKeyID,
+		testAuthorityCustody); checkErr == nil {
 		t.Fatal("client pinned a served key that does not derive its configured key ID")
 	}
-	if _, err := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-2", keys.ActionKeyID,
-		testAuthorityCustody); err == nil {
+	if _, checkErr := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-2", keys.ActionKeyID,
+		testAuthorityCustody); checkErr == nil {
 		t.Fatal("client accepted a shared authority serving another authority ID")
 	}
-	if _, err := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1",
-		"ed25519:"+strings.Repeat("a", 64), testAuthorityCustody); !errors.Is(err, commerce.ErrEd25519ActionAuthority) {
+	if _, checkErr := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1",
+		"ed25519:"+strings.Repeat("a", 64), testAuthorityCustody); !errors.Is(checkErr, commerce.ErrEd25519ActionAuthority) {
 		t.Fatalf("an Ed25519 key reference was not refused with the protocol diagnostic: %v", err)
 	}
 	client, err := NewSharedAuthorityClient(t.Context(), endpoint, httpClient, "authority-1", keys.ActionKeyID, testAuthorityCustody)
@@ -256,7 +256,7 @@ func TestSharedAuthorityClientPinsTheServedActionAuthorityKey(t *testing.T) {
 	if key, err := client.ResolveActionAuthorityKey("authority-1", actionID, now); err != nil || string(key) != string(keys.ActionPublicKey) {
 		t.Fatalf("client did not resolve its pinned key: %v", err)
 	}
-	if _, err := client.ResolveActionAuthorityKey("authority-2", actionID, now); err == nil {
+	if _, checkErr := client.ResolveActionAuthorityKey("authority-2", actionID, now); checkErr == nil {
 		t.Fatal("client resolved its pinned key for another authority")
 	}
 }

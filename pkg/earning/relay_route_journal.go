@@ -188,7 +188,7 @@ type RelayRouteJournal interface {
 		time.Time) (RelayRouteRecord, error)
 	BindSponsorshipChainEffect(agentrelay.RelayExecutionRequest,
 		agentrelay.RelaySponsorshipTransactionEvidence, time.Time) error
-	TerminalHandoffReference(RelayRouteRecord) (RelayTerminalHandoffReference, error)
+	TerminalHandoffReference(record RelayRouteRecord) (RelayTerminalHandoffReference, error)
 }
 
 // RelayTerminalHandoffReference is the immutable bridge between terminal

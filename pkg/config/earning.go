@@ -878,7 +878,8 @@ func validateEarningTOSCTLHelper(helper EarningTOSCTLHelperSettings, signing boo
 	}
 	if !filepath.IsAbs(helper.ConfigPath) || filepath.Clean(helper.ConfigPath) != helper.ConfigPath ||
 		!earningEnvironmentNamePattern.MatchString(helper.VaultURLEnvironment) {
-		return errors.New("earning authority tosctl signing needs an absolute config path and a vault URL environment variable name")
+		return errors.New(
+			"earning authority tosctl signing needs an absolute config path and a vault URL environment variable name")
 	}
 	return nil
 }

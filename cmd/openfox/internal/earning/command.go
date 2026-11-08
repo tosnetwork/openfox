@@ -660,8 +660,12 @@ func runCommand() *cobra.Command {
 					agreementPrerequisite := openfoxearning.AdapterPrerequisitePolicy{
 						LocalAgentID: cfg.Earning.AgentID, PostpaidAdapters: agreementPostpaid}
 					agreementPolicy := openfoxearning.BoundedAgreementAdmissionPolicy{
-						LocalAgentID: cfg.Earning.AgentID, MaximumOutgoingPaymentAtomic: effectiveOutgoingPayment(cfg.Earning.Policy.MaximumOutgoingPaymentAtomic),
-						MaximumLossAtomic: cfg.Earning.Policy.MaximumLossAtomic, Portfolio: authority}
+						LocalAgentID: cfg.Earning.AgentID,
+						MaximumOutgoingPaymentAtomic: effectiveOutgoingPayment(
+							cfg.Earning.Policy.MaximumOutgoingPaymentAtomic,
+						),
+						MaximumLossAtomic: cfg.Earning.Policy.MaximumLossAtomic, Portfolio: authority,
+					}
 					agreementAutonomy = &openfoxearning.AgreementAutonomy{Coordinator: openfoxearning.AgreementCoordinator{
 						Inbox: openfoxearning.AgreementInbox{Client: messenger}, Authority: authority, Verifier: verifier},
 						Engine: engine, Inventory: collector.Inventory, Policy: agreementPolicy,
@@ -910,7 +914,8 @@ func configuredFeatureGates(settings config.EarningSettings) openfoxearning.Feat
 	return openfoxearning.FeatureGates{ObserveOnly: settings.ObserveOnly, Publication: settings.Gates.Publication,
 		Contact: settings.Gates.Contact, Agreement: settings.Gates.Agreement, Execution: settings.Gates.Execution,
 		DirectPayment: settings.Gates.DirectPayment, ExternalSettlement: settings.Gates.ExternalSettlement,
-		AgentGuarantor: settings.Gates.AgentGuarantor}
+		AgentGuarantor: settings.Gates.AgentGuarantor,
+	}
 }
 
 func effectiveOutgoingPayment(value string) string {
@@ -959,8 +964,8 @@ func configuredWriterScopes(settings config.EarningSettings) []string {
 }
 
 func earningHasSideEffects(settings config.EarningSettings) bool {
-	return settings.Gates.Publication || settings.Gates.Contact || settings.Gates.Agreement || settings.Gates.Execution ||
-		settings.Gates.DirectPayment || settings.Gates.ExternalSettlement ||
+	return settings.Gates.Publication || settings.Gates.Contact || settings.Gates.Agreement ||
+		settings.Gates.Execution || settings.Gates.DirectPayment || settings.Gates.ExternalSettlement ||
 		settings.Gates.AgentRelay || settings.Gates.AgentGuarantor
 }
 

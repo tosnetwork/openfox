@@ -70,7 +70,8 @@ func relayClientCheckCommand() *cobra.Command {
 				return err
 			}
 			defer closeAuthority()
-			routeJournal, err := openfoxearning.OpenDurableRelayRouteJournal(settings.AgentRelay.ClientRouteJournalDirectory, authority)
+			routeJournal, err := openfoxearning.OpenDurableRelayRouteJournal(
+				settings.AgentRelay.ClientRouteJournalDirectory, authority)
 			if err != nil {
 				return err
 			}

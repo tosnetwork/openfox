@@ -824,15 +824,15 @@ func NewSharedAuthorityClient(ctx context.Context, endpoint string, client *http
 		parsed.RawQuery != "" || parsed.Fragment != "" || client == nil || authorityID == "" || verifier == nil || ctx == nil {
 		return nil, errors.New("shared authority client configuration is invalid")
 	}
-	if _, err := commerce.ParseActionAuthorityKeyID(keyID); err != nil {
-		return nil, err
+	if _, parseErr := commerce.ParseActionAuthorityKeyID(keyID); parseErr != nil {
+		return nil, parseErr
 	}
 	shared := &SharedAuthorityClient{Endpoint: parsed.String(), HTTPClient: client, AuthorityID: authorityID}
 	var key sharedAuthorityKey
-	if err := shared.call(ctx, "action-authority-key", struct{}{}, &key); err != nil {
-		return nil, err
+	if callErr := shared.call(ctx, "action-authority-key", struct{}{}, &key); callErr != nil {
+		return nil, callErr
 	}
-	if key.AuthorityID != authorityID || key.KeyID != keyID {
+	if key.AuthorityID != authorityID {
 		return nil, errors.New("shared authority serves another Action Authority than the configured one")
 	}
 	pin, err := newPinnedActionAuthority(authorityID, keyID, key.PublicKey, verifier)

@@ -40,7 +40,11 @@ type TOSCTLAuthorityHelper struct {
 // reads the public keys of the Action Authority and custody authorization
 // controllers from custody and requires each to derive its configured key
 // ID. No private key leaves custody.
-func OpenTOSCTLAuthorityKeys(ctx context.Context, helper TOSCTLAuthorityHelper, actionKeyID, custodyKeyID string) (AuthorityKeys, error) {
+func OpenTOSCTLAuthorityKeys(
+	ctx context.Context,
+	helper TOSCTLAuthorityHelper,
+	actionKeyID, custodyKeyID string,
+) (AuthorityKeys, error) {
 	if _, err := commerce.ParseActionAuthorityKeyID(actionKeyID); err != nil {
 		return AuthorityKeys{}, err
 	}
@@ -50,8 +54,10 @@ func OpenTOSCTLAuthorityKeys(ctx context.Context, helper TOSCTLAuthorityHelper, 
 	if helper.ConfigPath == "" || helper.VaultURL == "" {
 		return AuthorityKeys{}, errors.New("personal authority custody needs a tosctl configuration and vault")
 	}
-	custody, err := mldsa44.NewTosctl(mldsa44.TosctlConfig{Binary: helper.Binary, SHA256: helper.SHA256,
-		ConfigPath: helper.ConfigPath, VaultURL: helper.VaultURL})
+	custody, err := mldsa44.NewTosctl(mldsa44.TosctlConfig{
+		Binary: helper.Binary, SHA256: helper.SHA256,
+		ConfigPath: helper.ConfigPath, VaultURL: helper.VaultURL,
+	})
 	if err != nil {
 		return AuthorityKeys{}, err
 	}
@@ -63,8 +69,10 @@ func OpenTOSCTLAuthorityKeys(ctx context.Context, helper TOSCTLAuthorityHelper, 
 	if err != nil {
 		return AuthorityKeys{}, err
 	}
-	keys := AuthorityKeys{Custody: custody, ActionKeyID: actionKeyID, ActionPublicKey: actionKey,
-		CustodyKeyID: custodyKeyID, CustodyPublicKey: custodyKey}
+	keys := AuthorityKeys{
+		Custody: custody, ActionKeyID: actionKeyID, ActionPublicKey: actionKey,
+		CustodyKeyID: custodyKeyID, CustodyPublicKey: custodyKey,
+	}
 	if err := keys.validate(); err != nil {
 		return AuthorityKeys{}, err
 	}
@@ -84,7 +92,11 @@ func OpenTOSCTLVerifier(helper TOSCTLAuthorityHelper) (mldsa44.Verifier, error) 
 // which prints a controller's public key and key ID and never its secret. The
 // binary must hash to its pin; the answer is trusted only because the key
 // must derive the configured key ID.
-func readControllerPublicKey(ctx context.Context, helper TOSCTLAuthorityHelper, controller, expectedKeyID string) ([]byte, error) {
+func readControllerPublicKey(
+	ctx context.Context,
+	helper TOSCTLAuthorityHelper,
+	controller, expectedKeyID string,
+) ([]byte, error) {
 	if ctx == nil {
 		return nil, errors.New("controller key read has no context")
 	}
@@ -92,8 +104,8 @@ func readControllerPublicKey(ctx context.Context, helper TOSCTLAuthorityHelper, 
 	if err != nil {
 		return nil, errors.New("configured controller key ID is not canonical")
 	}
-	if err := checkPinnedBinary(helper.Binary, helper.SHA256); err != nil {
-		return nil, err
+	if pinErr := checkPinnedBinary(helper.Binary, helper.SHA256); pinErr != nil {
+		return nil, pinErr
 	}
 	if !filepath.IsAbs(helper.ConfigPath) || filepath.Clean(helper.ConfigPath) != helper.ConfigPath {
 		return nil, errors.New("tosctl configuration path must be absolute and clean")
@@ -107,7 +119,7 @@ func readControllerPublicKey(ctx context.Context, helper TOSCTLAuthorityHelper, 
 	var stdout, stderr boundedOutput
 	stdout.limit, stderr.limit = maximumControllerOutputBytes, maximumControllerOutputBytes
 	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil || stdout.overflow {
+	if runErr := command.Run(); runErr != nil || stdout.overflow {
 		// tosctl diagnostics may name custody; they are not echoed.
 		return nil, fmt.Errorf("tosctl could not read the %s controller key", controller)
 	}
@@ -118,7 +130,7 @@ func readControllerPublicKey(ctx context.Context, helper TOSCTLAuthorityHelper, 
 		KeyID     string `json:"key_id"`
 		PublicKey string `json:"public_key"`
 	}
-	if err := decoder.Decode(&answer); err != nil || answer.Name != controller ||
+	if decodeErr := decoder.Decode(&answer); decodeErr != nil || answer.Name != controller ||
 		!controllerKeyIDPattern.MatchString(answer.KeyID) {
 		return nil, fmt.Errorf("tosctl returned a malformed %s controller key", controller)
 	}

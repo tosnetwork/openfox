@@ -17,16 +17,24 @@ func testAuthorityKeys() AuthorityKeys {
 // testAuthorityKeysFor returns keys of other fake controllers, for tests that
 // need a second, distinct owner authority.
 func testAuthorityKeysFor(action, custody string) AuthorityKeys {
-	return AuthorityKeys{Custody: testAuthorityCustody,
+	return AuthorityKeys{
+		Custody:     testAuthorityCustody,
 		ActionKeyID: testAuthorityCustody.KeyID(action), ActionPublicKey: testAuthorityCustody.PublicKey(action),
-		CustodyKeyID: testAuthorityCustody.KeyID(custody), CustodyPublicKey: testAuthorityCustody.PublicKey(custody)}
+		CustodyKeyID: testAuthorityCustody.KeyID(custody), CustodyPublicKey: testAuthorityCustody.PublicKey(custody),
+	}
 }
 
 // testCustodyResolver resolves the fake custody authorization key for one
 // exact authority, owner and Agent, as a custody host pins it.
 func testCustodyResolver(authorityID, ownerID, agentID string) mldsa44test.CustodyAuthorizationResolver {
-	return mldsa44test.CustodyAuthorizationResolver{Verifier: testAuthorityCustody,
-		Keys: map[mldsa44test.CustodyPrincipal][]byte{{AuthorityID: authorityID, OwnerID: ownerID, AgentID: agentID}: testAuthorityCustody.PublicKey(CustodyAuthorizationController)}}
+	return mldsa44test.CustodyAuthorizationResolver{
+		Verifier: testAuthorityCustody,
+		Keys: map[mldsa44test.CustodyPrincipal][]byte{
+			{AuthorityID: authorityID, OwnerID: ownerID, AgentID: agentID}: testAuthorityCustody.PublicKey(
+				CustodyAuthorizationController,
+			),
+		},
+	}
 }
 
 // testActionAuthorityResolver resolves the fake Action Authority key for one

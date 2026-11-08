@@ -134,10 +134,11 @@ func openConfiguredAuthority(settings config.EarningSettings, createPersonal boo
 		httpClient.CloseIdleConnections()
 		return nil, func() {}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(settings.Authority.TimeoutMillis)*time.Millisecond)
+	timeout := time.Duration(settings.Authority.TimeoutMillis) * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	client, err := openfoxearning.NewSharedAuthorityClient(ctx, settings.Authority.Endpoint, httpClient, settings.AuthorityID,
-		settings.Authority.AuthorityKeyID, verifier)
+	client, err := openfoxearning.NewSharedAuthorityClient(ctx, settings.Authority.Endpoint, httpClient,
+		settings.AuthorityID, settings.Authority.AuthorityKeyID, verifier)
 	if err != nil {
 		httpClient.CloseIdleConnections()
 		return nil, func() {}, err
@@ -160,7 +161,8 @@ func openPersonalAuthority(settings config.EarningSettings, create bool) (*openf
 			return nil, func() {}, errors.New("economic authority has not been initialized")
 		}
 	}
-	keys, err := openfoxearning.OpenTOSCTLAuthorityKeys(context.Background(), configuredAuthorityHelper(settings.Authority.TOSCTL),
+	helper := configuredAuthorityHelper(settings.Authority.TOSCTL)
+	keys, err := openfoxearning.OpenTOSCTLAuthorityKeys(context.Background(), helper,
 		settings.Authority.AuthorityKeyID, settings.Authority.CustodyAuthorizationKeyID)
 	if err != nil {
 		return nil, func() {}, err
@@ -183,7 +185,8 @@ func openPersonalAuthority(settings config.EarningSettings, create bool) (*openf
 		limits.CustodyNativeAsset = &commerce.AssetIdentityV1{AssetNamespace: "tos.asset",
 			AssetIdentifier: "native", Unit: "nanotos"}
 	}
-	authority, err := openfoxearning.OpenPersonalAuthority(directory, settings.OwnerID, settings.AgentID, settings.AuthorityID, keys, limits)
+	authority, err := openfoxearning.OpenPersonalAuthority(directory, settings.OwnerID, settings.AgentID,
+		settings.AuthorityID, keys, limits)
 	if err != nil {
 		return nil, func() {}, err
 	}

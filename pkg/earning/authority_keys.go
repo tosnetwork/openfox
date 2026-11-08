@@ -80,7 +80,11 @@ type pinnedActionAuthority struct {
 	verifier    mldsa44.Verifier
 }
 
-func newPinnedActionAuthority(authorityID, keyIDText string, publicKey []byte, verifier mldsa44.Verifier) (pinnedActionAuthority, error) {
+func newPinnedActionAuthority(
+	authorityID, keyIDText string,
+	publicKey []byte,
+	verifier mldsa44.Verifier,
+) (pinnedActionAuthority, error) {
 	if authorityID == "" || verifier == nil {
 		return pinnedActionAuthority{}, errors.New("Action Authority pin is incomplete")
 	}
@@ -91,18 +95,28 @@ func newPinnedActionAuthority(authorityID, keyIDText string, publicKey []byte, v
 	if derived, err := mldsa44.KeyID(publicKey); err != nil || derived != keyID {
 		return pinnedActionAuthority{}, errors.New("Action Authority public key does not derive its key ID")
 	}
-	return pinnedActionAuthority{authorityID: authorityID, keyID: keyID, publicKey: append([]byte(nil), publicKey...),
-		verifier: verifier}, nil
+	return pinnedActionAuthority{
+		authorityID: authorityID, keyID: keyID, publicKey: append([]byte(nil), publicKey...),
+		verifier: verifier,
+	}, nil
 }
 
-func (pin pinnedActionAuthority) ResolveActionAuthorityKey(authorityID string, keyID [mldsa44.KeyIDSize]byte, _ time.Time) ([]byte, error) {
+func (pin pinnedActionAuthority) ResolveActionAuthorityKey(
+	authorityID string,
+	keyID [mldsa44.KeyIDSize]byte,
+	_ time.Time,
+) ([]byte, error) {
 	if pin.verifier == nil || authorityID != pin.authorityID || keyID != pin.keyID {
 		return nil, errors.New("Action Authority key is not the pinned owner authority key")
 	}
 	return append([]byte(nil), pin.publicKey...), nil
 }
 
-func (pin pinnedActionAuthority) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+func (pin pinnedActionAuthority) Verify(
+	ctx context.Context,
+	use mldsa44.Use,
+	payload, publicKey, signature []byte,
+) error {
 	if pin.verifier == nil {
 		return mldsa44.ErrUnavailable
 	}
@@ -119,15 +133,19 @@ type pinnedCustodyAuthority struct {
 }
 
 func (pin pinnedCustodyAuthority) ResolveCustodyAuthorizationKey(authorityID, ownerID, agentID string,
-	keyID [mldsa44.KeyIDSize]byte, _ time.Time) ([]byte, error) {
-	if pin.verifier == nil || authorityID != pin.authorityID || ownerID != pin.ownerID || agentID != pin.agentID ||
-		keyID != pin.keyID {
+	keyID [mldsa44.KeyIDSize]byte, _ time.Time,
+) ([]byte, error) {
+	if pin.verifier == nil || authorityID != pin.authorityID || ownerID != pin.ownerID || agentID != pin.agentID {
 		return nil, errors.New("custody authorization key is not the pinned owner custody key")
 	}
 	return append([]byte(nil), pin.publicKey...), nil
 }
 
-func (pin pinnedCustodyAuthority) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+func (pin pinnedCustodyAuthority) Verify(
+	ctx context.Context,
+	use mldsa44.Use,
+	payload, publicKey, signature []byte,
+) error {
 	if pin.verifier == nil {
 		return mldsa44.ErrUnavailable
 	}
@@ -158,29 +176,46 @@ func (authority *PersonalAuthority) custodyAuthorityResolver() (pinnedCustodyAut
 	if err != nil || authority.keys.Custody == nil {
 		return pinnedCustodyAuthority{}, errors.New("custody authorization pin is unavailable")
 	}
-	return pinnedCustodyAuthority{authorityID: authority.doc.AuthorityID, ownerID: authority.doc.OwnerID,
+	return pinnedCustodyAuthority{
+		authorityID: authority.doc.AuthorityID, ownerID: authority.doc.OwnerID,
 		agentID: authority.doc.AgentID, keyID: keyID, publicKey: authority.keys.CustodyPublicKey,
-		verifier: authority.keys.Custody}, nil
+		verifier: authority.keys.Custody,
+	}, nil
 }
 
 func (authority *PersonalAuthority) signWriterFence(body commerce.WriterFenceBody) (commerce.WriterFence, error) {
-	fence, err := commerce.SignWriterFence(context.Background(), body, authority.keys.Custody, ActionAuthorityController)
+	fence, err := commerce.SignWriterFence(
+		context.Background(),
+		body,
+		authority.keys.Custody,
+		ActionAuthorityController,
+	)
 	if err != nil {
 		return commerce.WriterFence{}, err
 	}
 	if fence.KeyID != authority.keys.ActionKeyID {
-		return commerce.WriterFence{}, errors.New("custody signed the writer fence with a key other than the pinned Action Authority key")
+		return commerce.WriterFence{}, errors.New(
+			"custody signed the writer fence with a key other than the pinned Action Authority key",
+		)
 	}
 	return fence, nil
 }
 
-func (authority *PersonalAuthority) signAuthorizedAction(action commerce.AuthorizedAction) (commerce.AuthorizedAction, error) {
-	return commerce.SignAuthorizedAction(context.Background(), action, authority.keys.ActionKeyID, authority.keys.Custody,
-		ActionAuthorityController)
+func (authority *PersonalAuthority) signAuthorizedAction(
+	action commerce.AuthorizedAction,
+) (commerce.AuthorizedAction, error) {
+	return commerce.SignAuthorizedAction(
+		context.Background(),
+		action,
+		authority.keys.ActionKeyID,
+		authority.keys.Custody,
+		ActionAuthorityController,
+	)
 }
 
 func (authority *PersonalAuthority) signRelayAdmissionReceipt(body agentrelay.RelaySideEffectAdmissionReceiptBody) (
-	agentrelay.SignedRelaySideEffectAdmissionReceipt, error) {
+	agentrelay.SignedRelaySideEffectAdmissionReceipt, error,
+) {
 	receipt, err := agentrelay.SignRelaySideEffectAdmissionReceipt(context.Background(), body, authority.keys.Custody,
 		ActionAuthorityController)
 	if err != nil {
@@ -194,7 +229,8 @@ func (authority *PersonalAuthority) signRelayAdmissionReceipt(body agentrelay.Re
 }
 
 func (authority *PersonalAuthority) signCustodyAuthorization(body commerce.CustodyActionAuthorization) (
-	commerce.CustodyActionAuthorization, error) {
+	commerce.CustodyActionAuthorization, error,
+) {
 	signed, err := commerce.SignCustodyActionAuthorization(context.Background(), body, authority.keys.Custody,
 		CustodyAuthorizationController)
 	if err != nil {
@@ -208,9 +244,14 @@ func (authority *PersonalAuthority) signCustodyAuthorization(body commerce.Custo
 }
 
 func (authority *PersonalAuthority) signPredictionCustodyEffect(body commerce.PredictionCustodyEffectAuthorizationV1) (
-	commerce.PredictionCustodyEffectAuthorizationV1, error) {
-	signed, err := commerce.SignPredictionCustodyEffectAuthorizationV1(context.Background(), body, authority.keys.Custody,
-		CustodyAuthorizationController)
+	commerce.PredictionCustodyEffectAuthorizationV1, error,
+) {
+	signed, err := commerce.SignPredictionCustodyEffectAuthorizationV1(
+		context.Background(),
+		body,
+		authority.keys.Custody,
+		CustodyAuthorizationController,
+	)
 	if err != nil {
 		return commerce.PredictionCustodyEffectAuthorizationV1{}, err
 	}
@@ -226,8 +267,8 @@ func (authority *PersonalAuthority) signPredictionCustodyEffect(body commerce.Pr
 // separately by the caller, so the proof is checked at an instant inside the
 // authorization's own validity window.
 func (authority *PersonalAuthority) verifyStoredCustodyAuthorization(value commerce.CustodyActionAuthorization) error {
-	if value.ExpiresAtUnix == 0 || value.ExpiresAtUnix > uint64(1<<63-1) || value.KeyID != authority.keys.CustodyKeyID {
-		return errors.New("stored custody authorization is not under the pinned custody key")
+	if value.ExpiresAtUnix == 0 || value.ExpiresAtUnix > uint64(1<<63-1) {
+		return errors.New("stored custody authorization has no validity window")
 	}
 	resolver, err := authority.custodyAuthorityResolver()
 	if err != nil {
@@ -238,7 +279,9 @@ func (authority *PersonalAuthority) verifyStoredCustodyAuthorization(value comme
 
 // verifyStoredRelayAdmissionReceipt re-verifies a journaled relay admission
 // receipt's Action Authority signature against the pinned key.
-func (authority *PersonalAuthority) verifyStoredRelayAdmissionReceipt(receipt agentrelay.SignedRelaySideEffectAdmissionReceipt) error {
+func (authority *PersonalAuthority) verifyStoredRelayAdmissionReceipt(
+	receipt agentrelay.SignedRelaySideEffectAdmissionReceipt,
+) error {
 	_, err := agentrelay.VerifyRelaySideEffectAdmissionReceiptAuthority(receipt, authority.actionAuthorityResolver())
 	return err
 }

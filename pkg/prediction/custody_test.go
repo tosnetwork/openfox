@@ -38,7 +38,9 @@ func (resolver *custodyTestResolver) ResolveActionAuthorityKey(
 	return bytes.Clone(resolver.key), nil
 }
 
-func (resolver *custodyTestResolver) Verify(ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte) error {
+func (resolver *custodyTestResolver) Verify(
+	ctx context.Context, use mldsa44.Use, payload, publicKey, signature []byte,
+) error {
 	return custodyTestAuthority.Verify(ctx, use, payload, publicKey, signature)
 }
 

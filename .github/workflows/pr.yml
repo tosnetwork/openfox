@@ -54,16 +54,54 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    env:
+      # The tosctl build that signs and verifies ML-DSA-44 for the owner
+      # Action Authority, the custody authorization and the rail packets.
+      # Those tests fail, rather than skip, without it.
+      TOS_HELPER_REPOSITORY: tosnetwork/tos
+      TOS_HELPER_COMMIT: c41331dd3103c0eac719d7e5f368079f0a40e64f
     steps:
+      # The two checkouts are siblings so `./...` never walks the helper's
+      # source tree.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          path: openfox
+
+      - name: Check out the pinned tosctl helper source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.TOS_HELPER_REPOSITORY }}
+          ref: ${{ env.TOS_HELPER_COMMIT }}
+          path: tos
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tos/tosctl/src -> target
+          key: tosctl-${{ env.TOS_HELPER_COMMIT }}
+
+      - name: Build the tosctl helper
+        working-directory: tos/tosctl/src
+        run: cargo build -p tosctl --bin tosctl --locked
+
+      - name: Pin the tosctl helper for the tests
+        run: |
+          helper="$GITHUB_WORKSPACE/tos/tosctl/src/target/debug/tosctl"
+          chmod 0755 "$helper"
+          echo "TOS_SERVICE_TOSCTL=$helper" >> "$GITHUB_ENV"
+          echo "TOS_SERVICE_TOSCTL_SHA256=$(sha256sum "$helper" | cut -d' ' -f1)" >> "$GITHUB_ENV"
 
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: openfox/go.mod
+          cache-dependency-path: openfox/go.sum
 
       - name: Run go generate
+        working-directory: openfox
         run: go generate -tags goolm,stdjson ./...
 
       # The isolation tests exercise a real bubblewrap sandbox: some only open
@@ -77,8 +115,12 @@ jobs:
           sudo apt-get update && sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
+      # pkg/earning holds the post-quantum Guarantor end-to-end test, which
+      # signs every authorization through the helper; on a small runner the
+      # package can approach the default 10 minute limit.
       - name: Run go test
-        run: go test -tags goolm,stdjson ./...
+        working-directory: openfox
+        run: go test -timeout 30m -tags goolm,stdjson ./...
 
   integration:
     name: Integration Tests

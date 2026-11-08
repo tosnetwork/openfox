@@ -50,10 +50,12 @@ type TaskHeader struct {
 	CapabilityVersion string `json:"capability_version"`
 	PackageBase64     string `json:"package_base64"`
 	ExecutionID       string `json:"execution_id"`
-	SourceDigest      string `json:"source_digest"`
-	RequestID         uint64 `json:"request_id"`
-	CallLT            uint64 `json:"call_lt"`
-	CallHash          string `json:"call_hash"`
+	// ExecutionNonce opens ExecutionID to BuyerAgentID; see ExecutionIDFor.
+	ExecutionNonce string `json:"execution_nonce"`
+	SourceDigest   string `json:"source_digest"`
+	RequestID      uint64 `json:"request_id"`
+	CallLT         uint64 `json:"call_lt"`
+	CallHash       string `json:"call_hash"`
 }
 
 // Task is a decoded task message.
@@ -159,11 +161,33 @@ func DecodeTask(raw []byte) (Task, error) {
 	return Task{Header: header, Package: pkg, Archive: append([]byte(nil), archive...)}, nil
 }
 
+// executionIDDomain separates the execution id commitment from every other
+// hash.
+const executionIDDomain = "tos.openfox.rail-execution-id.v1"
+
+// ExecutionIDFor commits an execution id to the Agent the result returns to.
+// The buyer's wallet pays a call carrying this id, so a task naming another
+// return Agent than the one committed cannot open it: without the binding,
+// anyone who knows the source could resend the paid task as their own Agent,
+// take the result and consume the provider's single execution.
+func ExecutionIDFor(buyerAgentID string, nonce [32]byte) [32]byte {
+	hash := sha256.New()
+	hash.Write([]byte(executionIDDomain))
+	hash.Write([]byte{0})
+	hash.Write([]byte(buyerAgentID))
+	hash.Write([]byte{0})
+	hash.Write(nonce[:])
+	var out [32]byte
+	copy(out[:], hash.Sum(nil))
+	return out
+}
+
 func validateTaskHeader(header TaskHeader, archiveBytes int) error {
 	if header.Schema != taskSchema || !agentIDPattern.MatchString(header.BuyerAgentID) ||
 		!rawAddressPattern.MatchString(header.BuyerWallet) || !capabilityPattern.MatchString(header.CapabilityID) ||
 		header.CapabilityVersion == "" || len(header.CapabilityVersion) > 128 || header.PackageBase64 == "" ||
-		!hex64Pattern.MatchString(header.ExecutionID) || !sha256Pattern.MatchString(header.SourceDigest) ||
+		!hex64Pattern.MatchString(header.ExecutionID) || !hex64Pattern.MatchString(header.ExecutionNonce) ||
+		!sha256Pattern.MatchString(header.SourceDigest) ||
 		!hex64Pattern.MatchString(header.CallHash) || header.CallLT == 0 {
 		return errors.New("servicebridge: the task header is incomplete")
 	}

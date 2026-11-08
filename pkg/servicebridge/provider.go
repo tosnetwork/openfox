@@ -1,6 +1,7 @@
 package servicebridge
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -215,6 +216,18 @@ func (p *Provider) claimFor(
 	if err != nil || len(executionID) != 32 {
 		return railgate.Claim{}, nil, none, errors.New("servicebridge: invalid execution id")
 	}
+	// The paid call carries the execution id, so this ties the Agent the
+	// result returns to, which signed the frames, to the paying wallet.
+	var executionNonce [32]byte
+	if err = decodeHex32(task.Header.ExecutionNonce, &executionNonce); err != nil {
+		return railgate.Claim{}, nil, none, errors.New("servicebridge: invalid execution nonce")
+	}
+	committed := ExecutionIDFor(task.Header.BuyerAgentID, executionNonce)
+	if !bytes.Equal(committed[:], executionID) {
+		return railgate.Claim{}, nil, none, errors.New(
+			"servicebridge: the paid execution id does not commit to the task's buyer Agent",
+		)
+	}
 	sourceDigest := sha256.Sum256(task.Archive)
 	claim := railgate.Claim{
 		Package: pkg, BuyerWallet: task.Header.BuyerWallet, InputDigest: InputDigest(sourceDigest),
@@ -222,6 +235,21 @@ func (p *Provider) claimFor(
 	}
 	copy(claim.ExecutionID[:], executionID)
 	return claim, pkg, validated.TransportBinding, nil
+}
+
+// resultRetentionEnd is when result delivery stops. It runs from the end of
+// the response window, not from admission, so a request that executes and
+// finalizes its respond late still has the full retention interval left for
+// delivery.
+func resultRetentionEnd(responseDeadline, retentionSeconds uint64) (uint64, error) {
+	if retentionSeconds == 0 {
+		return 0, errors.New("servicebridge: the manifest retains no result")
+	}
+	end := responseDeadline + retentionSeconds
+	if end < responseDeadline {
+		return 0, errors.New("servicebridge: the result retention overflows")
+	}
+	return end, nil
 }
 
 // HandleTask runs one complete task message. It never executes a request
@@ -255,11 +283,15 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 		return errors.New("servicebridge: the task frames are bound to another request than the verified one")
 	}
 	key := slot.Key()
+	retentionEnd, err := resultRetentionEnd(verified.ResponseDeadline, verified.Manifest.RetentionSeconds)
+	if err != nil {
+		return err
+	}
 	record := ProviderRecord{
 		BuyerAgentID: task.Header.BuyerAgentID, CapabilityID: task.Header.CapabilityID,
 		QuoteCommitment: verified.QuoteCommitment, Actor: verified.Actor, RequestID: verified.RequestID,
 		RequestHash:      hex.EncodeToString(verified.RequestHash[:]),
-		RetentionEndUnix: uint64(p.config.Now().Unix()) + verified.Manifest.RetentionSeconds,
+		RetentionEndUnix: retentionEnd,
 		ResponseDeadline: verified.ResponseDeadline, PackageBase64: base64.StdEncoding.EncodeToString(task.Package),
 		BuyerWallet: claim.BuyerWallet, ExecutionID: hex.EncodeToString(claim.ExecutionID[:]),
 		InputDigest: hex.EncodeToString(claim.InputDigest[:]), CallLT: claim.Call.LT, CallHash: claim.Call.Hash,

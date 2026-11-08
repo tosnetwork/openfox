@@ -123,6 +123,11 @@ func TestTheBuyerRefusesInputOverTheQuotedInlineBoundBeforePaying(t *testing.T) 
 	}
 }
 
+var (
+	testExecutionNonce = [32]byte{0x4e}
+	testExecutionID    = ExecutionIDFor(testBuyer, testExecutionNonce)
+)
+
 func taskMessage(t *testing.T, pkg *nativev1.QuoteProposalPackageV1, archive []byte, sender string) (Message, Task) {
 	t.Helper()
 	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(pkg)
@@ -131,7 +136,8 @@ func taskMessage(t *testing.T, pkg *nativev1.QuoteProposalPackageV1, archive []b
 	}
 	task := Task{Header: TaskHeader{
 		BuyerAgentID: testBuyer, BuyerWallet: testWallet, CapabilityID: pkg.GetProposal().GetCapabilityId(),
-		CapabilityVersion: "1.0.0", ExecutionID: strings.Repeat("01", 32), RequestID: 0, CallLT: 10,
+		CapabilityVersion: "1.0.0", ExecutionID: hex.EncodeToString(testExecutionID[:]),
+		ExecutionNonce: hex.EncodeToString(testExecutionNonce[:]), RequestID: 0, CallLT: 10,
 		CallHash: strings.Repeat("0a", 32),
 	}, Package: raw, Archive: archive}
 	body, err := EncodeTask(task)

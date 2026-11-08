@@ -67,6 +67,7 @@ type PurchaseRecord struct {
 	ProviderAgentID   string  `json:"provider_agent_id"`
 	QuoteCommitment   string  `json:"quote_commitment"`
 	ExecutionID       string  `json:"execution_id"`
+	ExecutionNonce    string  `json:"execution_nonce"`
 	InputDigest       string  `json:"input_digest"`
 	SourceDigest      string  `json:"source_digest"`
 	PriceNanoTOS      string  `json:"price_nanotos"`
@@ -191,6 +192,16 @@ func (b *Buyer) loadPurchase(requestHash string) (PurchaseRecord, error) {
 func (b *Buyer) savePurchase(record PurchaseRecord, create bool) error {
 	record.Schema, record.UpdatedUnix = purchaseRecordSchema, b.config.Now().Unix()
 	return writeJSON(filepath.Join(b.purchaseDir(record.RequestHash), "record.json"), record, create)
+}
+
+// drawExecution draws a fresh nonce and the execution id committing it to the
+// buyer Agent the result must return to.
+func drawExecution(agentID string, random func([]byte) error) ([32]byte, [32]byte, error) {
+	var nonce [32]byte
+	if err := random(nonce[:]); err != nil || nonce == ([32]byte{}) {
+		return [32]byte{}, [32]byte{}, errors.New("servicebridge: draw execution nonce")
+	}
+	return ExecutionIDFor(agentID, nonce), nonce, nil
 }
 
 // purchaseStagingPrefix names a purchase directory still being written. It
@@ -367,9 +378,9 @@ func (b *Buyer) Buy(ctx context.Context, capabilityID, version string, archive [
 	if err = b.authorize(ctx, provider, costs); err != nil {
 		return PurchaseRecord{}, err
 	}
-	var executionID [32]byte
-	if err = b.config.Random(executionID[:]); err != nil || executionID == ([32]byte{}) {
-		return PurchaseRecord{}, errors.New("servicebridge: draw execution id")
+	executionID, executionNonce, err := drawExecution(b.config.AgentID, b.config.Random)
+	if err != nil {
+		return PurchaseRecord{}, err
 	}
 	sourceDigest := sha256.Sum256(archive)
 	inputDigest := InputDigest(sourceDigest)
@@ -386,6 +397,7 @@ func (b *Buyer) Buy(ctx context.Context, capabilityID, version string, archive [
 		ProviderAgentID:   provider,
 		QuoteCommitment:   call.QuoteCommitment,
 		ExecutionID:       hex.EncodeToString(executionID[:]),
+		ExecutionNonce:    hex.EncodeToString(executionNonce[:]),
 		InputDigest:       hex.EncodeToString(inputDigest[:]),
 		SourceDigest: sha256Text(
 			sourceDigest,
@@ -668,9 +680,15 @@ func (b *Buyer) sendTask(ctx context.Context, record PurchaseRecord) error {
 		return err
 	}
 	body, err := EncodeTask(Task{Header: TaskHeader{
-		BuyerAgentID: b.config.AgentID, BuyerWallet: b.config.Wallet,
-		CapabilityID: record.CapabilityID, CapabilityVersion: record.CapabilityVersion, ExecutionID: record.ExecutionID,
-		RequestID: *record.RequestID, CallLT: record.CallLT, CallHash: record.CallHash,
+		BuyerAgentID:      b.config.AgentID,
+		BuyerWallet:       b.config.Wallet,
+		CapabilityID:      record.CapabilityID,
+		CapabilityVersion: record.CapabilityVersion,
+		ExecutionID:       record.ExecutionID,
+		ExecutionNonce:    record.ExecutionNonce,
+		RequestID:         *record.RequestID,
+		CallLT:            record.CallLT,
+		CallHash:          record.CallHash,
 	}, Package: pkg, Archive: archive})
 	if err != nil {
 		return err

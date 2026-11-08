@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -141,7 +140,7 @@ func NewBuyer(config BuyerConfig) (*Buyer, error) {
 	if err := ensurePrivateDirectory(config.Directory); err != nil {
 		return nil, err
 	}
-	if err := removePurchaseStaging(config.Directory); err != nil {
+	if err := removeStaging(config.Directory); err != nil {
 		return nil, err
 	}
 	return &Buyer{config: config}, nil
@@ -204,10 +203,6 @@ func drawExecution(agentID string, random func([]byte) error) ([32]byte, [32]byt
 	return ExecutionIDFor(agentID, nonce), nonce, nil
 }
 
-// purchaseStagingPrefix names a purchase directory still being written. It
-// never matches a request hash, so Purchases does not see it.
-const purchaseStagingPrefix = ".staging-"
-
 // publishPurchase makes a new purchase visible only once its record and both
 // payloads are durable: it writes them into a staging directory and renames
 // that into place. A crash at any earlier point leaves no entry Purchases
@@ -222,7 +217,7 @@ func (b *Buyer) publishPurchase(record PurchaseRecord, archive, packageBytes []b
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return errors.New("servicebridge: inspect purchase directory")
 	}
-	staging := filepath.Join(b.config.Directory, purchaseStagingPrefix+record.RequestHash)
+	staging := filepath.Join(b.config.Directory, stagingPrefix+record.RequestHash)
 	if err := os.RemoveAll(staging); err != nil {
 		return errors.New("servicebridge: clear purchase staging")
 	}
@@ -256,24 +251,6 @@ func (b *Buyer) publishPurchase(record PurchaseRecord, archive, packageBytes []b
 	}
 	published = true
 	return syncDirectory(b.config.Directory)
-}
-
-// removePurchaseStaging deletes purchases whose preparation was interrupted.
-// Nothing in a staging directory was ever called or paid.
-func removePurchaseStaging(directory string) error {
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return errors.New("servicebridge: read purchases")
-	}
-	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), purchaseStagingPrefix) {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(directory, entry.Name())); err != nil {
-			return errors.New("servicebridge: remove interrupted purchase staging")
-		}
-	}
-	return nil
 }
 
 // Purchases lists every purchase, newest first.

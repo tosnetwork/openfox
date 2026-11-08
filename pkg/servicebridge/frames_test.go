@@ -373,6 +373,42 @@ func TestInboxIgnoresACounterUpdateLeftByAnInterruptedFailure(t *testing.T) {
 	}
 }
 
+// A process killed while it creates an assembly leaves at most a staging
+// directory holding a temporary sender file; it must not hide the other
+// messages, and reopening the inbox removes it.
+func TestAnInterruptedAssemblyDoesNotBlockOtherMessages(t *testing.T) {
+	inbox, directory := openTestInbox(t, 2, 4)
+	frames, err := SplitMessage(FrameResult, testActor, 2, testRequest, fill(100, 8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, message, err := inbox.Put(testSeller, frames[0])
+	if err != nil || message == nil {
+		t.Fatal(err)
+	}
+	leftover := filepath.Join(directory, stagingPrefix+strings.Repeat("ab", 32))
+	if err = os.Mkdir(leftover, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	partial, err := os.CreateTemp(leftover, stateUpdatePrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = partial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := inbox.Pending()
+	if err != nil || len(pending) != 1 || pending[0].Key != message.Key {
+		t.Fatalf("an interrupted assembly blocks dispatch: %d %v", len(pending), err)
+	}
+	if _, err = OpenInbox(directory, 2, 4); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Lstat(leftover); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reopening the inbox kept the interrupted assembly: %v", err)
+	}
+}
+
 func TestInboxStillRejectsAnUnexpectedDirectoryNamedLikeAnUpdate(t *testing.T) {
 	inbox, directory := openTestInbox(t, 2, 4)
 	frames, err := SplitMessage(FrameResult, testActor, 2, testRequest, fill(100, 7))

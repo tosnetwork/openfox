@@ -69,6 +69,9 @@ func OpenInbox(directory string, maxPerSender, maxAll int) (*Inbox, error) {
 	if err := ensurePrivateDirectory(directory); err != nil {
 		return nil, err
 	}
+	if err := removeStaging(directory); err != nil {
+		return nil, err
+	}
 	return &Inbox{root: directory, maxPerSender: maxPerSender, maxAll: maxAll}, nil
 }
 
@@ -114,13 +117,7 @@ func (inbox *Inbox) Put(sender string, frame Frame) (InboxStatus, *Message, erro
 		if err = inbox.admitAssembly(sender); err != nil {
 			return 0, nil, err
 		}
-		if err = os.Mkdir(directory, 0o700); err != nil {
-			return 0, nil, errors.New("servicebridge: create assembly")
-		}
-		if err = writeSynced(filepath.Join(directory, senderFile), []byte(sender)); err != nil {
-			return 0, nil, err
-		}
-		if err = syncDirectory(inbox.root); err != nil {
+		if err = inbox.createAssembly(key, sender); err != nil {
 			return 0, nil, err
 		}
 	} else if err != nil {
@@ -156,6 +153,33 @@ func (inbox *Inbox) Put(sender string, frame Frame) (InboxStatus, *Message, erro
 		return InboxPartial, nil, nil
 	}
 	return InboxComplete, message, nil
+}
+
+// createAssembly makes an assembly directory visible only once its sender is
+// durable: a crash part way leaves a staging directory no listing reads, so
+// it cannot block the other messages.
+func (inbox *Inbox) createAssembly(key, sender string) error {
+	staging := filepath.Join(inbox.root, stagingPrefix+key)
+	if err := os.RemoveAll(staging); err != nil {
+		return errors.New("servicebridge: clear assembly staging")
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		return errors.New("servicebridge: create assembly")
+	}
+	if err := writeSynced(filepath.Join(staging, senderFile), []byte(sender)); err != nil {
+		return err
+	}
+	if err := os.Rename(staging, filepath.Join(inbox.root, key)); err != nil {
+		return errors.New("servicebridge: publish assembly")
+	}
+	published = true
+	return syncDirectory(inbox.root)
 }
 
 func (inbox *Inbox) admitAssembly(sender string) error {

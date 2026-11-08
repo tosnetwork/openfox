@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ensurePrivateDirectory creates directory if needed and requires an
@@ -74,6 +75,29 @@ func writeSynced(path string, data []byte) error {
 }
 
 // replaceSynced atomically replaces path with data.
+// stagingPrefix names a directory still being written before it is renamed
+// into place. It never matches a published entry's name, so no listing sees
+// it.
+const stagingPrefix = ".staging-"
+
+// removeStaging deletes directories whose initialization was interrupted.
+// Nothing in one was ever published.
+func removeStaging(directory string) error {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return errors.New("servicebridge: read state directory")
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), stagingPrefix) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(directory, entry.Name())); err != nil {
+			return errors.New("servicebridge: remove interrupted staging")
+		}
+	}
+	return nil
+}
+
 // stateUpdatePrefix names the temporary file replaceSynced writes before it
 // renames it over the target.
 const stateUpdatePrefix = ".tmp-"

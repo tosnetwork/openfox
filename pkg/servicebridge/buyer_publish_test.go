@@ -32,7 +32,7 @@ func TestAnInterruptedPurchasePreparationDoesNotBlockTheListing(t *testing.T) {
 		t.Fatal(err)
 	}
 	interrupted := strings.Repeat("cd", 32)
-	leftover := filepath.Join(directory, purchaseStagingPrefix+interrupted)
+	leftover := filepath.Join(directory, stagingPrefix+interrupted)
 	if err := os.Mkdir(leftover, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestAnInterruptedPurchasePreparationDoesNotBlockTheListing(t *testing.T) {
 	if err != nil || len(purchases) != 1 || purchases[0].RequestHash != existing {
 		t.Fatalf("an interrupted preparation blocks the purchase listing: %d %v", len(purchases), err)
 	}
-	if err = removePurchaseStaging(directory); err != nil {
+	if err = removeStaging(directory); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = os.Lstat(leftover); !errors.Is(err, os.ErrNotExist) {
@@ -88,7 +88,7 @@ func TestPublishingAPurchaseTwiceKeepsTheFirstAndLeavesNoStaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), purchaseStagingPrefix) {
+		if strings.HasPrefix(entry.Name(), stagingPrefix) {
 			t.Fatalf("a refused publish left staging behind: %s", entry.Name())
 		}
 	}

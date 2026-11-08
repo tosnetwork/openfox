@@ -99,3 +99,65 @@ func TestWriteSyncedRefusesToReplaceAndLeavesNoTemporaryFile(t *testing.T) {
 		t.Fatalf("temporary files were left behind: %d %v", len(entries), err)
 	}
 }
+
+const inboxCrashChildEnv = "SERVICEBRIDGE_INBOX_PUT_CHILD"
+
+// The child half: store one-frame messages until killed.
+func TestInboxPutCrashChild(t *testing.T) {
+	directory := os.Getenv(inboxCrashChildEnv)
+	if directory == "" {
+		t.Skip("runs only as the child of TestAKilledInboxPutNeverBlocksPending")
+	}
+	inbox, err := OpenInbox(directory, 4096, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for request := uint64(1); request < 4000; request++ {
+		frames, err := SplitMessage(FrameResult, testActor, request, testRequest, fill(64, byte(request)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = inbox.Put(testSeller, frames[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A process killed at any point of Put must leave an inbox whose Pending
+// still lists every stored message once it is reopened.
+func TestAKilledInboxPutNeverBlocksPending(t *testing.T) {
+	if os.Getenv(inboxCrashChildEnv) != "" {
+		t.Skip("the child does not recurse")
+	}
+	for round := 0; round < 12; round++ {
+		directory := filepath.Join(t.TempDir(), "inbox")
+		child := exec.Command(os.Args[0], "-test.run=^TestInboxPutCrashChild$", "-test.count=1")
+		child.Env = append(os.Environ(), inboxCrashChildEnv+"="+directory)
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			if entries, err := os.ReadDir(directory); err == nil && len(entries) > 2 {
+				break
+			}
+			time.Sleep(200 * time.Microsecond)
+		}
+		time.Sleep(time.Duration(rand.IntN(5_000)) * time.Microsecond)
+		if err := child.Process.Signal(syscall.SIGKILL); err != nil {
+			t.Fatalf("round %d: the child finished before it was killed: %v", round, err)
+		}
+		_ = child.Wait()
+		inbox, err := OpenInbox(directory, 4096, 4096)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pending, err := inbox.Pending()
+		if err != nil {
+			t.Fatalf("round %d: a killed Put blocks Pending: %v", round, err)
+		}
+		if len(pending) == 0 {
+			t.Fatalf("round %d: no stored message is pending", round)
+		}
+	}
+}

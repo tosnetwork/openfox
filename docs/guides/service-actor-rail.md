@@ -49,7 +49,106 @@ Packet receiver socket must point at the node's `receiver_socket`.
    is final it delivers the result and redelivers it in fresh packets until the
    buyer acknowledges it or the manifest retention ends. A failed or ambiguous
    execution is never attested; the buyer's refund path applies.
-   `openfox earning service status` lists the requests.
+   `openfox earning service status` lists the requests (see below).
+
+## Operating a provider
+
+### Preflight
+
+`openfox earning service preflight --rail-config <file>` (`--config` is an
+alias) checks that the node is ready to admit paid work and prints a JSON
+report:
+
+```json
+{"schema": "tos.openfox.provider-preflight", "version": 1, "generated_unix": 1900000000,
+ "ok": false, "admission_paused": false,
+ "checks": [{"id": "chain.attestor", "status": "fail", "message": "the actor has no attestor …"}]}
+```
+
+Each check is `pass`, `fail`, `warn` or `unknown`; the command exits non-zero
+when any check is `fail`. `version` changes only when a field changes meaning
+or is removed; new checks may appear within a version. A check whose
+prerequisite did not pass is `unknown` with the prerequisite named.
+
+| Check | Fails (or warns) when |
+|---|---|
+| `config.parse` | the file is not owner-only (`0600`) strict JSON |
+| `config.provider` | the provider section is missing or names an invalid Capability, controller, wallet or path |
+| `state_dir.private` | `state_dir` is missing, a symbolic link, not `0700` or owned by another user |
+| `state_dir.disk_free` | less than 1 GiB is free under `state_dir` |
+| `admission.pause` | warns while admission is paused; fails if the pause marker is unreadable |
+| `process.user` | warns when running as root |
+| `tosctl.pin`, `executor.pin` | the binary is missing or does not hash to its pin |
+| `tosctl.config` | the tosctl configuration is missing or world-accessible |
+| `tosctl.vault_env` | the variable `vault_url_env` names is unset (its value is never printed) |
+| `containerd.socket` | the runtime socket is missing, not a socket, or world-accessible; it is never connected to |
+| `manifest.local` | the manifest is not canonical, or its actor code hash, version or transport differ from the configuration |
+| `rpc.endpoints` | fewer than 3 or more than 8 endpoints, duplicate authorities, plain HTTP off loopback, or a quorum that is not a strict majority |
+| `rpc.independence` | always `unknown`: distinct authorities are enforced, distinct operators are not verified |
+| `rpc.genesis` | an endpoint serves another genesis, or fewer than a quorum match (warns when some are unreachable but a quorum matches); the network id is a label bound only by the genesis hashes |
+| `chain.finalized` | no finalized checkpoint is read by a strict majority |
+| `clock.skew` | warns when the local clock is more than 30 s from the checkpoint's chain time (which includes the block's age) |
+| `chain.registry` | the Native Registry account does not read under `registry_code_hash` |
+| `chain.capability` | the Capability is missing, tombstoned, owned by another Agent, lacks the version, the version is revoked, or names another manifest digest |
+| `chain.actor` | the actor is not active or does not run `actor_code_hash` |
+| `chain.attestor` | the actor has no attestor (attestor-less actors are refused), or its attestor is not the manifest's |
+| `chain.admission` | the protocol's own admission verification (binding, metadata hash, proof scheme, policy bounds) refuses the offer |
+| `signer.attestor`, `signer.packet` | the controller does not resolve in the tosctl vault, or resolves to another key than the manifest attestor or `packet_key_id` |
+| `signer.wallet` | always `unknown`: tosctl cannot resolve a wallet without signing |
+
+Preflight sends nothing to the chain and signs nothing. The signer checks run
+`tosctl agent native-registry controller`, which prints a controller's public
+key and key ID only. Its finalized reads keep their checkpoint fences in a
+private scratch directory, so it writes nothing into `state_dir`. Endpoint
+URLs in messages are replaced by their positions (`rpc_endpoints[0]`), since a
+path may carry an access token.
+
+### Status
+
+`openfox earning service status --rail-config <file>` prints:
+
+- `admission`: whether new admissions are paused, since when and why;
+- `actor`: the actor's finalized accounting at one checkpoint:
+  `credited_revenue_nanotos` (the contract's `withdrawable_revenue`),
+  `pending_liability_nanotos`, `refundable_liability_nanotos`,
+  `locked_storage_fees_nanotos` and the actor balance. Credited revenue is not
+  money received: it reaches a wallet only after `withdraw_revenue` finalizes
+  and the wallet credit is verified, and `wallet_receipt` is `not_tracked`;
+- `requests`: every request with the fields the earlier listing printed, plus
+  `slot_state` (the rail gate's record), `chain_fact` and one
+  `operator_state` with a `state_reason`.
+
+| `operator_state` | Meaning |
+|---|---|
+| `admitted` | the rail gate admitted the request; execution has not started |
+| `executing` | the execution was handed to the executor |
+| `result_available` | executed and attested locally; respond not sent, or sent and the request still pending |
+| `responded` | a finalized `respond` carries this request's attested response hash (price and storage fee credited to the actor) |
+| `refunded` | a finalized `expire` made the price refundable, or `claim_refund` paid it to the caller |
+| `swept` | a finalized `sweep_expired_request` returned the price to the caller |
+| `outcome_unknown` | anything not established: a failed or ambiguous execution awaiting expiry, a respond whose finality was not read, a chain read that failed, an incomplete history, or local and chain facts that disagree |
+
+These are projections of local records and finalized facts, not contract
+states. `status` reads one finalized checkpoint through the node's own
+checkpoint fences; `--offline` skips the chain, and a failed read is reported
+in `actor.error`. In both cases states the chain would decide stay
+`outcome_unknown`; only a respond the node itself saw finalized before
+delivering is reported as `responded`. `--records` prints only the request
+list, in the earlier array shape with the added fields.
+
+### Pause and resume
+
+`openfox earning service pause --rail-config <file> [--reason <text>]` writes
+an owner-only marker `state_dir/admission-paused`; a running `serve` checks it
+before every admission, so no restart is needed. Work already admitted still
+executes, responds and delivers. A task that arrives while paused is held in
+the inbox, not refused and not counted against its retry cap; after
+`openfox earning service resume` it is admitted if its request is still
+admissible. A held task is pruned with other incomplete inbox entries after an
+hour, and a request that is never answered falls to the buyer's refund path.
+Pausing never touches funds. It does not stop buyers from calling the actor;
+to stop new calls on chain, change the actor's policy with the owner wallet.
+An unreadable marker is treated as paused.
 
 ## Buyer
 

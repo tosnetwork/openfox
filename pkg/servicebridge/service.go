@@ -79,6 +79,11 @@ func (s *Service) Dispatch(ctx context.Context) error {
 			return ctx.Err()
 		}
 		if err := s.handle(ctx, message); err != nil {
+			if errors.Is(err, ErrAdmissionPaused) {
+				// Held, not failed: the attempt cap must not retire a funded
+				// request's task while the owner has paused admission.
+				continue
+			}
 			s.Report("rail message", err)
 			if err := s.Inbox.Failed(message.Key); err != nil {
 				s.Report("rail message attempt", err)

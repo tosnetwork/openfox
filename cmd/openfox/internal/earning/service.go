@@ -32,7 +32,8 @@ func serviceCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 	}
 	command.AddCommand(serviceManifestCommand(), serviceMetadataCommand(), serviceServeCommand(), serviceBuyCommand(),
-		servicePurchasesCommand(), serviceStatusCommand())
+		servicePurchasesCommand(), serviceStatusCommand(), servicePreflightCommand(), servicePauseCommand(),
+		serviceResumeCommand())
 	return command
 }
 
@@ -258,8 +259,14 @@ func servicePurchasesCommand() *cobra.Command {
 
 func serviceStatusCommand() *cobra.Command {
 	var path string
+	var offline, recordsOnly bool
 	command := &cobra.Command{
-		Use: "status", Short: "List the provider's admitted requests", Args: cobra.NoArgs,
+		Use: "status", Short: "Show admission, the actor's credited revenue and each request's operator state",
+		Long: "Show whether new admissions are paused, the actor's finalized accounting (credited revenue is a " +
+			"contract balance, not wallet receipt) and one operator state per request: admitted, executing, " +
+			"result_available, responded, refunded, swept or outcome_unknown. Without --offline it reads one " +
+			"finalized checkpoint; a failed read is reported, and states it would have decided stay outcome_unknown.",
+		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			config, err := servicebridge.LoadNodeConfig(path)
 			if err != nil {
@@ -268,11 +275,114 @@ func serviceStatusCommand() *cobra.Command {
 			if config.Provider == nil {
 				return errors.New("the rail configuration has no provider section")
 			}
-			records, err := servicebridge.ReadProviderRecords(config.StateDir)
+			var chain servicebridge.StatusChain
+			if !offline {
+				chain, err = servicebridge.OpenStatusChain(config)
+				if err != nil {
+					return fmt.Errorf("open the finalized reader (use --offline to skip chain facts): %w", err)
+				}
+			}
+			status, err := servicebridge.ReadProviderStatus(command.Context(), config, chain, time.Now())
 			if err != nil {
 				return err
 			}
-			return printJSON(command.OutOrStdout(), records)
+			if recordsOnly {
+				return printJSON(command.OutOrStdout(), status.Requests)
+			}
+			return printJSON(command.OutOrStdout(), status)
+		},
+	}
+	railConfigFlag(command, &path)
+	command.Flags().BoolVar(&offline, "offline", false, "do not read finalized chain facts")
+	command.Flags().
+		BoolVar(&recordsOnly, "records", false, "print only the request list (the earlier array shape, with added fields)")
+	return command
+}
+
+// errPreflightFailed makes a failed preflight exit non-zero after its report
+// was printed.
+var errPreflightFailed = errors.New("preflight: at least one required check failed")
+
+func servicePreflightCommand() *cobra.Command {
+	var path string
+	command := &cobra.Command{
+		Use:   "preflight",
+		Short: "Check that this provider node is ready to admit paid work (no chain effect, signs nothing)",
+		Long: "Print a machine-readable readiness report and exit non-zero if any check fails. It reads the " +
+			"configuration, local files and finalized chain state; it sends nothing, signs nothing, never connects " +
+			"to the container runtime socket and writes nothing into state_dir.",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: false,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if path == "" {
+				return errors.New("--rail-config is required")
+			}
+			report := servicebridge.RunPreflight(command.Context(), path, servicebridge.PreflightEnv{})
+			if err := printJSON(command.OutOrStdout(), report); err != nil {
+				return err
+			}
+			if !report.OK {
+				return errPreflightFailed
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&path, "rail-config", "", "owner-private rail node configuration (JSON)")
+	command.Flags().StringVar(&path, "config", "", "alias of --rail-config")
+	return command
+}
+
+func servicePauseCommand() *cobra.Command {
+	var path, reason string
+	command := &cobra.Command{
+		Use:   "pause",
+		Short: "Stop admitting new requests; admitted work still executes, responds and delivers",
+		Long: "Write an owner-only marker in state_dir that a running `serve` checks before each admission. " +
+			"Work already admitted is unaffected. A task that arrives while paused is held, not refused; it is " +
+			"admitted after `resume` if its request is still admissible, and otherwise the buyer's refund path " +
+			"applies. Pausing never touches funds; to stop new calls on chain, change the actor's policy with the " +
+			"owner wallet.",
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			config, err := servicebridge.LoadNodeConfig(path)
+			if err != nil {
+				return err
+			}
+			if config.Provider == nil {
+				return errors.New("the rail configuration has no provider section")
+			}
+			pause, already, err := servicebridge.PauseAdmission(config.StateDir, reason, time.Now())
+			if err != nil {
+				return err
+			}
+			return printJSON(command.OutOrStdout(), map[string]any{
+				"paused": true, "already_paused": already, "paused_unix": pause.PausedUnix, "reason": pause.Reason,
+			})
+		},
+	}
+	railConfigFlag(command, &path)
+	command.Flags().StringVar(&reason, "reason", "", "one-line note shown in status (at most 256 bytes)")
+	return command
+}
+
+func serviceResumeCommand() *cobra.Command {
+	var path string
+	command := &cobra.Command{
+		Use: "resume", Short: "Admit new requests again", Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			config, err := servicebridge.LoadNodeConfig(path)
+			if err != nil {
+				return err
+			}
+			if config.Provider == nil {
+				return errors.New("the rail configuration has no provider section")
+			}
+			wasPaused, err := servicebridge.ResumeAdmission(config.StateDir)
+			if err != nil {
+				return err
+			}
+			return printJSON(command.OutOrStdout(), map[string]any{"paused": false, "was_paused": wasPaused})
 		},
 	}
 	railConfigFlag(command, &path)

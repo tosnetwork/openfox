@@ -195,6 +195,64 @@ func parseNano(value, name string, allowEmpty bool) (*big.Int, error) {
 	return parsed, nil
 }
 
+// effectiveQuorum is the configured quorum, or a strict majority of the
+// endpoints when none is configured.
+func effectiveQuorum(config NodeConfig) int {
+	if config.Quorum == 0 {
+		return len(config.RPCEndpoints)/2 + 1
+	}
+	return config.Quorum
+}
+
+// newChainAdapter validates the endpoint set and quorum without contacting
+// any endpoint.
+func newChainAdapter(config NodeConfig) (*toschain.Adapter, error) {
+	return toschain.New(toschain.Config{
+		Network: config.Network.NetworkID, Endpoints: config.RPCEndpoints, Quorum: effectiveQuorum(config),
+	})
+}
+
+// openServiceActorReader assembles the finalized Service Actor reader whose
+// monotonic checkpoint fences live in checkpointDir.
+func openServiceActorReader(
+	config NodeConfig,
+	network *nativev1.NetworkDomain,
+	checkpointDir string,
+) (*toschain.ServiceActorReader, error) {
+	chain, err := newChainAdapter(config)
+	if err != nil {
+		return nil, err
+	}
+	code, err := os.ReadFile(config.RegistryCodeBOC)
+	if err != nil || len(code) == 0 || len(code) > 1<<20 {
+		return nil, errors.New("servicebridge: read the Native Registry code BOC")
+	}
+	locator, err := nativecore.NewLocator(
+		network,
+		0,
+		strings.Join(strings.Fields(string(code)), ""),
+		config.RegistryCodeHash,
+	)
+	if err != nil {
+		return nil, err
+	}
+	registry, err := toschain.NewSimplifiedNativeResolver(
+		chain,
+		locator,
+		filepath.Join(checkpointDir, "registry.checkpoint"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return toschain.NewServiceActorReader(toschain.ServiceActorReaderConfig{
+		Chain:          chain,
+		Network:        network,
+		ActorCodeHash:  config.ActorCodeHash,
+		Registry:       registry,
+		CheckpointPath: filepath.Join(checkpointDir, "service-actor.checkpoint"),
+	})
+}
+
 // OpenNode validates the configuration and assembles the node.
 func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Node, error) {
 	if config.Provider == nil && config.Buyer == nil {
@@ -211,48 +269,12 @@ func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Nod
 	}
 	node := &Node{Config: config, Manifests: &MemoryManifests{}}
 	fail := func(err error) (*Node, error) { return nil, errors.Join(err, node.Close()) }
+	var err error
 	node.Network = &nativev1.NetworkDomain{
 		NetworkId: config.Network.NetworkID, GenesisRootHash: config.Network.GenesisRootHash,
 		GenesisFileHash: config.Network.GenesisFileHash,
 	}
-	quorum := config.Quorum
-	if quorum == 0 {
-		quorum = len(config.RPCEndpoints)/2 + 1
-	}
-	chain, err := toschain.New(
-		toschain.Config{Network: node.Network.GetNetworkId(), Endpoints: config.RPCEndpoints, Quorum: quorum},
-	)
-	if err != nil {
-		return fail(err)
-	}
-	code, err := os.ReadFile(config.RegistryCodeBOC)
-	if err != nil || len(code) == 0 || len(code) > 1<<20 {
-		return fail(errors.New("servicebridge: read the Native Registry code BOC"))
-	}
-	locator, err := nativecore.NewLocator(
-		node.Network,
-		0,
-		strings.Join(strings.Fields(string(code)), ""),
-		config.RegistryCodeHash,
-	)
-	if err != nil {
-		return fail(err)
-	}
-	registry, err := toschain.NewSimplifiedNativeResolver(
-		chain,
-		locator,
-		filepath.Join(config.StateDir, "registry.checkpoint"),
-	)
-	if err != nil {
-		return fail(err)
-	}
-	node.Reader, err = toschain.NewServiceActorReader(toschain.ServiceActorReaderConfig{
-		Chain:          chain,
-		Network:        node.Network,
-		ActorCodeHash:  config.ActorCodeHash,
-		Registry:       registry,
-		CheckpointPath: filepath.Join(config.StateDir, "service-actor.checkpoint"),
-	})
+	node.Reader, err = openServiceActorReader(config, node.Network, config.StateDir)
 	if err != nil {
 		return fail(err)
 	}
@@ -392,6 +414,7 @@ func (n *Node) openProvider(ctx context.Context, options NodeOptions, lifecycle 
 		Courier:            n.Courier,
 		History:            railReader{reader: n.Reader},
 		Directory:          filepath.Join(n.Config.StateDir, "provider"),
+		StateDir:           n.Config.StateDir,
 		Now:                options.Now,
 	})
 	return err

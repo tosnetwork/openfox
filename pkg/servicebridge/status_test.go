@@ -102,7 +102,39 @@ func TestEveryRequestProjectsToOneExplicitOperatorState(t *testing.T) {
 		}, true, []uint64{7}, nil), OperatorResultAvailable, ChainFactPending},
 		{
 			"gone with incomplete history", ProviderResponding, "", readFacts(respond(responseHash), false, nil, nil),
-			OperatorOutcomeUnknown, ChainFactNotFound,
+			OperatorOutcomeUnknown, ChainFactHistoryIncomplete,
+		},
+		{
+			"delivering past the history bound", ProviderDelivering, "", readFacts(nil, false, nil, nil),
+			OperatorResponded, ChainFactHistoryIncomplete,
+		},
+		{
+			"delivering, history read failed", ProviderDelivering, "", withoutHistory(readFacts(nil, true, nil, nil)),
+			OperatorResponded, ChainFactHistoryIncomplete,
+		},
+		{
+			"responding, history read failed", ProviderResponding, "", withoutHistory(readFacts(nil, true, nil, nil)),
+			OperatorOutcomeUnknown, ChainFactHistoryIncomplete,
+		},
+		{
+			"failed record, finalized respond", ProviderFailed, "", readFacts(respond(responseHash), true, nil, nil),
+			OperatorOutcomeUnknown, ChainFactUnmatchedResponse,
+		},
+		{
+			"completed slot, finalized respond", "", railgate.SlotCompleted,
+			readFacts(respond(responseHash), true, nil, nil), OperatorResponded, ChainFactResponded,
+		},
+		{
+			"failed slot, finalized respond", "", railgate.SlotFailed,
+			readFacts(respond(responseHash), true, nil, nil), OperatorOutcomeUnknown, ChainFactUnmatchedResponse,
+		},
+		{
+			"delivering, actor not active", ProviderDelivering, "", &actorFacts{read: true},
+			OperatorResponded, ChainFactActorInactive,
+		},
+		{
+			"responding, actor not active", ProviderResponding, "", &actorFacts{read: true},
+			OperatorOutcomeUnknown, ChainFactActorInactive,
 		},
 		{
 			"gone with no terminal transaction", ProviderExecuted, "", readFacts(nil, true, nil, nil),
@@ -118,18 +150,34 @@ func TestEveryRequestProjectsToOneExplicitOperatorState(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var records []ProviderRecord
 			var slots []railgate.Slot
+			// As in production, only attested work carries a response hash.
 			if test.record != "" {
-				records = append(records, ProviderRecord{
-					State: test.record, Actor: actor, RequestID: 7,
+				record := ProviderRecord{
+					Schema: providerRecordSchema, State: test.record, Actor: actor, RequestID: 7,
 					ResponseHash: responseHash,
-				})
+				}
+				if test.record == ProviderFailed || test.record == ProviderAbandoned {
+					record.ResponseHash = ""
+				}
+				records = append(records, record)
 			}
 			if test.slot != "" {
-				slots = append(slots, railgate.Slot{Actor: actor, RequestID: 7, State: test.slot})
+				slot := railgate.Slot{Actor: actor, RequestID: 7, State: test.slot}
+				if test.slot == railgate.SlotCompleted {
+					slot.ResponseHash = responseHash
+				}
+				slots = append(slots, slot)
 			}
 			got := projectProviderStatus(records, slots, map[string]*actorFacts{actor: test.facts})
 			if len(got) != 1 {
 				t.Fatalf("%d entries for one request", len(got))
+			}
+			wantSource := RequestSourceRecord
+			if test.record == "" {
+				wantSource = RequestSourceSlot
+			}
+			if got[0].Source != wantSource || (wantSource == RequestSourceSlot) == (got[0].Schema != "") {
+				t.Fatalf("source %q schema %q for a %s entry", got[0].Source, got[0].Schema, wantSource)
 			}
 			if got[0].OperatorState != test.want || got[0].ChainFact != test.fact || got[0].StateReason == "" {
 				t.Fatalf("state %s fact %s (%s), want %s %s", got[0].OperatorState, got[0].ChainFact,
@@ -137,6 +185,12 @@ func TestEveryRequestProjectsToOneExplicitOperatorState(t *testing.T) {
 			}
 		})
 	}
+}
+
+// withoutHistory is a read whose history walk failed.
+func withoutHistory(facts *actorFacts) *actorFacts {
+	facts.history = nil
+	return facts
 }
 
 // statusChain is a fake finalized chain for one actor.

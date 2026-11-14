@@ -172,15 +172,10 @@ func (p *preflight) requires(id string, dependencies ...string) bool {
 	return true
 }
 
-// redact replaces configured endpoint URLs, whose paths may carry access
-// tokens, with their positions.
+// redact hides configured endpoint URLs, whose paths may carry access
+// tokens.
 func (p *preflight) redact(message string) string {
-	for index, endpoint := range p.endpoints {
-		if endpoint != "" {
-			message = strings.ReplaceAll(message, endpoint, fmt.Sprintf("rpc_endpoints[%d]", index))
-		}
-	}
-	return message
+	return redactEndpoints(message, p.endpoints)
 }
 
 // RunPreflight checks that a provider node is ready to admit paid work. It

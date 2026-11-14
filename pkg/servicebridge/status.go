@@ -43,6 +43,22 @@ const (
 	ChainFactRefundClaimed = "refund_claimed"
 	ChainFactSwept         = "swept"
 	ChainFactNotFound      = "not_found"
+	// ChainFactUnmatchedResponse is a finalized respond for a request the
+	// node holds no attested result for, so its hash cannot be compared.
+	ChainFactUnmatchedResponse = "responded_without_local_result"
+	// ChainFactHistoryIncomplete is a request neither pending nor refundable
+	// whose terminal transaction could not be looked for: the history read
+	// failed or stopped at its bound.
+	ChainFactHistoryIncomplete = "history_incomplete"
+	// ChainFactActorInactive is a request of an actor that is not an active
+	// account at the checkpoint.
+	ChainFactActorInactive = "actor_not_active"
+)
+
+// Where a listed request comes from.
+const (
+	RequestSourceRecord = "record"
+	RequestSourceSlot   = "slot"
 )
 
 // ProviderStatusSchema names the status report; ProviderStatusVersion
@@ -56,6 +72,10 @@ const (
 // embedded record keeps every field the earlier listing printed.
 type RequestStatus struct {
 	ProviderRecord
+	// Source is "record" for a provider record, or "slot" for a request the
+	// rail gate admitted that has no provider record yet; a slot entry
+	// carries no record schema.
+	Source        string `json:"source"`
 	SlotState     string `json:"slot_state,omitempty"`
 	OperatorState string `json:"operator_state"`
 	ChainFact     string `json:"chain_fact"`
@@ -118,6 +138,22 @@ type StatusSession interface {
 // StatusChain opens finalized sessions for the status report.
 type StatusChain interface {
 	BeginStatus(ctx context.Context) (StatusSession, error)
+}
+
+type unavailableStatusChain struct{ err error }
+
+func (c unavailableStatusChain) BeginStatus(context.Context) (StatusSession, error) {
+	return nil, c.err
+}
+
+// UnavailableStatusChain stands for a reader that could not be opened: the
+// report is the offline one, with err in the actor summary, rather than no
+// report at all.
+func UnavailableStatusChain(err error) StatusChain {
+	if err == nil {
+		err = errors.New("servicebridge: the finalized reader is unavailable")
+	}
+	return unavailableStatusChain{err: err}
 }
 
 // ReaderStatusChain adapts the finalized Service Actor reader.
@@ -208,11 +244,15 @@ type requestKey struct {
 	id    uint64
 }
 
+// requestFact is what the finalized read says about one request.
+// responseHash is the locally attested response hash, empty when the node
+// holds no attested result for the request.
 func (f *actorFacts) requestFact(requestID uint64, responseHash string) (string, string) {
 	if f == nil || !f.read {
 		return ChainFactNotRead, ""
 	}
-	if f.history != nil && f.history.Result == toschain.HistoryComplete {
+	complete := f.history != nil && f.history.Result == toschain.HistoryComplete
+	if complete {
 		// Terminal transactions are matched newest first; a request has at
 		// most one terminal resolution.
 		for _, transaction := range f.history.Transactions {
@@ -225,20 +265,28 @@ func (f *actorFacts) requestFact(requestID uint64, responseHash string) (string,
 			case toschain.ActorTxClaim:
 				return ChainFactRefundClaimed, ""
 			case toschain.ActorTxRespond:
-				if responseHash != "" && transaction.ResponseHash != responseHash {
+				switch {
+				case responseHash == "":
+					return ChainFactUnmatchedResponse, transaction.ResponseHash
+				case transaction.ResponseHash != responseHash:
 					return ChainFactOtherResponse, transaction.ResponseHash
+				default:
+					return ChainFactResponded, transaction.ResponseHash
 				}
-				return ChainFactResponded, transaction.ResponseHash
 			}
 		}
 	}
-	if f.found && f.account != nil && f.account.Data != nil {
-		if _, ok := f.account.Data.Pending[requestID]; ok {
-			return ChainFactPending, ""
-		}
-		if _, ok := f.account.Data.Refunds[requestID]; ok {
-			return ChainFactRefundable, ""
-		}
+	if !f.found || f.account == nil || f.account.Data == nil {
+		return ChainFactActorInactive, ""
+	}
+	if _, ok := f.account.Data.Pending[requestID]; ok {
+		return ChainFactPending, ""
+	}
+	if _, ok := f.account.Data.Refunds[requestID]; ok {
+		return ChainFactRefundable, ""
+	}
+	if !complete {
+		return ChainFactHistoryIncomplete, ""
 	}
 	return ChainFactNotFound, ""
 }
@@ -257,10 +305,15 @@ func projectRequest(record *ProviderRecord, slot *railgate.Slot, fact string) (s
 		return OperatorResponded, "finalized respond with this request's attested response hash"
 	case ChainFactOtherResponse:
 		return OperatorOutcomeUnknown, "finalized respond carries another response hash than the local record"
+	case ChainFactUnmatchedResponse:
+		return OperatorOutcomeUnknown, "a finalized respond exists but the node holds no attested result to " +
+			"compare its response hash with"
 	case ChainFactNotFound:
 		return OperatorOutcomeUnknown, "the request is neither pending nor refundable and no terminal " +
 			"transaction was found in the complete finalized history"
-	case ChainFactPending, ChainFactNotRead:
+	case ChainFactPending, ChainFactNotRead, ChainFactHistoryIncomplete, ChainFactActorInactive:
+		// The chain did not settle the request at this checkpoint: the local
+		// state decides, and never more than it saw itself.
 	default:
 		return OperatorOutcomeUnknown, "unrecognized chain fact"
 	}
@@ -273,12 +326,13 @@ func projectRequest(record *ProviderRecord, slot *railgate.Slot, fact string) (s
 			if pending {
 				return OperatorResultAvailable, "respond sent; the request is still pending at the checkpoint"
 			}
-			return OperatorOutcomeUnknown, "respond sent; its finality was not read"
+			return OperatorOutcomeUnknown, "respond sent; its finality is not established"
 		case ProviderDelivering, ProviderAcked, ProviderExpired:
 			if pending {
 				return OperatorOutcomeUnknown, "the local record saw a finalized respond but the chain shows the request pending"
 			}
-			return OperatorResponded, "the provider observed the finalized respond before delivering (chain not read now)"
+			return OperatorResponded, "the provider observed the finalized respond before delivering " +
+				"(not re-established at this checkpoint)"
 		case ProviderFailed:
 			return OperatorOutcomeUnknown, "execution failed and is never attested; the request resolves by " +
 				"expire and claim_refund or by sweep"
@@ -326,7 +380,10 @@ func projectProviderStatus(
 		slot := slotByKey[key]
 		fact, _ := facts[record.Actor].requestFact(record.RequestID, record.ResponseHash)
 		state, reason := projectRequest(&record, slot, fact)
-		status := RequestStatus{ProviderRecord: record, OperatorState: state, ChainFact: fact, StateReason: reason}
+		status := RequestStatus{
+			ProviderRecord: record, Source: RequestSourceRecord, OperatorState: state, ChainFact: fact,
+			StateReason: reason,
+		}
 		if slot != nil {
 			status.SlotState = string(slot.State)
 		}
@@ -338,14 +395,16 @@ func projectProviderStatus(
 		if seen[key] {
 			continue
 		}
-		fact, _ := facts[slot.Actor].requestFact(slot.RequestID, "")
+		// Only a completed slot holds an attested response hash.
+		fact, _ := facts[slot.Actor].requestFact(slot.RequestID, slot.ResponseHash)
 		state, reason := projectRequest(nil, &slot, fact)
 		out = append(out, RequestStatus{
 			ProviderRecord: ProviderRecord{
-				Schema: providerRecordSchema, QuoteCommitment: slot.QuoteCommitment, Actor: slot.Actor,
-				RequestID: slot.RequestID, RequestHash: slot.RequestHash, UpdatedUnix: slot.UpdatedUnix,
+				QuoteCommitment: slot.QuoteCommitment, Actor: slot.Actor, RequestID: slot.RequestID,
+				RequestHash: slot.RequestHash, ResponseHash: slot.ResponseHash, UpdatedUnix: slot.UpdatedUnix,
 			},
-			SlotState: string(slot.State), OperatorState: state, ChainFact: fact, StateReason: reason,
+			Source: RequestSourceSlot, SlotState: string(slot.State), OperatorState: state, ChainFact: fact,
+			StateReason: reason,
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].UpdatedUnix > out[j].UpdatedUnix })
@@ -452,6 +511,7 @@ func ReadProviderStatus(
 	if chain != nil {
 		session, err = chain.BeginStatus(ctx)
 		if err != nil {
+			session = nil
 			facts[actor] = &actorFacts{err: "finalized read failed: " + err.Error()}
 		} else {
 			names := make([]string, 0, len(actors))
@@ -463,6 +523,10 @@ func ReadProviderStatus(
 				facts[name] = readActorFacts(ctx, session, name)
 			}
 		}
+	}
+	// Chain errors can quote an endpoint URL, whose path may carry a token.
+	for _, value := range facts {
+		value.err = redactEndpoints(value.err, config.RPCEndpoints)
 	}
 	status.Actor = summarize(actor, facts[actor], session)
 	status.Requests = projectProviderStatus(records, slots, facts)

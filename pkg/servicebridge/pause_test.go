@@ -126,8 +126,120 @@ func TestDispatchHoldsATaskWhilePausedWithoutSpendingItsAttempts(t *testing.T) {
 	if pending, err := inbox.Pending(); err != nil || len(pending) != 1 {
 		t.Fatalf("a held task was retired while paused: %d %v", len(pending), err)
 	}
-	if len(reports) != 0 {
-		t.Fatalf("a held task was counted as failed: %v", reports)
+	// One pause line per round, and never a failed-handling report.
+	if len(reports) != 2*maxHandlingAttempts {
+		t.Fatalf("%d reports over %d rounds: %v", len(reports), 2*maxHandlingAttempts, reports)
+	}
+	for _, stage := range reports {
+		if stage != "admission paused" {
+			t.Fatalf("a held task was reported as %q", stage)
+		}
+	}
+}
+
+// putTask stores a complete task message whose frames name requestHash, so
+// each call makes a distinct assembly from the same buyer.
+func putTask(t *testing.T, inbox *Inbox, requestHash [32]byte) error {
+	t.Helper()
+	message, _ := taskMessage(t, testPackage(t, nil), fill(100, 1), testBuyer)
+	frames, err := SplitMessage(FrameTask, testActor, 0, requestHash, message.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, frame := range frames {
+		if _, _, err := inbox.Put(testBuyer, frame); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestHeldTasksCannotKeepOutAcknowledgementsOfAdmittedWork(t *testing.T) {
+	state := privateStateDir(t)
+	const bound = 4
+	inbox, _ := openTestInbox(t, bound, bound)
+	for index := range bound {
+		if err := putTask(t, inbox, [32]byte{byte(index + 1)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := putTask(t, inbox, [32]byte{0xf0}); err == nil {
+		t.Fatal("the fixture did not fill the inbox")
+	}
+	if _, _, err := PauseAdmission(state, "", time.Unix(1_800_000_000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	var reported []error
+	service := &Service{
+		Inbox:    inbox,
+		Provider: &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, StateDir: state}},
+		Report:   func(_ string, err error) { reported = append(reported, err) },
+	}
+	if err := service.Dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The buyer of admitted work acknowledges its result while the inbox
+	// holds a full bound of paused tasks.
+	body, err := EncodeAck([32]byte{0x42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames, err := SplitMessage(FrameResultAck, testActor, 3, testRequest, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ackSender := "agent_" + strings.Repeat("c3", 32)
+	for _, frame := range frames {
+		if _, _, putErr := inbox.Put(ackSender, frame); putErr != nil {
+			t.Fatalf("held tasks kept out an acknowledgement of admitted work: %v", putErr)
+		}
+	}
+	// Held tasks have a bound of their own: one more is retired, not held.
+	if putErr := putTask(t, inbox, [32]byte{0xf1}); putErr != nil {
+		t.Fatal(putErr)
+	}
+	reported = nil
+	if dispatchErr := service.Dispatch(context.Background()); dispatchErr != nil {
+		t.Fatal(dispatchErr)
+	}
+	pending, err := inbox.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := 0
+	for _, message := range pending {
+		if message.Kind == FrameTask {
+			tasks++
+		}
+	}
+	if tasks != bound {
+		t.Fatalf("%d tasks held, want the hold bound %d", tasks, bound)
+	}
+	if len(reported) == 0 || !strings.Contains(reported[len(reported)-1].Error(), "1 retired") {
+		t.Fatalf("the retired task was not reported: %v", reported)
+	}
+}
+
+func TestServeReportsAnUnreadablePauseMarker(t *testing.T) {
+	state := privateStateDir(t)
+	inbox, _ := openTestInbox(t, 2, 4)
+	if err := putTask(t, inbox, testRequest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, AdmissionPauseFile), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var reported []error
+	service := &Service{
+		Inbox:    inbox,
+		Provider: &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, StateDir: state}},
+		Report:   func(_ string, err error) { reported = append(reported, err) },
+	}
+	if err := service.Dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 1 || !strings.Contains(reported[0].Error(), "pause marker is invalid") {
+		t.Fatalf("an unreadable pause marker was not reported: %v", reported)
 	}
 }
 

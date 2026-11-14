@@ -279,7 +279,10 @@ func serviceStatusCommand() *cobra.Command {
 			if !offline {
 				chain, err = servicebridge.OpenStatusChain(config)
 				if err != nil {
-					return fmt.Errorf("open the finalized reader (use --offline to skip chain facts): %w", err)
+					// The local view is still worth printing; the failure is
+					// reported in actor.error and chain-decided states stay
+					// unknown.
+					chain = servicebridge.UnavailableStatusChain(fmt.Errorf("open the finalized reader: %w", err))
 				}
 			}
 			status, err := servicebridge.ReadProviderStatus(command.Context(), config, chain, time.Now())

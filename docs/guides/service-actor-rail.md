@@ -115,8 +115,18 @@ path may carry an access token.
   money received: it reaches a wallet only after `withdraw_revenue` finalizes
   and the wallet credit is verified, and `wallet_receipt` is `not_tracked`;
 - `requests`: every request with the fields the earlier listing printed, plus
-  `slot_state` (the rail gate's record), `chain_fact` and one
-  `operator_state` with a `state_reason`.
+  `source` (`record`, or `slot` for a request the rail gate admitted that has
+  no provider record yet; a slot entry has an empty `schema`), `slot_state`
+  (the rail gate's record), `chain_fact` and one `operator_state` with a
+  `state_reason`.
+
+`chain_fact` is what the finalized read said: `not_read`, `pending`,
+`refundable`, `responded`, `responded_with_another_hash`,
+`responded_without_local_result` (a respond exists but the node holds no
+attested result to compare it with), `refund_claimed`, `swept`, `not_found`
+(neither pending nor refundable and no terminal transaction in the complete
+history), `history_incomplete` (the history read failed or stopped at its
+bound) or `actor_not_active`.
 
 | `operator_state` | Meaning |
 |---|---|
@@ -130,11 +140,14 @@ path may carry an access token.
 
 These are projections of local records and finalized facts, not contract
 states. `status` reads one finalized checkpoint through the node's own
-checkpoint fences; `--offline` skips the chain, and a failed read is reported
-in `actor.error`. In both cases states the chain would decide stay
-`outcome_unknown`; only a respond the node itself saw finalized before
-delivering is reported as `responded`. `--records` prints only the request
-list, in the earlier array shape with the added fields.
+checkpoint fences; `--offline` skips the chain. A reader that cannot be opened
+or a read that fails is reported in `actor.error` (endpoint URLs replaced by
+their positions) and the rest of the report is still printed. When the chain
+does not settle a request (not read, history incomplete, actor not active),
+the states it would decide stay `outcome_unknown`; only a respond the node
+itself saw finalized before delivering is reported as `responded`.
+`--records` prints only the request list, in the earlier array shape with the
+added fields.
 
 ### Pause and resume
 
@@ -144,11 +157,16 @@ before every admission, so no restart is needed. Work already admitted still
 executes, responds and delivers. A task that arrives while paused is held in
 the inbox, not refused and not counted against its retry cap; after
 `openfox earning service resume` it is admitted if its request is still
-admissible. A held task is pruned with other incomplete inbox entries after an
-hour, and a request that is never answered falls to the buyer's refund path.
-Pausing never touches funds. It does not stop buyers from calling the actor;
-to stop new calls on chain, change the actor's policy with the owner wallet.
-An unreadable marker is treated as paused.
+admissible. Held tasks leave the inbox's open-message bounds and have bounds
+of their own (the same per-sender and total limits), so they never keep out
+results and acknowledgements of admitted work; a task over the hold bound is
+retired. A held task is pruned with other incomplete inbox entries an hour
+after it was held, and a request that is never answered falls to the buyer's
+refund path. `serve` logs one `admission paused` line per round while tasks
+are held, with the count held and retired. Pausing never touches funds. It
+does not stop buyers from calling the actor; to stop new calls on chain,
+change the actor's policy with the owner wallet. An unreadable marker is
+treated as paused and its error is logged.
 
 ## Buyer
 

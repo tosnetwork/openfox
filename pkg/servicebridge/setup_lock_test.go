@@ -17,6 +17,13 @@ import (
 // middle of the scripted step, and returns once it is there.
 func (f *setupFixture) startHanging(t *testing.T, command string, input any) *exec.Cmd {
 	t.Helper()
+	return f.startHangingAt(t, command, input, "")
+}
+
+// startHangingAt stops the helper at a report line instead of a tosctl
+// call, for a command that makes none.
+func (f *setupFixture) startHangingAt(t *testing.T, command string, input any, report string) *exec.Cmd {
+	t.Helper()
 	raw, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +31,8 @@ func (f *setupFixture) startHanging(t *testing.T, command string, input any) *ex
 	writeFixtureFile(t, filepath.Join(f.root, "input.json"), raw, 0o600)
 	_ = os.Remove(hangMarker(f.worldPath))
 	helper := exec.Command(os.Args[0], "-test.run=^TestHelperProcessForSetupCrashTests$")
-	helper.Env = append(os.Environ(), crashHelperDir+"="+f.root, crashHelperCommand+"="+command)
+	helper.Env = append(os.Environ(), crashHelperDir+"="+f.root, crashHelperCommand+"="+command,
+		crashHelperHangOn+"="+report)
 	var output bytes.Buffer
 	helper.Stdout, helper.Stderr = &output, &output
 	if err = helper.Start(); err != nil {
@@ -163,6 +171,37 @@ func TestOneSetupOrWithdrawRunAtATimePerStateDirectory(t *testing.T) {
 		killHelper(t, helper)
 		_, err := RunWithdraw(ctx, withdrawOne(f), f.env())
 		if errors.Is(err, ErrSetupBusy) || !errors.Is(err, ErrWithdrawalPending) {
+			t.Fatalf("after the first run was killed: %v", err)
+		}
+	})
+	t.Run("acknowledge", func(t *testing.T) {
+		// A withdrawal finalized state cannot decide, past its window.
+		f, _ := newWithdrawFixture(t, 5_000_000_000)
+		f.script(withdrawLabel, fakeLost)
+		if _, err := RunWithdraw(ctx, withdrawOne(f), f.env()); err == nil {
+			t.Fatal("the scripted failure did not happen")
+		}
+		record := withdrawals(t, f)[0]
+		f.change(func(w *fakeWorld) {
+			w.History = append(w.History, f.withdrawTx(w, record.QueryID, fakeWalletAddress, "999999999"))
+			w.Clock += int64(sendResolutionWindow.Seconds()) + 1
+		})
+		in := AcknowledgeInput{
+			RailConfigPath: f.init.RailConfigPath, QueryID: record.QueryID, Note: "checked the wallet", Yes: true,
+		}
+		helper := f.startHangingAt(t, "acknowledge", in, "acknowledging closes this record")
+		refused(t, f, map[string]func() error{
+			"a withdraw": func() error { _, err := RunWithdraw(ctx, withdrawOne(f), f.env()); return err },
+			"a second acknowledge": func() error {
+				_, err := RunWithdrawAcknowledge(ctx, in, f.env())
+				return err
+			},
+		})
+		if now := withdrawals(t, f)[0]; now.terminal() {
+			t.Fatalf("the record was closed by a refused run: %+v", now)
+		}
+		killHelper(t, helper)
+		if _, err := RunWithdrawAcknowledge(ctx, in, f.env()); err != nil {
 			t.Fatalf("after the first run was killed: %v", err)
 		}
 	})

@@ -744,6 +744,8 @@ func (f *setupFixture) journal(t *testing.T) *SetupJournal {
 const (
 	crashHelperDir     = "OPENFOX_SETUP_CRASH_DIR"
 	crashHelperCommand = "OPENFOX_SETUP_CRASH_COMMAND"
+	// crashHelperHangOn names a report line at which the helper stops.
+	crashHelperHangOn = "OPENFOX_SETUP_HANG_ON_REPORT"
 )
 
 func TestHelperProcessForSetupCrashTests(t *testing.T) {
@@ -755,8 +757,25 @@ func TestHelperProcessForSetupCrashTests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := fakeEnv(filepath.Join(directory, "world.json"), nil)
+	worldPath := filepath.Join(directory, "world.json")
+	env := fakeEnv(worldPath, nil)
+	// A command that runs no tosctl call can be stopped at a report line.
+	if phrase := os.Getenv(crashHelperHangOn); phrase != "" {
+		env.Report = func(line string) {
+			if strings.Contains(line, phrase) {
+				if err := os.WriteFile(hangMarker(worldPath), []byte(line), 0o600); err != nil {
+					panic(err)
+				}
+				select {}
+			}
+		}
+	}
 	switch os.Getenv(crashHelperCommand) {
+	case "acknowledge":
+		var in AcknowledgeInput
+		if err = json.Unmarshal(raw, &in); err == nil {
+			_, err = RunWithdrawAcknowledge(context.Background(), in, env)
+		}
 	case "init":
 		var in InitInput
 		if err = json.Unmarshal(raw, &in); err == nil {

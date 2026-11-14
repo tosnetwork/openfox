@@ -111,6 +111,11 @@ type ProviderStatus struct {
 	Admission     AdmissionStatus `json:"admission"`
 	Actor         *ActorSummary   `json:"actor,omitempty"`
 	Requests      []RequestStatus `json:"requests"`
+	// Withdrawals are the newest withdrawals this node made, newest first.
+	// A finalized withdrawal is the actor paying out; the wallet credit is
+	// never claimed (wallet_credit is not_verified).
+	Withdrawals      []WithdrawalRecord `json:"withdrawals"`
+	WithdrawalsError string             `json:"withdrawals_error,omitempty"`
 }
 
 // AdmissionStatus says whether new requests are admitted.
@@ -527,6 +532,17 @@ func ReadProviderStatus(
 	// Chain errors can quote an endpoint URL, whose path may carry a token.
 	for _, value := range facts {
 		value.err = redactEndpoints(value.err, config.RPCEndpoints)
+	}
+	var withdrawals withdrawalSession
+	if session != nil {
+		withdrawals = session
+	}
+	status.Withdrawals, err = viewWithdrawals(ctx, config.StateDir, withdrawals)
+	if err != nil {
+		status.WithdrawalsError = err.Error()
+	}
+	if status.Withdrawals == nil {
+		status.Withdrawals = []WithdrawalRecord{}
 	}
 	status.Actor = summarize(actor, facts[actor], session)
 	status.Requests = projectProviderStatus(records, slots, facts)

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -208,6 +209,7 @@ func RunPreflight(ctx context.Context, configPath string, env PreflightEnv) *Pre
 	p.checkPause()
 	p.checkUser()
 	p.checkTOSCTL()
+	p.checkTransport()
 	p.checkExecutor()
 	p.checkContainerd()
 	p.checkManifest()
@@ -253,11 +255,15 @@ func (p *preflight) checkProviderConfig() {
 	if provider.RespondBudgetSecond <= 0 {
 		problems = append(problems, "provider.respond_budget_seconds must be positive")
 	}
-	for name, path := range map[string]string{
+	paths := map[string]string{
 		"provider.manifest_file": provider.ManifestFile, "provider.fifo_dir": provider.FIFODir,
-		"messenger_socket": p.config.MessengerSocket, "receiver_socket": p.config.ReceiverSocket,
-		"registry_code_boc_file": p.config.RegistryCodeBOC,
-	} {
+		"receiver_socket": p.config.ReceiverSocket, "registry_code_boc_file": p.config.RegistryCodeBOC,
+	}
+	// The Messenger is optional only when direct peers are configured.
+	if p.config.MessengerSocket != "" || len(p.config.DirectPeers) == 0 {
+		paths["messenger_socket"] = p.config.MessengerSocket
+	}
+	for name, path := range paths {
 		if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 			problems = append(problems, name+" must be an absolute clean path")
 		}
@@ -382,6 +388,57 @@ func (p *preflight) checkTOSCTL() {
 	default:
 		p.addf("tosctl.vault_env", CheckPass, "the vault URL environment variable %s is set (value not shown)", name)
 	}
+}
+
+// checkTransport reports which transport each configured peer's packets
+// take. A direct peer's socket is inspected, never connected to.
+func (p *preflight) checkTransport() {
+	if err := validateDirectPeers(p.config.DirectPeers); err != nil {
+		p.addf("transport.peers", CheckFail, "%v", err)
+		return
+	}
+	if _, self := p.config.DirectPeers[p.config.AgentID]; self {
+		p.addf("transport.peers", CheckFail, "direct_peers names this node's own Agent")
+		return
+	}
+	rest := "every other recipient goes through the Messenger"
+	if p.config.MessengerSocket == "" {
+		rest = "no Messenger is configured, so any other recipient has no route and a send to it fails"
+		if len(p.config.DirectPeers) == 0 {
+			p.addf("transport.peers", CheckFail, "neither messenger_socket nor direct_peers is configured: no "+
+				"packet can be sent")
+			return
+		}
+	}
+	peers := make([]string, 0, len(p.config.DirectPeers))
+	for agent := range p.config.DirectPeers {
+		peers = append(peers, agent)
+	}
+	sort.Strings(peers)
+	status := CheckPass
+	var lines []string
+	for _, agent := range peers {
+		socket := p.config.DirectPeers[agent]
+		info, err := os.Lstat(socket)
+		switch {
+		case err != nil:
+			status = CheckWarn
+			lines = append(lines, fmt.Sprintf("%s: direct, socket %s is not present (that node is not serving)",
+				agent, socket))
+		case info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0:
+			status = CheckFail
+			lines = append(lines, fmt.Sprintf("%s: direct, %s is a symbolic link or not a socket; sends are refused",
+				agent, socket))
+		default:
+			lines = append(lines, fmt.Sprintf("%s: direct, same-host socket %s", agent, socket))
+		}
+	}
+	if len(lines) == 0 {
+		p.addf("transport.peers", CheckPass, "no direct peers; %s", rest)
+		return
+	}
+	p.addf("transport.peers", status, "%s; %s. The direct transport is for one user on one host: no "+
+		"confidentiality, no carrier admission or rate limiting", strings.Join(lines, "; "), rest)
 }
 
 func (p *preflight) checkExecutor() {
@@ -735,6 +792,45 @@ func (p *preflight) checkAdmission() {
 	}
 	p.addf("chain.admission", CheckPass, "the offer passes the protocol's admission verification at checkpoint %d",
 		evidence.Checkpoint)
+}
+
+// offerChecks are the preflight checks a published offer must pass.
+var offerChecks = []string{"manifest.local", "chain.capability", "chain.actor", "chain.attestor", "chain.admission"}
+
+// verifyProviderOffer runs the preflight's own manifest and chain checks of
+// a provider configuration at one finalized session, so `offer` accepts
+// exactly what `preflight` accepts. It returns the checks and whether every
+// one of offerChecks passed.
+func verifyProviderOffer(
+	ctx context.Context,
+	config NodeConfig,
+	session serviceactor.Session,
+) ([]PreflightCheck, bool) {
+	env := PreflightEnv{}
+	env.fill()
+	p := &preflight{
+		ctx: ctx, env: env, config: config, endpoints: append([]string(nil), config.RPCEndpoints...),
+		passed: map[string]bool{providerSection: config.Provider != nil},
+		report: &PreflightReport{OK: true, Checks: []PreflightCheck{}}, session: session,
+	}
+	p.checkManifest()
+	if config.Provider != nil {
+		p.checkRegistry()
+		p.checkActor()
+		p.checkAdmission()
+	}
+	ok := true
+	for _, id := range offerChecks {
+		// A warning is not a pass here: the offer must verify outright.
+		found := false
+		for _, check := range p.report.Checks {
+			if check.ID == id {
+				found = check.Status == CheckPass
+			}
+		}
+		ok = ok && found
+	}
+	return p.report.Checks, ok
 }
 
 func digestBytes32(value, prefix string) ([32]byte, error) {

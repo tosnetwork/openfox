@@ -105,7 +105,7 @@ func (s *TOSCTLLifecycle) execute(ctx context.Context, args []string) ([]byte, e
 		command.Env = []string{"VAULT_URL=" + s.vault}
 	}
 	var stdout, stderr limitedBuffer
-	stdout.limit, stderr.limit = maxLifecycleOutput, maxLifecycleOutput
+	stdout.limit, stderr.limit, stderr.truncate = maxLifecycleOutput, maxLifecycleOutput, true
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
 		// tosctl diagnostics can echo configuration; only the exit status
@@ -126,17 +126,34 @@ func exitStatus(err error) string {
 	return "did not run"
 }
 
+// limitedBuffer collects at most limit bytes of a child's output. The
+// buffer is a field, not embedded: an embedded bytes.Buffer would offer
+// ReadFrom, which io.Copy prefers over Write and which knows no limit.
+//
+// With truncate the excess is dropped instead of failing the write: a
+// child's diagnostics are never part of its answer, so their length must
+// not decide whether the child succeeds.
 type limitedBuffer struct {
-	bytes.Buffer
-	limit int
+	buffer   bytes.Buffer
+	limit    int
+	truncate bool
 }
 
 func (b *limitedBuffer) Write(value []byte) (int, error) {
-	if b.Len()+len(value) > b.limit {
-		return 0, errors.New("servicebridge: tosctl output exceeded its bound")
+	if room := b.limit - b.buffer.Len(); len(value) > room {
+		if !b.truncate {
+			return 0, errors.New("servicebridge: tosctl output exceeded its bound")
+		}
+		if room > 0 {
+			b.buffer.Write(value[:room])
+		}
+		return len(value), nil
 	}
-	return b.Buffer.Write(value)
+	return b.buffer.Write(value)
 }
+
+// Bytes returns what was collected.
+func (b *limitedBuffer) Bytes() []byte { return b.buffer.Bytes() }
 
 func (s *TOSCTLLifecycle) send(ctx context.Context, operation, actor string, requestID uint64, extra ...string) error {
 	if s == nil || ctx == nil || !rawAddressPattern.MatchString(actor) {

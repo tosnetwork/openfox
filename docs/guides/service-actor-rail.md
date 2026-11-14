@@ -16,28 +16,160 @@ the environment variable that carries the vault URL.
 
 | Key | Holder | Signs |
 |---|---|---|
-| owner wallet (provider) | tosctl wallet | `respond`, policy updates |
+| owner wallet (provider) | tosctl wallet | the messages that carry the Agent and Capability registrations, the actor deployment, policy updates, `respond`, `withdraw_revenue` |
 | attestor controller (`service-attestor`) | tosctl vault | the request-bound SRP2 response domain, inside `respond` |
-| packet controller | tosctl vault, a controller of the node's Native Registry Agent | every Agent Packet |
-| buyer wallet | tosctl wallet | `call`, `expire`, `claim_refund` |
+| packet controller | tosctl vault, a controller of the node's Native Registry Agent | the Agent registration, the Capability registration, every Agent Packet |
+| buyer wallet | tosctl wallet | the message that carries the Agent registration, `call`, `expire`, `claim_refund` |
 
-Paid work requires a Messenger daemon for each Agent. Its delegation's
-`allowed_outbound_event_classes` must include `agent.packet`, and its Agent
-Packet receiver socket must point at the node's `receiver_socket`.
+`openfox earning service` is the one entry point: `init`, `offer`, `preflight`,
+`serve`, `status` and `withdraw` for a provider; `init`, `buy` and `purchases`
+for a buyer. The commands that sign or send (`init`, `offer`, `withdraw`) run
+the pinned tosctl from a sealed in-memory copy with only the vault URL in its
+environment, print a preview first and do nothing without `--yes`. They print a
+JSON report on stdout and the preview and progress on stderr; neither holds a
+secret or the vault URL.
+
+Three things still need other tools:
+
+- **Funding the owner wallet.** Create it with `tosctl wallet create`, send it
+  TOS and activate it with `tosctl wallet activate`. `init` and `offer` stop
+  with the wallet address and the amount needed when it is missing, inactive
+  or short.
+- **A carrier for Agent Packets.** Across hosts that is a `tos-messengerd`
+  daemon per Agent (below); on one host two nodes of one user can use the
+  direct transport instead.
+- **The provider's executor.** The private containerd executor (tos-ai
+  `software-work-execute`) and its container runtime are installed as root;
+  `offer` only pins the binary and records the socket.
+
+## Setting up a node: `init`
+
+Both roles start with `init`, which establishes the node's Agent and writes the
+rail configuration:
+
+```
+export VAULT_URL=…   # read by tosctl only; never printed or stored
+openfox earning service init \
+  --rail-config /…/rail.json --state-dir /…/rail \
+  --rpc https://… --rpc https://… --rpc https://… \
+  --global-config /…/global.config.json --network-label tos:global-id:<n> \
+  --tosctl /…/tosctl --tosctl-config /…/tosctl-config.json \
+  --wallet provider \
+  --registry-code-boc /…/tos-service-native-registry-v1.boc.base64 \
+  --actor-code-hash tvm-cell-sha256:… \
+  --messenger-socket /…/messenger.sock        # or --direct-peer, below
+```
+
+Only choices the owner must make are inputs. Everything else is derived and
+checked:
+
+- **tosctl pin.** `init` hashes the binary and pins it. With `--tosctl-sha256`
+  the binary must have that digest. Without it the pin is **trust on first
+  use**: the digest printed is the digest of whatever binary was found, so
+  compare it with the release you meant to install. A binary that later
+  differs from the pin is refused until its new digest is given explicitly.
+- **Network domain and registry code hash.** tosctl derives them from the chain
+  global configuration and the network label. `init` requires the registry code
+  file to hash to the code that tosctl release signs for, and a quorum of the
+  RPC endpoints (and no endpoint of another network) to serve that genesis.
+- **Wallet.** The address comes from `tosctl wallet ls`. A wallet that is
+  missing, not active or holds less than the registration needs stops `init`
+  with the address and the amount.
+- **Packet controller.** `--packet-controller` (default `openfox-packet`) is
+  created in the vault if it is absent. tosctl never replaces an existing one.
+- **Agent.** `init` builds a one-controller policy, has tosctl sign the
+  registration, checks that it targets the address the Agent id derives under
+  the configured network and registry code, sends it from the owner wallet with
+  2 TOS attached and waits for the Agent in finalized state.
+- **Paths.** The receiver socket defaults to `<state-dir>/rail-receiver.sock`.
+
+The configuration is written owner-only (`0600`) and must read back through the
+strict loader. Without `--yes`, `init` creates, signs and sends nothing and
+prints what it would do.
+
+A buyer adds its spending policy, which is an allow-list of providers:
+`--allow-provider agent_…` (repeatable), with `--max-per-purchase`,
+`--max-in-window`, `--window-seconds`, `--max-open-purchases`,
+`--refund-reserve` and `--confirm-above` in TOS, and optionally `--gateway-url`,
+`--gateway-token-file`, `--gateway-ca-file` and `--caller-id`. Re-running
+`init` with these flags adds or replaces the buyer section; a re-run keeps the
+provider section, and keeps the buyer section and the transport it does not
+restate.
+
+### Re-running and interruption
+
+`init` and `offer` keep one journal, `state_dir/setup/journal.json`. It holds
+the inputs that determine on-chain identities, the nonces drawn for them
+(written before tosctl builds anything, so a re-run builds the same Agent and
+the same Capability) and, for every chain message, whether it was handed to
+tosctl. Each step:
+
+1. reads finalized state first, and is done if its effect is there;
+2. if an earlier run may have sent the message, waits for finalized state and
+   **never sends again** while that message could still be included; it
+   reports `the outcome of a sent message is not yet established` and exits,
+   and a later run resumes. Only when finalized chain time is past the
+   message's inclusion window (five minutes after the send began) and the
+   effect is still absent is the message sent again;
+3. otherwise marks the step as sending in the journal, then runs tosctl.
+
+A tosctl failure that is one of its checks before broadcasting (insufficient
+balance, wallet not active, entry not found) clears the mark; any other failure
+is an unknown outcome. Changing an input that determines an identity after its
+step was sent is refused: another packet controller or network would be a
+second Agent, other terms a second Service Actor and Capability. To change the
+terms of a published actor use `tosctl agent service send --operation
+update-policy`; to start over use another state directory and configuration.
 
 ## Provider
 
-1. Build the manifest (no chain effect):
-   `openfox earning service manifest --provider-agent agent_… --actor 0:… --code-hash tvm-cell-sha256:… --attestor mldsa44:… --out-dir <dir>`.
-   Key 12 limits the output to 1 MiB, key 17 commits to the Agent Packet
-   transport binding, key 18 names the attestor and key 21 the actor with the
-   pinned release code hash.
-2. With tosctl, deploy the Service Actor with the attestor controller, register
-   the Capability with the manifest digest, then set the actor's metadata hash
-   to the value `openfox earning service metadata` prints.
-3. Serve Quotes from the provider's gateway with a quote-source profile of
-   transport security mode `2`: `base_url` `agent-packet:<provider Agent id>`
-   and `max_request_bytes` `1048576`.
+1. `openfox earning service init …` (above).
+2. Publish the offer:
+
+   ```
+   openfox earning service offer --rail-config /…/rail.json \
+     --price 0.3 --storage-fee 0.25 --cleanup-bounty 0.1 \
+     --response-sla 3600 --refund-claim-window 3600 \
+     --executor /…/software-work-execute --containerd-socket /…/containerd.sock
+   ```
+
+   Amounts are decimal TOS and are handled as checked nanoTOS integers. The
+   contract's bounds are applied before anything is sent: the price is
+   positive; the cleanup bounty is 0.1 to 1 TOS; the storage fee is at least
+   0.1 TOS plus the cleanup bounty; the response SLA and the refund-claim
+   window are 3600 to 2592000 seconds. Optional: `--version` (default
+   `1.0.0`), `--attestor-controller` (default `service-attestor`, created if
+   absent), `--executor-sha256` (otherwise the executor is pinned on first
+   use, as tosctl is), `--deploy-funding` (default and minimum 1.2 TOS),
+   `--retention-seconds`, `--respond-budget-seconds`, `--fifo-dir`,
+   `--offer-out`.
+
+   `offer` prints a preview of everything that is signed or sent: the owner
+   wallet, the actor address (computed by tosctl without signing), the pinned
+   actor code hash, the attestor key id, the terms, the manifest digest, the
+   Capability id and address, the metadata hash and the value attached to each
+   message. With `--yes` it then:
+
+   - deploys the Service Actor with the attestor and zero metadata, and
+     verifies from finalized state that the account runs the pinned code, is
+     owned by the owner wallet and snapshots that attestor;
+   - builds the manifest (key 12 limits the output to 1 MiB, key 17 commits to
+     the Agent Packet transport binding, key 18 names the attestor and key 21
+     the actor with the pinned code hash);
+   - has tosctl sign the Capability registration, checks that it targets the
+     address the Capability id derives, sends it with 2 TOS attached and waits
+     for it in finalized state;
+   - sends `update-policy` with every policy field, the NSM1 metadata hash of
+     the Capability version and the software-work proof scheme;
+   - runs the preflight's own `manifest.local`, `chain.capability`,
+     `chain.actor`, `chain.attestor` and `chain.admission` checks, and only
+     then writes the provider section of the configuration and the **offer
+     file** (default `state_dir/setup/offer.json`).
+
+   The offer file (`tos.openfox.rail-offer.v1`) holds the Capability id, the
+   version, the provider Agent id, the manifest digest and the manifest bytes.
+   It holds nothing secret and carries no authority; give it to buyers.
+3. `openfox earning service preflight --rail-config <file>` (below).
 4. Run `openfox earning service serve --rail-config <file>`. For each task it
    verifies the packets and the Quote, refuses input over the quoted bound,
    admits the request once through the finalized rail gate (pending, call
@@ -49,7 +181,30 @@ Packet receiver socket must point at the node's `receiver_socket`.
    is final it delivers the result and redelivers it in fresh packets until the
    buyer acknowledges it or the manifest retention ends. A failed or ambiguous
    execution is never attested; the buyer's refund path applies.
-   `openfox earning service status` lists the requests (see below).
+5. `openfox earning service status` lists the requests, the actor's credited
+   revenue and the last withdrawals (below).
+6. Withdraw credited revenue:
+
+   ```
+   openfox earning service withdraw --rail-config <file> --amount 1.5   # or --all
+   ```
+
+   It reads the credited revenue at a finalized checkpoint and previews the
+   amount, the destination (the owner wallet: the contract pays a withdrawal
+   to the actor's owner) and the 0.2 TOS attached for fees. Zero and more than
+   the credit are refused. With `--yes` it records the withdrawal in
+   `state_dir/withdrawals/` before sending, tags the message with a query id
+   and resolves it from the finalized transaction that carries that id and
+   pays exactly the amount to the owner, so revenue credited in the meantime
+   does not confuse it. A record is `submitted`, then `finalized`, `failed`
+   (the transaction failed; nothing was debited), `not_included` (the
+   inclusion window passed without it) or `unknown`. An unresolved withdrawal
+   blocks the next one. `finalized` means the actor paid out; the wallet's own
+   credit is not followed, so every record says `wallet_credit: not_verified`.
+
+The manual steps remain available: `openfox earning service manifest` and
+`openfox earning service metadata` build the manifest and print the metadata
+hash for an offer published with tosctl by hand.
 
 ## Operating a provider
 
@@ -81,6 +236,7 @@ prerequisite did not pass is `unknown` with the prerequisite named.
 | `tosctl.pin`, `executor.pin` | the binary is missing or does not hash to its pin |
 | `tosctl.config` | the tosctl configuration is missing or world-accessible |
 | `tosctl.vault_env` | the variable `vault_url_env` names is unset (its value is never printed) |
+| `transport.peers` | reports which transport each configured peer uses; fails when neither `messenger_socket` nor `direct_peers` is set, a direct peer is malformed or its socket is a symbolic link or not a socket; warns when a direct peer's socket is absent (that node is not serving) |
 | `containerd.socket` | the runtime socket is missing, not a socket, or world-accessible; it is never connected to |
 | `manifest.local` | the manifest is not canonical, or its actor code hash, version or transport differ from the configuration |
 | `rpc.endpoints` | fewer than 3 or more than 8 endpoints, duplicate authorities, plain HTTP off loopback, or a quorum that is not a strict majority |
@@ -114,6 +270,10 @@ path may carry an access token.
   `locked_storage_fees_nanotos` and the actor balance. Credited revenue is not
   money received: it reaches a wallet only after `withdraw_revenue` finalizes
   and the wallet credit is verified, and `wallet_receipt` is `not_tracked`;
+- `withdrawals`: the ten newest withdrawals made with `withdraw`, newest
+  first, each with its amount, state and `wallet_credit: not_verified`. An
+  unresolved record is shown as finalized state decides it at this checkpoint;
+  `status` does not rewrite the record;
 - `requests`: every request with the fields the earlier listing printed, plus
   `source` (`record`, or `slot` for a request the rail gate admitted that has
   no provider record yet; a slot entry has an empty `schema`), `slot_state`
@@ -170,35 +330,92 @@ treated as paused and its error is logged.
 
 ## Buyer
 
-`openfox earning service buy --rail-config <file> --capability-id cap_… --source <archive>`
+1. `openfox earning service init …` with `--allow-provider agent_…` for the
+   provider named in the offer file (above).
+2. Buy from the offer file:
 
-1. Takes a Quote from the configured gateway (or `--quote-package`), verifies
-   the offer at a finalized checkpoint and validates the Quote.
-2. Refuses input over the quoted inline bound (at most 1 MiB) before anything
-   is reserved or paid.
-3. Shows the costs and applies the owner policy: the price (refunded only if no
-   attested response arrives and the refund is claimed), the non-refundable
-   storage fee, the 0.2 TOS admission allowance, the attached value
-   `price + storage fee + 0.2 TOS`, and that a refund takes two transactions
-   from the buyer wallet inside the refund window (`expire`, then
-   `claim_refund`, which attaches 0.2 TOS), each paying fees.
-4. Prepares and calls with the quoted terms hash.
+   ```
+   openfox earning service buy --rail-config <file> --offer /…/offer.json --source <archive>
+   ```
 
-`openfox earning service serve` then delivers the task once the call is
-admitted, accepts a result only when its Receipt hashes to the finalized
-attested response and binds the buyer's own request, price and provider, and
-the artifact matches every digest the Receipt states, and acknowledges it. If
-the provider does not answer in time it sends `expire` and `claim_refund`.
-`openfox earning service purchases` shows each purchase's phase, status,
-required action, deadlines and costs.
+   Exactly one Quote source is used: `--offer`, `--quote-package` (a package
+   obtained out of band) or, with neither, the configured gateway.
+
+   With `--offer` the Quote Proposal package is built locally; it needs no
+   provider secret and no signature. The provider Agent is the Capability's
+   **finalized owner**, not the file's word; the file's manifest bytes must
+   hash to the **finalized digest** of the version; the transport is the
+   rail's deterministic Agent Packet binding to that owner; price, storage fee
+   and terms hash are read from the actor's finalized policy. An offer file
+   that finalized state contradicts is refused. `--capability-id` and
+   `--version` may be given only if they agree with the file.
+
+   The package then goes through the same path as any other:
+
+   1. the offer is verified at a finalized checkpoint and the Quote validated;
+   2. input over the quoted inline bound (at most 1 MiB) is refused before
+      anything is reserved or paid;
+   3. the costs are shown and the owner policy applied: the price (refunded
+      only if no attested response arrives and the refund is claimed), the
+      non-refundable storage fee, the 0.2 TOS admission allowance, the
+      attached value `price + storage fee + 0.2 TOS`, and that a refund takes
+      two transactions from the buyer wallet inside the refund window
+      (`expire`, then `claim_refund`, which attaches 0.2 TOS), each paying
+      fees;
+   4. the call is prepared and sent with the quoted terms hash.
+3. `openfox earning service serve` delivers the task once the call is admitted,
+   accepts a result only when its Receipt hashes to the finalized attested
+   response and binds the buyer's own request, price and provider, and the
+   artifact matches every digest the Receipt states, and acknowledges it. If
+   the provider does not answer in time it sends `expire` and `claim_refund`.
+4. `openfox earning service purchases` shows each purchase's phase, status,
+   required action, deadlines and costs.
+
+## Carrying Agent Packets
+
+The work and its result travel as Agent Packets signed by the sender's packet
+controller. A receiver verifies every packet against the sender's finalized
+Agent state and stores it durably before it answers, whatever carried it.
+
+**Messenger (any hosts).** Each Agent runs a `tos-messengerd` daemon. Its
+delegation's `allowed_outbound_event_classes` must include `agent.packet`, and
+its Agent Packet receiver socket must point at the node's `receiver_socket`.
+Set `messenger_socket` (`init --messenger-socket`).
+
+**Direct (same host, same user).** `init --direct-peer agent_<hex>=<socket>`
+(repeatable) records `direct_peers`: a packet to a listed Agent is posted to
+that node's `receiver_socket` at `/v1/agent-packet`, and a `202` answer means
+the packet is in the recipient's durable inbox. This is a transport **for
+trials and single-operator setups on one host**:
+
+- it gives no confidentiality beyond the socket's file permissions;
+- there is no carrier-level admission or rate limiting;
+- any process of that user can post to the socket. What the receiver trusts is
+  the packet's signature against finalized state, exactly as with the
+  Messenger; the inbox's replay handling and bounds apply unchanged.
+
+A socket path that is a symbolic link or not a socket is refused, a redirect is
+not followed, the request and the answer are bounded, and a failed send leaves
+the packet journaled for the next retry as a failed Messenger send does. When
+`direct_peers` is set, `messenger_socket` is optional: a recipient that is
+neither a direct peer nor reachable through a Messenger has no route, and the
+send fails. A node with neither does not start. Delivery across hosts still
+needs the Messenger. `preflight` reports each peer's transport in
+`transport.peers`.
+
+Each node lists the other: the buyer the provider's Agent and receiver socket,
+the provider the buyer's. The Agent ids are in each `init` report and the
+provider's is in the offer file.
 
 ## Configuration
 
-`--rail-config` names an owner-only (`0600`) JSON file:
+`--rail-config` names an owner-only (`0600`) JSON file. `init` and `offer`
+write it; it can also be written by hand:
 
 ```json
 {
   "network": {"network_id": "…", "genesis_root_hash": "sha256:…", "genesis_file_hash": "sha256:…"},
+  "chain_global_config_file": "/…/global.config.json",
   "rpc_endpoints": ["https://…", "https://…", "https://…"],
   "registry_code_boc_file": "/…/native-registry.boc.base64",
   "registry_code_hash": "tvm-cell-sha256:…",
@@ -211,6 +428,7 @@ required action, deadlines and costs.
   "wallet_name": "provider",
   "wallet_address": "0:…",
   "messenger_socket": "/…/messenger.sock",
+  "direct_peers": {"agent_…": "/…/peer/rail-receiver.sock"},
   "receiver_socket": "/…/rail-receiver.sock",
   "provider": {"capability_id": "cap_…", "version": "1.0.0", "manifest_file": "/…/<digest>.cbor",
                "attestor_controller": "service-attestor", "respond_budget_seconds": 120,
@@ -222,6 +440,10 @@ required action, deadlines and costs.
                        "allowed_providers": ["agent_…"]}}
 }
 ```
+
+`chain_global_config_file` is used by `offer` (tosctl derives the registry
+identity domain from it). `messenger_socket` may be omitted when
+`direct_peers` is set, and `direct_peers` when `messenger_socket` is.
 
 The executor runs as a separate pinned binary (tos-ai `software-work-execute`),
 so the container runtime client stays outside OpenFox.

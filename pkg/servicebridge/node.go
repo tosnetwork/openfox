@@ -21,6 +21,7 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativeclient"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
+	"github.com/tosnetwork/tos-service-protocol/pkg/quoteprovider"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 )
 
@@ -28,24 +29,33 @@ import (
 // It names custody (tosctl, the vault) but holds no key material: the vault
 // URL is read from the environment variable VaultURLEnv.
 type NodeConfig struct {
-	Network          NetworkConfig   `json:"network"`
-	RPCEndpoints     []string        `json:"rpc_endpoints"`
-	Quorum           int             `json:"quorum"`
-	RegistryCodeBOC  string          `json:"registry_code_boc_file"`
-	RegistryCodeHash string          `json:"registry_code_hash"`
-	ActorCodeHash    string          `json:"actor_code_hash"`
-	StateDir         string          `json:"state_dir"`
-	AgentID          string          `json:"agent_id"`
-	PacketController string          `json:"packet_controller"`
-	PacketKeyID      string          `json:"packet_key_id"`
-	TOSCTL           TOSCTLConfig    `json:"tosctl"`
-	WalletName       string          `json:"wallet_name"`
-	WalletAddress    string          `json:"wallet_address"`
-	MessengerSocket  string          `json:"messenger_socket"`
-	ReceiverSocket   string          `json:"receiver_socket"`
-	Provider         *ProviderNode   `json:"provider,omitempty"`
-	Buyer            *BuyerNode      `json:"buyer,omitempty"`
-	MaxAssemblies    *AssemblyBounds `json:"max_assemblies,omitempty"`
+	Network NetworkConfig `json:"network"`
+	// GlobalConfigFile is the chain global configuration tosctl derives the
+	// Native Registry identity domain from; `init` records it for `offer`.
+	GlobalConfigFile string       `json:"chain_global_config_file,omitempty"`
+	RPCEndpoints     []string     `json:"rpc_endpoints"`
+	Quorum           int          `json:"quorum"`
+	RegistryCodeBOC  string       `json:"registry_code_boc_file"`
+	RegistryCodeHash string       `json:"registry_code_hash"`
+	ActorCodeHash    string       `json:"actor_code_hash"`
+	StateDir         string       `json:"state_dir"`
+	AgentID          string       `json:"agent_id"`
+	PacketController string       `json:"packet_controller"`
+	PacketKeyID      string       `json:"packet_key_id"`
+	TOSCTL           TOSCTLConfig `json:"tosctl"`
+	WalletName       string       `json:"wallet_name"`
+	WalletAddress    string       `json:"wallet_address"`
+	// MessengerSocket is the local Messenger daemon. It may be empty only
+	// when DirectPeers is not: then every packet needs a direct route.
+	MessengerSocket string `json:"messenger_socket,omitempty"`
+	// DirectPeers maps a recipient Agent id to the receiver Unix socket of
+	// its node on this host. A packet to a listed Agent is posted to that
+	// socket instead of going through the Messenger.
+	DirectPeers    map[string]string `json:"direct_peers,omitempty"`
+	ReceiverSocket string            `json:"receiver_socket"`
+	Provider       *ProviderNode     `json:"provider,omitempty"`
+	Buyer          *BuyerNode        `json:"buyer,omitempty"`
+	MaxAssemblies  *AssemblyBounds   `json:"max_assemblies,omitempty"`
 }
 
 // NetworkConfig is the network domain.
@@ -253,6 +263,10 @@ func openServiceActorReader(
 	})
 }
 
+func newMessengerClient(socket string) (*localapi.Client, error) {
+	return localapi.NewClient(socket, 30*time.Second)
+}
+
 // OpenNode validates the configuration and assembles the node.
 func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Node, error) {
 	if config.Provider == nil && config.Buyer == nil {
@@ -293,15 +307,11 @@ func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Nod
 	if err != nil {
 		return fail(err)
 	}
-	client, err := localapi.NewClient(config.MessengerSocket, 30*time.Second)
+	transport, err := openPacketTransport(config)
 	if err != nil {
 		return fail(err)
 	}
-	node.Courier, err = OpenCourier(
-		filepath.Join(config.StateDir, "outbox"),
-		signer,
-		MessengerTransport{Client: client},
-	)
+	node.Courier, err = OpenCourier(filepath.Join(config.StateDir, "outbox"), signer, transport)
 	if err != nil {
 		return fail(err)
 	}
@@ -539,6 +549,14 @@ type PackageQuotes struct {
 	next      QuoteSource
 	mutex     sync.Mutex
 	fixed     *nativev1.QuoteProposalPackageV1
+	source    QuoteSource
+}
+
+// UseSource makes the next Quote come from source instead of the gateway.
+func (q *PackageQuotes) UseSource(source QuoteSource) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+	q.source = source
 }
 
 // UsePackage makes the next Quote the given package.
@@ -554,12 +572,17 @@ func (q *PackageQuotes) Quote(
 	request *nativev1.RequestQuoteProposalRequest,
 ) (*nativev1.QuoteProposalPackageV1, error) {
 	q.mutex.Lock()
-	fixed := q.fixed
+	fixed, chosen := q.fixed, q.source
 	q.mutex.Unlock()
 	var source QuoteSource = FixedQuote{Package: fixed}
-	if fixed == nil {
+	switch {
+	case fixed != nil && chosen != nil:
+		return nil, errors.New("servicebridge: more than one Quote source was chosen")
+	case chosen != nil:
+		source = chosen
+	case fixed == nil:
 		if q.next == nil {
-			return nil, errors.New("servicebridge: no gateway or Quote package is configured")
+			return nil, errors.New("servicebridge: no gateway, offer or Quote package is configured")
 		}
 		source = q.next
 	}
@@ -580,6 +603,20 @@ func (n *Node) BuyerQuotes() (*PackageQuotes, bool) {
 	}
 	quotes, ok := n.Buyer.config.Quotes.(*PackageQuotes)
 	return quotes, ok
+}
+
+// UseOffer makes the buyer build its next Quote locally from an offer file
+// and finalized state.
+func (n *Node) UseOffer(offer Offer, now func() time.Time) error {
+	quotes, ok := n.BuyerQuotes()
+	if !ok || n.Reader == nil {
+		return errors.New("servicebridge: the buyer cannot take an offer file")
+	}
+	quotes.UseSource(OfferQuotes{
+		Sessions: quoteprovider.FromChain(n.Reader), Network: n.Network,
+		RegistryCodeHash: n.Config.RegistryCodeHash, Offer: offer, Now: now,
+	})
+	return nil
 }
 
 // EncodeNodeConfig renders a configuration for an owner to edit.

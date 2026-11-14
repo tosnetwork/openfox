@@ -33,7 +33,7 @@ func serviceCommand() *cobra.Command {
 	}
 	command.AddCommand(serviceManifestCommand(), serviceMetadataCommand(), serviceServeCommand(), serviceBuyCommand(),
 		servicePurchasesCommand(), serviceStatusCommand(), servicePreflightCommand(), servicePauseCommand(),
-		serviceResumeCommand())
+		serviceResumeCommand(), serviceInitCommand(), serviceOfferCommand(), serviceWithdrawCommand())
 	return command
 }
 
@@ -165,13 +165,29 @@ func serviceServeCommand() *cobra.Command {
 }
 
 func serviceBuyCommand() *cobra.Command {
-	var path, capability, version, source, packagePath string
+	var path, capability, version, source, packagePath, offerPath string
 	var yes bool
 	command := &cobra.Command{
 		Use: "buy", Short: "Buy software work from a published Service Actor Capability", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if !filepath.IsAbs(source) {
 				return errors.New("--source must be an absolute path")
+			}
+			if packagePath != "" && offerPath != "" {
+				return errors.New("choose exactly one Quote source: --offer, --quote-package or the configured gateway")
+			}
+			var offer *servicebridge.Offer
+			if offerPath != "" {
+				read, offerErr := servicebridge.ReadOfferFile(offerPath)
+				if offerErr != nil {
+					return offerErr
+				}
+				// The offer names the Capability; a flag may only agree.
+				if (command.Flags().Changed("capability-id") && capability != read.CapabilityID) ||
+					(command.Flags().Changed("version") && version != read.Version) {
+					return errors.New("--capability-id or --version differs from the offer file")
+				}
+				capability, version, offer = read.CapabilityID, read.Version, &read
 			}
 			archive, err := os.ReadFile(source)
 			if err != nil {
@@ -203,6 +219,17 @@ func serviceBuyCommand() *cobra.Command {
 				}
 				quotes.UsePackage(value)
 			}
+			if offer != nil {
+				if node.Config.Buyer.GatewayURL != "" {
+					fmt.Fprintln(
+						command.ErrOrStderr(),
+						"the Quote is built from the offer file; the gateway is not asked",
+					)
+				}
+				if useErr := node.UseOffer(*offer, time.Now); useErr != nil {
+					return useErr
+				}
+			}
 			node.Buyer.SetDisclosure(func(costs servicebridge.Costs) {
 				fmt.Fprintln(command.ErrOrStderr(), costs.Disclosure())
 			})
@@ -230,6 +257,8 @@ func serviceBuyCommand() *cobra.Command {
 	command.Flags().StringVar(&source, "source", "", "source archive (at most 1 MiB)")
 	command.Flags().
 		StringVar(&packagePath, "quote-package", "", "a Quote package obtained out of band (protojson), instead of the gateway")
+	command.Flags().StringVar(&offerPath, "offer", "", "a provider's offer file: the Quote is built locally from "+
+		"it and finalized state, instead of the gateway")
 	command.Flags().BoolVar(&yes, "yes", false, "confirm a purchase the policy routes to the owner")
 	return command
 }

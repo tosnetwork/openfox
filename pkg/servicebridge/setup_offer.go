@@ -445,10 +445,17 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		return nil, errors.New("servicebridge: no context")
 	}
 	result := &OfferResult{Schema: OfferResultSchema, RailConfig: in.RailConfigPath, Steps: []SetupStep{}}
-	config, err := LoadNodeConfig(in.RailConfigPath)
+	// One run at a time per state directory, from before the journal is
+	// read: two runs would draw two Capability nonces and overwrite each
+	// other's step records.
+	config, release, err := loadConfigLocked(in.RailConfigPath)
+	if errors.Is(err, ErrSetupBusy) {
+		return result, err
+	}
 	if err != nil {
 		return result, fmt.Errorf("%w; run `openfox earning service init` first", err)
 	}
+	defer release()
 	in.fill(config.StateDir)
 	if err = in.validate(); err != nil {
 		return result, err

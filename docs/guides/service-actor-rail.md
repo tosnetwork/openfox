@@ -152,6 +152,16 @@ second Agent, other terms a second Service Actor and Capability. To change the
 terms of a published actor use `tosctl agent service send --operation
 update-policy`; to start over use another state directory and configuration.
 
+Only one of `init`, `offer`, `withdraw` and `withdraw --acknowledge` runs at a
+time in a state directory. Each takes the lock `state_dir/setup/run.lock`
+before it reads the configuration or the journal and holds it until it
+returns; a second run fails at once with `another init, offer or withdraw run
+is in progress`, having read, signed and sent nothing. The operating system
+drops the lock when the process ends, so a killed run never leaves it behind.
+`serve`, `status`, `preflight`, `pause` and `resume` do not take it: none of
+them reads or writes the journal or sends a withdrawal, and withdrawing
+beside a serving node is the intended use.
+
 The journal is the only place the Agent's nonce lives until `init` writes the
 rail configuration. **If the state directory is lost after the registration
 was sent and before the configuration was written, a new `init` draws a new

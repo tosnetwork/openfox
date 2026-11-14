@@ -301,10 +301,13 @@ func RunWithdraw(ctx context.Context, in WithdrawInput, env SetupEnv) (*Withdraw
 		}
 		return result, errors.New("servicebridge: give exactly one of --amount and --all")
 	}
-	config, err := LoadNodeConfig(in.RailConfigPath)
+	// One run at a time per state directory, from before the records are
+	// read: two runs would both find no unresolved withdrawal and both send.
+	config, release, err := loadConfigLocked(in.RailConfigPath)
 	if err != nil {
 		return result, err
 	}
+	defer release()
 	actor, err := providerActor(config)
 	if err != nil {
 		return result, err
@@ -523,10 +526,13 @@ func RunWithdrawAcknowledge(ctx context.Context, in AcknowledgeInput, env SetupE
 	if in.QueryID == 0 {
 		return result, errors.New("servicebridge: --acknowledge takes the query id of the unresolved withdrawal")
 	}
-	config, err := LoadNodeConfig(in.RailConfigPath)
+	// One run at a time per state directory, from before the records are
+	// read: two runs would both find no unresolved withdrawal and both send.
+	config, release, err := loadConfigLocked(in.RailConfigPath)
 	if err != nil {
 		return result, err
 	}
+	defer release()
 	actor, err := providerActor(config)
 	if err != nil {
 		return result, err

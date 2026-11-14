@@ -392,6 +392,17 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 		PacketController: in.PacketController, AttachedNanoTOS: fmt.Sprint(RegistryMessageValueNano),
 		Steps: []SetupStep{},
 	}
+	// One run at a time per state directory, from before the configuration
+	// and the journal are read: two runs that both read "no Agent yet"
+	// would draw two nonces and register two Agents.
+	if !cleanAbsolute(in.StateDir) {
+		return result, errors.New("servicebridge: init: the state directory must be an absolute clean path")
+	}
+	release, lockErr := lockSetup(in.StateDir)
+	if lockErr != nil {
+		return result, lockErr
+	}
+	defer release()
 	// An existing configuration keeps the sections init does not own, and
 	// the transport a re-run does not restate.
 	var existing *NodeConfig

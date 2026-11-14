@@ -43,6 +43,7 @@ const (
 	fakeRefuseBalance = "refuse-balance" // tosctl refuses before broadcasting
 	fakeWrongTarget   = "wrong-target"   // a builder answers for another address
 	fakeFailedTx      = "failed-tx"      // the message is included and its transaction fails
+	fakeHang          = "hang"           // the call marks that it began and never returns
 )
 
 const (
@@ -246,6 +247,9 @@ func fakeTermArgs(args []string) []string {
 // fakeRunner is the scripted tosctl.
 type fakeRunner struct{ path string }
 
+// hangMarker is the file a hanging call writes once it has begun.
+func hangMarker(worldPath string) string { return worldPath + ".hanging" }
+
 func die() {
 	_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
 	select {}
@@ -268,6 +272,13 @@ func (f fakeRunner) Run(_ context.Context, call TOSCTLCall) ([]byte, error) {
 	// send applies a message's effect under the scripted behavior.
 	send := func(effect func(*fakeWorld)) error {
 		switch behavior {
+		case fakeHang:
+			// The run is now in the middle of a step, holding whatever it
+			// holds, until it is killed.
+			if err := os.WriteFile(hangMarker(f.path), []byte(call.Label), 0o600); err != nil {
+				panic(err)
+			}
+			select {}
 		case fakeKillBefore:
 			die()
 		case fakeLost:

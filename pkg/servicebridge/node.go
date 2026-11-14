@@ -498,6 +498,7 @@ func (n *Node) openBuyer(options NodeOptions, lifecycle LifecycleSender, vaultUR
 		Courier:   n.Courier,
 		Lifecycle: lifecycle,
 		Directory: filepath.Join(n.Config.StateDir, "purchases"),
+		Manifests: n.Manifests,
 		Now:       options.Now,
 	})
 	return err

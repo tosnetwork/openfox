@@ -221,7 +221,8 @@ func TestBuyFromAnOfferFileGoesThroughTheExistingPurchasePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the purchase path refused the package built from the offer file: %v", err)
 	}
-	if record.Phase != PurchaseCalled || record.ProviderAgentID != offer.ProviderAgentID ||
+	if record.Schema != purchaseRecordSchema || record.Phase != PurchaseCalled ||
+		record.ProviderAgentID != offer.ProviderAgentID ||
 		record.ManifestDigest != offer.ManifestDigest || record.Actor != world.Actor.Address ||
 		record.PriceNanoTOS != "300000000" {
 		t.Fatalf("record = %+v", record)
@@ -239,6 +240,50 @@ func TestBuyFromAnOfferFileGoesThroughTheExistingPurchasePath(t *testing.T) {
 	if intent.ExpectedTermsHash != terms || intent.Price.String() != "300000000" ||
 		intent.StorageFee.String() != "250000000" || intent.Actor != world.Actor.Address {
 		t.Fatalf("intent = %+v", intent)
+	}
+
+	// `serve` is another process than the `buy` that took the Quote: it
+	// starts with no manifest in memory and must resolve the purchase from
+	// what the purchase stored.
+	served := &MemoryManifests{}
+	if _, missing := served.Manifest(context.Background(), offer.ManifestDigest); missing == nil {
+		t.Fatal("a new manifest store already holds the manifest, so the check below proves nothing")
+	}
+	servedSDK, err := buyersdk.NewServiceActorBuyer(buyersdk.ServiceActorBuyerConfig{
+		Reader: offerSessions{path: f.worldPath}, Manifests: served, Network: world.network(),
+		ActorCodeHash: fakeCodeHashActor, BuyerWallet: testWallet, Sender: sender, Journal: journal,
+		Limits: buyersdk.ServiceActorLimits{
+			Window: time.Hour, MaxCalls: 4, MaxPerCallNanoTOS: big.NewInt(2_000_000_000),
+			MaxWindowNanoTOS: big.NewInt(10_000_000_000),
+		},
+		Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serving, err := NewBuyer(BuyerConfig{
+		AgentID: testBuyer, Wallet: testWallet, Network: world.network(), Buyer: servedSDK,
+		Quotes: &PackageQuotes{manifests: served},
+		Policy: SpendingPolicy{
+			MaxCommittedPerPurchase: big.NewInt(2_000_000_000), MaxCommittedInWindow: big.NewInt(10_000_000_000),
+			Window: time.Hour, MaxOpenPurchases: 4, RefundReserve: big.NewInt(300_000_000),
+			AllowedProviders: map[string]bool{offer.ProviderAgentID: true},
+		},
+		Courier: courier, Lifecycle: idleLifecycle{}, Directory: filepath.Join(f.root, "purchases"),
+		Manifests: served, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fake chain serves no request getter, so the advance stops later;
+	// it must not stop for want of the manifest.
+	advanceErr := serving.Advance(context.Background())
+	if advanceErr != nil && strings.Contains(advanceErr.Error(), "manifest") {
+		t.Fatalf("a serving process cannot resolve a purchase made by another process: %v", advanceErr)
+	}
+	restored, err := served.Manifest(context.Background(), offer.ManifestDigest)
+	if err != nil || !bytes.Equal(restored, offer.ManifestCBOR) {
+		t.Fatalf("the serving process did not restore the purchase's manifest: %v", err)
 	}
 }
 

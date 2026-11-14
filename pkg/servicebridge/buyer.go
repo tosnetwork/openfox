@@ -1,6 +1,7 @@
 package servicebridge
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,6 +18,7 @@ import (
 
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
+	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tos-service-protocol/pkg/quoteexchange"
 	"github.com/tosnetwork/tos-service-protocol/pkg/serviceactor"
 	"google.golang.org/protobuf/proto"
@@ -603,14 +605,25 @@ func (b *Buyer) restoreManifest(record PurchaseRecord) error {
 		return fmt.Errorf("servicebridge: read the purchase's Quote package: %w", err)
 	}
 	pkg := &nativev1.QuoteProposalPackageV1{}
-	if err := proto.Unmarshal(raw, pkg); err != nil || pkg.GetProposal() == nil ||
+	if err = proto.Unmarshal(raw, pkg); err != nil || pkg.GetProposal() == nil ||
 		len(pkg.GetCanonicalManifestCbor()) == 0 {
 		return errors.New("servicebridge: the purchase's Quote package does not decode or holds no manifest")
 	}
 	if pkg.GetProposal().GetManifestDigest() != record.ManifestDigest {
 		return errors.New("servicebridge: the purchase's Quote package names another manifest than its record")
 	}
-	b.config.Manifests.Put(record.ManifestDigest, pkg.GetCanonicalManifestCbor())
+	// Only bytes that are the canonical manifest of the recorded digest
+	// are handed on, so a damaged file never replaces a good entry.
+	stored := pkg.GetCanonicalManifestCbor()
+	manifest, err := nativecore.DecodeCanonicalSoftwareWorkManifestCBOR(stored)
+	if err != nil {
+		return errors.New("servicebridge: the purchase's stored manifest is not a canonical software-work manifest")
+	}
+	canonical, digest, err := nativecore.CanonicalSoftwareWorkManifest(manifest)
+	if err != nil || !bytes.Equal(canonical, stored) || digest != record.ManifestDigest {
+		return errors.New("servicebridge: the purchase's stored manifest does not hash to the digest its record names")
+	}
+	b.config.Manifests.Put(record.ManifestDigest, stored)
 	return nil
 }
 

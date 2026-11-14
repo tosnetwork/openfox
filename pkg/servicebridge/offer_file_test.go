@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/tosnetwork/tos-service-protocol/pkg/quoteexchange"
 	"github.com/tosnetwork/tos-service-protocol/pkg/serviceactor"
 	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+	"google.golang.org/protobuf/proto"
 )
 
 // publishedOffer is a fixture with a finalized offer and its offer file.
@@ -284,6 +286,35 @@ func TestBuyFromAnOfferFileGoesThroughTheExistingPurchasePath(t *testing.T) {
 	restored, err := served.Manifest(context.Background(), offer.ManifestDigest)
 	if err != nil || !bytes.Equal(restored, offer.ManifestCBOR) {
 		t.Fatalf("the serving process did not restore the purchase's manifest: %v", err)
+	}
+	// A stored package whose manifest bytes were damaged is not handed on:
+	// the good entry stays, and the purchase stops with the reason.
+	packagePath := filepath.Join(f.root, "purchases", record.RequestHash, "quote-package")
+	raw, err := os.ReadFile(packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := &nativev1.QuoteProposalPackageV1{}
+	if err = proto.Unmarshal(raw, stored); err != nil {
+		t.Fatal(err)
+	}
+	damaged := append([]byte(nil), stored.GetCanonicalManifestCbor()...)
+	damaged[bytes.Index(damaged, []byte("Deterministic"))] ^= 0x01
+	stored.CanonicalManifestCbor = damaged
+	if raw, err = proto.Marshal(stored); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Remove(packagePath); err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, packagePath, raw, 0o600)
+	advanceErr = serving.Advance(context.Background())
+	if advanceErr == nil || !strings.Contains(advanceErr.Error(), "does not hash to the digest its record names") {
+		t.Fatalf("a damaged stored manifest was not refused: %v", advanceErr)
+	}
+	kept, err := served.Manifest(context.Background(), offer.ManifestDigest)
+	if err != nil || !bytes.Equal(kept, offer.ManifestCBOR) {
+		t.Fatalf("a damaged stored manifest replaced the good entry: %v", err)
 	}
 }
 

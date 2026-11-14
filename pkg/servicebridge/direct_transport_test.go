@@ -371,3 +371,80 @@ func TestTheNodeTransportFailsClosedWithoutARoute(t *testing.T) {
 		t.Fatal("routes with a Messenger")
 	}
 }
+
+// The direct transport joins nodes of one user on one host. A socket that
+// another user owns, a socket another user could replace, and a listener
+// that runs as another user are all outside it.
+func TestTheDirectTransportStaysWithinOneUser(t *testing.T) {
+	root, err := os.MkdirTemp("", "dts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	if err = os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(root, "peer.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int64
+	server := &http.Server{
+		ReadHeaderTimeout: 5 * time.Second,
+		Handler: http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			writer.WriteHeader(http.StatusAccepted)
+		}),
+	}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	ctx := context.Background()
+	packet := directPacket(t, testSeller, 100)
+	me := os.Geteuid()
+	another := func() int { return me + 1 }
+	peers := map[string]string{testSeller: socket}
+
+	if err = (DirectTransport{Peers: peers}).Send(ctx, packet); err != nil || requests.Load() != 1 {
+		t.Fatalf("a socket of this user in a private directory was refused: %v (%d requests)", err, requests.Load())
+	}
+	connection, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user, userErr := peerUserID(connection); userErr != nil || user != me {
+		t.Fatalf("the listener's user read as %d (%v), not %d", user, userErr, me)
+	}
+	_ = connection.Close()
+
+	// The socket file belongs to another user.
+	err = (DirectTransport{Peers: peers, socketUser: another}).Send(ctx, packet)
+	if !errors.Is(err, ErrDirectSocketInvalid) || inspectDirectSocket(socket, me+1) != directSocketOwner {
+		t.Fatalf("a socket owned by another user: %v", err)
+	}
+	// The file is this user's, but the process listening on it is not.
+	err = (DirectTransport{Peers: peers, peerUser: another}).Send(ctx, packet)
+	if !errors.Is(err, ErrDirectPeerUser) {
+		t.Fatalf("a receiver running as another user: %v", err)
+	}
+	// Group or others can write the directory, so they could replace the
+	// socket between the check and the connection.
+	for _, mode := range []os.FileMode{0o770, 0o707, 0o777} {
+		if err = os.Chmod(root, mode); err != nil {
+			t.Fatal(err)
+		}
+		err = (DirectTransport{Peers: peers}).Send(ctx, packet)
+		if !errors.Is(err, ErrDirectSocketInvalid) || inspectDirectSocket(socket, me) != directSocketParent {
+			t.Fatalf("a socket in a directory of mode %04o: %v", mode, err)
+		}
+	}
+	if err = os.Chmod(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if problem := inspectDirectSocket(socket, me); problem != "" {
+		t.Fatalf("a directory only its owner can write was refused: %s", problem)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("a refused send still reached the receiver: %d requests", requests.Load())
+	}
+}

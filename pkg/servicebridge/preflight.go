@@ -419,18 +419,20 @@ func (p *preflight) checkTransport() {
 	var lines []string
 	for _, agent := range peers {
 		socket := p.config.DirectPeers[agent]
-		info, err := os.Lstat(socket)
-		switch {
-		case err != nil:
-			status = CheckWarn
+		// The same inspection a send makes, so preflight and the
+		// transport agree on which sockets are in scope.
+		switch problem := inspectDirectSocket(socket, os.Geteuid()); problem {
+		case "":
+			lines = append(lines, fmt.Sprintf("%s: direct, same-host socket %s of this user", agent, socket))
+		case directSocketAbsent:
+			if status == CheckPass {
+				status = CheckWarn
+			}
 			lines = append(lines, fmt.Sprintf("%s: direct, socket %s is not present (that node is not serving)",
 				agent, socket))
-		case info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0:
-			status = CheckFail
-			lines = append(lines, fmt.Sprintf("%s: direct, %s is a symbolic link or not a socket; sends are refused",
-				agent, socket))
 		default:
-			lines = append(lines, fmt.Sprintf("%s: direct, same-host socket %s", agent, socket))
+			status = CheckFail
+			lines = append(lines, fmt.Sprintf("%s: direct, %s %s; sends are refused", agent, socket, problem))
 		}
 	}
 	if len(lines) == 0 {

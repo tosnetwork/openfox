@@ -36,3 +36,18 @@ func ownedByCurrentUser(info os.FileInfo) (bool, error) {
 	}
 	return int64(stat.Uid) == int64(os.Geteuid()), nil
 }
+
+// fileOwnerID returns the user that owns info's file.
+func fileOwnerID(info os.FileInfo) (int, error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, errors.New("file owner is not available")
+	}
+	return int(stat.Uid), nil
+}
+
+// errPeerUserUnsupported is never returned on Linux.
+var errPeerUserUnsupported = errors.New("peer credentials are only read on Linux")
+
+// errOwnerUnsupported is never returned on Linux.
+var errOwnerUnsupported = errors.New("file ownership is only checked on Linux")

@@ -530,9 +530,29 @@ func TestPreflightReportsWhichTransportEachPeerUses(t *testing.T) {
 		checks["config.provider"].Status != CheckPass {
 		t.Fatalf("direct peers only: %+v, config.provider %+v", check, checks["config.provider"])
 	}
+	// A socket in a directory other users can write could be replaced by
+	// them: outside the one-user scope, as a send would find it.
+	openDir, err := os.MkdirTemp("", "pfo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(openDir) })
+	exposed := filepath.Join(openDir, "peer.sock")
+	exposedListener, err := net.Listen("unix", exposed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exposedListener.Close() })
+	if err = os.Chmod(openDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
 	for name, peers := range map[string]map[string]string{
-		"no transport":      nil,
-		"a symbolic link":   {testBuyer: filepath.Join(socketDir, "link.sock")},
+		"no transport":                      nil,
+		"a symbolic link":                   {testBuyer: filepath.Join(socketDir, "link.sock")},
+		"a directory other users can write": {testBuyer: exposed},
+		"an absent socket beside a refused one": {
+			testBuyer: exposed, "agent_" + strings.Repeat("c3", 32): filepath.Join(socketDir, "absent.sock"),
+		},
 		"its own Agent":     {testSeller: serving},
 		"a malformed Agent": {"agent_zz": serving},
 	} {

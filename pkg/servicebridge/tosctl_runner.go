@@ -58,6 +58,11 @@ const (
 	TOSCTLFailureOccupied      TOSCTLFailure = "an account already exists at the derived address"
 	TOSCTLFailureUnconfirmed   TOSCTLFailure = "the message was broadcast but its inclusion was not observed"
 	TOSCTLFailureWrongChain    TOSCTLFailure = "the tosctl chain RPC serves another chain or network label"
+	// TOSCTLFailureUnsafeDirectory is tosctl refusing a configuration or
+	// vault under a directory another user can modify. It is reported so
+	// the owner can act; it is not one of the checks that clear a step.
+	TOSCTLFailureUnsafeDirectory TOSCTLFailure = "the tosctl configuration is under a directory another user can " +
+		"modify; every ancestor must be owned by the user running OpenFox or by root"
 )
 
 var tosctlFailurePhrases = []struct {
@@ -75,11 +80,29 @@ var tosctlFailurePhrases = []struct {
 	{"Transaction timeout expired", TOSCTLFailureUnconfirmed},
 	{"the RPC serves another chain", TOSCTLFailureWrongChain},
 	{"network label does not match this chain", TOSCTLFailureWrongChain},
+	{"which another user can modify", TOSCTLFailureUnsafeDirectory},
 }
 
-func classifyTOSCTLDiagnostic(stderr []byte) TOSCTLFailure {
+// tosctlErrorPrefix starts the one line tosctl ends a failed run with.
+const tosctlErrorPrefix = "command failed: "
+
+// classifyTOSCTLDiagnostic classifies a failed run by tosctl's final error
+// line alone: the last line of its diagnostics, which is "command failed:
+// <cause>". A phrase in an earlier progress or warning line says nothing
+// about why the run ended, and classifying by it could take a broadcast
+// message for one refused before broadcasting. Diagnostics that were cut
+// at the bound may have lost that line, so they classify as nothing.
+func classifyTOSCTLDiagnostic(stderr []byte, truncated bool) TOSCTLFailure {
+	if truncated {
+		return TOSCTLFailureUnclassified
+	}
+	lines := bytes.Split(bytes.TrimRight(stderr, "\r\n \t"), []byte("\n"))
+	final := bytes.TrimRight(lines[len(lines)-1], "\r")
+	if !bytes.HasPrefix(final, []byte(tosctlErrorPrefix)) {
+		return TOSCTLFailureUnclassified
+	}
 	for _, candidate := range tosctlFailurePhrases {
-		if bytes.Contains(stderr, []byte(candidate.phrase)) {
+		if bytes.Contains(final, []byte(candidate.phrase)) {
 			return candidate.failure
 		}
 	}
@@ -201,7 +224,9 @@ func (s *SealedTOSCTL) Run(ctx context.Context, call TOSCTLCall) ([]byte, error)
 		if errors.Is(bounded.Err(), context.DeadlineExceeded) {
 			status = "timed out"
 		}
-		return nil, &TOSCTLError{Label: call.Label, Status: status, Reason: classifyTOSCTLDiagnostic(stderr.Bytes())}
+		return nil, &TOSCTLError{
+			Label: call.Label, Status: status, Reason: classifyTOSCTLDiagnostic(stderr.Bytes(), stderr.truncated),
+		}
 	}
 	return stdout.Bytes(), nil
 }

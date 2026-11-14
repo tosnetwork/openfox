@@ -137,6 +137,8 @@ type limitedBuffer struct {
 	buffer   bytes.Buffer
 	limit    int
 	truncate bool
+	// truncated reports that some output was dropped.
+	truncated bool
 }
 
 func (b *limitedBuffer) Write(value []byte) (int, error) {
@@ -144,6 +146,7 @@ func (b *limitedBuffer) Write(value []byte) (int, error) {
 		if !b.truncate {
 			return 0, errors.New("servicebridge: tosctl output exceeded its bound")
 		}
+		b.truncated = true
 		if room > 0 {
 			b.buffer.Write(value[:room])
 		}

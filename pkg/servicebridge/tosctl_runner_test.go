@@ -184,21 +184,46 @@ func TestTheSealedRunnerBoundsOutputAndTimeAndRedactsFailures(t *testing.T) {
 }
 
 func TestTOSCTLFailuresAreClassifiedByFixedPhrases(t *testing.T) {
-	for phrase, want := range map[string]TOSCTLFailure{
-		"command failed: read the registry controller native-registry-x: [E100: Not found] Secret": TOSCTLFailureNotFound,
-		"[E101: Already exists] Secret with id":                                                    TOSCTLFailureAlreadyExists,
-		"funding wallet has insufficient balance":                                                  TOSCTLFailureBalance,
-		"Wrong amount value 2 TOS. Wallet balance is 1 TOS":                                        TOSCTLFailureBalance,
-		"funding wallet is not active":                                                             TOSCTLFailureWalletState,
-		"wallet 'provider' is uninitialized":                                                       TOSCTLFailureWalletState,
-		"an account already exists at 0:ab":                                                        TOSCTLFailureOccupied,
-		"Transaction timeout expired":                                                              TOSCTLFailureUnconfirmed,
-		"the RPC serves another chain than the global config's zero state":                         TOSCTLFailureWrongChain,
-		"error sending request for url":                                                            TOSCTLFailureUnclassified,
+	for cause, want := range map[string]TOSCTLFailure{
+		"read the registry controller native-registry-x: [E100: Not found] Secret": TOSCTLFailureNotFound,
+		"[E101: Already exists] Secret with id":                                    TOSCTLFailureAlreadyExists,
+		"funding wallet has insufficient balance":                                  TOSCTLFailureBalance,
+		"Wrong amount value 2 TOS. Wallet balance is 1 TOS":                        TOSCTLFailureBalance,
+		"funding wallet is not active":                                             TOSCTLFailureWalletState,
+		"wallet 'provider' is uninitialized":                                       TOSCTLFailureWalletState,
+		"an account already exists at 0:ab":                                        TOSCTLFailureOccupied,
+		"Transaction timeout expired":                                              TOSCTLFailureUnconfirmed,
+		"the RPC serves another chain than the global config's zero state":         TOSCTLFailureWrongChain,
+		"persistence directory /x is inside /y, which another user can modify":     TOSCTLFailureUnsafeDirectory,
+		"error sending request for url":                                            TOSCTLFailureUnclassified,
 	} {
-		if got := classifyTOSCTLDiagnostic([]byte(phrase)); got != want {
-			t.Errorf("%q classified as %q, want %q", phrase, got, want)
+		final := tosctlErrorPrefix + cause
+		for _, diagnostic := range []string{final, final + "\n", "Sending...\nwarning: slow RPC\n" + final + "\r\n"} {
+			if got := classifyTOSCTLDiagnostic([]byte(diagnostic), false); got != want {
+				t.Errorf("%q classified as %q, want %q", diagnostic, got, want)
+			}
 		}
+		// The same words anywhere but in tosctl's final error line say
+		// nothing about why the run ended.
+		for _, diagnostic := range []string{
+			cause,
+			"note: " + final,
+			final + "\n" + tosctlErrorPrefix + "error sending request for url",
+			"warning: " + cause + "\n" + tosctlErrorPrefix + "Transaction was sent; waiting failed",
+			final + "\nsomething printed after the error line",
+		} {
+			if got := classifyTOSCTLDiagnostic([]byte(diagnostic), false); got != TOSCTLFailureUnclassified {
+				t.Errorf("%q was classified as %q by words outside the final error line", diagnostic, got)
+			}
+		}
+		// Diagnostics cut at the bound may have lost the final line.
+		if got := classifyTOSCTLDiagnostic([]byte(final), true); got != TOSCTLFailureUnclassified {
+			t.Errorf("truncated diagnostics were classified as %q", got)
+		}
+	}
+	// The directory refusal is reported, but it does not clear a step.
+	if refusedBeforeBroadcast(&TOSCTLError{Reason: TOSCTLFailureUnsafeDirectory}) {
+		t.Error("an unsafe directory was taken for a pre-broadcast refusal")
 	}
 	// Only failures tosctl checks before broadcasting clear a step.
 	for failure, before := range map[TOSCTLFailure]bool{

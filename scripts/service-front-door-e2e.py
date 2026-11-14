@@ -531,7 +531,12 @@ def stage_root() -> None:
     socket = sudo("stat", "-c", "%U:%G %a %n", Path(CONTAINERD_SOCKET).parent, CONTAINERD_SOCKET).stdout.split("\n")
     evidence["binaries"] = {name: {"sha256": digest} for name, digest in built.items()}
     evidence["root"] = {"staged_under": str(ROOT), "ownership": [line for line in ownership if line],
-                        "container_runtime_socket": [line for line in socket if line]}
+                        "container_runtime_socket": [line for line in socket if line],
+                        "why": "the executor accepts only a runtime socket its own user owns, in a private directory; "
+                               "OpenFox runs the executor as its own child and reads its artifact store, so the "
+                               "provider node runs as the socket's owner, root. The direct transport joins nodes of "
+                               "one user, so the buyer node runs as root too. No permission of the socket, the "
+                               "executor, tosctl or OpenFox was changed."}
     require("not OpenFox: binaries, chain files and each node's tosctl configuration and vault are staged root-owned",
             staged == built, {"staged": staged, "built": built, "ownership": ownership})
 
@@ -568,9 +573,13 @@ def setup_nodes() -> None:
     # Provider: offer.
     before = chain_snapshot({"wallet": provider_wallet})
     preview = fox_again("provider", "offer", *offer_flags())
-    record("provider offer without --yes previews and sends nothing", preview.returncode != 0 and
-           strict_json(preview).get("confirmed") is False and chain_snapshot({"wallet": provider_wallet}) == before,
-           preview.stderr[-3000:])
+    early = strict_json(preview).get("preview") or {}
+    record("provider offer without --yes shows the terms, every attached value and what will be created, and sends "
+           "nothing", preview.returncode != 0 and strict_json(preview).get("confirmed") is False and
+           early.get("total_attached_nanotos") == "3210000000" and
+           early.get("buyer_attaches_per_call_nanotos") == str(PRICE_NANO + STORAGE_FEE_NANO + 200_000_000) and
+           (early.get("terms") or {}).get("price_nanotos") == str(PRICE_NANO) and bool(early.get("to_be_created")) and
+           chain_snapshot({"wallet": provider_wallet}) == before, preview.stderr[-3000:])
     offer = fox_json("provider", "offer", *offer_flags(), "--yes")
     plan = offer.get("preview") or {}
     actor, capability_address = plan.get("actor", ""), plan.get("capability_address", "")

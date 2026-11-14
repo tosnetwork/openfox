@@ -56,6 +56,11 @@ func TestWithdrawSendsExactlyThePreviewedAmountAndRecordsItsFinalizedOutcome(t *
 	if len(records) != 1 {
 		t.Fatalf("records = %+v", records)
 	}
+	// The command reports the record as it stored it.
+	if reported := result.Withdrawal; reported == nil || *reported != records[0] ||
+		reported.Schema != withdrawalSchema || reported.UpdatedUnix == 0 {
+		t.Fatalf("reported %+v, stored %+v", reported, records[0])
+	}
 	record := records[0]
 	if record.State != WithdrawalFinalized || record.PayoutNano != "1250000001" ||
 		record.CreditedAfterNano != "3749999999" ||

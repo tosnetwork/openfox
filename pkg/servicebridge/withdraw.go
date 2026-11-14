@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
@@ -19,7 +20,8 @@ import (
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 )
 
-// Withdrawal states. Only finalized, failed and not_included are final.
+// Withdrawal states. Finalized, failed and not_included are decided by
+// finalized state; owner_acknowledged is decided by the owner alone.
 const (
 	// WithdrawalSubmitted: the record was written and the message handed to
 	// tosctl; its outcome is not yet read from finalized state.
@@ -35,7 +37,29 @@ const (
 	WithdrawalNotIncluded = "not_included"
 	// WithdrawalUnknown: finalized state does not yet say.
 	WithdrawalUnknown = "unknown"
+	// WithdrawalAcknowledged: finalized state never decided this
+	// withdrawal, its inclusion window passed, and the owner closed it by
+	// hand with `withdraw --acknowledge`. It says nothing about whether the
+	// actor paid out; the record keeps what the owner was shown.
+	WithdrawalAcknowledged = "owner_acknowledged"
 )
+
+// WithdrawalAcknowledgement is what the owner acknowledged when closing a
+// withdrawal that finalized state could not decide.
+type WithdrawalAcknowledgement struct {
+	Unix int64 `json:"unix"`
+	// Note is the owner's own account of what they checked.
+	Note string `json:"note"`
+	// StateBefore, DetailBefore and ReadError are what the node knew.
+	StateBefore  string `json:"state_before"`
+	DetailBefore string `json:"detail_before,omitempty"`
+	ReadError    string `json:"read_error,omitempty"`
+	// Checkpoint and ChainTimeUnix are the finalized view it was shown at.
+	Checkpoint    uint64 `json:"checkpoint"`
+	ChainTimeUnix int64  `json:"chain_time_unix"`
+	// CreditedNano is the actor's credited revenue at that checkpoint.
+	CreditedNano string `json:"credited_revenue_nanotos"`
+}
 
 // WalletCreditNotVerified is the only statement made about the wallet: a
 // finalized withdrawal is the actor paying out, which this node does not
@@ -72,10 +96,13 @@ type WithdrawalRecord struct {
 	Detail            string `json:"detail,omitempty"`
 	WalletCredit      string `json:"wallet_credit"`
 	UpdatedUnix       int64  `json:"updated_unix"`
+	// Acknowledged is set only by `withdraw --acknowledge`.
+	Acknowledged *WithdrawalAcknowledgement `json:"owner_acknowledged,omitempty"`
 }
 
 func (r WithdrawalRecord) terminal() bool {
-	return r.State == WithdrawalFinalized || r.State == WithdrawalFailed || r.State == WithdrawalNotIncluded
+	return r.State == WithdrawalFinalized || r.State == WithdrawalFailed || r.State == WithdrawalNotIncluded ||
+		(r.State == WithdrawalAcknowledged && r.Acknowledged != nil)
 }
 
 var withdrawalFilePattern = regexp.MustCompile(`^[0-9]{20}-[0-9]{20}\.json$`)
@@ -84,9 +111,11 @@ func withdrawalFile(record WithdrawalRecord) string {
 	return fmt.Sprintf("%020d-%020d.json", record.StartedUnix, record.QueryID)
 }
 
-func saveWithdrawal(stateDir string, record WithdrawalRecord, create bool, now time.Time) error {
+// saveWithdrawal stamps and stores a record. The caller's record is
+// stamped too, so what a command reports is what it stored.
+func saveWithdrawal(stateDir string, record *WithdrawalRecord, create bool, now time.Time) error {
 	record.Schema, record.UpdatedUnix, record.WalletCredit = withdrawalSchema, now.Unix(), WalletCreditNotVerified
-	return writeJSON(filepath.Join(stateDir, withdrawalDirectory, withdrawalFile(record)), record, create)
+	return writeJSON(filepath.Join(stateDir, withdrawalDirectory, withdrawalFile(*record)), *record, create)
 }
 
 // ReadWithdrawals lists the withdrawal records, newest first. A missing
@@ -307,16 +336,20 @@ func RunWithdraw(ctx context.Context, in WithdrawInput, env SetupEnv) (*Withdraw
 		}
 		resolved, resolveErr := resolveWithdrawal(ctx, session, record)
 		if resolveErr != nil {
-			return result, run.chainError("resolve the earlier withdrawal", resolveErr)
+			result.Withdrawal = &record
+			return result, fmt.Errorf("%w (query id %d). If this persists after the withdrawal's inclusion window, "+
+				"see `withdraw --acknowledge`", run.chainError("resolve the earlier withdrawal", resolveErr),
+				record.QueryID)
 		}
-		if saveErr := saveWithdrawal(config.StateDir, resolved, false, env.Now()); saveErr != nil {
+		if saveErr := saveWithdrawal(config.StateDir, &resolved, false, env.Now()); saveErr != nil {
 			return result, saveErr
 		}
 		if !resolved.terminal() {
 			result.Withdrawal = &resolved
-			return result, fmt.Errorf("%w: the withdrawal of %s nanoTOS started at %s; run the command again later",
-				ErrWithdrawalPending, resolved.AmountNano,
-				time.Unix(resolved.StartedUnix, 0).UTC().Format(time.RFC3339))
+			return result, fmt.Errorf("%w: the withdrawal of %s nanoTOS started at %s (query id %d); run the "+
+				"command again later. If it stays unresolved after its inclusion window, see `withdraw "+
+				"--acknowledge`", ErrWithdrawalPending, resolved.AmountNano,
+				time.Unix(resolved.StartedUnix, 0).UTC().Format(time.RFC3339), resolved.QueryID)
 		}
 		env.reportf("withdraw: the earlier withdrawal of %s nanoTOS is %s", resolved.AmountNano, resolved.State)
 	}
@@ -366,6 +399,24 @@ func RunWithdraw(ctx context.Context, in WithdrawInput, env SetupEnv) (*Withdraw
 	env.reportf("withdraw: %s TOS of %s TOS credited (checkpoint %d) from actor %s to owner wallet %s, attaching "+
 		"%s TOS for fees", FormatTOSAmount(amount), FormatTOSAmount(credited), session.Checkpoint(), actor,
 		config.WalletAddress, FormatTOSAmount(PayoutMessageValueNano))
+	// A lost withdrawal is sent again only past its inclusion window, which
+	// only a wallet whose messages expire has.
+	runner, err := env.Runner(config.TOSCTL, env.vaultURL(config.TOSCTL))
+	if err != nil {
+		return result, err
+	}
+	ops := tosctlOps{runner: runner}
+	wallet, err := ops.wallet(ctx, config.WalletName)
+	if err != nil {
+		return result, err
+	}
+	if wallet.Address != config.WalletAddress {
+		return result, fmt.Errorf("servicebridge: tosctl wallet %q is %s, not the wallet_address %s of the rail "+
+			"configuration", config.WalletName, wallet.Address, config.WalletAddress)
+	}
+	if err = requireExpiringWallet(wallet); err != nil {
+		return result, err
+	}
 	if !in.Yes {
 		return result, ErrConfirmationRequired
 	}
@@ -379,20 +430,14 @@ func RunWithdraw(ctx context.Context, in WithdrawInput, env SetupEnv) (*Withdraw
 		Anchor: account.LastTransaction, State: WithdrawalSubmitted, StartedUnix: env.Now().Unix(),
 	}
 	// The record is durable before the message is handed to tosctl.
-	if err = saveWithdrawal(config.StateDir, record, true, env.Now()); err != nil {
+	if err = saveWithdrawal(config.StateDir, &record, true, env.Now()); err != nil {
 		return result, err
 	}
 	result.Withdrawal = &record
-	runner, err := env.Runner(config.TOSCTL, env.vaultURL(config.TOSCTL))
-	if err != nil {
-		record.State, record.Detail = WithdrawalNotIncluded, "tosctl could not be opened; nothing was sent"
-		return result, errors.Join(err, saveWithdrawal(config.StateDir, record, false, env.Now()))
-	}
-	ops := tosctlOps{runner: runner}
 	if sendErr := ops.withdrawRevenue(ctx, config.WalletName, actor, amount, queryID); sendErr != nil {
 		if refusedBeforeBroadcast(sendErr) {
 			record.State, record.Detail = WithdrawalNotIncluded, "tosctl refused before broadcasting; nothing was sent"
-			return result, errors.Join(sendErr, saveWithdrawal(config.StateDir, record, false, env.Now()))
+			return result, errors.Join(sendErr, saveWithdrawal(config.StateDir, &record, false, env.Now()))
 		}
 		env.reportf("withdraw: %v; the message may still have been broadcast, reading finalized state", sendErr)
 	}
@@ -415,7 +460,7 @@ func RunWithdraw(ctx context.Context, in WithdrawInput, env SetupEnv) (*Withdraw
 		record = resolved
 		return record.terminal(), nil
 	}, nil)
-	if saveErr := saveWithdrawal(config.StateDir, record, false, env.Now()); saveErr != nil {
+	if saveErr := saveWithdrawal(config.StateDir, &record, false, env.Now()); saveErr != nil {
 		return result, saveErr
 	}
 	switch {
@@ -430,6 +475,157 @@ func RunWithdraw(ctx context.Context, in WithdrawInput, env SetupEnv) (*Withdraw
 	env.reportf("withdraw: finalized at checkpoint %d; the wallet credit itself is %s", record.Checkpoint,
 		WalletCreditNotVerified)
 	return result, nil
+}
+
+// AcknowledgeInput names the unresolved withdrawal the owner closes.
+type AcknowledgeInput struct {
+	RailConfigPath string `json:"rail_config"`
+	QueryID        uint64 `json:"query_id,string"`
+	// Note is the owner's account of what they checked; it is required and
+	// stored with the record.
+	Note string `json:"note"`
+	Yes  bool   `json:"yes"`
+}
+
+// ErrNothingToAcknowledge reports a withdrawal that needs no
+// acknowledgement.
+var ErrNothingToAcknowledge = errors.New("servicebridge: the withdrawal needs no acknowledgement")
+
+const maxAcknowledgementNote = 512
+
+func validAcknowledgementNote(note string) bool {
+	if note == "" || len(note) > maxAcknowledgementNote || strings.TrimSpace(note) != note {
+		return false
+	}
+	for _, character := range note {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// RunWithdrawAcknowledge closes, on the owner's explicit word, a withdrawal
+// that finalized state cannot decide and that therefore blocks every later
+// withdrawal. It is never automatic. It first tries once more to resolve
+// the record from finalized state, and acknowledges only when that fails
+// and the withdrawal's inclusion window has passed on finalized chain
+// time, so the message itself can no longer be included. It moves no
+// funds and sends nothing: the next withdrawal reads the credited revenue
+// from finalized state, whatever became of this one. What the owner was
+// shown and the owner's note are stored in the record.
+func RunWithdrawAcknowledge(ctx context.Context, in AcknowledgeInput, env SetupEnv) (*WithdrawResult, error) {
+	env.fill()
+	result := &WithdrawResult{Schema: WithdrawResultSchema}
+	if ctx == nil {
+		return result, errors.New("servicebridge: no context")
+	}
+	if in.QueryID == 0 {
+		return result, errors.New("servicebridge: --acknowledge takes the query id of the unresolved withdrawal")
+	}
+	config, err := LoadNodeConfig(in.RailConfigPath)
+	if err != nil {
+		return result, err
+	}
+	actor, err := providerActor(config)
+	if err != nil {
+		return result, err
+	}
+	records, err := ReadWithdrawals(config.StateDir)
+	if err != nil {
+		return result, err
+	}
+	var record *WithdrawalRecord
+	for index := range records {
+		if records[index].QueryID == in.QueryID {
+			record = &records[index]
+		}
+	}
+	if record == nil {
+		return result, fmt.Errorf("servicebridge: this node recorded no withdrawal with query id %d", in.QueryID)
+	}
+	result.Withdrawal = record
+	if record.terminal() {
+		return result, fmt.Errorf("%w: it is already %s", ErrNothingToAcknowledge, record.State)
+	}
+	run := &setupRun{ctx: ctx, env: env, stateDir: config.StateDir, endpoints: config.RPCEndpoints}
+	run.chain, err = env.OpenChain(config)
+	if err != nil {
+		return result, fmt.Errorf("servicebridge: open the finalized reader: %s",
+			redactEndpoints(err.Error(), run.endpoints))
+	}
+	session, err := run.begin()
+	if err != nil {
+		return result, err
+	}
+	resolved, resolveErr := resolveWithdrawal(ctx, session, *record)
+	if resolveErr == nil && resolved.terminal() {
+		// Finalized state decides it after all; nothing is acknowledged.
+		*record = resolved
+		if saveErr := saveWithdrawal(config.StateDir, record, false, env.Now()); saveErr != nil {
+			return result, saveErr
+		}
+		env.reportf("withdraw: finalized state resolves the withdrawal as %s; nothing was acknowledged",
+			record.State)
+		return result, nil
+	}
+	expiry := time.Unix(record.StartedUnix, 0).Add(sendResolutionWindow)
+	if !session.ChainTime().After(expiry) {
+		return result, fmt.Errorf("%w: its message can still be included until %s on finalized chain time (now "+
+			"%s); an acknowledgement is taken only after that", ErrWithdrawalPending,
+			expiry.UTC().Format(time.RFC3339), session.ChainTime().UTC().Format(time.RFC3339))
+	}
+	account, found, err := session.ReadActor(ctx, actor)
+	if err != nil || !found {
+		return result, errors.New("servicebridge: the actor's finalized accounting cannot be read, so the " +
+			"acknowledgement would record nothing to compare against; try again")
+	}
+	credited, err := creditedRevenue(account)
+	if err != nil {
+		return result, err
+	}
+	acknowledgement := &WithdrawalAcknowledgement{
+		Note: in.Note, StateBefore: resolved.State, DetailBefore: resolved.Detail, Checkpoint: session.Checkpoint(),
+		ChainTimeUnix: session.ChainTime().Unix(), CreditedNano: fmt.Sprint(credited),
+	}
+	if resolveErr != nil {
+		acknowledgement.StateBefore, acknowledgement.DetailBefore = record.State, record.Detail
+		acknowledgement.ReadError = redactEndpoints(resolveErr.Error(), run.endpoints)
+	}
+	env.reportf("withdraw: withdrawal %d of %s TOS from actor %s, started %s, is not decided by finalized state "+
+		"(%s%s) and its inclusion window has passed", record.QueryID, formatNanoText(record.AmountNano), record.Actor,
+		time.Unix(record.StartedUnix, 0).UTC().Format(time.RFC3339), acknowledgement.DetailBefore,
+		acknowledgement.ReadError)
+	env.reportf("withdraw: credited revenue was %s TOS before it and is %s TOS at checkpoint %d",
+		formatNanoText(record.CreditedBeforeNano), FormatTOSAmount(credited), session.Checkpoint())
+	env.reportf("withdraw: acknowledging closes this record so later withdrawals are not blocked. It moves no " +
+		"funds, sends nothing and does not establish whether the actor paid this withdrawal out: compare the " +
+		"credited revenue above and the owner wallet's transactions yourself, and say what you found in --note")
+	if !validAcknowledgementNote(in.Note) {
+		return result, fmt.Errorf("servicebridge: --note is required: one line of at most %d bytes saying what "+
+			"you checked", maxAcknowledgementNote)
+	}
+	if !in.Yes {
+		return result, ErrConfirmationRequired
+	}
+	acknowledgement.Unix = env.Now().Unix()
+	record.State, record.Acknowledged = WithdrawalAcknowledged, acknowledgement
+	record.Detail = "closed by the owner; finalized state did not decide it"
+	if err = saveWithdrawal(config.StateDir, record, false, env.Now()); err != nil {
+		return result, err
+	}
+	result.Confirmed = true
+	env.reportf("withdraw: withdrawal %d is recorded as %s", record.QueryID, WithdrawalAcknowledged)
+	return result, nil
+}
+
+// formatNanoText formats a decimal nanoTOS string as TOS for a report.
+func formatNanoText(value string) string {
+	nano, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return value + " nano"
+	}
+	return FormatTOSAmount(nano)
 }
 
 // viewWithdrawals returns the newest withdrawal records as status shows

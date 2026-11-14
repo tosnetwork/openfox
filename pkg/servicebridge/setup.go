@@ -160,9 +160,19 @@ var ErrSetupInputChanged = errors.New("servicebridge: an input that determines a
 
 // sendResolutionWindow is how long after a send began its wallet message
 // can still be included: tosctl's own bound on the send (two minutes), the
-// wallet message lifetime it signs (two minutes) and a margin for clock
-// difference between this host and the chain. Past it, on finalized chain
-// time, a message whose effect is absent can no longer take effect.
+// wallet message lifetime it signs (two minutes) and one more minute. Past
+// it, on finalized chain time, a message whose effect is absent can no
+// longer take effect.
+//
+// The last minute covers two things the first four do not. The start is
+// stamped with this host's clock while expiry is judged on chain time, so
+// a host clock that runs behind the chain makes the window end early by
+// that difference. And every message here takes one more hop after the
+// wallet's own transaction (wallet to registry or actor), which is
+// included a few blocks after the wallet message itself. A minute is far
+// more than either on a network whose blocks are seconds apart; a host
+// whose clock is off by more than that is reported by preflight's
+// clock.skew check.
 const sendResolutionWindow = defaultLifecycleTime + 2*time.Minute + time.Minute
 
 // Chain step states. A step is marked sending durably before its message is
@@ -253,6 +263,9 @@ const (
 	SetupDone    = "done"
 	SetupAlready = "already_done"
 	SetupPlanned = "planned"
+	// SetupMissing marks something the command does not do and the owner
+	// still has to supply.
+	SetupMissing = "missing"
 )
 
 // setupRun carries what `init` and `offer` share while they run.
@@ -264,6 +277,9 @@ type setupRun struct {
 	chain    RailChain
 	yes      bool
 	steps    []SetupStep
+	// wallet is the owner wallet every step sends from. A step is sent
+	// only from a wallet whose messages expire.
+	wallet *WalletView
 	// endpoints are redacted from every chain error.
 	endpoints []string
 }
@@ -392,6 +408,14 @@ func (r *setupRun) runStep(id, what string, step *ChainStep, effect effectFunc, 
 			"absent, so that message can no longer take effect", id,
 			time.Unix(step.StartedUnix, 0).UTC().Format(time.RFC3339))
 	}
+	// "Past its window an absent message cannot land" is only true of a
+	// wallet whose messages expire, so no other wallet sends a step.
+	if r.wallet == nil {
+		return errors.New("servicebridge: the owner wallet was not resolved before a send")
+	}
+	if walletErr := requireExpiringWallet(*r.wallet); walletErr != nil {
+		return walletErr
+	}
 	if !r.yes {
 		r.notef(id, SetupPlanned, "%s will be sent", what)
 		return ErrConfirmationRequired
@@ -437,6 +461,15 @@ func (r *setupRun) runStep(id, what string, step *ChainStep, effect effectFunc, 
 	}
 	r.notef(id, SetupDone, "%s is in finalized state at checkpoint %d", what, session.Checkpoint())
 	return nil
+}
+
+// handoff stamps a step at the moment its message is handed to the wallet.
+// A send that first builds or signs something calls it right before the
+// wallet send, so the inclusion window is counted from the instant the
+// wallet message can be signed, not from the start of what preceded it.
+func (r *setupRun) handoff(step *ChainStep) error {
+	step.StartedUnix = r.env.Now().Unix()
+	return r.save()
 }
 
 // checkGenesis requires that no endpoint serves another network and that a

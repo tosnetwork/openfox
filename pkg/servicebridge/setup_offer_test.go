@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -156,6 +157,34 @@ func TestOfferWithoutYesShowsTheWholePreviewAndSendsNothing(t *testing.T) {
 		result.Confirmed {
 		t.Fatalf("something ran without --yes: %+v", world.Calls[len(before.Calls):])
 	}
+	// The run with --yes creates the key and sends in one go, so this run
+	// already shows everything the owner decides or pays: the terms, every
+	// attached value, the totals and what will be created. Only what
+	// derives from the key is left open, and is said to be.
+	early := result.Preview
+	if early == nil || early.Terms != f.offer.Terms || early.DeployFundingNano != "1200000000" ||
+		early.RegistryValueNano != "2000000000" || early.PolicyValueNano != "10000000" ||
+		early.TotalAttachedNano != "3210000000" || early.BuyerAttachesNano != "750000000" ||
+		early.OwnerWallet != fakeWalletAddress || early.AttestorController != DefaultAttestorController ||
+		len(early.ToBeCreated) == 0 || !strings.Contains(early.ToBeCreated[0], DefaultAttestorController) ||
+		early.Actor != "" || early.AttestorKeyID != "" || early.CapabilityID != "" {
+		t.Fatalf("the preview before the attestor key exists is incomplete: %+v", early)
+	}
+	shown := strings.Join(*f.reports, "\n")
+	for _, line := range []string{
+		"to be created: attestor controller", "price 0.300000000 TOS", "funded with 1.200000000 TOS",
+		"total attached 3.210000000 TOS", "a buyer attaches 0.750000000 TOS", "derived once the attestor key exists",
+	} {
+		if !strings.Contains(shown, line) {
+			t.Fatalf("the preview before the attestor key exists does not print %q:\n%s", line, shown)
+		}
+	}
+	for _, line := range *f.reports {
+		if strings.HasPrefix(line, "executor.pin:") &&
+			(strings.Contains(line, "--tosctl-sha256") || !strings.Contains(line, "--executor-sha256")) {
+			t.Fatalf("the executor pin note names the wrong flag: %s", line)
+		}
+	}
 	f.change(func(w *fakeWorld) { w.Controllers[DefaultAttestorController] = true })
 	result, err = RunOffer(context.Background(), f.offer, f.env())
 	mustFail(t, err, ErrConfirmationRequired)
@@ -178,7 +207,7 @@ func TestOfferWithoutYesShowsTheWholePreviewAndSendsNothing(t *testing.T) {
 	// The run with --yes publishes exactly what was previewed.
 	f.offer.Yes = true
 	published := f.mustOffer(t)
-	if *published.Preview != *preview {
+	if !reflect.DeepEqual(published.Preview, preview) || len(preview.ToBeCreated) != 0 {
 		t.Fatalf("published %+v, previewed %+v", published.Preview, preview)
 	}
 }

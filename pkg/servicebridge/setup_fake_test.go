@@ -80,13 +80,18 @@ type fakeActor struct {
 
 type fakeWorld struct {
 	path          string
-	GenesisRoot   string                       `json:"genesis_root"`
-	GenesisFile   string                       `json:"genesis_file"`
-	CodeHash      string                       `json:"code_hash"`
-	Controllers   map[string]bool              `json:"controllers"`
-	WalletState   string                       `json:"wallet_state"`
-	WalletBalance string                       `json:"wallet_balance"`
-	WalletMissing bool                         `json:"wallet_missing"`
+	GenesisRoot   string          `json:"genesis_root"`
+	GenesisFile   string          `json:"genesis_file"`
+	CodeHash      string          `json:"code_hash"`
+	Controllers   map[string]bool `json:"controllers"`
+	WalletState   string          `json:"wallet_state"`
+	WalletBalance string          `json:"wallet_balance"`
+	WalletMissing bool            `json:"wallet_missing"`
+	// WalletType is the wallet version `wallet ls` reports; empty is V3R2.
+	WalletType string `json:"wallet_type"`
+	// LocalAhead is how far this host's clock runs ahead of finalized
+	// chain time (Clock); negative when it runs behind.
+	LocalAhead    int64                        `json:"local_ahead"`
 	Agents        map[string]string            `json:"agents"`
 	Capabilities  map[string]fakeCapability    `json:"capabilities"`
 	Actor         *fakeActor                   `json:"actor"`
@@ -301,7 +306,13 @@ func (f fakeRunner) Run(_ context.Context, call TOSCTLCall) ([]byte, error) {
 			return []byte("[]"), nil
 		}
 		// tosctl lists the user-friendly form; the raw form is accepted too.
-		entry := map[string]any{"name": fakeWalletName, "address": fakeWalletAddress, "wallet_type": "V3R2", "seqno": 1}
+		walletType := world.WalletType
+		if walletType == "" {
+			walletType = "V3R2"
+		}
+		entry := map[string]any{
+			"name": fakeWalletName, "address": fakeWalletAddress, "wallet_type": walletType, "seqno": 1,
+		}
 		entry["state"], entry["balance"] = world.WalletState, world.WalletBalance
 		if world.WalletState == "" {
 			entry["state"], entry["balance"], entry["wallet_type"], entry["seqno"] = nil, nil, nil, nil
@@ -602,8 +613,13 @@ func (f *setupFixture) script(label string, behaviors ...string) {
 // process and the test build the same environment.
 func fakeEnv(worldPath string, reports *[]string) SetupEnv {
 	return SetupEnv{
-		Now: func() time.Time { return time.Unix(loadWorld(worldPath).Clock, 0) },
-		// Waiting advances the one clock that is both local and chain time.
+		// The host's clock and finalized chain time are two clocks: a
+		// session's ChainTime is Clock, the local time is LocalAhead later.
+		Now: func() time.Time {
+			world := loadWorld(worldPath)
+			return time.Unix(world.Clock+world.LocalAhead, 0)
+		},
+		// Waiting advances both by the same amount.
 		Sleep: func(_ context.Context, wait time.Duration) error {
 			updateWorld(worldPath, func(w *fakeWorld) { w.Clock += int64(wait / time.Second) })
 			return nil

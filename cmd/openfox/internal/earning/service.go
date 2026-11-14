@@ -279,6 +279,10 @@ func servicePurchasesCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// A buyer without purchases lists none; it does not print null.
+			if records == nil {
+				records = []servicebridge.PurchaseRecord{}
+			}
 			return printJSON(command.OutOrStdout(), records)
 		},
 	}

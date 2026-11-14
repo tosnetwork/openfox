@@ -140,9 +140,6 @@ func (in InitInput) validate() error {
 	if in.MessengerSocket != "" && !cleanAbsolute(in.MessengerSocket) {
 		problems = append(problems, "the messenger socket must be an absolute clean path")
 	}
-	if in.MessengerSocket == "" && len(in.DirectPeers) == 0 {
-		problems = append(problems, "a messenger socket or at least one direct peer is required")
-	}
 	if len(in.ReceiverSocket) > maxUnixSocketPath {
 		problems = append(problems, fmt.Sprintf("the receiver socket path exceeds %d bytes", maxUnixSocketPath))
 	}
@@ -235,15 +232,18 @@ func pinTOSCTL(in InitInput, earlier string) (pin, how string, err error) {
 	}
 }
 
-func pinNote(how string) string {
+func pinNote(how string) string { return pinNoteFor(how, "--tosctl-sha256") }
+
+// pinNoteFor words a pin for the flag that states the binary's digest.
+func pinNoteFor(how, flag string) string {
 	switch how {
 	case PinGivenByOwner:
-		return "the binary matches the SHA-256 given with --tosctl-sha256"
+		return "the binary matches the SHA-256 given with " + flag
 	case PinKept:
 		return "the binary matches the SHA-256 pinned by an earlier run"
 	default:
 		return "trust on first use: this SHA-256 was computed from the binary found, not checked against " +
-			"anything; compare it with the digest of the release you meant to install, or pass --tosctl-sha256"
+			"anything; compare it with the digest of the release you meant to install, or pass " + flag
 	}
 }
 
@@ -294,7 +294,7 @@ func requireFundedWallet(wallet WalletView, neededNano uint64, purpose string) e
 			"address and run this command again", wallet.Name, wallet.Address, FormatTOSAmount(wallet.BalanceNano),
 			purpose, needed)
 	default:
-		return nil
+		return requireExpiringWallet(wallet)
 	}
 }
 
@@ -505,6 +505,7 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 		return result, err
 	}
 	config.WalletAddress, result.WalletAddress = wallet.Address, wallet.Address
+	run.wallet = &wallet
 	run.notef("wallet.address", SetupDone, "wallet %q is %s", wallet.Name, wallet.Address)
 
 	packet, err := run.ensureController(ops, "controller.packet", in.PacketController)
@@ -632,6 +633,18 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 	result.NextSteps = []string{
 		"provider: openfox earning service offer --rail-config " + in.RailConfigPath + " --price <TOS> ...",
 		"buyer: openfox earning service buy --rail-config " + in.RailConfigPath + " --offer <file> --source <archive>",
+	}
+	// Two nodes that reach each other directly each need the other's Agent
+	// id, which exists only after that node's own init. A node may therefore
+	// be established without a transport; it cannot serve or buy until one
+	// is added.
+	if config.MessengerSocket == "" && len(config.DirectPeers) == 0 {
+		run.notef("transport", SetupMissing, "no packet transport is configured: serve and buy refuse to start "+
+			"until this command is run again with --direct-peer or --messenger-socket")
+		result.NextSteps = append([]string{
+			"add a packet transport: run init again with --direct-peer agent_<hex>=<socket> (the peer's Agent id " +
+				"and receiver socket) or --messenger-socket <socket>",
+		}, result.NextSteps...)
 	}
 	return result, nil
 }

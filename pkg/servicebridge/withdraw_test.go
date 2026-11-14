@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 )
 
 // newWithdrawFixture is a published provider whose actor holds revenue.
@@ -310,4 +312,117 @@ func TestAWithdrawalIsFinalizedOnlyByItsOwnTransaction(t *testing.T) {
 			t.Errorf("%s resolved the withdrawal as finalized", name)
 		}
 	}
+}
+
+// A withdrawal finalized state cannot decide blocks every later one. Only
+// the owner closes it, explicitly, after its inclusion window, and the
+// record keeps what was acknowledged.
+func TestAnUndecidedWithdrawalIsClosedOnlyByTheOwnersRecordedAcknowledgement(t *testing.T) {
+	stuck := func(t *testing.T) (*setupFixture, WithdrawInput, WithdrawalRecord) {
+		t.Helper()
+		f, in := newWithdrawFixture(t, 5_000_000_000)
+		in.AmountNano = 1_000_000_000
+		f.script(withdrawLabel, fakeLost)
+		if _, err := RunWithdraw(context.Background(), in, f.env()); err == nil {
+			t.Fatal("the scripted failure did not happen")
+		}
+		record := withdrawals(t, f)[0]
+		// A finalized transaction carries the query id but pays another
+		// amount: finalized state will never decide this record.
+		f.change(func(w *fakeWorld) {
+			w.History = append(w.History, f.withdrawTx(w, record.QueryID, fakeWalletAddress, "999999999"))
+		})
+		return f, in, record
+	}
+	acknowledge := func(f *setupFixture, record WithdrawalRecord, note string, yes bool) (*WithdrawResult, error) {
+		return RunWithdrawAcknowledge(context.Background(), AcknowledgeInput{
+			RailConfigPath: f.init.RailConfigPath, QueryID: record.QueryID, Note: note, Yes: yes,
+		}, f.env())
+	}
+	pastWindow := func(w *fakeWorld) { w.Clock += int64(sendResolutionWindow.Seconds()) + 1 }
+
+	f, in, record := stuck(t)
+	f.change(pastWindow)
+	_, err := RunWithdraw(context.Background(), in, f.env())
+	mustFail(t, err, ErrWithdrawalPending, "--acknowledge")
+	if f.world().count(withdrawLabel) != 1 {
+		t.Fatal("a withdrawal was sent while an earlier one is undecided")
+	}
+	// Nothing is acknowledged without a note, or without --yes.
+	_, err = acknowledge(f, record, "", true)
+	mustFail(t, err, nil, "--note is required")
+	_, err = acknowledge(f, record, "two\nlines", true)
+	mustFail(t, err, nil, "--note is required")
+	_, err = acknowledge(f, record, "checked the wallet: no payout arrived", false)
+	mustFail(t, err, ErrConfirmationRequired)
+	if now := withdrawals(t, f)[0]; now.terminal() || now.Acknowledged != nil {
+		t.Fatalf("the record was closed without the owner's confirmed note: %+v", now)
+	}
+	shown := strings.Join(*f.reports, "\n")
+	if !strings.Contains(shown, "moves no funds") || !strings.Contains(shown, "no payout of exactly the amount") {
+		t.Fatalf("the owner was not shown what is acknowledged:\n%s", shown)
+	}
+	result, err := acknowledge(f, record, "checked the wallet: no payout arrived", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := withdrawals(t, f)[0]
+	ack := closed.Acknowledged
+	if !result.Confirmed || closed.State != WithdrawalAcknowledged || !closed.terminal() || ack == nil ||
+		ack.Note != "checked the wallet: no payout arrived" || ack.StateBefore != WithdrawalUnknown ||
+		!strings.Contains(ack.DetailBefore, "no payout of exactly the amount") || ack.CreditedNano != "5000000000" ||
+		ack.Checkpoint != f.world().Checkpoint || ack.ChainTimeUnix != f.world().Clock || ack.Unix == 0 ||
+		closed.Schema != withdrawalSchema || result.Withdrawal.Schema != withdrawalSchema {
+		t.Fatalf("the acknowledgement does not record what was acknowledged: %+v / %+v", closed, ack)
+	}
+	if f.world().count(withdrawLabel) != 1 {
+		t.Fatal("an acknowledgement sent a message")
+	}
+	// Acknowledged once; it no longer blocks.
+	_, err = acknowledge(f, record, "again", true)
+	mustFail(t, err, ErrNothingToAcknowledge)
+	f.change(func(w *fakeWorld) { w.History = nil })
+	if _, err = RunWithdraw(context.Background(), in, f.env()); err != nil {
+		t.Fatalf("a withdrawal after the acknowledgement: %v", err)
+	}
+	if f.world().count(withdrawLabel) != 2 {
+		t.Fatal("the next withdrawal was not sent")
+	}
+
+	t.Run("not while the message can still be included", func(t *testing.T) {
+		f, _, record := stuck(t)
+		_, err := acknowledge(f, record, "impatient", true)
+		mustFail(t, err, ErrWithdrawalPending, "can still be included")
+		if now := withdrawals(t, f)[0]; now.terminal() {
+			t.Fatalf("a withdrawal inside its inclusion window was closed: %+v", now)
+		}
+		// The local clock does not open the door either.
+		f.change(func(w *fakeWorld) { w.LocalAhead = int64(sendResolutionWindow.Seconds()) + 600 })
+		_, err = acknowledge(f, record, "impatient", true)
+		mustFail(t, err, ErrWithdrawalPending)
+	})
+	t.Run("not what finalized state decides", func(t *testing.T) {
+		f, _, record := stuck(t)
+		f.change(func(w *fakeWorld) {
+			pastWindow(w)
+			w.History = []toschain.ActorTransaction{
+				f.withdrawTx(w, record.QueryID, fakeWalletAddress, record.AmountNano),
+			}
+		})
+		result, err := acknowledge(f, record, "it did land", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if now := withdrawals(t, f)[0]; now.State != WithdrawalFinalized || now.Acknowledged != nil || result.Confirmed {
+			t.Fatalf("a withdrawal finalized state decides was acknowledged instead: %+v", now)
+		}
+	})
+	t.Run("not a withdrawal this node never made", func(t *testing.T) {
+		f, _, record := stuck(t)
+		f.change(pastWindow)
+		record.QueryID++
+		if _, err := acknowledge(f, record, "another", true); err == nil {
+			t.Fatal("an unknown query id was acknowledged")
+		}
+	})
 }

@@ -382,7 +382,6 @@ func TestInitValidatesItsInputsBeforeTouchingAnything(t *testing.T) {
 	cases := map[string]func(*InitInput){
 		"relative state dir":   func(in *InitInput) { in.StateDir = "state" },
 		"bad actor code hash":  func(in *InitInput) { in.ActorCodeHash = "sha256:" + strings.Repeat("88", 32) },
-		"no transport":         func(in *InitInput) { in.MessengerSocket = "" },
 		"bad wallet name":      func(in *InitInput) { in.WalletName = "--yes" },
 		"bad network label":    func(in *InitInput) { in.NetworkLabel = "--config" },
 		"bad direct peer":      func(in *InitInput) { in.DirectPeers = map[string]string{"agent_x": "/tmp/s"} },
@@ -425,5 +424,50 @@ func TestInitKeepsTheSectionsItDoesNotOwnAndWritesABuyerSection(t *testing.T) {
 	if config.Provider == nil || config.Buyer == nil || config.Buyer.Policy.AllowedProviders[0] != testSeller ||
 		config.DirectPeers[testBuyer] == "" || config.MessengerSocket == "" {
 		t.Fatalf("a re-run dropped a section: %+v", config)
+	}
+}
+
+// Two nodes that reach each other directly each need the other's Agent id,
+// which only that node's init produces. So the first init names no
+// transport: it establishes the node, says what is missing, and the node
+// does not start until a second run adds the peer, without a second Agent.
+func TestInitWithoutATransportEstablishesTheNodeWhichCannotStartUntilOneIsAdded(t *testing.T) {
+	f := newSetupFixture(t)
+	f.init.MessengerSocket = ""
+	first := f.mustInit(t)
+	missing := false
+	for _, step := range first.Steps {
+		missing = missing || (step.ID == "transport" && step.Status == SetupMissing)
+	}
+	if !missing || len(first.NextSteps) == 0 || !strings.Contains(first.NextSteps[0], "--direct-peer") {
+		t.Fatalf("the report does not say a transport is missing: %+v", first)
+	}
+	config, err := LoadNodeConfig(f.init.RailConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MessengerSocket != "" || len(config.DirectPeers) != 0 || config.AgentID != first.AgentID {
+		t.Fatalf("configuration = %+v", config)
+	}
+	if _, err = openPacketTransport(config); err == nil {
+		t.Fatal("a node without a transport opened one")
+	}
+	f.init.DirectPeers = map[string]string{testBuyer: "/run/peer/rail-receiver.sock"}
+	second := f.mustInit(t)
+	for _, step := range second.Steps {
+		if step.ID == "transport" {
+			t.Fatalf("a transport is still reported missing: %+v", step)
+		}
+	}
+	config, err = LoadNodeConfig(f.init.RailConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.DirectPeers[testBuyer] != "/run/peer/rail-receiver.sock" || second.AgentID != first.AgentID ||
+		f.world().count("wallet send") != 1 {
+		t.Fatalf("adding the peer changed the Agent or sent again: %+v", config)
+	}
+	if _, err = openPacketTransport(config); err != nil {
+		t.Fatalf("the node with a direct peer has no transport: %v", err)
 	}
 }

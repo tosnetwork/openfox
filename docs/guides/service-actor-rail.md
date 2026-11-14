@@ -27,7 +27,8 @@ for a buyer. The commands that sign or send (`init`, `offer`, `withdraw`) run
 the pinned tosctl from a sealed in-memory copy with only the vault URL in its
 environment, print a preview first and do nothing without `--yes`. They print a
 JSON report on stdout and the preview and progress on stderr; neither holds a
-secret or the vault URL.
+secret or the vault URL. Standard output that is a pipe or a file carries
+exactly that JSON document: the start-up banner is printed only to a terminal.
 
 Three things still need other tools:
 
@@ -40,7 +41,17 @@ Three things still need other tools:
   direct transport instead.
 - **The provider's executor.** The private containerd executor (tos-ai
   `software-work-execute`) and its container runtime are installed as root;
-  `offer` only pins the binary and records the socket.
+  `offer` only pins the binary and records the socket. OpenFox runs the
+  executor as its own child process and reads the executor's artifact store,
+  and the executor accepts only a runtime socket, in a private directory, that
+  its own user owns. **The provider node therefore runs as the user that owns
+  the runtime socket.** With a root-only runtime that user is root, for every
+  provider command, and tosctl run as root refuses a configuration under a
+  directory another user can modify; `preflight` then warns `process.user`.
+  A provider that is not root needs a runtime whose socket that user owns.
+
+`scripts/service-front-door-e2e.sh` runs the whole sequence below, two nodes
+and one paid job, on a local network and checks every chain fact itself.
 
 ## Setting up a node: `init`
 
@@ -60,6 +71,13 @@ openfox earning service init \
   --messenger-socket /…/messenger.sock        # or --direct-peer, below
 ```
 
+The transport may be left out of the first run. Two nodes that reach each
+other directly each need the other's Agent id, which only that node's `init`
+produces; so `init` without a transport establishes the node, reports
+`transport: missing`, and `serve`, `buy` and `preflight` refuse until `init`
+is run again with `--direct-peer` or `--messenger-socket`. That second run
+sends nothing.
+
 Only choices the owner must make are inputs. Everything else is derived and
 checked:
 
@@ -74,7 +92,11 @@ checked:
   RPC endpoints (and no endpoint of another network) to serve that genesis.
 - **Wallet.** The address comes from `tosctl wallet ls`. A wallet that is
   missing, not active or holds less than the registration needs stops `init`
-  with the address and the amount.
+  with the address and the amount. Only a V3R2, V4R2 or V5R1 wallet sends:
+  tosctl signs their messages with an expiry, and every "the earlier message
+  can no longer be included" decision below rests on it. `init`, `offer` and
+  `withdraw` refuse any other wallet type (a V1R3 message never expires), and
+  a wallet whose type tosctl could not read, before signing or sending.
 - **Packet controller.** `--packet-controller` (default `openfox-packet`) is
   created in the vault if it is absent. tosctl never replaces an existing one.
 - **Agent.** `init` builds a one-controller policy, has tosctl sign the
@@ -113,13 +135,29 @@ tosctl. Each step:
    effect is still absent is the message sent again;
 3. otherwise marks the step as sending in the journal, then runs tosctl.
 
+The five minutes are tosctl's own two-minute bound on a send, the two-minute
+lifetime of the wallet message it signs, and one minute for a host clock that
+runs behind the chain and for the hop from the wallet to the registry or the
+actor. They are counted from the moment the wallet message is handed to
+tosctl; a step that first builds and signs a registration starts its window
+after that.
+
 A tosctl failure that is one of its checks before broadcasting (insufficient
 balance, wallet not active, entry not found) clears the mark; any other failure
-is an unknown outcome. Changing an input that determines an identity after its
+is an unknown outcome. Only the final `command failed:` line of tosctl's
+diagnostics classifies a failure, and diagnostics cut at their bound classify
+as nothing. Changing an input that determines an identity after its
 step was sent is refused: another packet controller or network would be a
 second Agent, other terms a second Service Actor and Capability. To change the
 terms of a published actor use `tosctl agent service send --operation
 update-policy`; to start over use another state directory and configuration.
+
+The journal is the only place the Agent's nonce lives until `init` writes the
+rail configuration. **If the state directory is lost after the registration
+was sent and before the configuration was written, a new `init` draws a new
+nonce and registers a second Agent**; the first one stays registered and
+unused. Keep the state directory until `init` reports `config.write`; after
+that a re-run adopts the Agent the configuration names.
 
 ## Provider
 
@@ -148,7 +186,12 @@ update-policy`; to start over use another state directory and configuration.
    wallet, the actor address (computed by tosctl without signing), the pinned
    actor code hash, the attestor key id, the terms, the manifest digest, the
    Capability id and address, the metadata hash and the value attached to each
-   message. With `--yes` it then:
+   message. While the attestor controller does not exist yet, the run without
+   `--yes` still shows every term, every attached value, the totals and a
+   `to_be_created` list; only what derives from the new key (the actor
+   address, the manifest digest, the Capability id and address, the metadata
+   hash) is left open, since the run with `--yes` creates the key and sends in
+   one go. With `--yes` it then:
 
    - deploys the Service Actor with the attestor and zero metadata, and
      verifies from finalized state that the account runs the pinned code, is
@@ -202,6 +245,28 @@ update-policy`; to start over use another state directory and configuration.
    blocks the next one. `finalized` means the actor paid out; the wallet's own
    credit is not followed, so every record says `wallet_credit: not_verified`.
 
+   A withdrawal can stay `unknown` for good: the actor's history no longer
+   reaches the record's anchor, or a finalized transaction carries its query
+   id without a payout of exactly the amount. Nothing closes such a record
+   automatically. To resolve it by hand, compare `credited_before_nanotos` in
+   the record with the actor's credited revenue in `status` and look at the
+   owner wallet's transactions since `started_unix`; then close the record
+   with
+
+   ```
+   openfox earning service withdraw --rail-config <file> \
+     --acknowledge <query id> --note "what you checked" [--yes]
+   ```
+
+   It first tries once more to resolve the record from finalized state, and
+   does nothing else if that succeeds. Otherwise it is accepted only after the
+   withdrawal's inclusion window has passed on finalized chain time, shows
+   what the node knows, and with `--yes` stores the record as
+   `owner_acknowledged` together with the note, the earlier state and detail,
+   the checkpoint and the credited revenue at that checkpoint. It moves no
+   funds and sends nothing, and it does not say whether the actor paid out:
+   the next withdrawal reads the credited revenue from finalized state.
+
 The manual steps remain available: `openfox earning service manifest` and
 `openfox earning service metadata` build the manifest and print the metadata
 hash for an offer published with tosctl by hand.
@@ -236,8 +301,8 @@ prerequisite did not pass is `unknown` with the prerequisite named.
 | `tosctl.pin`, `executor.pin` | the binary is missing or does not hash to its pin |
 | `tosctl.config` | the tosctl configuration is missing or world-accessible |
 | `tosctl.vault_env` | the variable `vault_url_env` names is unset (its value is never printed) |
-| `transport.peers` | reports which transport each configured peer uses; fails when neither `messenger_socket` nor `direct_peers` is set, a direct peer is malformed or its socket is a symbolic link or not a socket; warns when a direct peer's socket is absent (that node is not serving) |
-| `containerd.socket` | the runtime socket is missing, not a socket, or world-accessible; it is never connected to |
+| `transport.peers` | reports which transport each configured peer uses; fails when neither `messenger_socket` nor `direct_peers` is set, a direct peer is malformed, or its socket is a symbolic link, not a socket, owned by another user or in a directory group or others can write; warns when a direct peer's socket is absent (that node is not serving) |
+| `containerd.socket` | the runtime socket is missing, cannot be inspected by this user (a socket in a root-only directory reads as missing to any other user), not a socket, or world-accessible; it is never connected to |
 | `manifest.local` | the manifest is not canonical, or its actor code hash, version or transport differ from the configuration |
 | `rpc.endpoints` | fewer than 3 or more than 8 endpoints, duplicate authorities, plain HTTP off loopback, or a quorum that is not a strict majority |
 | `rpc.independence` | always `unknown`: distinct authorities are enforced, distinct operators are not verified |
@@ -394,7 +459,12 @@ trials and single-operator setups on one host**:
   the packet's signature against finalized state, exactly as with the
   Messenger; the inbox's replay handling and bounds apply unchanged.
 
-A socket path that is a symbolic link or not a socket is refused, a redirect is
+The scope is enforced, not only stated. A send is refused when the socket path
+is a symbolic link or not a socket, when another user owns the socket, when
+group or others can write its directory (they could replace the socket), and,
+on Linux, when the process listening on it runs as another user (the kernel's
+peer credentials of the connection). `preflight` makes the same inspection of
+the path. A redirect is
 not followed, the request and the answer are bounded, and a failed send leaves
 the packet journaled for the next retry as a failed Messenger send does. When
 `direct_peers` is set, `messenger_socket` is optional: a recipient that is
@@ -405,7 +475,18 @@ needs the Messenger. `preflight` reports each peer's transport in
 
 Each node lists the other: the buyer the provider's Agent and receiver socket,
 the provider the buyer's. The Agent ids are in each `init` report and the
-provider's is in the offer file.
+provider's is in the offer file. In order:
+
+1. provider: `init` (no transport yet), then `offer`;
+2. buyer: `init --allow-provider <provider Agent> --direct-peer <provider
+   Agent>=<provider receiver socket>`;
+3. provider: `init` again with `--direct-peer <buyer Agent>=<buyer receiver
+   socket>`, then `preflight` and `serve`;
+4. buyer: `serve`, and `buy --offer`.
+
+`serve` and `buy` are separate processes. `serve` takes each open purchase's
+manifest from the Quote package the purchase stored, so it needs neither the
+offer file nor a gateway to deliver a task bought with `buy --offer`.
 
 ## Configuration
 

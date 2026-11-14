@@ -237,7 +237,8 @@ func serviceOfferCommand() *cobra.Command {
 
 func serviceWithdrawCommand() *cobra.Command {
 	var in servicebridge.WithdrawInput
-	var amount string
+	var amount, note string
+	var acknowledge uint64
 	command := &cobra.Command{
 		Use:   "withdraw",
 		Short: "Withdraw the actor's credited revenue to the owner wallet",
@@ -249,6 +250,18 @@ func serviceWithdrawCommand() *cobra.Command {
 			"is not verified and is reported as such.",
 		Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(command *cobra.Command, _ []string) error {
+			if command.Flags().Changed("acknowledge") {
+				if in.All || command.Flags().Changed("amount") {
+					return errors.New("--acknowledge closes an earlier withdrawal; it takes neither --amount nor --all")
+				}
+				result, err := servicebridge.RunWithdrawAcknowledge(command.Context(), servicebridge.AcknowledgeInput{
+					RailConfigPath: in.RailConfigPath, QueryID: acknowledge, Note: note, Yes: in.Yes,
+				}, setupEnv(command))
+				return finishSetup(command, result, err)
+			}
+			if command.Flags().Changed("note") {
+				return errors.New("--note belongs to --acknowledge")
+			}
 			if in.All == command.Flags().Changed("amount") {
 				return errors.New("give exactly one of --amount and --all")
 			}
@@ -269,6 +282,10 @@ func serviceWithdrawCommand() *cobra.Command {
 	railConfigFlag(command, &in.RailConfigPath)
 	command.Flags().StringVar(&amount, "amount", "", "amount to withdraw, in TOS")
 	command.Flags().BoolVar(&in.All, "all", false, "withdraw all credited revenue")
-	command.Flags().BoolVar(&in.Yes, "yes", false, "send the withdrawal as previewed")
+	command.Flags().Uint64Var(&acknowledge, "acknowledge", 0, "query id of an earlier withdrawal that finalized "+
+		"state cannot decide and whose inclusion window has passed: close its record so it no longer blocks "+
+		"withdrawals (moves no funds, sends nothing, never automatic)")
+	command.Flags().StringVar(&note, "note", "", "with --acknowledge: what you checked, stored with the record")
+	command.Flags().BoolVar(&in.Yes, "yes", false, "send the withdrawal, or record the acknowledgement, as previewed")
 	return command
 }

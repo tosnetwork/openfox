@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
@@ -105,6 +106,11 @@ type OfferPreview struct {
 	TotalAttachedNano  string     `json:"total_attached_nanotos"`
 	BuyerAttachesNano  string     `json:"buyer_attaches_per_call_nanotos"`
 	Note               string     `json:"note"`
+	// ToBeCreated lists what the run with --yes creates before it can
+	// state the fields left empty here: the attestor key does not exist
+	// yet, and the actor address, the manifest digest, the Capability id
+	// and address and the metadata hash all derive from it.
+	ToBeCreated []string `json:"to_be_created,omitempty"`
 }
 
 // OfferResult is the report of `offer`.
@@ -353,6 +359,83 @@ func pinExecutor(in OfferInput, earlier *ProviderNode) (pin, how string, err err
 	}
 }
 
+// offerValues returns what the owner wallet attaches in total and what a
+// buyer attaches to one call.
+func offerValues(deployFundingNano uint64, terms ActorTerms) (total, perCall uint64, err error) {
+	if total, err = checkedAdd(deployFundingNano, RegistryMessageValueNano); err != nil {
+		return 0, 0, err
+	}
+	if total, err = checkedAdd(total, PolicyMessageValueNano); err != nil {
+		return 0, 0, err
+	}
+	if perCall, err = checkedAdd(terms.PriceNano, terms.StorageFeeNano); err != nil {
+		return 0, 0, err
+	}
+	if perCall, err = checkedAdd(perCall, AdmissionAllowanceNano); err != nil {
+		return 0, 0, err
+	}
+	return total, perCall, nil
+}
+
+// offerPreviewBeforeKey is the preview of an offer whose attestor
+// controller does not exist yet: every term, value and total, and a list of
+// what is created first. The fields that derive from the key stay empty.
+func offerPreviewBeforeKey(config NodeConfig, in OfferInput, agentAddress string) (*OfferPreview, error) {
+	total, perCall, err := offerValues(in.DeployFundingNano, in.Terms)
+	if err != nil {
+		return nil, err
+	}
+	proof := nativecore.ServiceActorSoftwareWorkProofScheme
+	return &OfferPreview{
+		OwnerWallet: config.WalletAddress, ProviderAgentID: config.AgentID, ProviderAgent: agentAddress,
+		ActorCodeHash: config.ActorCodeHash, AttestorController: in.AttestorController, Terms: in.Terms,
+		Version: in.Version, ProofSchemeHash: hex.EncodeToString(proof[:]),
+		DeployFundingNano: fmt.Sprint(in.DeployFundingNano), RegistryValueNano: fmt.Sprint(RegistryMessageValueNano),
+		PolicyValueNano: fmt.Sprint(PolicyMessageValueNano), TotalAttachedNano: fmt.Sprint(total),
+		BuyerAttachesNano: fmt.Sprint(perCall), Note: offerPreviewNote,
+		ToBeCreated: []string{
+			fmt.Sprintf("attestor controller %q: a new ML-DSA-44 key in the tosctl vault", in.AttestorController),
+			"a Service Actor at an address derived from the owner wallet, these terms and that key",
+			"a manifest naming that actor and key, and a Capability whose id derives from its digest",
+		},
+	}, nil
+}
+
+// reportOfferPreview prints a preview. Every line the owner needs in order
+// to decide is printed whether or not the attestor key exists yet.
+func reportOfferPreview(env SetupEnv, preview *OfferPreview) {
+	parse := func(value string) string {
+		nano, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return value + " nanoTOS"
+		}
+		return FormatTOSAmount(nano) + " TOS"
+	}
+	pending := func(value string) string {
+		if value == "" {
+			return "(derived once the attestor key exists)"
+		}
+		return value
+	}
+	env.reportf("offer.preview: owner wallet %s; provider Agent %s", preview.OwnerWallet, preview.ProviderAgentID)
+	for _, created := range preview.ToBeCreated {
+		env.reportf("offer.preview: to be created: %s", created)
+	}
+	env.reportf("offer.preview: deploy Service Actor %s (code %s, attestor %s) funded with %s",
+		pending(preview.Actor), preview.ActorCodeHash, pending(preview.AttestorKeyID), parse(preview.DeployFundingNano))
+	env.reportf("offer.preview: terms: price %s TOS, storage fee %s TOS, cleanup bounty %s TOS, response SLA %d s, "+
+		"refund-claim window %d s", FormatTOSAmount(preview.Terms.PriceNano),
+		FormatTOSAmount(preview.Terms.StorageFeeNano), FormatTOSAmount(preview.Terms.CleanupBountyNano),
+		preview.Terms.ResponseSLA, preview.Terms.RefundClaimWindow)
+	env.reportf("offer.preview: register Capability %s version %q at %s with manifest %s, attaching %s",
+		pending(preview.CapabilityID), preview.Version, pending(preview.CapabilityAddress),
+		pending(preview.ManifestDigest), parse(preview.RegistryValueNano))
+	env.reportf("offer.preview: update-policy with metadata hash %s and proof scheme %s, attaching %s",
+		pending(preview.MetadataHash), preview.ProofSchemeHash, parse(preview.PolicyValueNano))
+	env.reportf("offer.preview: total attached %s plus wallet fees; a buyer attaches %s to each call",
+		parse(preview.TotalAttachedNano), parse(preview.BuyerAttachesNano))
+}
+
 // RunOffer publishes a provider's offer: attestor, Service Actor,
 // manifest, Capability and policy, each verified from finalized state. It
 // is idempotent and resumes after a crash at any step.
@@ -390,7 +473,8 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		endpoints: append([]string(nil), config.RPCEndpoints...),
 	}
 	defer func() { result.Steps = run.steps }()
-	run.notef("executor.pin", SetupDone, "the executor is pinned to SHA-256 %s (%s)", executorPin, pinNote(executorHow))
+	run.notef("executor.pin", SetupDone, "the executor is pinned to SHA-256 %s (%s)", executorPin,
+		pinNoteFor(executorHow, "--executor-sha256"))
 	runner, err := env.Runner(config.TOSCTL, env.vaultURL(config.TOSCTL))
 	if err != nil {
 		return result, err
@@ -419,9 +503,19 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 	attestor, err := run.ensureController(ops, "controller.attestor", in.AttestorController)
 	if err != nil {
 		if errors.Is(err, ErrConfirmationRequired) {
-			run.notef("offer.preview", SetupPlanned, "the actor address and Capability id depend on the attestor "+
-				"key, which does not exist yet; with --yes the controller is created first and the full preview "+
-				"is printed before anything is sent")
+			// The attestor key does not exist, so nothing that derives
+			// from it can be shown. Everything the owner decides or pays
+			// can: the run with --yes sends right after it creates the
+			// key, so this preview is the one the owner confirms.
+			preview, previewErr := offerPreviewBeforeKey(config, in, agent.Address)
+			if previewErr != nil {
+				return result, previewErr
+			}
+			result.Preview = preview
+			reportOfferPreview(env, preview)
+			run.notef("offer.preview", SetupPlanned, "the actor address, the manifest digest and the Capability id "+
+				"derive from the attestor key, which does not exist yet; the run with --yes creates controller %q, "+
+				"prints them and then sends the three messages above", in.AttestorController)
 		}
 		return result, err
 	}
@@ -506,17 +600,7 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		return result, err
 	}
 
-	total, err := checkedAdd(state.DeployFundingNano, RegistryMessageValueNano)
-	if err == nil {
-		total, err = checkedAdd(total, PolicyMessageValueNano)
-	}
-	if err != nil {
-		return result, err
-	}
-	perCall, err := checkedAdd(in.Terms.PriceNano, in.Terms.StorageFeeNano)
-	if err == nil {
-		perCall, err = checkedAdd(perCall, AdmissionAllowanceNano)
-	}
+	total, perCall, err := offerValues(state.DeployFundingNano, in.Terms)
 	if err != nil {
 		return result, err
 	}
@@ -531,17 +615,7 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		PolicyValueNano: fmt.Sprint(PolicyMessageValueNano), TotalAttachedNano: fmt.Sprint(total),
 		BuyerAttachesNano: fmt.Sprint(perCall), Note: offerPreviewNote,
 	}
-	env.reportf("offer.preview: owner wallet %s; provider Agent %s", config.WalletAddress, config.AgentID)
-	env.reportf("offer.preview: deploy Service Actor %s (code %s, attestor %s) funded with %s TOS", actor,
-		config.ActorCodeHash, attestor.Text(), FormatTOSAmount(state.DeployFundingNano))
-	env.reportf("offer.preview: terms: price %s TOS, storage fee %s TOS, cleanup bounty %s TOS, response SLA %d s, "+
-		"refund-claim window %d s", FormatTOSAmount(in.Terms.PriceNano), FormatTOSAmount(in.Terms.StorageFeeNano),
-		FormatTOSAmount(in.Terms.CleanupBountyNano), in.Terms.ResponseSLA, in.Terms.RefundClaimWindow)
-	env.reportf("offer.preview: register Capability %s version %q at %s with manifest %s, attaching %s TOS",
-		capabilityID, in.Version, capability.Address, digest, FormatTOSAmount(RegistryMessageValueNano))
-	env.reportf("offer.preview: update-policy with metadata hash %s and proof scheme %s, attaching %s TOS",
-		state.MetadataHash, hex.EncodeToString(proof[:]), FormatTOSAmount(PolicyMessageValueNano))
-	env.reportf("offer.preview: total attached %s TOS plus wallet fees", FormatTOSAmount(total))
+	reportOfferPreview(env, result.Preview)
 
 	wallet, err := ops.wallet(ctx, config.WalletName)
 	if err != nil {
@@ -551,6 +625,7 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		return result, fmt.Errorf("servicebridge: tosctl wallet %q is now %s, not the wallet_address %s of the rail "+
 			"configuration", config.WalletName, wallet.Address, config.WalletAddress)
 	}
+	run.wallet = &wallet
 
 	err = run.runStep("actor.deploy", "the deployment of Service Actor "+actor, &state.Deploy,
 		actorEffect(ctx, actor, config.ActorCodeHash, config.WalletAddress, attestor), func() error {
@@ -604,7 +679,9 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 					"Agent address than the ones derived here; nothing was sent"))
 			}
 			state.Registration = &message
-			if saveErr := run.save(); saveErr != nil {
+			// Building and signing the registration took time the wallet
+			// message's lifetime does not include: the window starts now.
+			if saveErr := run.handoff(&state.Capability); saveErr != nil {
 				return notSent(saveErr)
 			}
 			return ops.walletSend(ctx, config.WalletName, RegistryMessageValueNano, message)

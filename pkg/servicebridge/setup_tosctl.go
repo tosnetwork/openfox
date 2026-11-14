@@ -124,6 +124,37 @@ type WalletView struct {
 	// BalanceNano is the balance tosctl displayed, which it rounds to
 	// 0.0001 TOS; it only guides the funding check.
 	BalanceNano uint64
+	// Type is the wallet contract version tosctl reads from the deployed
+	// account (for example V3R2); empty when it could not be read.
+	Type string
+}
+
+// ErrWalletTypeUnsupported reports an owner wallet whose signed messages
+// carry no expiry.
+var ErrWalletTypeUnsupported = errors.New("servicebridge: the owner wallet's type is not supported")
+
+// expiringWalletTypes are the wallet versions whose messages tosctl signs
+// with an expiry two minutes ahead. Every "the earlier message can no
+// longer be included" decision of init, offer and withdraw rests on that
+// expiry. A V1R3 message carries none: it stays valid until its sequence
+// number is used, so it could land long after a second one was sent.
+var expiringWalletTypes = map[string]bool{"V3R2": true, "V4R2": true, "V5R1": true}
+
+// requireExpiringWallet refuses to send from a wallet whose messages do
+// not expire, or whose type tosctl could not read.
+func requireExpiringWallet(wallet WalletView) error {
+	switch {
+	case expiringWalletTypes[wallet.Type]:
+		return nil
+	case wallet.Type == "":
+		return fmt.Errorf("%w: tosctl did not report the type of wallet %q (%s), so it is not known that its "+
+			"messages expire; nothing was sent. Check chain_rpc in the tosctl configuration and that the wallet "+
+			"is an active V3R2, V4R2 or V5R1 wallet", ErrWalletTypeUnsupported, wallet.Name, wallet.Address)
+	default:
+		return fmt.Errorf("%w: wallet %q (%s) is a %s wallet, whose messages carry no expiry: a message that "+
+			"seemed lost could still be included later and be paid twice. Nothing was sent; use a V3R2, V4R2 or "+
+			"V5R1 wallet", ErrWalletTypeUnsupported, wallet.Name, wallet.Address, wallet.Type)
+	}
 }
 
 type walletAnswer struct {
@@ -187,6 +218,9 @@ func (o tosctlOps) wallet(ctx context.Context, name string) (WalletView, error) 
 			return WalletView{}, errors.New("servicebridge: tosctl listed an undecodable wallet balance")
 		}
 		view.StateKnown, view.State, view.BalanceNano = true, *answer.State, balance
+		if answer.WalletType != nil {
+			view.Type = *answer.WalletType
+		}
 		return view, nil
 	}
 	return WalletView{}, errWalletMissing

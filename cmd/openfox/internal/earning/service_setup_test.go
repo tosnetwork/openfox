@@ -149,6 +149,30 @@ func TestWithdrawTakesExactlyOneOfAmountAndAll(t *testing.T) {
 			t.Errorf("amount %q: %v", amount, err)
 		}
 	}
+	// --acknowledge closes an earlier withdrawal; it is never combined
+	// with a new one, and --note belongs to it alone.
+	for name, args := range map[string][]string{
+		"with an amount": {"withdraw", "--rail-config", path, "--acknowledge", "7", "--amount", "1"},
+		"with all":       {"withdraw", "--rail-config", path, "--acknowledge", "7", "--all"},
+	} {
+		if _, _, err := runService(args...); err == nil ||
+			!strings.Contains(err.Error(), "neither --amount nor --all") {
+			t.Errorf("--acknowledge %s: %v", name, err)
+		}
+	}
+	if _, _, err := runService("withdraw", "--rail-config", path, "--all", "--note", "x"); err == nil ||
+		!strings.Contains(err.Error(), "--note belongs to --acknowledge") {
+		t.Errorf("--note without --acknowledge: %v", err)
+	}
+	if _, _, err := runService("withdraw", "--rail-config", path, "--acknowledge", "0", "--note", "x"); err == nil ||
+		!strings.Contains(err.Error(), "query id") {
+		t.Errorf("--acknowledge 0: %v", err)
+	}
+	// An acknowledgement reaches the configuration, not a withdrawal.
+	if _, _, err := runService("withdraw", "--rail-config", path, "--acknowledge", "7", "--note", "x"); err == nil ||
+		strings.Contains(err.Error(), "exactly one of") {
+		t.Errorf("--acknowledge was taken for a withdrawal: %v", err)
+	}
 	// A well-formed request reaches the configuration, and prints a report
 	// even though it fails.
 	stdout, _, err := runService("withdraw", "--rail-config", path, "--amount", "1.5")
@@ -206,5 +230,31 @@ func TestInitAndOfferRefuseMalformedFlagsBeforeDoingAnything(t *testing.T) {
 	}
 	if _, _, err := runService(offer...); err == nil || !strings.Contains(err.Error(), "required flag") {
 		t.Fatalf("offer without a price: %v", err)
+	}
+}
+
+func TestPurchasesOfABuyerThatBoughtNothingIsAnEmptyList(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, "state")
+	if err := os.MkdirAll(filepath.Join(state, "purchases"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := servicebridge.EncodeNodeConfig(servicebridge.NodeConfig{
+		StateDir: state, Buyer: &servicebridge.BuyerNode{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "rail.json")
+	if err = os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err := runService("purchases", "--rail-config", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []servicebridge.PurchaseRecord
+	if err = json.Unmarshal([]byte(stdout), &listed); err != nil || listed == nil || len(listed) != 0 {
+		t.Fatalf("no purchases printed %q, not an empty list (%v)", stdout, err)
 	}
 }

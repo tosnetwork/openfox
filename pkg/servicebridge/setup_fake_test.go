@@ -763,8 +763,8 @@ func TestHelperProcessForSetupCrashTests(t *testing.T) {
 	if phrase := os.Getenv(crashHelperHangOn); phrase != "" {
 		env.Report = func(line string) {
 			if strings.Contains(line, phrase) {
-				if err := os.WriteFile(hangMarker(worldPath), []byte(line), 0o600); err != nil {
-					panic(err)
+				if writeErr := os.WriteFile(hangMarker(worldPath), []byte(line), 0o600); writeErr != nil {
+					panic(writeErr)
 				}
 				select {}
 			}

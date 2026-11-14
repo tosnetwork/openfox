@@ -418,7 +418,8 @@ func TestAnUndecidedWithdrawalIsClosedOnlyByTheOwnersRecordedAcknowledgement(t *
 		if err != nil {
 			t.Fatal(err)
 		}
-		if now := withdrawals(t, f)[0]; now.State != WithdrawalFinalized || now.Acknowledged != nil || result.Confirmed {
+		now := withdrawals(t, f)[0]
+		if now.State != WithdrawalFinalized || now.Acknowledged != nil || result.Confirmed {
 			t.Fatalf("a withdrawal finalized state decides was acknowledged instead: %+v", now)
 		}
 	})

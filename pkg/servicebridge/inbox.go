@@ -21,6 +21,7 @@ const (
 	DefaultMaxAssembliesPerSender = 8
 	DefaultMaxAssemblies          = 64
 	doneMarker                    = "done"
+	heldMarker                    = "held"
 	senderFile                    = "sender"
 )
 
@@ -182,18 +183,26 @@ func (inbox *Inbox) createAssembly(key, sender string) error {
 	return syncDirectory(inbox.root)
 }
 
-func (inbox *Inbox) admitAssembly(sender string) error {
+// countOpen counts the assemblies not marked done whose held state equals
+// held, in total and from sender. Held tasks have their own bound, so tasks
+// parked while admission is paused never take the room that results and
+// acknowledgements of already admitted work need.
+func (inbox *Inbox) countOpen(sender string, held bool, except string) (int, int, error) {
 	entries, err := os.ReadDir(inbox.root)
 	if err != nil {
-		return errors.New("servicebridge: read inbox")
+		return 0, 0, errors.New("servicebridge: read inbox")
 	}
 	open, fromSender := 0, 0
 	for _, entry := range entries {
-		if !assemblyNamePattern.MatchString(entry.Name()) {
+		if !assemblyNamePattern.MatchString(entry.Name()) || entry.Name() == except {
 			continue
 		}
 		directory := filepath.Join(inbox.root, entry.Name())
 		if _, err := os.Lstat(filepath.Join(directory, doneMarker)); err == nil {
+			continue
+		}
+		_, heldErr := os.Lstat(filepath.Join(directory, heldMarker))
+		if (heldErr == nil) != held {
 			continue
 		}
 		open++
@@ -205,8 +214,58 @@ func (inbox *Inbox) admitAssembly(sender string) error {
 			fromSender++
 		}
 	}
+	return open, fromSender, nil
+}
+
+func (inbox *Inbox) admitAssembly(sender string) error {
+	open, fromSender, err := inbox.countOpen(sender, false, "")
+	if err != nil {
+		return err
+	}
 	if open >= inbox.maxAll || fromSender >= inbox.maxPerSender {
 		return errors.New("servicebridge: too many open rail messages; retry later")
+	}
+	return nil
+}
+
+// ErrHoldFull reports that no more messages may be held; the caller retires
+// the message instead.
+var ErrHoldFull = errors.New("servicebridge: too many held rail messages")
+
+// Hold parks a complete message that cannot be handled yet (a task while
+// admission is paused). A held message stays pending, so it is handled again
+// on every round, but it no longer counts against the open-message bounds;
+// held messages have the same bounds of their own. Holding an already held
+// or processed message does nothing.
+func (inbox *Inbox) Hold(key string) error {
+	if inbox == nil || !assemblyNamePattern.MatchString(key) {
+		return errors.New("servicebridge: invalid inbox hold")
+	}
+	inbox.mutex.Lock()
+	defer inbox.mutex.Unlock()
+	directory := filepath.Join(inbox.root, key)
+	if info, err := os.Lstat(directory); err != nil || !info.IsDir() {
+		return errors.New("servicebridge: no such assembly")
+	}
+	for _, marker := range []string{doneMarker, heldMarker} {
+		if _, err := os.Lstat(filepath.Join(directory, marker)); err == nil {
+			return nil
+		}
+	}
+	sender, err := readPrivateFile(filepath.Join(directory, senderFile), 128)
+	if err != nil {
+		return errors.New("servicebridge: assembly sender is unreadable")
+	}
+	held, fromSender, err := inbox.countOpen(string(sender), true, key)
+	if err != nil {
+		return err
+	}
+	if held >= inbox.maxAll || fromSender >= inbox.maxPerSender {
+		return ErrHoldFull
+	}
+	if err := writeSynced(filepath.Join(directory, heldMarker), []byte("1")); err != nil &&
+		!errors.Is(err, os.ErrExist) {
+		return err
 	}
 	return nil
 }
@@ -224,7 +283,7 @@ func (inbox *Inbox) assemble(key string) (*Message, bool, error) {
 	var frames []Frame
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == senderFile || name == doneMarker || name == attemptsFile {
+		if name == senderFile || name == doneMarker || name == attemptsFile || name == heldMarker {
 			continue
 		}
 		// A crash between creating and renaming a counter update leaves its

@@ -98,7 +98,10 @@ type ProviderConfig struct {
 	Courier            *Courier
 	History            railgate.Reader
 	Directory          string
-	Now                func() time.Time
+	// StateDir holds the owner's admission pause marker. Empty means the
+	// provider has no pause control; OpenNode always sets it.
+	StateDir string
+	Now      func() time.Time
 }
 
 // preRespondChecker is the part of the gate the delivery loop uses to recheck
@@ -269,6 +272,9 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 	if err != nil {
 		return err
 	}
+	if pauseErr := p.admissionOpen(); pauseErr != nil {
+		return pauseErr
+	}
 	slot, verified, err := p.config.Gate.Admit(ctx, claim)
 	if errors.Is(err, railgate.ErrSlotTaken) {
 		// The buyer resent the task: it is never executed again. A result
@@ -358,6 +364,23 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 	); err != nil {
 		// Ambiguous: the delivery loop reads finalized history for it.
 		return err
+	}
+	return nil
+}
+
+// admissionOpen refuses new admission while the owner's pause marker exists.
+// An unreadable marker counts as paused: the owner asked for a stop and an
+// unreadable answer is not permission to start work.
+func (p *Provider) admissionOpen() error {
+	if p.config.StateDir == "" {
+		return nil
+	}
+	pause, err := ReadAdmissionPause(p.config.StateDir)
+	if err != nil {
+		return errors.Join(ErrAdmissionPaused, err)
+	}
+	if pause != nil {
+		return ErrAdmissionPaused
 	}
 	return nil
 }

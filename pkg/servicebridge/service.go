@@ -74,11 +74,41 @@ func (s *Service) Dispatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	held, retired := 0, 0
+	var pauseErr error
+	defer func() {
+		// One line per round while tasks are held, not one per task.
+		if held > 0 || retired > 0 || pauseErr != nil {
+			s.Report("admission paused", fmt.Errorf("%d task(s) held, %d retired over the hold bound: %w",
+				held, retired, pauseErr))
+		}
+	}()
 	for _, message := range messages {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if err := s.handle(ctx, message); err != nil {
+			if errors.Is(err, ErrAdmissionPaused) {
+				// Held, not failed: the attempt cap must not retire a funded
+				// request's task while the owner has paused admission. A held
+				// task leaves the open-message bounds, so it cannot keep out
+				// results and acknowledgements of admitted work.
+				pauseErr = err
+				switch holdErr := s.Inbox.Hold(message.Key); {
+				case errors.Is(holdErr, ErrHoldFull):
+					// Over the hold bound the task is retired; an unanswered
+					// request falls to the buyer's refund path.
+					retired++
+					if doneErr := s.Inbox.Done(message.Key); doneErr != nil {
+						return doneErr
+					}
+				case holdErr != nil:
+					s.Report("rail message hold", holdErr)
+				default:
+					held++
+				}
+				continue
+			}
 			s.Report("rail message", err)
 			if err := s.Inbox.Failed(message.Key); err != nil {
 				s.Report("rail message attempt", err)

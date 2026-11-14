@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
 	"github.com/tosnetwork/openfox/cmd/openfox/internal/agent"
@@ -171,28 +172,40 @@ const (
 		"\r\n"
 )
 
+// startupBanner is what a run prints before its command. Only an
+// interactive terminal gets the banner: standard output that is a pipe or a
+// file carries exactly what the command prints, so a JSON report parses.
+func startupBanner(interactive, plain bool) string {
+	switch {
+	case !interactive:
+		return ""
+	case plain:
+		return plainBanner
+	default:
+		return banner
+	}
+}
+
 func main() {
 	// Initialize Termux SSL certificate detection before anything else
 	initTermuxSSL()
 
 	cliui.Init(earlyColorDisabled())
 
-	if earlyColorDisabled() {
-		fmt.Print(plainBanner)
-	} else {
-		fmt.Printf("%s", banner)
-	}
+	fmt.Print(startupBanner(term.IsTerminal(int(os.Stdout.Fd())), earlyColorDisabled()))
 
+	// Diagnostics go to standard error: standard output belongs to the
+	// command, whose report a caller may parse.
 	tzEnv := os.Getenv("TZ")
 	if tzEnv != "" {
-		fmt.Println("TZ environment:", tzEnv)
+		fmt.Fprintln(os.Stderr, "TZ environment:", tzEnv)
 		zoneinfoEnv := os.Getenv("ZONEINFO")
-		fmt.Println("ZONEINFO environment:", zoneinfoEnv)
+		fmt.Fprintln(os.Stderr, "ZONEINFO environment:", zoneinfoEnv)
 		loc, err := time.LoadLocation(tzEnv)
 		if err != nil {
-			fmt.Println("Error loading time zone:", err)
+			fmt.Fprintln(os.Stderr, "Error loading time zone:", err)
 		} else {
-			fmt.Println("Time zone loaded successfully:", loc)
+			fmt.Fprintln(os.Stderr, "Time zone loaded successfully:", loc)
 			time.Local = loc //nolint:gosmopolitan // We intentionally set local timezone from TZ env
 		}
 	}

@@ -626,3 +626,49 @@ func TestAStalledServiceDoesNotHoldAnAdmission(t *testing.T) {
 		t.Fatal("the task took a slot")
 	}
 }
+
+// A node can die after the gate recorded the result and before its own
+// record did. The outcome read again must be the one the gate recorded.
+func TestAnOutcomeThatDiffersFromTheGatesRecordIsNeverAttested(t *testing.T) {
+	for name, agrees := range map[string]bool{"the gate's response hash": true, "another response hash": false} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			service := startScriptedExecutor(t, func(scriptedRequest) scriptedAnswer {
+				return scriptedAnswer{Status: executorservice.StatusInProgress}
+			})
+			fixture := newGateFixture(t, serviceFixtureStart)
+			node := openServiceNode(t, fixture, serviceState(t), ownClient(t, service.socket))
+			if err := node.provider.HandleTask(ctx, fixture.message); !errors.Is(err, ErrExecutionPending) {
+				t.Fatal(err)
+			}
+			service.setAnswer(func(request scriptedRequest) scriptedAnswer {
+				return scriptedSuccess(request, []byte("artifact"), []byte("report"))
+			})
+			recorded := hex.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+			if agrees {
+				// Learn the response hash of this outcome from a twin node.
+				twinFixture := newGateFixture(t, serviceFixtureStart)
+				twin := openServiceNode(t, twinFixture, serviceState(t), ownClient(t, service.socket))
+				if err := twin.provider.HandleTask(ctx, twinFixture.message); err != nil {
+					t.Fatal(err)
+				}
+				recorded = twin.record(t).ResponseHash
+			}
+			if err := node.gate.Complete(recordKey(node.record(t)), recorded); err != nil {
+				t.Fatal(err)
+			}
+			err := node.provider.Tick(ctx)
+			record := node.record(t)
+			if agrees {
+				if err != nil || record.State != ProviderResponding || node.lifecycle.responds != 1 ||
+					record.ResponseHash != recorded {
+					t.Fatalf("the gate's own result was not attested: %s, %v", record.State, err)
+				}
+				return
+			}
+			if err == nil || record.State != ProviderUnknown || node.lifecycle.responds != 0 {
+				t.Fatalf("a result the gate did not record was attested: %s, %v", record.State, err)
+			}
+		})
+	}
+}

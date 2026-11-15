@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"os"
@@ -46,6 +47,10 @@ type pfChain struct {
 	registry   error
 	actor      *toschain.ActorAccount
 	actorErr   error
+	// fenceDir, when set, is the checkpoint directory the real reader
+	// writes a fence into on every registry read: a read fails once it is
+	// gone, as the real reader's does.
+	fenceDir string
 }
 
 func (c *pfChain) Endpoints() []string { return append([]string(nil), pfEndpoints...) }
@@ -67,6 +72,11 @@ func (c *pfChain) ChainTime() time.Time { return c.chainTime }
 func (c *pfChain) ResolveRegistry(_ context.Context, id string) (*nativev1.NativeStateV1, bool, error) {
 	if c.registry != nil {
 		return nil, false, c.registry
+	}
+	if c.fenceDir != "" {
+		if err := os.WriteFile(filepath.Join(c.fenceDir, "checkpoint"), []byte("77"), 0o600); err != nil {
+			return nil, false, fmt.Errorf("checkpoint fence: %w", err)
+		}
 	}
 	var state *nativev1.NativeStateV1
 	switch {

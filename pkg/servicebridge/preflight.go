@@ -243,6 +243,9 @@ type preflight struct {
 	chain   PreflightChain
 	session serviceactor.Session
 	account *toschain.ActorAccount
+	// scratch holds the session's checkpoint fences; removed when the
+	// preflight returns.
+	scratch string
 }
 
 func (p *preflight) addf(id, status, format string, arguments ...any) {
@@ -280,6 +283,13 @@ func RunPreflight(ctx context.Context, configPath string, env PreflightEnv) *Pre
 		Schema: PreflightSchema, Version: PreflightVersion, GeneratedUnix: env.Now().Unix(), OK: true,
 		Checks: []PreflightCheck{},
 	}}
+	defer func() {
+		if p.scratch != "" {
+			// Best effort: a leftover scratch directory holds only
+			// checkpoint numbers and is never read again.
+			_ = os.RemoveAll(p.scratch)
+		}
+	}()
 	if ctx == nil {
 		p.addf("preflight", CheckFail, "no context")
 		return p.report
@@ -780,7 +790,10 @@ func (p *preflight) checkChain() {
 		p.skipChain("chain.open")
 		return
 	}
-	defer os.RemoveAll(scratch)
+	// The session opened below writes its checkpoint fences here on every
+	// registry read, and the relay checks still read through it after this
+	// function returns, so the directory lives until RunPreflight returns.
+	p.scratch = scratch
 	if chmodErr := os.Chmod(scratch, 0o700); chmodErr != nil {
 		p.addf("chain.open", CheckFail, "protect the scratch directory")
 		p.skipChain("chain.open")

@@ -33,9 +33,11 @@ func newCheckpointChain(t *testing.T, head uint64, root, file []byte) *checkpoin
 	chain.head.Store(head)
 	block := func(seqno uint64) map[string]any {
 		suffix := string(rune('a' + seqno%26))
-		return map[string]any{"@type": "tos.blockIdExt", "workchain": -1, "shard": "8000000000000000", "seqno": seqno,
+		return map[string]any{
+			"@type": "tos.blockIdExt", "workchain": -1, "shard": "8000000000000000", "seqno": seqno,
 			"root_hash": base64.StdEncoding.EncodeToString([]byte(strings.Repeat("r", 31) + suffix)),
-			"file_hash": base64.StdEncoding.EncodeToString([]byte(strings.Repeat("f", 31) + suffix))}
+			"file_hash": base64.StdEncoding.EncodeToString([]byte(strings.Repeat("f", 31) + suffix)),
+		}
 	}
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		var call struct {
@@ -52,18 +54,28 @@ func newCheckpointChain(t *testing.T, head uint64, root, file []byte) *checkpoin
 		var result any
 		switch call.Method {
 		case "getConsensusBlock":
-			result = map[string]any{"@type": "ext.blocks.consensusBlock", "consensus_block": head, "timestamp": now,
-				"last_block_utime": now}
+			result = map[string]any{
+				"@type": "ext.blocks.consensusBlock", "consensus_block": head, "timestamp": now,
+				"last_block_utime": now,
+			}
 		case "getMasterchainInfo":
-			result = map[string]any{"@type": "blocks.masterchainInfo", "last": block(head),
-				"init": map[string]any{"root_hash": base64.StdEncoding.EncodeToString(root),
-					"file_hash": base64.StdEncoding.EncodeToString(file)}}
+			result = map[string]any{
+				"@type": "blocks.masterchainInfo", "last": block(head),
+				"init": map[string]any{
+					"root_hash": base64.StdEncoding.EncodeToString(root),
+					"file_hash": base64.StdEncoding.EncodeToString(file),
+				},
+			}
 		case "getAddressInformation":
 			var params struct {
 				Seqno uint64 `json:"seqno"`
 			}
 			_ = json.Unmarshal(call.Params, &params)
-			result = map[string]any{"@type": "raw.fullAccountState", "block_id": block(params.Seqno), "state": "uninitialized"}
+			result = map[string]any{
+				"@type":    "raw.fullAccountState",
+				"block_id": block(params.Seqno),
+				"state":    "uninitialized",
+			}
 		default:
 			http.Error(response, "unknown method", http.StatusBadRequest)
 			return
@@ -102,8 +114,10 @@ func sharedStateConfig(t *testing.T, chain *checkpointChain, root, file []byte) 
 		t.Fatal(err)
 	}
 	return NodeConfig{
-		Network: NetworkConfig{NetworkID: "tos:shared-checkpoint-test", GenesisRootHash: "sha256:" + hex.EncodeToString(root),
-			GenesisFileHash: "sha256:" + hex.EncodeToString(file)},
+		Network: NetworkConfig{
+			NetworkID: "tos:shared-checkpoint-test", GenesisRootHash: "sha256:" + hex.EncodeToString(root),
+			GenesisFileHash: "sha256:" + hex.EncodeToString(file),
+		},
 		RPCEndpoints: chain.urls, Quorum: 2, RegistryCodeBOC: absolute,
 		RegistryCodeHash: "tvm-cell-sha256:" + hex.EncodeToString(code.Hash()),
 		ActorCodeHash:    "tvm-cell-sha256:" + strings.Repeat("ab", 32),
@@ -140,7 +154,7 @@ func TestBuyReadsAtItsCheckpointWhileServeAdvancesTheSharedFence(t *testing.T) {
 	if err != nil || session.Checkpoint() != 1000 {
 		t.Fatalf("buy's session: %v", err)
 	}
-	if _, _, err := session.ResolveRegistry(ctx, capability); err != nil {
+	if _, _, err = session.ResolveRegistry(ctx, capability); err != nil {
 		t.Fatalf("buy's offer check: %v", err)
 	}
 	chain.head.Store(1005)
@@ -148,10 +162,10 @@ func TestBuyReadsAtItsCheckpointWhileServeAdvancesTheSharedFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := served.ResolveRegistry(ctx, capability); err != nil {
+	if _, _, err = served.ResolveRegistry(ctx, capability); err != nil {
 		t.Fatalf("serve's read: %v", err)
 	}
-	if _, _, err := session.ResolveRegistry(ctx, capability); err != nil {
+	if _, _, err = session.ResolveRegistry(ctx, capability); err != nil {
 		t.Fatalf("buy's Quote read at its checkpoint after serve advanced the shared fence: %v", err)
 	}
 
@@ -193,7 +207,7 @@ func TestBuyReadsAtItsCheckpointWhileServeAdvancesTheSharedFence(t *testing.T) {
 			t.Fatalf("purchase %d: open: %v", purchase, err)
 		}
 		for read := 0; read < 2; read++ {
-			if _, _, err := pinned.ResolveRegistry(ctx, capability); err != nil {
+			if _, _, err = pinned.ResolveRegistry(ctx, capability); err != nil {
 				close(stop)
 				wait.Wait()
 				t.Fatalf("purchase %d read %d at checkpoint %d: %v", purchase, read, pinned.Checkpoint(), err)

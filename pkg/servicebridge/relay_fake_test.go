@@ -56,6 +56,11 @@ type fakeRelay struct {
 	tombs  map[[32]byte]uint64
 	// failDeposits answers 503 to that many deposits.
 	failDeposits int
+	// slowDeposits answers 408 to that many deposits, as a relay whose read
+	// deadline a body missed.
+	slowDeposits int
+	// expiryRefusals answers 422 to that many deposits.
+	expiryRefusals int
 	// storeThenFail stores the next deposit and answers 500, an ambiguous
 	// outcome for the sender.
 	storeThenFail bool
@@ -167,6 +172,16 @@ func (f *fakeRelay) deposit(w http.ResponseWriter, request *http.Request, agent 
 	if f.failDeposits > 0 {
 		f.failDeposits--
 		answer(http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	if f.slowDeposits > 0 {
+		f.slowDeposits--
+		answer(http.StatusRequestTimeout, "request_timeout")
+		return
+	}
+	if f.expiryRefusals > 0 {
+		f.expiryRefusals--
+		answer(http.StatusUnprocessableEntity, "expiry_out_of_bounds")
 		return
 	}
 	header, err := agentpacketseal.ParseEnvelope(raw)

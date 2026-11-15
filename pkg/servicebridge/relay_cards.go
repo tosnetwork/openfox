@@ -126,18 +126,65 @@ func (p *PeerCards) AllowLoopbackRelays(allowed bool) {
 	p.mutex.Unlock()
 }
 
-// loopbackRelay reports whether a relay base URL names a loopback host.
+// loopbackRelay reports whether a relay base URL names a loopback host, or
+// a numeric host in any form other than a canonical dotted quad or an IPv6
+// literal (127.1, 0x7f.1, 0177.0.0.1 and 2130706433 all reach 127.0.0.1 in
+// common resolvers). A name that resolves to a loopback address through DNS
+// is not caught: the node would then only POST a ciphertext envelope, or GET
+// a mailbox listing, to whatever answers there, and opens nothing it gets.
 func loopbackRelay(relay string) bool {
 	parsed, err := url.Parse(relay)
 	if err != nil {
 		return true
 	}
-	host := parsed.Hostname()
-	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+	host := strings.ToLower(parsed.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || nonCanonicalNumericHost(host) {
 		return true
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+}
+
+// nonCanonicalNumericHost reports a host whose last label is numeric (all
+// digits, or a 0x form) but that is not four canonical decimal octets.
+func nonCanonicalNumericHost(host string) bool {
+	if strings.Contains(host, ":") {
+		return net.ParseIP(host) == nil
+	}
+	labels := strings.Split(strings.TrimSuffix(host, "."), ".")
+	last := labels[len(labels)-1]
+	numeric := strings.HasPrefix(last, "0x")
+	if !numeric {
+		numeric = last != ""
+		for _, c := range last {
+			if c < '0' || c > '9' {
+				numeric = false
+				break
+			}
+		}
+	}
+	if !numeric {
+		return false
+	}
+	if len(labels) != 4 {
+		return true
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 3 || (len(label) > 1 && label[0] == '0') {
+			return true
+		}
+		value := 0
+		for _, c := range label {
+			if c < '0' || c > '9' {
+				return true
+			}
+			value = value*10 + int(c-'0')
+		}
+		if value > 255 {
+			return true
+		}
+	}
+	return false
 }
 
 // OpenPeerCards opens the owner-private card directory. Stored cards are

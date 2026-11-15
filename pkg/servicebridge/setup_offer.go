@@ -847,9 +847,16 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 	return result, nil
 }
 
-// offerKeyCard returns the provider's current key card, issuing one signed
-// by the packet controller when none is valid for at least the successor
-// lead.
+// offerCardCover is how long the card an offer file carries should run: the
+// longest card, so a buyer away for longer than a short card lives can still
+// reach the provider (for example to ask for its result); it is reused while
+// it runs at least relayLongCoverFloor longer.
+func offerCardCover(now uint64) uint64 {
+	return saturatingAdd(now, uint64(agentpacketseal.MaxKeyCardLifetime/time.Second))
+}
+
+// offerKeyCard returns the provider's current long key card, issuing one
+// signed by the packet controller when none qualifies.
 func offerKeyCard(ctx context.Context, config NodeConfig, env SetupEnv) (OwnRelayKey, error) {
 	helper, err := env.PacketSigner(config.TOSCTL, env.vaultURL(config.TOSCTL))
 	if err != nil {
@@ -872,5 +879,5 @@ func offerKeyCard(ctx context.Context, config NodeConfig, env SetupEnv) (OwnRela
 	if now <= 0 {
 		return OwnRelayKey{}, errors.New("servicebridge: the clock is not set")
 	}
-	return keys.Current(ctx, saturatingAdd(uint64(now), uint64(RelaySuccessorLead/time.Second)))
+	return keys.Current(ctx, offerCardCover(uint64(now)))
 }

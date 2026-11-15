@@ -621,13 +621,35 @@ valid until the end of the redelivery window, so a buyer whose offer-file card
 expired during a long request keeps a route back for its acknowledgement. The
 buyer takes it only from a result of one of its own purchases from that
 provider, verifies it like an offer-file card, and records a refused card on
-the purchase (`provider_card_refused`) without refusing the result. The buyer verifies the card against finalized state
+the purchase (`provider_card_refused`) without refusing the result. The card
+in the offer file is a long one (30 days, reissued once it runs under 15), so
+a buyer that was away longer than a short card lives can still reach the
+provider.
+
+**Asking for a result again.** After the respond is final the buyer has
+nothing else to send until the result arrives, so the provider's copy of the
+buyer's card is not refreshed. A buyer that sees a finalized respond and has
+no result sends a result request carrying its current card (valid to the end
+of the result's retention): at once when it first sees that state, also after
+`serve` restarts, and then at most every 6 hours until the result arrives or
+the retention ends. The provider takes it only from the request's buyer and
+only for a request it has responded to and still retains; it verifies the
+card like a task card, keeps the newest valid one and delivers the result at
+its next pass (at most one such moved delivery every 10 minutes). A result
+request never admits, executes or responds. Anything else is refused and
+changes nothing. A buyer away for longer than the provider card it holds can
+reach the provider only after it takes a newer offer file. The buyer verifies the card against finalized state
 and requires its Agent to be the Capability's **finalized owner, read from
 chain** (never from the offer file) before anything is paid; it seals only to
 a card verified within the last 9 minutes. A peer card that names a relay on a
 loopback host is refused unless this node's own relays are on loopback (a
 single-host test setup), so a verified peer cannot make the node send requests
-to services on its own host. The buyer's card travels inside its
+to services on its own host. A numeric host must be four canonical decimal
+octets or an IPv6 literal; short, octal, hex and integer forms such as
+`127.1` are refused everywhere, in peer cards and in `--relay-url`. A name
+that resolves to a loopback address through DNS is not caught: the node would
+only POST a ciphertext envelope to, or list and download from, whatever
+answers there, and opens nothing it gets back. The buyer's card travels inside its
 signed and encrypted task; it is chosen to cover the request's response and
 refund deadlines plus a day, and the provider takes it only from a task the
 gate admitted and only when the card's Agent is the task's sender. Each task
@@ -695,7 +717,12 @@ when the buyer has no relays. The result message header
 absent when the provider has no relays. The result acknowledgement header
 (`tos.openfox.rail-result-ack.v1`) gains one optional last member,
 `"buyer_key_card_base64"`, with the same encoding and bound; the
-acknowledgement message bound grows accordingly to 4 + 4,096 + 21,848 bytes. Both are inside the signed packets
+acknowledgement message bound grows accordingly to 4 + 4,096 + 21,848 bytes.
+The result request is frame kind 4 with message header
+`{"schema":"tos.openfox.rail-result-request.v1"}` plus the optional member
+`"buyer_key_card_base64"` (same encoding and bound) and no body; the request
+it names is the frame's own binding (actor account, request id and request
+hash), and its message bound is that of the acknowledgement. Both are inside the signed packets
 and, over the relay, inside the encryption. Both headers are decoded
 strictly, so a decoder that predates a member refuses a message carrying it.
 

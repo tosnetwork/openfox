@@ -19,10 +19,15 @@ const (
 	// An acknowledgement may carry the buyer's key card: its header holds
 	// the base64 of at most maxCardJSON bytes besides its own fields.
 	maxAckMessageBytes = 4 + 4<<10 + (maxCardJSON+2)/3*4
+	// A result request carries nothing but its schema and the buyer's card;
+	// the request it names is the frame's own binding.
+	maxResultRequestBytes = maxAckMessageBytes
 
 	taskSchema   = "tos.openfox.rail-task.v1"
 	resultSchema = "tos.openfox.rail-result.v1"
 	ackSchema    = "tos.openfox.rail-result-ack.v1"
+
+	resultRequestSchema = "tos.openfox.rail-result-request.v1"
 
 	// inputDomain separates the request's input digest from the raw
 	// source digest it commits to.
@@ -297,3 +302,38 @@ func DecodeAck(raw []byte) (AckHeader, error) {
 }
 
 func sha256Sum(value []byte) [32]byte { return sha256.Sum256(value) }
+
+// ResultRequestHeader asks for a responded request's result again. The
+// request is named by the frame binding (actor, request id, request hash);
+// the header holds only the buyer's current key card.
+type ResultRequestHeader struct {
+	Schema       string `json:"schema"`
+	BuyerKeyCard string `json:"buyer_key_card_base64,omitempty"`
+}
+
+// EncodeResultRequest builds a result request carrying the buyer's key card
+// packet JSON, or none when card is empty.
+func EncodeResultRequest(card []byte) ([]byte, error) {
+	if len(card) > maxCardJSON {
+		return nil, errors.New("servicebridge: the buyer key card exceeds its bound")
+	}
+	header := ResultRequestHeader{Schema: resultRequestSchema}
+	if len(card) > 0 {
+		header.BuyerKeyCard = base64.StdEncoding.EncodeToString(card)
+	}
+	return encodeMessage(header, nil, maxResultRequestBytes)
+}
+
+// DecodeResultRequest parses a result request.
+func DecodeResultRequest(raw []byte) (ResultRequestHeader, error) {
+	var header ResultRequestHeader
+	rest, err := decodeMessage(raw, maxResultRequestBytes, &header)
+	if err != nil {
+		return ResultRequestHeader{}, err
+	}
+	if len(rest) != 0 || header.Schema != resultRequestSchema ||
+		len(header.BuyerKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
+		return ResultRequestHeader{}, errors.New("servicebridge: invalid result request")
+	}
+	return header, nil
+}

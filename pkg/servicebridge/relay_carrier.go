@@ -105,7 +105,11 @@ func (c *RelayCarrier) Maintain(ctx context.Context) error {
 	// Every pass, not only the one that issued a card: a republish that
 	// failed, or a crash after the successor was stored, is caught up here.
 	// The hook writes only when what it publishes differs.
-	key, err := c.Keys.Current(ctx, 0)
+	now := c.now().Unix()
+	if now <= 0 {
+		return errors.New("servicebridge: the clock is not set")
+	}
+	key, err := c.Keys.Current(ctx, offerCardCover(uint64(now)))
 	if err != nil {
 		return err
 	}

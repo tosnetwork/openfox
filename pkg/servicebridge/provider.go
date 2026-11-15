@@ -87,7 +87,10 @@ type ProviderRecord struct {
 	NextDeliveryUnix int64  `json:"next_delivery_unix,omitempty"`
 	BackoffSeconds   int64  `json:"backoff_seconds,omitempty"`
 	Deliveries       int    `json:"deliveries"`
-	UpdatedUnix      int64  `json:"updated_unix"`
+	// ResultRequestUnix is when a buyer's result request last moved the
+	// next delivery forward.
+	ResultRequestUnix int64 `json:"result_request_unix,omitempty"`
+	UpdatedUnix       int64 `json:"updated_unix"`
 }
 
 // ErrExecutorNotReady reports a task that was not admitted because the
@@ -442,6 +445,72 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 		return err
 	}
 	return nil
+}
+
+// ResultRequestInterval bounds how often a buyer's result requests move a
+// request's next delivery forward; requests in between only refresh the card.
+const ResultRequestInterval = 10 * time.Minute
+
+// ErrResultRequestRefused reports a result request this provider does not
+// act on: from another Agent than the request's buyer, or for a request it
+// has not responded to or no longer retains.
+var ErrResultRequestRefused = errors.New("servicebridge: the result request is refused")
+
+// HandleResultRequest takes a buyer's request to deliver a responded
+// request's result again. It only refreshes the buyer's key card and moves
+// the next delivery forward; it never admits, executes or responds.
+func (p *Provider) HandleResultRequest(ctx context.Context, message Message) error {
+	if p == nil || ctx == nil || message.Kind != FrameResultRequest {
+		return errors.New("servicebridge: invalid result request handling")
+	}
+	request, err := DecodeResultRequest(message.Body)
+	if err != nil {
+		return err
+	}
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	records, err := p.records()
+	if err != nil {
+		return err
+	}
+	now := p.config.Now()
+	for path, record := range records {
+		if record.Actor != "0:"+hex.EncodeToString(message.ActorAccount[:]) || record.RequestID != message.RequestID ||
+			record.RequestHash != hex.EncodeToString(message.RequestHash[:]) {
+			continue
+		}
+		if record.BuyerAgentID != message.SenderAgentID {
+			return fmt.Errorf("%w: it is not from this request's buyer", ErrResultRequestRefused)
+		}
+		switch record.State {
+		case ProviderResponding, ProviderDelivering:
+		case ProviderAcked:
+			// The buyer already acknowledged this result; nothing to do.
+			return nil
+		default:
+			return fmt.Errorf("%w: the request has no response to deliver", ErrResultRequestRefused)
+		}
+		if uint64(now.Unix()) >= record.RetentionEndUnix {
+			return fmt.Errorf("%w: the result is no longer retained", ErrResultRequestRefused)
+		}
+		changed := false
+		if cardErr := p.learnCard(ctx, message.SenderAgentID, request.BuyerKeyCard); cardErr != nil {
+			if !errors.Is(cardErr, ErrCardRefused) {
+				return cardErr
+			}
+			record.Detail, changed = "the buyer's encryption key card was not taken: "+cardErr.Error(), true
+		}
+		if record.State == ProviderDelivering && record.NextDeliveryUnix > now.Unix() &&
+			now.Unix()-record.ResultRequestUnix >= int64(ResultRequestInterval/time.Second) {
+			record.NextDeliveryUnix, record.ResultRequestUnix, changed = now.Unix(), now.Unix(), true
+		}
+		if changed {
+			record.Schema, record.UpdatedUnix = providerRecordSchema, now.Unix()
+			return writeJSON(path, record, false)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: it names no request of this provider", ErrResultRequestRefused)
 }
 
 // learnBuyerCard verifies the buyer's key card a task carries against

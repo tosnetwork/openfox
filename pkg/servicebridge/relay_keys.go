@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -129,7 +130,8 @@ func canonicalRelayURLs(relays []string) ([]string, error) {
 	for index, relay := range out {
 		// No percent escape at all: the relay client refuses one even
 		// where the URL parser would accept it.
-		if err := agentpacketseal.CheckRelayURL(relay); err != nil || strings.Contains(relay, "%") {
+		if err := agentpacketseal.CheckRelayURL(relay); err != nil || strings.Contains(relay, "%") ||
+			numericHostIsNonCanonical(relay) {
 			return nil, fmt.Errorf("servicebridge: relay URL %q is not a canonical base URL: https, or http only to "+
 				"127.0.0.1, localhost or ::1; lowercase host; no user, query, fragment, escape or trailing slash",
 				relay)
@@ -531,4 +533,11 @@ func saturatingAdd(a, b uint64) uint64 {
 		return ^uint64(0)
 	}
 	return a + b
+}
+
+// numericHostIsNonCanonical reports a relay URL whose host is a numeric
+// address in a non-canonical form.
+func numericHostIsNonCanonical(relay string) bool {
+	parsed, err := url.Parse(relay)
+	return err != nil || nonCanonicalNumericHost(strings.ToLower(parsed.Hostname()))
 }

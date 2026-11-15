@@ -85,6 +85,10 @@ func TestEveryMaintenancePassHandsTheCurrentCardToTheOfferHook(t *testing.T) {
 	if len(seen) != 2 || !bytes.Equal(seen[0], seen[1]) {
 		t.Fatalf("the failed publish was not retried: %d calls", len(seen))
 	}
+	card, err := decodeOwnCard(testSeller, seen[1])
+	if err != nil || card.NotAfterUnix < uint64(clock.Now().Add(relayLongCoverFloor).Unix()) {
+		t.Fatalf("the offer card is not a long one: %v", err)
+	}
 }
 
 func TestTheOfferFileIsRewrittenOnlyWhenItsCardChanges(t *testing.T) {
@@ -268,9 +272,93 @@ func TestPeerCardsNamingLoopbackRelaysAreRefusedUnlessThisNodeIsOnLoopback(t *te
 	for relay, want := range map[string]bool{
 		"http://127.0.0.1:8080": true, "http://localhost": true, "http://[::1]:9": true, "https://127.0.0.2": true,
 		"https://relay.example": false, "https://10.0.0.1": false,
+		"https://127.1": true, "https://0x7f.0.0.1": true, "https://0177.0.0.1": true, "https://2130706433": true,
+		"https://127.000.0.1": true, "https://1.2.3.4.5": true, "https://8.8.8.8": false, "https://relay1.example": false,
+		"https://[::ffff:127.0.0.1]": true,
 	} {
 		if loopbackRelay(relay) != want {
 			t.Errorf("%s: loopback %v", relay, !want)
 		}
+	}
+}
+
+func TestMidRangeMixedDeadlinesAloneKeepTheKeyCountBounded(t *testing.T) {
+	clock := newRelayClock()
+	relay := startFakeRelay(t, clock)
+	buyer := newRelayTestNode(t, clock, testBuyer, relayAgents(), relay)
+	start := clock.Now()
+	most := 0
+	for step := 0; clock.Now().Sub(start) < 60*24*time.Hour; step++ {
+		now := uint64(clock.Now().Unix())
+		// Only deadlines between 8 and 30 days ahead, different on every
+		// call: each is a long cover, none past the 30-day bound.
+		for offset := range 3 {
+			cover := now + uint64(8+(step*7+offset*5)%23)*86400
+			if _, err := buyer.carrier.Keys.Current(context.Background(), cover); err != nil {
+				t.Fatalf("day %.1f: %v", clock.Now().Sub(start).Hours()/24, err)
+			}
+		}
+		if step%6 == 0 {
+			if _, err := buyer.carrier.Keys.Maintain(context.Background()); err != nil {
+				t.Fatalf("maintenance: %v", err)
+			}
+		}
+		if held := len(buyer.carrier.Keys.Held()); held > most {
+			most = held
+		}
+		clock.Advance(10 * time.Minute)
+	}
+	if most > 3 {
+		t.Fatalf("%d keys were held at once", most)
+	}
+}
+
+func TestASlowDepositIsRetriedAtTheSameRelayWithIdenticalBytes(t *testing.T) {
+	clock := newRelayClock()
+	agents := relayAgents()
+	relay := startFakeRelay(t, clock)
+	seller := newRelayTestNode(t, clock, testSeller, agents, relay)
+	buyer := newRelayTestNode(t, clock, testBuyer, agents, relay)
+	seller.learn(buyer)
+	relay.slowDeposits = 1
+	if _, err := seller.courier.Deliver(context.Background(), relayEnvelopeTo(testBuyer), markedBody(20)); !errors.Is(
+		err,
+		ErrRelayUndelivered,
+	) {
+		t.Fatalf("a 408 deposit: %v", err)
+	}
+	if err := seller.courier.Resume(context.Background()); err != nil {
+		t.Fatalf("the retry after 408: %v", err)
+	}
+	log := relay.depositLog()
+	if len(log) != 2 || log[0].status != 408 || log[1].status != 201 || !bytes.Equal(log[0].raw, log[1].raw) {
+		t.Fatalf("the 408 deposit was not retried with identical bytes: %d deposits", len(log))
+	}
+}
+
+func TestARefusedExpiryIsNeverResealed(t *testing.T) {
+	clock := newRelayClock()
+	agents := relayAgents()
+	relay := startFakeRelay(t, clock)
+	seller := newRelayTestNode(t, clock, testSeller, agents, relay)
+	buyer := newRelayTestNode(t, clock, testBuyer, agents, relay)
+	seller.learn(buyer)
+	relay.expiryRefusals = 2
+	if _, err := seller.courier.Deliver(context.Background(), relayEnvelopeTo(testBuyer), markedBody(20)); !errors.Is(
+		err,
+		ErrRelayUndelivered,
+	) {
+		t.Fatalf("a 422 deposit: %v", err)
+	}
+	if err := seller.courier.Resume(context.Background()); !errors.Is(err, ErrRelayUndelivered) {
+		t.Fatalf("the second 422: %v", err)
+	}
+	views, err := ReadRelayOutbox(filepath.Join(seller.dir, relayStateDir, relayOutboxDir))
+	if err != nil || len(views) != 1 || views[0].Seals != 1 {
+		t.Fatalf("a 422 made the sender seal again: %+v %v", views, err)
+	}
+	log := relay.depositLog()
+	if len(log) != 2 || !bytes.Equal(log[0].raw, log[1].raw) {
+		t.Fatal("the bytes changed after a 422")
 	}
 }

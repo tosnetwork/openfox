@@ -55,8 +55,8 @@ func newTestCA(t *testing.T, name string, notBefore, notAfter time.Time) testCA 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return testCA{certificate: certificate, key: key,
-		pem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}
+	encoded := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return testCA{certificate: certificate, key: key, pem: encoded}
 }
 
 func newTestRelayCA(t *testing.T, name string) testCA {
@@ -117,7 +117,9 @@ func pinnedConfig(t *testing.T, ca testCA, relays ...string) NodeConfig {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(ca.pem)
-	return NodeConfig{StateDir: state, RelayURLs: relays, RelayCAFile: path, RelayCASHA256: hex.EncodeToString(digest[:])}
+	return NodeConfig{
+		StateDir: state, RelayURLs: relays, RelayCAFile: path, RelayCASHA256: hex.EncodeToString(digest[:]),
+	}
 }
 
 func describeWith(dial relayDialer, base string) error {
@@ -446,7 +448,8 @@ func TestPreflightReportsEachRelaysTrustAnchorAndFailsOnAnUnusablePin(t *testing
 		t.Fatalf("expiring: %+v", checks["relay.trust"])
 	}
 	f.env.Now = func() time.Time { return testCAValidUntil.Add(time.Hour) }
-	if _, checks = f.run(t); checks["relay.trust"].Status != CheckFail || checks["relay.reachable"].Status != CheckFail {
+	_, checks = f.run(t)
+	if checks["relay.trust"].Status != CheckFail || checks["relay.reachable"].Status != CheckFail {
 		t.Fatalf("expired: %+v %+v", checks["relay.trust"], checks["relay.reachable"])
 	}
 	f.env.Now = func() time.Time { return pfChainNow }

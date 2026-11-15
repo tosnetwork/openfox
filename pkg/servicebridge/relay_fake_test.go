@@ -67,6 +67,8 @@ type fakeRelay struct {
 	// conflictAll answers 409 to every deposit, as if an observer had
 	// pre-empted every envelope id.
 	conflictAll bool
+	// conflictIDs answers 409 to deposits under these envelope ids only.
+	conflictIDs map[[32]byte]bool
 	// listFails answers 503 to listings.
 	listFails bool
 	// replay keeps acknowledged envelopes listed and downloadable, as a
@@ -75,6 +77,12 @@ type fakeRelay struct {
 	// deposits records every deposit body and the status answered.
 	deposits []fakeDeposit
 	acks     int
+	// ackFails answers 503 to that many acknowledgements.
+	ackFails int
+	// ackRequests counts every acknowledgement request, answered or not.
+	ackRequests int
+	// ackBodies records every acknowledgement secret presented.
+	ackBodies [][]byte
 }
 
 type fakeDeposit struct {
@@ -194,7 +202,7 @@ func (f *fakeRelay) deposit(w http.ResponseWriter, request *http.Request, agent 
 		answer(http.StatusUnprocessableEntity, "expiry_out_of_bounds")
 		return
 	}
-	if f.conflictAll {
+	if f.conflictAll || f.conflictIDs[id] {
 		answer(http.StatusConflict, "conflict")
 		return
 	}
@@ -314,6 +322,13 @@ func (f *fakeRelay) ack(w http.ResponseWriter, request *http.Request, agent stri
 	copy(secret[:], raw)
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
+	f.ackRequests++
+	f.ackBodies = append(f.ackBodies, append([]byte(nil), raw...))
+	if f.ackFails > 0 {
+		f.ackFails--
+		f.errorBody(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
 	if !agentpacketseal.CheckAck(id, secret) {
 		f.errorBody(w, http.StatusForbidden, "forbidden")
 		return
@@ -333,6 +348,21 @@ func (f *fakeRelay) ack(w http.ResponseWriter, request *http.Request, agent stri
 		delete(f.boxes[agent], id)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// holds reports whether the relay holds id for agent.
+func (f *fakeRelay) holds(agent string, id [32]byte) bool {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	_, ok := f.boxes[agent][id]
+	return ok
+}
+
+// ackCounts reports the acknowledgement requests and deletions so far.
+func (f *fakeRelay) ackCounts() (requests, deletions int) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	return f.ackRequests, f.acks
 }
 
 // count reports how many envelopes the relay holds for agent.

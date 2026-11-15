@@ -112,7 +112,8 @@ type PreflightEnv struct {
 	// PacketVerifier opens the pinned tosctl's ML-DSA-44 verification, for
 	// the key card checks. It never signs.
 	PacketVerifier func(config NodeConfig) (mldsa44.Verifier, error)
-	// RelayDial opens the client of one relay base URL.
+	// RelayDial opens the client of one relay base URL. Nil uses the
+	// configuration's trust anchors, as `serve` does.
 	RelayDial relayDialer
 }
 
@@ -134,9 +135,6 @@ func (e *PreflightEnv) fill() {
 				VaultURL: vaultURL,
 			})
 		}
-	}
-	if e.RelayDial == nil {
-		e.RelayDial = dialRelay
 	}
 	if e.OpenChain == nil {
 		e.OpenChain = func(config NodeConfig, checkpointDir string) (PreflightChain, error) {

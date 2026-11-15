@@ -71,7 +71,12 @@ func (p *preflight) checkRelay() {
 		return
 	}
 	p.addf("relay.config", CheckPass, "relays %s (https, or http only on loopback)", strings.Join(relays, ", "))
-	p.checkRelayReachable(relays)
+	dial := p.checkRelayTrust(relays)
+	if dial == nil {
+		p.addf("relay.reachable", CheckFail, "not run: the relay trust anchor cannot be used")
+	} else {
+		p.checkRelayReachable(relays, dial)
+	}
 	key := p.checkRelayKey(relays)
 	if !p.requires("relay.card", "relay.key", "chain.finalized", "tosctl.pin") || key == nil {
 		if key == nil && p.passed["relay.key"] {
@@ -99,11 +104,64 @@ func (p *preflight) checkRelay() {
 	p.checkPeerCards(verifier, agents)
 }
 
-func (p *preflight) checkRelayReachable(relays []string) {
+// relayCAExpiryWarning is how close to its expiry a pinned certificate
+// makes the trust check warn.
+const relayCAExpiryWarning = 30 * 24 * time.Hour
+
+// checkRelayTrust reports the trust anchor each relay is verified against
+// and returns the dialer `serve` would use, or nil when a pinned CA file
+// cannot be used: unreadable, changed since init, expired or not yet
+// valid.
+func (p *preflight) checkRelayTrust(relays []string) relayDialer {
+	pinned, err := loadRelayCA(p.config)
+	if err != nil {
+		p.addf("relay.trust", CheckFail, "%v", err)
+		return nil
+	}
+	now := p.env.Now()
+	if pinned != nil {
+		if err = pinned.checkValidAt(now); err != nil {
+			p.addf("relay.trust", CheckFail, "%v; run init again with a current --relay-ca-file", err)
+			return nil
+		}
+	}
+	var lines []string
+	for _, relay := range relays {
+		switch relayTrustOf(p.config, relay) {
+		case RelayTrustPinned:
+			lines = append(lines, relay+": the pinned CA file only")
+		case RelayTrustLoopback:
+			lines = append(lines, relay+": plaintext loopback, no TLS")
+		default:
+			lines = append(lines, relay+": the system trust store")
+		}
+	}
+	status, note := CheckPass, "relays named only by a peer's card use the system trust store"
+	if pinned != nil {
+		expiry := pinned.notAfter()
+		note = fmt.Sprintf("pinned CA file %s (SHA-256 %s, %d certificates, valid until %s); %s", p.config.RelayCAFile,
+			pinned.sha256, len(pinned.certificates), expiry.UTC().Format(time.RFC3339), note)
+		if expiry.Sub(now) < relayCAExpiryWarning {
+			status, note = CheckWarn, note+"; a pinned certificate expires within 30 days"
+		}
+	}
+	p.addf("relay.trust", status, "%s; %s", strings.Join(lines, "; "), note)
+	if p.env.RelayDial != nil {
+		return p.env.RelayDial
+	}
+	dial, err := relayDialerFor(p.config)
+	if err != nil {
+		// The file changed between the two reads; relay.reachable says so.
+		return nil
+	}
+	return dial
+}
+
+func (p *preflight) checkRelayReachable(relays []string, dial relayDialer) {
 	reached := 0
 	var lines []string
 	for _, relay := range relays {
-		client, err := p.env.RelayDial(relay)
+		client, err := dial(relay)
 		if err != nil {
 			lines = append(lines, relay+": the URL cannot be used")
 			continue

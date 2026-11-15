@@ -145,6 +145,11 @@ func serviceInitCommand() *cobra.Command {
 	flags.StringArrayVar(&in.RelayURLs, "relay-url", nil, "Agent Packet Relay base URL this node publishes in its "+
 		"encryption key card and polls (repeatable, at most 4; https, or http only to a loopback host): packets "+
 		"to peers whose verified card is known are sealed end to end and deposited at the peer's relays")
+	flags.StringVar(&in.RelayCAFile, "relay-ca-file", "", "PEM file of one or more certificate authorities this "+
+		"node's own https relays are verified against instead of the system trust store (copied into the "+
+		"owner-only state; kept by a re-run that names neither this nor --relay-system-roots)")
+	flags.BoolVar(&in.RelaySystemRoots, "relay-system-roots", false, "drop a pinned --relay-ca-file: verify this "+
+		"node's relays against the system trust store again")
 	flags.StringArrayVar(&allowProviders, "allow-provider", nil, "provider Agent this node may buy from "+
 		"(repeatable; adds the buyer section)")
 	flags.StringVar(&perPurchase, "max-per-purchase", "2", "buyer: most TOS one purchase may commit")

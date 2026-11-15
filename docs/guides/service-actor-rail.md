@@ -534,13 +534,39 @@ to `127.0.0.1`, `localhost` or `::1`; it has a lowercase host, no user, query,
 fragment, escape or trailing slash. Anything else is refused by `init`, by
 `preflight` and by the client.
 
-The node verifies a relay's TLS certificate against the system trust store.
-There is no per-relay certificate authority option yet (a planned
-follow-up), so a relay whose certificate comes from a private authority
-needs that authority in the system trust store, or in a file named by
-`SSL_CERT_FILE` in the node's environment (with `SSL_CERT_DIR` naming an
-empty directory, it is then the node's only trust root). Verification is
-never turned off.
+**Relay certificates.** Verification is never turned off, and TLS 1.2 is the
+minimum. By default the node verifies a relay's certificate against the
+system trust store. `init --relay-ca-file <PEM file>` pins instead: the file
+holds one or more certificates (certificate authorities, or a relay's own
+self-signed certificate) and nothing else (a private key or any other PEM
+block is refused), each valid when `init` runs. `init` copies it into
+`state_dir/relay/relay-ca-<sha256>.pem` (`0600`) and records its SHA-256 as
+`relay_ca_file` and `relay_ca_sha256`, so the pin is what the owner gave at
+`init` whatever later happens to the original file. A new pin is written
+under its own name before the configuration naming it is committed, and the
+earlier file is removed only after that, so an `init` interrupted at any
+point leaves a configuration whose pinned file still matches. With a pin:
+
+- every https relay in this node's `relay_urls` is verified against the
+  pinned certificates **only**; the system trust store (and `SSL_CERT_FILE`)
+  is not consulted for them. One file covers all of them: a node whose
+  relays use different authorities lists each in the file;
+- a relay that only a peer's key card names (one not in this node's
+  `relay_urls`) is verified against the system trust store, as without a
+  pin. A peer card naming one of this node's own relays uses the pin. Such a
+  relay is trusted through the public certificate authority system, so a
+  mis-issued certificate for its name can intercept that connection; the
+  packets stay end-to-end sealed, so only availability and the metadata a
+  relay sees are exposed;
+- a pinned file that is missing, not owner-only or no longer has the
+  recorded digest stops `serve` from opening the relay carrier; it never
+  falls back to the system trust store. `serve` reads the file at start, so
+  a new pin takes effect at the next start.
+
+A re-run of `init` that names neither `--relay-ca-file` nor
+`--relay-system-roots` keeps the pin; `--relay-ca-file` replaces it and
+`--relay-system-roots` drops it. A pin needs at least one https relay. When
+the pinned authority is renewed, run `init` again with the new file.
 
 **What a relay operator can and cannot do.** A relay has no authority and
 never decrypts. It sees the recipient Agent id, the recipient's key id, the
@@ -688,7 +714,10 @@ is not done yet, since the node does not keep those secrets.
 (last listing, last failure, consecutive failures, next poll), the held keys
 (key id, validity, destruction time; never the key), the peer cards and every
 journaled outgoing envelope with the relays that accepted it, answered `409`
-or are still pending. `preflight` checks `relay.config`, `relay.reachable`
+or are still pending. `preflight` checks `relay.config`, `relay.trust` (the
+trust anchor each relay is verified against; it fails when a pinned CA file
+is unreadable, changed, expired or not yet valid, and warns within 30 days of
+a pinned certificate's expiry), `relay.reachable`
 (each relay described and the mailbox listed), `relay.key` (a key valid now
 for the configured relays), `relay.card` (the own card verifies against
 finalized state) and `relay.peers` (each held peer card verifies).

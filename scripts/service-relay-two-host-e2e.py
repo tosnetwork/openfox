@@ -605,7 +605,7 @@ async def main() -> int:
                         "generated for this run (P-256, SAN IP:%s)" % RELAY_IP,
                 "node_trust": "SSL_CERT_FILE names the run's certificate authority only and SSL_CERT_DIR an empty "
                               "directory, so it is the nodes' only trust root; certificate verification stays on. "
-                              "OpenFox has no per-relay CA option yet.",
+                              "This run does not pin the relay CA with init --relay-ca-file.",
                 "plain_http": False},
         "topology": {
             "bridge": "tosrly-br0 10.231.77.0/24, host end 10.231.77.1, no default route in any namespace",

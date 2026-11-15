@@ -43,6 +43,13 @@ type InitInput struct {
 	// RelayURLs are the Agent Packet Relay base URLs the node publishes in
 	// its encryption key card and polls (1 to 4).
 	RelayURLs []string `json:"relay_urls"`
+	// RelayCAFile is a PEM file of one or more certificate authorities
+	// this node's own https relays are verified against instead of the
+	// system trust store. It is copied into the owner-only state.
+	RelayCAFile string `json:"relay_ca_file"`
+	// RelaySystemRoots drops a pinned CA file: the relays are verified
+	// against the system trust store again.
+	RelaySystemRoots bool `json:"relay_system_roots"`
 	// Buyer, when set, becomes the buyer section.
 	Buyer *BuyerNode `json:"buyer"`
 	// Yes confirms the previewed actions.
@@ -172,6 +179,12 @@ func (in InitInput) validate() error {
 		if _, err := canonicalRelayURLs(in.RelayURLs); err != nil {
 			problems = append(problems, strings.TrimPrefix(err.Error(), "servicebridge: "))
 		}
+	}
+	if in.RelayCAFile != "" && !cleanAbsolute(in.RelayCAFile) {
+		problems = append(problems, "--relay-ca-file must be an absolute clean path")
+	}
+	if in.RelayCAFile != "" && in.RelaySystemRoots {
+		problems = append(problems, "--relay-ca-file and --relay-system-roots exclude each other")
 	}
 	if in.Buyer != nil {
 		if _, err := in.Buyer.Policy.parse(); err != nil {
@@ -444,6 +457,10 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 		}
 		relays = canonical
 	}
+	relayPin, err := chooseRelayCA(in, existing, relays, env.Now())
+	if err != nil {
+		return result, err
+	}
 	journal, err := loadSetupJournal(in.StateDir)
 	if err != nil {
 		return result, err
@@ -655,7 +672,25 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 		return result, err
 	}
 	config.AgentID = state.AgentID
+	if relayPin.data != nil {
+		if config.RelayCAFile, err = installRelayCA(in.StateDir, relayPin.data); err != nil {
+			return result, err
+		}
+	} else {
+		config.RelayCAFile = relayPin.path
+	}
+	config.RelayCASHA256 = relayPin.sha256
+	if relayPin.sha256 != "" {
+		run.notef("relay.trust", SetupDone, "this node's https relays are verified against the %d pinned certificate "+
+			"authorities in %s (SHA-256 %s) only, not the system trust store; relays only a peer's card names "+
+			"use the system trust store", relayPin.certificates, config.RelayCAFile, relayPin.sha256)
+	}
 	if err = writeNodeConfig(in.RailConfigPath, config); err != nil {
+		return result, err
+	}
+	// Only now that the configuration names the new pin (or none) is an
+	// earlier pinned file unused.
+	if err = removeStaleRelayCAs(in.StateDir, config.RelayCAFile); err != nil {
 		return result, err
 	}
 	run.notef("config.write", SetupDone, "wrote the rail configuration %s (0600); it reads back strictly",

@@ -76,6 +76,13 @@ type ResultHeader struct {
 	Schema           string `json:"schema"`
 	ResponseHash     string `json:"response_hash"`
 	ReceiptBOCBase64 string `json:"receipt_boc_base64"`
+	// ProviderKeyCard is the provider's current encryption key card packet
+	// (standard base64 of its exact signed JSON), present when the provider
+	// receives over the relay carrier. It gives a buyer whose offer-file
+	// card expired during a long request a route back for its
+	// acknowledgement; the buyer binds it to the Capability's finalized
+	// owner before sealing to it.
+	ProviderKeyCard string `json:"provider_key_card_base64,omitempty"`
 }
 
 // Result is a decoded result message: the Receipt and the artifact.
@@ -208,12 +215,24 @@ func validateTaskHeader(header TaskHeader, archiveBytes int) error {
 
 // EncodeResult builds a result message.
 func EncodeResult(responseHash [32]byte, receiptBOC, artifact []byte) ([]byte, error) {
+	return EncodeResultWithCard(responseHash, receiptBOC, artifact, nil)
+}
+
+// EncodeResultWithCard builds a result message carrying the provider's key
+// card packet JSON, or none when card is empty.
+func EncodeResultWithCard(responseHash [32]byte, receiptBOC, artifact, card []byte) ([]byte, error) {
 	header := ResultHeader{
 		Schema: resultSchema, ResponseHash: hex.EncodeToString(responseHash[:]),
 		ReceiptBOCBase64: base64.StdEncoding.EncodeToString(receiptBOC),
 	}
 	if len(receiptBOC) == 0 || len(artifact) == 0 || len(artifact) > MaxResultBytes {
 		return nil, errors.New("servicebridge: the result is empty or oversized")
+	}
+	if len(card) > maxCardJSON {
+		return nil, errors.New("servicebridge: the provider key card exceeds its bound")
+	}
+	if len(card) > 0 {
+		header.ProviderKeyCard = base64.StdEncoding.EncodeToString(card)
 	}
 	return encodeMessage(header, artifact, maxResultMessageBytes)
 }
@@ -228,6 +247,9 @@ func DecodeResult(raw []byte) (Result, error) {
 	if header.Schema != resultSchema || !hex64Pattern.MatchString(header.ResponseHash) ||
 		len(artifact) == 0 || len(artifact) > MaxResultBytes {
 		return Result{}, errors.New("servicebridge: the result header is incomplete")
+	}
+	if len(header.ProviderKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
+		return Result{}, errors.New("servicebridge: the provider key card exceeds its bound")
 	}
 	receipt, err := base64.StdEncoding.Strict().DecodeString(header.ReceiptBOCBase64)
 	if err != nil || len(receipt) == 0 {

@@ -139,7 +139,10 @@ type ProviderConfig struct {
 	Courier            *Courier
 	// Cards, when the node has a relay carrier, takes the buyer's key card
 	// from an admitted task so results can be sealed back to it.
-	Cards     *PeerCards
+	Cards *PeerCards
+	// RelayKeys, when the node has a relay carrier, supplies the provider's
+	// own key card for each result delivery.
+	RelayKeys *RelayKeys
 	History   railgate.Reader
 	Directory string
 	// StateDir holds the owner's admission pause marker. Empty means the
@@ -712,7 +715,17 @@ func (p *Provider) deliver(ctx context.Context, record ProviderRecord) error {
 	if err = decodeHex32(record.Actor[2:], &actor); err != nil {
 		return err
 	}
-	body, err := EncodeResult(responseHash, receipt, artifact)
+	var card []byte
+	if p.config.RelayKeys != nil {
+		// The card covers the redelivery window, so the buyer can still
+		// acknowledge a result delivered near its end.
+		key, keyErr := p.config.RelayKeys.Current(ctx, record.RetentionEndUnix)
+		if keyErr != nil {
+			return keyErr
+		}
+		card = key.CardJSON
+	}
+	body, err := EncodeResultWithCard(responseHash, receipt, artifact, card)
 	if err != nil {
 		return err
 	}

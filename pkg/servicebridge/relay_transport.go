@@ -62,9 +62,15 @@ type relayOutboxRecord struct {
 	Accepted       []string `json:"accepted,omitempty"`
 	Conflicts      []string `json:"conflicts,omitempty"`
 	Seals          int      `json:"seals"`
+	// Stopped ends the redundant deposits of an envelope whose card was
+	// revoked or expired after a relay accepted it.
+	Stopped bool `json:"stopped,omitempty"`
 }
 
 func (r relayOutboxRecord) pending() []string {
+	if r.Stopped {
+		return nil
+	}
 	var out []string
 	for _, relay := range r.Relays {
 		if !slices.Contains(r.Accepted, relay) && !slices.Contains(r.Conflicts, relay) {
@@ -158,7 +164,8 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 	if found && record.Recipient != packet.RecipientAgentID {
 		return errors.New("servicebridge: the journaled envelope is for another recipient")
 	}
-	if !found || now >= record.ExpiresAtUnix {
+	fresh := !found || now >= record.ExpiresAtUnix
+	if fresh {
 		if record, err = t.seal(ctx, packet, record.Seals); err != nil {
 			return err
 		}
@@ -170,6 +177,23 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 		// A relay accepted it before an interruption; the rest is the
 		// background loop's.
 		return nil
+	}
+	if !fresh {
+		// Journaled bytes are sent again only while the card they were
+		// sealed to is still valid and verifies; bytes sealed to a revoked
+		// or expired card are replaced by a seal to the current card.
+		switch usable := t.sealedCardUsable(ctx, record); {
+		case usable == nil:
+		case errors.Is(usable, ErrCardRefused):
+			if record, err = t.seal(ctx, packet, record.Seals); err != nil {
+				return err
+			}
+			if err = t.store(path, record, false); err != nil {
+				return err
+			}
+		default:
+			return usable
+		}
 	}
 	envelope, err := base64.StdEncoding.Strict().DecodeString(record.EnvelopeBase64)
 	if err != nil {
@@ -247,6 +271,17 @@ func (t *RelayTransport) seal(ctx context.Context, packet OutboundPacket, seals 
 		), EnvelopeBase64: base64.StdEncoding.EncodeToString(envelope),
 		ExpiresAtUnix: expires, Seals: seals + 1,
 	}, nil
+}
+
+// sealedCardUsable reports whether the card a journaled envelope was sealed
+// to may still be sent to: ErrCardRefused when it was revoked, expired or is
+// no longer held, another error when finalized state cannot answer now.
+func (t *RelayTransport) sealedCardUsable(ctx context.Context, record relayOutboxRecord) error {
+	keyID, err := agentpacketseal.ParseKeyIDText(record.KeyID)
+	if err != nil {
+		return fmt.Errorf("%w: the journaled key id does not parse", ErrCardRefused)
+	}
+	return t.cards.Usable(ctx, record.Recipient, keyID)
 }
 
 type depositClass int
@@ -348,8 +383,19 @@ func (t *RelayTransport) redepositOne(ctx context.Context, path string) error {
 		return syncDirectory(t.directory)
 	}
 	pending := record.pending()
-	if len(record.Accepted) == 0 || len(pending) == 0 {
+	if len(record.Accepted) == 0 || len(pending) == 0 || record.Stopped {
 		t.forget(record.IdempotencyKey)
+		return nil
+	}
+	switch usable := t.sealedCardUsable(ctx, record); {
+	case usable == nil:
+	case errors.Is(usable, ErrCardRefused):
+		// Already durably held by one relay; it is not spread further to
+		// a key whose card no longer stands.
+		record.Stopped = true
+		t.forget(record.IdempotencyKey)
+		return t.store(path, record, false)
+	default:
 		return nil
 	}
 	t.mutex.Lock()

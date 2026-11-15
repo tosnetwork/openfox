@@ -461,6 +461,40 @@ func (p *PeerCards) Current(ctx context.Context, agentID string) (*peerCard, err
 	return nil, ErrNoPacketRoute
 }
 
+// Usable reports whether the held card of agentID with keyID may still be
+// sealed or sent to now: inside its window and verified against finalized
+// state within RelayCardReverify, verifying it again when that is older. A
+// card that is expired, revoked or not held is ErrCardRefused (a revoked one
+// is dropped); a check finalized state cannot answer is another error.
+func (p *PeerCards) Usable(ctx context.Context, agentID string, keyID [agentpacketseal.KeyIDSize]byte) error {
+	if p == nil || ctx == nil {
+		return ErrCardRefused
+	}
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	if err := p.reloadLocked(); err != nil {
+		return fmt.Errorf("servicebridge: read the peer card directory: %w", err)
+	}
+	now := p.now()
+	for _, card := range p.cards[agentID] {
+		if card.Key.KeyID != keyID {
+			continue
+		}
+		if agentpacketseal.CheckKeyCardTime(card.Card, now) != nil {
+			return fmt.Errorf("%w: the card is outside its validity window", ErrCardRefused)
+		}
+		if !card.verifiedAt.IsZero() && now.Sub(card.verifiedAt) < RelayCardReverify && !now.Before(card.verifiedAt) {
+			return nil
+		}
+		err := p.verify(ctx, card)
+		if err != nil && !errors.Is(err, errCardUnavailable) {
+			p.dropLocked(card)
+		}
+		return err
+	}
+	return fmt.Errorf("%w: the card is not held", ErrCardRefused)
+}
+
 func (p *PeerCards) dropLocked(card *peerCard) {
 	list := p.cards[card.AgentID]
 	kept := list[:0]

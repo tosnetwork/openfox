@@ -84,8 +84,11 @@ type PurchaseRecord struct {
 	Disclosure        string  `json:"cost_disclosure"`
 	LastActionUnix    int64   `json:"last_action_unix,omitempty"`
 	Failure           string  `json:"failure,omitempty"`
-	CreatedUnix       int64   `json:"created_unix"`
-	UpdatedUnix       int64   `json:"updated_unix"`
+	// ProviderCardRefused says why the key card the provider's result
+	// carried was not taken; the result itself was.
+	ProviderCardRefused string `json:"provider_card_refused,omitempty"`
+	CreatedUnix         int64  `json:"created_unix"`
+	UpdatedUnix         int64  `json:"updated_unix"`
 }
 
 // QuoteSource fetches a non-canonical Quote Proposal package.
@@ -112,6 +115,9 @@ type BuyerConfig struct {
 	// RelayKeys, when the node has a relay carrier, supplies the buyer's own
 	// key card for each task.
 	RelayKeys *RelayKeys
+	// Cards, when the node has a relay carrier, takes the provider's key
+	// card from a result of one of this buyer's purchases.
+	Cards     *PeerCards
 	Lifecycle LifecycleSender
 	Directory string
 	// Manifests receives the manifest bytes of each open purchase's stored
@@ -518,7 +524,8 @@ func (b *Buyer) HandleResult(ctx context.Context, message Message) error {
 	if b == nil || message.Kind != FrameResult {
 		return errors.New("servicebridge: invalid result handling")
 	}
-	if _, err := DecodeResult(message.Body); err != nil {
+	result, err := DecodeResult(message.Body)
+	if err != nil {
 		return err
 	}
 	b.mutex.Lock()
@@ -535,6 +542,9 @@ func (b *Buyer) HandleResult(ctx context.Context, message Message) error {
 	}
 	path := filepath.Join(b.purchaseDir(requestHash), "result")
 	if err := writeSynced(path, message.Body); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	if err := b.learnProviderCard(ctx, &record, result.Header.ProviderKeyCard); err != nil {
 		return err
 	}
 	if record.Phase == PurchaseCompleted {
@@ -737,6 +747,35 @@ func (b *Buyer) sendTask(ctx context.Context, record PurchaseRecord) error {
 	}
 	_, err = b.config.Courier.Deliver(ctx, envelope, body)
 	return err
+}
+
+// learnProviderCard takes the key card a result of this purchase carried,
+// verified like an offer-file card: against finalized state, and only as a
+// card of the Capability's finalized owner. A card finalized state refuses
+// is recorded on the purchase and does not refuse the result; a check that
+// cannot be made now fails the handling, which is retried.
+func (b *Buyer) learnProviderCard(ctx context.Context, record *PurchaseRecord, encoded string) error {
+	if encoded == "" || b.config.Cards == nil {
+		return nil
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err == nil {
+		err = b.config.Cards.Learn(ctx, raw, record.ProviderAgentID, record.CapabilityID)
+	} else {
+		err = fmt.Errorf("%w: the provider key card does not decode", ErrCardRefused)
+	}
+	switch {
+	case err == nil:
+		if record.ProviderCardRefused == "" {
+			return nil
+		}
+		record.ProviderCardRefused = ""
+	case errors.Is(err, ErrCardRefused):
+		record.ProviderCardRefused = err.Error()
+	default:
+		return err
+	}
+	return b.savePurchase(*record, false)
 }
 
 // buyerCardMargin is how far beyond the request's last deadline the buyer's

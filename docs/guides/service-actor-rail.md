@@ -553,7 +553,15 @@ encrypt) under a fresh acknowledgement secret, journals the envelope in
 `state_dir/relay/outbox` **before** the first deposit, and deposits it at the
 card's relays in order, each bounded to 30 seconds. A send is done only when
 one relay answers `200`, `201` or `410`; a retry after an ambiguous answer or
-a restart sends the journaled bytes again, so the relay recognizes them. The
+a restart sends the journaled bytes again, so the relay recognizes them. Before
+journaled bytes are sent again, the card they were sealed to is checked: if it
+was last verified 9 minutes ago or more it is verified again, and if it has
+expired, was revoked or is no longer held, those bytes are never sent again;
+the packet is sealed to the recipient's current valid card under a fresh
+acknowledgement secret (a new envelope id), journaled, and deposited instead.
+Without a valid card the send fails and the courier retries; an envelope one
+relay already accepted is not spread to further relays once its card is
+revoked. The
 remaining relays are deposited in the background for redundancy. A relay that
 answers `409` holds other bytes under that public envelope id; it is abandoned
 for that envelope, and when no relay accepted and one answered `409` the packet
@@ -573,7 +581,17 @@ unavailable chain or a failing inbox write leaves the envelope for a later
 poll. An envelope that does not open, or that names a key the node does not
 hold, is remembered by relay and envelope id (never by the id alone, so a junk
 copy at one relay never hides the genuine envelope at another) and left to
-expire.
+expire. An envelope whose listing names a key id the node does not hold is
+remembered without being downloaded: the key id in a listing is the relay's
+unauthenticated word, and a relay that lies about it can only hide that
+envelope, which it could do anyway.
+
+Implementation bounds: the not-again memory and the memory of settled
+envelope ids each hold at most 8,192 entries and forget an entry after its
+listed expiry, at most 24 hours and 5 minutes; evicting one only costs a
+repeated download. At most 8 cards are kept per peer Agent (the least
+preferred is dropped) and at most 1,024 peers; a node holds at most 16 own
+keys.
 
 **Keys.** Each node holds HPKE private keys in `state_dir/relay/keys`, one
 owner-only (`0600`) file per key, written atomically; a key is never printed,
@@ -587,7 +605,12 @@ sealed in time can wait at a relay, then destroys it.
 
 **How cards travel.** The provider's card is in its offer file; `serve`
 rewrites the offer file when it issues a successor, and the owner hands the
-new file out as before. The buyer verifies the card against finalized state
+new file out as before. Each result also carries the provider's current card,
+valid until the end of the redelivery window, so a buyer whose offer-file card
+expired during a long request keeps a route back for its acknowledgement. The
+buyer takes it only from a result of one of its own purchases from that
+provider, verifies it like an offer-file card, and records a refused card on
+the purchase (`provider_card_refused`) without refusing the result. The buyer verifies the card against finalized state
 and requires its Agent to be the Capability's **finalized owner, read from
 chain** (never from the offer file) before anything is paid; it seals only to
 a card verified within the last 9 minutes. The buyer's card travels inside its
@@ -643,8 +666,12 @@ member, written after `manifest_cbor_base64`:
 
 The task message header (`tos.openfox.rail-task.v1`) gains one optional last
 member, `"buyer_key_card_base64"`, with the same encoding and bound, absent
-when the buyer has no relays. It is inside the signed packets and, over the
-relay, inside the encryption.
+when the buyer has no relays. The result message header
+(`tos.openfox.rail-result.v1`) likewise gains one optional last member,
+`"provider_key_card_base64"`: the provider's card, same encoding and bound,
+absent when the provider has no relays. Both are inside the signed packets
+and, over the relay, inside the encryption. Both headers are decoded
+strictly, so a decoder that predates a member refuses a message carrying it.
 
 ## Configuration
 

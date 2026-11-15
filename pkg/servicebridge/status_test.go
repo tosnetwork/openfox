@@ -379,3 +379,47 @@ func TestStatusListsAdmittedSlotsThatHaveNoRecordYet(t *testing.T) {
 		t.Fatal("a malformed slot was listed")
 	}
 }
+
+// The gate writes why a slot is ambiguous and whether its result was
+// reconciled; status reads slot files strictly and must know both fields.
+func TestStatusReadsTheGatesRestartAndReconciledSlots(t *testing.T) {
+	config, actor := statusNode(t)
+	slots := filepath.Join(config.StateDir, "slots")
+	if err := ensurePrivateDirectory(slots); err != nil {
+		t.Fatal(err)
+	}
+	quote := "tvm-cell-sha256:" + strings.Repeat("cd", 32)
+	for name, body := range map[string]string{
+		strings.Repeat("a", 64): `"request_id":11,"state":"ambiguous","ambiguous_cause":"restart"`,
+		strings.Repeat("b", 64): `"request_id":12,"state":"ambiguous"`,
+		strings.Repeat("c", 64): `"request_id":13,"state":"completed","response_hash":"` + strings.Repeat("34", 32) +
+			`","reconciled":true`,
+	} {
+		raw := `{"schema":"` + railgateSlotSchema + `","quote_commitment":"` + quote + `","actor":"` + actor +
+			`","request_hash":"` + strings.Repeat("12", 32) + `",` + body + `,"updated_unix":1800000000}`
+		if err := writeSynced(filepath.Join(slots, name+".json"), []byte(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, err := ReadProviderStatus(context.Background(), config, nil, time.Unix(1_800_000_100, 0))
+	if err != nil {
+		t.Fatalf("status does not read the gate's slots: %v", err)
+	}
+	seen := map[uint64]RequestStatus{}
+	for _, request := range status.Requests {
+		seen[request.RequestID] = request
+	}
+	restart, plain, reconciled := seen[11], seen[12], seen[13]
+	if restart.OperatorState != OperatorOutcomeUnknown || restart.SlotState != string(railgate.SlotAmbiguous) ||
+		!strings.Contains(restart.StateReason, "restarted") {
+		t.Fatalf("a slot ambiguous after a restart: %+v", restart)
+	}
+	if plain.OperatorState != OperatorOutcomeUnknown || strings.Contains(plain.StateReason, "restarted") ||
+		!strings.Contains(plain.StateReason, "never attested") {
+		t.Fatalf("a slot ambiguous without a cause: %+v", plain)
+	}
+	if reconciled.OperatorState != OperatorOutcomeUnknown || reconciled.SlotState != string(railgate.SlotCompleted) ||
+		!strings.Contains(reconciled.StateReason, "provider record is missing") {
+		t.Fatalf("a reconciled slot without a record: %+v", reconciled)
+	}
+}

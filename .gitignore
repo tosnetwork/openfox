@@ -74,3 +74,6 @@ docker/data
 
 .omc/
 .worktrees/
+
+# Python bytecode caches of the scripts
+__pycache__/

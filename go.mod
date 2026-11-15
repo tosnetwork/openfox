@@ -149,7 +149,7 @@ require (
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/tosnetwork/tos-ai v0.0.0-20261115021415-619084c45385
+	github.com/tosnetwork/tos-ai v0.0.0-20261115025324-274e7ee47c73
 	github.com/tosnetwork/tos-messenger v0.0.0-20261108093725-c04f384f1344
 	github.com/tosnetwork/tos-service-protocol v0.0.0-20261108125119-62f5b740bc77
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

@@ -65,11 +65,36 @@ type gfChain struct {
 	agent      *nativev1.NativeStateV1
 	data       *nativecore.ServiceActorDataV1
 	history    []toschain.ActorTransaction
+	// unavailable makes every finalized read fail.
+	unavailable bool
+}
+
+// time is the finalized chain time, which is also the verifier's clock.
+func (c *gfChain) time() time.Time {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.chainTime
+}
+
+func (c *gfChain) setTime(now time.Time) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.chainTime = now
+}
+
+// setUnavailable makes every finalized read fail until it is cleared.
+func (c *gfChain) setUnavailable(unavailable bool) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.unavailable = unavailable
 }
 
 func (c *gfChain) BeginSession(context.Context) (railgate.Session, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if c.unavailable {
+		return nil, errors.New("no finalized checkpoint by a strict majority")
+	}
 	c.checkpoint++
 	return &gfSession{
 		checkpoint: c.checkpoint, chainTime: c.chainTime,
@@ -391,7 +416,7 @@ func openServiceNodeWith(
 		ExecutionBudget: 180 * time.Second, RespondBudget: respond,
 		// The verifier measures its slack at the fixture's start; only the
 		// provider's own clock is moved by a test.
-		Now: func() time.Time { return fixture.chain.chainTime },
+		Now: fixture.chain.time,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -418,7 +443,7 @@ func openServiceNodeWith(
 	}
 	node.provider, err = NewProvider(ProviderConfig{
 		AgentID: testSeller, CapabilityID: gfCapability, Version: "1.0.0", Network: testNetwork, Gate: gate,
-		Service: runner, Verifier: verifier, RespondBudget: respond, Store: runner, Lifecycle: node.lifecycle,
+		Service: runner, RespondBudget: respond, Store: runner, Lifecycle: node.lifecycle,
 		AttestorController: "service-attestor", Courier: courier, History: node.history,
 		Directory: filepath.Join(state, "provider"), Now: fixture.clock.Now,
 	})
@@ -449,4 +474,14 @@ func (n *serviceNode) slotState(t *testing.T) railgate.SlotState {
 		t.Fatalf("the request has no slot: %v", err)
 	}
 	return slot.State
+}
+
+// slot returns the gate's record of the node's single request.
+func (n *serviceNode) slot(t *testing.T) railgate.Slot {
+	t.Helper()
+	slot, found, err := n.gate.Lookup(recordKey(n.record(t)))
+	if err != nil || !found {
+		t.Fatalf("the request has no slot: %v", err)
+	}
+	return slot
 }

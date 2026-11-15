@@ -20,12 +20,6 @@ import (
 // retention ended.
 const objectSweepInterval = 10 * time.Minute
 
-// respondVerifier is the fresh finalized check in front of a respond: still
-// pending, unchanged, with the respond budget ahead.
-type respondVerifier interface {
-	Recheck(ctx context.Context, claim railgate.Claim, expected *railgate.Verified) error
-}
-
 // objectSweeper is a store that deletes objects whose retention ended.
 type objectSweeper interface {
 	Sweep(ctx context.Context, now time.Time) error
@@ -123,8 +117,8 @@ func (p *Provider) advanceExecuting(ctx context.Context, path string, record Pro
 			return runErr
 		}
 	case railgate.SlotStarted, railgate.SlotAmbiguous, railgate.SlotCompleted:
-		// The gate already let this execution start. A slot it calls
-		// ambiguous after a restart is one whose outcome the service holds.
+		// The gate already let this execution start; asking the service
+		// again only reads the outcome of that one run.
 		outcome, runErr = p.askService(ctx, key, record, cutoff)
 	case railgate.SlotFailed:
 		return p.endExecuting(key, record, ProviderFailed)
@@ -168,20 +162,14 @@ func (p *Provider) advanceExecuting(ctx context.Context, path string, record Pro
 		if err = p.config.Gate.Complete(key, response); err != nil {
 			return err
 		}
-	case slot.State == railgate.SlotCompleted:
-		if slot.ResponseHash != response {
-			return errors.Join(
-				errors.New("servicebridge: the gate holds another response hash for this execution"),
-				p.endExecuting(key, record, ProviderUnknown),
-			)
-		}
-	case slot.State == railgate.SlotAmbiguous:
-		// The gate lost track of the execution when the node restarted and
-		// cannot be told its outcome. The pre-respond check of this record
-		// goes to the verifier directly.
-		record.Recovered = true
 	default:
-		return fmt.Errorf("servicebridge: the execution slot is %s after a successful run", slot.State)
+		// The gate no longer holds the execution started: the node
+		// restarted during the run, or died after the gate recorded the
+		// result. Only the gate decides whether this outcome may still be
+		// attested.
+		if err = p.reconcile(ctx, key, record, claim, response); err != nil {
+			return err
+		}
 	}
 	record.State, record.ResponseHash = ProviderExecuted, response
 	record.ReceiptBOCBase64, record.ArtifactDigest = base64.StdEncoding.EncodeToString(boc), outcome.Artifact.Digest
@@ -189,6 +177,38 @@ func (p *Provider) advanceExecuting(ctx context.Context, path string, record Pro
 		return err
 	}
 	return errors.Join(p.dropSource(key), p.resumeExecuted(ctx, path, record, p.config.Now()))
+}
+
+// reconcile hands the gate the response hash of an outcome the service
+// recorded for an execution the gate lost track of. The gate verifies the
+// request afresh and completes the slot only if it was left ambiguous by a
+// restart, or already holds this very hash.
+//
+//   - No finalized checkpoint: nothing was decided; the record stays
+//     executing and the next round asks again.
+//   - The gate refuses the slot or holds another response hash: the record
+//     is unknown, with the gate's reason, and is never attested.
+//   - The verifier refuses the request (no longer pending, no respond
+//     budget left): nothing is attested and the record stays executing
+//     until the respond cut-off abandons it, as a failed pre-respond check
+//     leaves an executed record.
+func (p *Provider) reconcile(
+	ctx context.Context,
+	key railgate.SlotKey,
+	record ProviderRecord,
+	claim railgate.Claim,
+	response string,
+) error {
+	_, _, err := p.config.Gate.Reconcile(ctx, claim, response)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, railgate.ErrNotReconcilable), errors.Is(err, railgate.ErrReconcileConflict):
+		record.Detail = err.Error()
+		return errors.Join(err, p.endExecuting(key, record, ProviderUnknown))
+	default:
+		return fmt.Errorf("servicebridge: the outcome is not recorded by the gate yet: %w", err)
+	}
 }
 
 // askService sends the request with its staged source and waits no longer

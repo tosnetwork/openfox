@@ -81,13 +81,13 @@ type ProviderRecord struct {
 	// ExecutionLimits are the admitted manifest's limits, sent to the
 	// executor service unchanged every time the request is sent.
 	ExecutionLimits *ExecutionLimits `json:"execution_limits,omitempty"`
-	// Recovered marks an outcome read from the executor service after a
-	// restart, which the gate's slot does not record.
-	Recovered        bool  `json:"recovered_after_restart,omitempty"`
-	NextDeliveryUnix int64 `json:"next_delivery_unix,omitempty"`
-	BackoffSeconds   int64 `json:"backoff_seconds,omitempty"`
-	Deliveries       int   `json:"deliveries"`
-	UpdatedUnix      int64 `json:"updated_unix"`
+	// Detail says why a request ended in a state that is never attested,
+	// when the reason is not the state itself.
+	Detail           string `json:"detail,omitempty"`
+	NextDeliveryUnix int64  `json:"next_delivery_unix,omitempty"`
+	BackoffSeconds   int64  `json:"backoff_seconds,omitempty"`
+	Deliveries       int    `json:"deliveries"`
+	UpdatedUnix      int64  `json:"updated_unix"`
 }
 
 // ExecutionLimits are a manifest's limits as a provider record keeps them.
@@ -122,10 +122,8 @@ type ProviderConfig struct {
 	// outcome when the node restarts is ambiguous for good.
 	Runner WorkRunner
 	// Service executes through a service that owns the run. It needs
-	// Verifier, the gate's own verifier, and RespondBudget, the time kept
-	// for respond after an outcome arrives.
+	// RespondBudget, the time kept for respond after an outcome arrives.
 	Service            ServiceRunner
-	Verifier           respondVerifier
 	RespondBudget      time.Duration
 	Store              ArtifactSource
 	Lifecycle          LifecycleSender
@@ -173,7 +171,7 @@ func NewProvider(config ProviderConfig) (*Provider, error) {
 		config.Network == nil ||
 		config.Gate == nil ||
 		(config.Runner == nil) == (config.Service == nil) ||
-		(config.Service != nil && (config.Verifier == nil || config.RespondBudget <= 0)) ||
+		(config.Service != nil && config.RespondBudget <= 0) ||
 		config.Store == nil ||
 		config.Lifecycle == nil ||
 		!walletNamePattern.MatchString(config.AttestorController) ||
@@ -752,17 +750,6 @@ func (p *Provider) recheck(ctx context.Context, record ProviderRecord) error {
 	}
 	if !found {
 		return errors.New("servicebridge: the request has no execution slot")
-	}
-	if record.Recovered && slot.State == railgate.SlotAmbiguous {
-		// The gate only rechecks a slot it completed itself, and it calls
-		// every slot that was started when the node restarted ambiguous.
-		// This record's outcome was read from the executor service, which
-		// ran the execution exactly once, so the same fresh finalized check
-		// is made with the gate's verifier.
-		if p.config.Verifier == nil {
-			return errors.New("servicebridge: no verifier to recheck a recovered execution with")
-		}
-		return p.config.Verifier.Recheck(ctx, claim, expected)
 	}
 	return checker.Recheck(ctx, slot, claim, expected)
 }

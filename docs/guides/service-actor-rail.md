@@ -651,13 +651,23 @@ every time, whatever manifest the node is configured with later.
   an outage of the service does not use up a paid request's one execution.
 - **Restart.** A run belongs to the service and outlives the node. A node
   that stops or dies during a run finds the request `executing` when it
-  starts again, sends the same request (the source archive is kept in
-  `state_dir/provider/` for this) and attests the one outcome. The rail gate
-  marks every slot that was started when the node stopped as `ambiguous`
-  (`slot_state` in `status`) and cannot be told the outcome; for such a
-  request the node makes the same fresh finalized check before `respond`
-  with the gate's verifier, and the record carries
-  `recovered_after_restart`.
+  starts again and sends the same request (the source archive is kept in
+  `state_dir/provider/` for this). The rail gate marks every slot that was
+  started when the node stopped as `ambiguous`, with the restart as its
+  recorded cause, and an ambiguous slot is never attested. So the node hands
+  the gate the response hash of the outcome the service recorded; the gate
+  verifies the request afresh from finalized state and completes the slot
+  itself (`slot_state` `completed`, the slot marked `reconciled`). Only then
+  does the usual pre-respond check and `respond` follow.
+
+  | The gate's answer to the recovered outcome | The request |
+  |---|---|
+  | reconciled (or the slot already holds this response hash) | `executed`, then `responding` |
+  | no finalized checkpoint could be read | stays `executing`; asked again next round |
+  | the slot cannot be reconciled (not ambiguous because of a restart, or it is another request's) | `unknown`, with the gate's reason in the record's `detail`; never attested |
+  | the slot is completed with another response hash | `unknown`, with the reason in `detail`; never attested |
+  | the verifier refuses the request (no longer pending, respond budget gone) | not attested; stays `executing` until the deadline rule below abandons it |
+
 - **Deadline.** The node waits for an outcome only while `respond` would
   still fit: until `respond_budget_seconds` before the request's response
   deadline. After that the request is `abandoned`, the service is no longer

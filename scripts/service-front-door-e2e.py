@@ -51,6 +51,7 @@ import hashlib
 import io
 import json
 import os
+import pwd
 import re
 import secrets
 import subprocess
@@ -560,11 +561,11 @@ def stage_nodes() -> None:
         install_node(PRIVATE / node / "vault.json", ROOT / node / "vault.json")
     staged = {name: root_sha256(ROOT / "bin" / name) for name in binaries}
     built = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in binaries.items()}
-    ownership = as_node("stat", "-c", "%U:%G %a %n", ROOT, ROOT / "bin", OPENFOX, ROOT / "provider", ROOT / "buyer",
+    ownership = as_node("stat", "-c", "%u:%g %a %n", ROOT, ROOT / "bin", OPENFOX, ROOT / "provider", ROOT / "buyer",
                         ROOT / "provider" / "vault.json").stdout.split("\n")
     evidence["binaries"] = {name: {"sha256": digest} for name, digest in built.items()}
     if SERVICE_MODE:
-        socket = as_node("stat", "-c", "%U:%G %a %n", Path(EXECUTOR_SOCKET).parent, EXECUTOR_SOCKET,
+        socket = as_node("stat", "-c", "%u:%g %a %n", Path(EXECUTOR_SOCKET).parent, EXECUTOR_SOCKET,
                          check=False).stdout.split("\n")
         evidence["node_user"] = {"staged_under": str(ROOT), "uid": os.geteuid(),
                                  "ownership": [line for line in ownership if line],
@@ -577,7 +578,7 @@ def stage_nodes() -> None:
                 os.geteuid() != 0 and staged == built and not root_commands,
                 {"uid": os.geteuid(), "staged": staged, "built": built, "ownership": ownership})
         return
-    socket = as_node("stat", "-c", "%U:%G %a %n", Path(CONTAINERD_SOCKET).parent, CONTAINERD_SOCKET).stdout.split("\n")
+    socket = as_node("stat", "-c", "%u:%g %a %n", Path(CONTAINERD_SOCKET).parent, CONTAINERD_SOCKET).stdout.split("\n")
     evidence["root"] = {"staged_under": str(ROOT), "ownership": [line for line in ownership if line],
                         "container_runtime_socket": [line for line in socket if line],
                         "why": "the executor accepts only a runtime socket its own user owns, in a private directory; "
@@ -957,12 +958,27 @@ def stop_nodes() -> None:
            {"running": running, "exit": codes, "log_tail": unexpected})
 
 
+def personal_data(text: str) -> list[str]:
+    """Which kinds of personal data of the invoking user text holds: the home
+    directory path, or the login name as a word of its own. Ownership is
+    recorded as numeric ids, so neither has a reason to appear."""
+    kinds = []
+    if os.path.expanduser("~") in text:
+        kinds.append("home directory path")
+    login = pwd.getpwuid(os.getuid()).pw_name
+    # "root" is a word of the evidence itself and never the unprivileged
+    # invoking user's name.
+    if login != "root" and re.search(r"(?<![A-Za-z0-9_-])" + re.escape(login) + r"(?![A-Za-z0-9_-])", text):
+        kinds.append("login name")
+    return kinds
+
+
 def scan_artifacts() -> None:
-    """No home directory path in what the run leaves as evidence."""
-    home = os.path.expanduser("~")
-    found = [path.name for path in WORK.glob("*") if path.is_file() and path.name != "run.log" and
-             home in path.read_text(errors="replace")]
-    record("no home directory path in the transcripts or logs", not found, found)
+    """No home directory path and no login name in what the run leaves as
+    evidence. evidence.json is checked when it is written."""
+    found = {path.name: kinds for path in WORK.glob("*") if path.is_file() and path.name != "run.log"
+             and (kinds := personal_data(path.read_text(errors="replace")))}
+    record("no home directory path or login name in the transcripts or logs", not found, found)
 
 
 async def main() -> int:
@@ -1043,6 +1059,10 @@ async def main() -> int:
     evidence["ran_as_root"] = root_commands
     evidence["steps"] = steps
     evidence["finished_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    # The evidence file itself must hold no personal data either. The check
+    # is recorded in it, so the kinds found are named and never the values.
+    leaked = personal_data(json.dumps(redact_value(evidence), default=str))
+    record("no home directory path or login name in evidence.json", not leaked, leaked)
     passed = bool(steps) and all(step["pass"] for step in steps)
     evidence["result"] = "ALL PASS" if passed else "FAIL"
     (WORK / "evidence.json").write_text(json.dumps(redact_value(evidence), indent=2, default=str) + "\n")

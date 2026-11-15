@@ -484,7 +484,6 @@ func (n *Node) openProvider(ctx context.Context, options NodeOptions, lifecycle 
 		Gate:               gate,
 		Runner:             runner,
 		Service:            service,
-		Verifier:           verifier,
 		RespondBudget:      providerRespond,
 		Store:              store,
 		Lifecycle:          lifecycle,

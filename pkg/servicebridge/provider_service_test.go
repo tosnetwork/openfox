@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -54,9 +55,9 @@ func TestAServiceExecutionIsAttestedAndDeliveredFromTheNodesOwnObjects(t *testin
 		t.Fatal(err)
 	}
 	record := node.record(t)
-	if record.State != ProviderResponding || node.lifecycle.responds != 1 || record.Recovered {
-		t.Fatalf("after the run: state %s, %d responds, recovered %v", record.State, node.lifecycle.responds,
-			record.Recovered)
+	if record.State != ProviderResponding || node.lifecycle.responds != 1 || node.slot(t).Reconciled {
+		t.Fatalf("after the run: state %s, %d responds, reconciled %v", record.State, node.lifecycle.responds,
+			node.slot(t).Reconciled)
 	}
 	if state := node.slotState(t); state != railgate.SlotCompleted {
 		t.Fatalf("the gate slot is %s", state)
@@ -283,7 +284,7 @@ func TestEveryServiceAnswerLeadsToItsProviderState(t *testing.T) {
 				t.Fatalf("the request does not carry the task and the manifest: %+v", seen[0].Header)
 			}
 			record := node.record(t)
-			if record.State != ProviderResponding || node.lifecycle.responds != 1 || record.Recovered ||
+			if record.State != ProviderResponding || node.lifecycle.responds != 1 || node.slot(t).Reconciled ||
 				node.slotState(t) != railgate.SlotCompleted {
 				t.Fatalf("after the outcome arrived: state %s, %d responds, slot %s", record.State,
 					node.lifecycle.responds, node.slotState(t))
@@ -367,9 +368,10 @@ func TestServiceNodeCrashChild(t *testing.T) {
 }
 
 // A node that dies while its execution runs must, after its restart, send
-// the same request again and attest the one outcome: the gate calls the slot
-// ambiguous, but the execution belongs to the service, which neither ran it
-// twice nor lost it.
+// the same request again and attest the one outcome. The gate calls the slot
+// ambiguous because of the restart; the outcome the service recorded is
+// handed to the gate, which completes the slot itself before anything is
+// attested.
 func TestANodeKilledDuringARunAttestsItsOneOutcomeAfterRestart(t *testing.T) {
 	if os.Getenv(crashNodeStateEnv) != "" {
 		t.Skip("the child does not recurse")
@@ -429,9 +431,10 @@ func TestANodeKilledDuringARunAttestsItsOneOutcomeAfterRestart(t *testing.T) {
 		t.Fatalf("the round that read the outcome: %v", err)
 	}
 	record := node.record(t)
-	if record.State != ProviderResponding || !record.Recovered || node.lifecycle.responds != 1 {
-		t.Fatalf("after the outcome: state %s, recovered %v, %d responds", record.State, record.Recovered,
-			node.lifecycle.responds)
+	slot := node.slot(t)
+	if record.State != ProviderResponding || node.lifecycle.responds != 1 || slot.State != railgate.SlotCompleted ||
+		!slot.Reconciled || slot.ResponseHash != record.ResponseHash {
+		t.Fatalf("after the outcome: state %s, %d responds, slot %+v", record.State, node.lifecycle.responds, slot)
 	}
 	for round := 0; round < 3; round++ {
 		if err = node.provider.Tick(ctx); err != nil {
@@ -470,40 +473,144 @@ func TestANodeKilledDuringARunAttestsItsOneOutcomeAfterRestart(t *testing.T) {
 	}
 }
 
-// The gate, not the record, decides whether a slot it calls ambiguous may be
-// attested: only a record whose outcome was read from the service is
-// rechecked past it.
-func TestOnlyARecoveredExecutionIsRecheckedPastAnAmbiguousSlot(t *testing.T) {
-	ctx := context.Background()
+// restartedWithOutcome is a node restarted during a run whose outcome the
+// service now holds: the record is executing and the gate's slot ambiguous
+// because of the restart.
+func restartedWithOutcome(t *testing.T) (*gateFixture, *serviceNode) {
+	t.Helper()
 	service := startScriptedExecutor(t, func(scriptedRequest) scriptedAnswer {
 		return scriptedAnswer{Status: executorservice.StatusInProgress}
 	})
 	fixture := newGateFixture(t, serviceFixtureStart)
 	state := serviceState(t)
 	node := openServiceNode(t, fixture, state, ownClient(t, service.socket))
-	if err := node.provider.HandleTask(ctx, fixture.message); !errors.Is(err, ErrExecutionPending) {
+	if err := node.provider.HandleTask(context.Background(), fixture.message); !errors.Is(err, ErrExecutionPending) {
 		t.Fatal(err)
 	}
 	if err := node.gate.Close(); err != nil {
 		t.Fatal(err)
 	}
 	node = openServiceNode(t, fixture, state, ownClient(t, service.socket))
-	if slot := node.slotState(t); slot != railgate.SlotAmbiguous {
-		t.Fatalf("the reopened gate calls the slot %s", slot)
+	if slot := node.slot(t); slot.State != railgate.SlotAmbiguous ||
+		slot.AmbiguousCause != railgate.AmbiguousAfterRestart {
+		t.Fatalf("the reopened gate holds the slot as %+v", slot)
 	}
-	// A record that claims an attested result without the recovery mark,
-	// as a subprocess execution interrupted by a restart would be.
+	service.setAnswer(func(request scriptedRequest) scriptedAnswer {
+		return scriptedSuccess(request, []byte("artifact"), []byte("report"))
+	})
+	return fixture, node
+}
+
+// The gate, not the record, decides whether a slot it calls ambiguous may be
+// attested: a record that claims a result the gate never recorded is refused.
+func TestARecordAloneNeverGetsAnAmbiguousSlotAttested(t *testing.T) {
+	ctx := context.Background()
+	_, node := restartedWithOutcome(t)
 	record := node.record(t)
 	record.State, record.ResponseHash = ProviderExecuted, hex.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
 	if err := node.provider.store(recordKey(record), record, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := node.provider.Tick(ctx); err == nil {
-		t.Fatal("an ambiguous slot was rechecked for a record that was not recovered")
+		t.Fatal("an ambiguous slot was rechecked for respond")
 	}
-	if node.lifecycle.responds != 0 || node.record(t).State != ProviderExecuted {
+	if node.lifecycle.responds != 0 || node.record(t).State != ProviderExecuted ||
+		node.slotState(t) != railgate.SlotAmbiguous {
 		t.Fatalf("an ambiguous execution was attested: %d responds", node.lifecycle.responds)
 	}
+}
+
+// Without a finalized checkpoint the gate decides nothing: the outcome is
+// neither attested nor given up, and is reconciled once the chain reads.
+func TestAnOutcomeWaitsForTheGateWhileNoCheckpointIsRead(t *testing.T) {
+	ctx := context.Background()
+	fixture, node := restartedWithOutcome(t)
+	fixture.chain.setUnavailable(true)
+	for round := 0; round < 2; round++ {
+		err := node.provider.Tick(ctx)
+		if !errors.Is(err, railgate.ErrResolverUnavailable) {
+			t.Fatalf("round %d: %v", round, err)
+		}
+		if node.record(t).State != ProviderExecuting || node.lifecycle.responds != 0 ||
+			node.slotState(t) != railgate.SlotAmbiguous {
+			t.Fatalf("round %d: state %s, slot %s", round, node.record(t).State, node.slotState(t))
+		}
+	}
+	fixture.chain.setUnavailable(false)
+	if err := node.provider.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if slot := node.slot(t); node.record(t).State != ProviderResponding || node.lifecycle.responds != 1 ||
+		slot.State != railgate.SlotCompleted || !slot.Reconciled {
+		t.Fatalf("once the chain reads: state %s, slot %+v", node.record(t).State, slot)
+	}
+}
+
+// A slot the gate will not reconcile is final: the request is unknown, says
+// why, and is never attested.
+func TestASlotTheGateWillNotReconcileIsNeverAttested(t *testing.T) {
+	ctx := context.Background()
+	_, node := restartedWithOutcome(t)
+	// An ambiguous slot without the restart as its recorded cause.
+	key := recordKey(node.record(t))
+	path := filepath.Join(node.state, "slots", slotFileName(key))
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := bytes.Replace(raw, []byte(`,"ambiguous_cause":"restart"`), nil, 1)
+	if bytes.Equal(stripped, raw) {
+		t.Fatalf("the slot records no restart cause: %s", raw)
+	}
+	if err = os.WriteFile(path, stripped, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = node.provider.Tick(ctx)
+	record := node.record(t)
+	if !errors.Is(err, railgate.ErrNotReconcilable) || record.State != ProviderUnknown ||
+		!strings.Contains(record.Detail, "cannot be reconciled") || node.lifecycle.responds != 0 {
+		t.Fatalf("a slot the gate refuses: %v, state %s, detail %q", err, record.State, record.Detail)
+	}
+	for round := 0; round < 2; round++ {
+		if err = node.provider.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if node.record(t).State != ProviderUnknown || node.lifecycle.responds != 0 ||
+		node.slotState(t) != railgate.SlotAmbiguous {
+		t.Fatalf("after the refusal: state %s, %d responds", node.record(t).State, node.lifecycle.responds)
+	}
+}
+
+// A request the verifier no longer lets be answered is not attested; like a
+// failed pre-respond check it is kept until the respond cut-off abandons it.
+func TestAnOutcomeTheVerifierRefusesIsNotAttested(t *testing.T) {
+	ctx := context.Background()
+	fixture, node := restartedWithOutcome(t)
+	// Finalized chain time is inside the respond budget before the deadline.
+	fixture.chain.setTime(time.Unix(int64(fixture.deadline), 0).Add(-time.Minute))
+	err := node.provider.Tick(ctx)
+	if err == nil || errors.Is(err, railgate.ErrNotReconcilable) || errors.Is(err, railgate.ErrResolverUnavailable) {
+		t.Fatalf("the verifier's refusal was reported as %v", err)
+	}
+	if node.record(t).State != ProviderExecuting || node.lifecycle.responds != 0 ||
+		node.slotState(t) != railgate.SlotAmbiguous {
+		t.Fatalf("after the verifier refused: state %s, slot %s", node.record(t).State, node.slotState(t))
+	}
+	fixture.clock.Set(time.Unix(int64(fixture.deadline), 0).Add(-2 * time.Minute))
+	if err = node.provider.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if node.record(t).State != ProviderAbandoned || node.lifecycle.responds != 0 {
+		t.Fatalf("past the cut-off: state %s", node.record(t).State)
+	}
+}
+
+// slotFileName is the gate's file name of a slot.
+func slotFileName(key railgate.SlotKey) string {
+	digest := sha256Sum([]byte(key.QuoteCommitment + "\x00" + key.Actor + "\x00" +
+		strconv.FormatUint(key.RequestID, 10)))
+	return hex.EncodeToString(digest[:]) + ".json"
 }
 
 func TestTheNodeStopsWaitingWhenRespondNoLongerFits(t *testing.T) {
@@ -606,12 +713,10 @@ func TestAProviderHasExactlyOneExecutor(t *testing.T) {
 	both.Runner = &SubprocessRunner{}
 	neither := good
 	neither.Service = nil
-	noVerifier := good
-	noVerifier.Verifier = nil
 	noBudget := good
 	noBudget.RespondBudget = 0
 	for name, config := range map[string]ProviderConfig{
-		"both executors": both, "no executor": neither, "a service without the verifier": noVerifier,
+		"both executors": both, "no executor": neither,
 		"a service without a respond budget": noBudget,
 	} {
 		if _, err := NewProvider(config); err == nil {
@@ -730,8 +835,10 @@ func TestAnOutcomeThatDiffersFromTheGatesRecordIsNeverAttested(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || record.State != ProviderUnknown || node.lifecycle.responds != 0 {
-				t.Fatalf("a result the gate did not record was attested: %s, %v", record.State, err)
+			if !errors.Is(err, railgate.ErrReconcileConflict) || record.State != ProviderUnknown ||
+				!strings.Contains(record.Detail, "another response hash") || node.lifecycle.responds != 0 {
+				t.Fatalf("a result the gate did not record was attested: %s, %q, %v", record.State,
+					record.Detail, err)
 			}
 		})
 	}

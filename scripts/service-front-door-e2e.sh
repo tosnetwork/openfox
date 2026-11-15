@@ -67,7 +67,10 @@ mkdir -p "$E2E_BIN"
 export E2E_REPO="$repo"
 cd "$TOS_SOURCE"
 export PYTHONPATH="$TOS_SOURCE/test/tostester/src"
-setsid uv run --frozen python "$here/service-front-door-e2e.py" > "$E2E_WORKDIR/run.log" 2>&1 &
+# No bytecode cache is written next to the script: the run checks that the
+# tree is clean at the commit its evidence names.
+export PYTHONDONTWRITEBYTECODE=1
+setsid uv run --frozen python -B "$here/service-front-door-e2e.py" > "$E2E_WORKDIR/run.log" 2>&1 &
 pg=$!
 echo "$pg" > "$E2E_WORKDIR/run.pgid"
 "$THERMAL_GUARD" "$pg" > "$E2E_WORKDIR/guard.log" 2>&1 &

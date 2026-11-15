@@ -361,6 +361,10 @@ func projectRequest(record *ProviderRecord, slot *railgate.Slot, fact string) (s
 		case railgate.SlotStarted:
 			return OperatorExecuting, "the execution was handed to the executor"
 		case railgate.SlotAmbiguous:
+			if slot.AmbiguousCause == railgate.AmbiguousAfterRestart {
+				return OperatorOutcomeUnknown, "the node restarted while the execution had no recorded outcome; " +
+					"it is attested only if the gate is given the outcome an executor service recorded for it"
+			}
 			return OperatorOutcomeUnknown, "the execution started and has no recorded outcome; it is never attested"
 		case railgate.SlotFailed, railgate.SlotAbandoned:
 			return OperatorOutcomeUnknown, "the gate recorded no result; the request resolves by refund or sweep"

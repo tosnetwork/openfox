@@ -449,7 +449,7 @@ func TestInitWithoutATransportEstablishesTheNodeWhichCannotStartUntilOneIsAdded(
 	if config.MessengerSocket != "" || len(config.DirectPeers) != 0 || config.AgentID != first.AgentID {
 		t.Fatalf("configuration = %+v", config)
 	}
-	if _, err = openPacketTransport(config); err == nil {
+	if _, err = openPacketTransport(config, nil); err == nil {
 		t.Fatal("a node without a transport opened one")
 	}
 	f.init.DirectPeers = map[string]string{testBuyer: "/run/peer/rail-receiver.sock"}
@@ -467,7 +467,7 @@ func TestInitWithoutATransportEstablishesTheNodeWhichCannotStartUntilOneIsAdded(
 		f.world().count("wallet send") != 1 {
 		t.Fatalf("adding the peer changed the Agent or sent again: %+v", config)
 	}
-	if _, err = openPacketTransport(config); err != nil {
+	if _, err = openPacketTransport(config, nil); err != nil {
 		t.Fatalf("the node with a direct peer has no transport: %v", err)
 	}
 }

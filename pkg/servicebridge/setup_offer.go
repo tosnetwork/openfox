@@ -11,9 +11,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tosnetwork/ai/execution/pkg/softwarework"
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/ai/protocol/pkg/agentpacketseal"
 	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
 	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 )
@@ -787,6 +789,20 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		ExecutorBinary: in.ExecutorBinary, ExecutorSHA256: executorPin, ContainerdSocket: in.ContainerdSocket,
 		FIFODir: in.FIFODir,
 	}
+	var keyCard []byte
+	if len(config.RelayURLs) > 0 {
+		// The offer file carries the provider's current card; `serve`
+		// rewrites the file when it issues a successor.
+		config.Provider.OfferFile = in.OfferPath
+		key, cardErr := offerKeyCard(ctx, config, env)
+		if cardErr != nil {
+			return result, cardErr
+		}
+		keyCard = key.CardJSON
+		run.notef("relay.card", SetupDone, "the offer carries encryption key card %s, valid until %s, naming "+
+			"relays %s", agentpacketseal.KeyIDText(key.KeyID),
+			time.Unix(int64(key.NotAfterUnix), 0).UTC().Format(time.RFC3339), strings.Join(key.Relays, ", "))
+	}
 	session, err := run.begin()
 	if err != nil {
 		return result, err
@@ -816,7 +832,7 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 	run.notef("config.write", SetupDone, "wrote the provider section of %s", in.RailConfigPath)
 	if err = writeOfferFile(in.OfferPath, Offer{
 		CapabilityID: capabilityID, Version: in.Version, ProviderAgentID: config.AgentID, ManifestDigest: digest,
-		ManifestCBOR: manifestCBOR,
+		ManifestCBOR: manifestCBOR, KeyCard: keyCard,
 	}, env.Now()); err != nil {
 		return result, err
 	}
@@ -829,4 +845,32 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		"openfox earning service serve --rail-config " + in.RailConfigPath,
 	}
 	return result, nil
+}
+
+// offerKeyCard returns the provider's current key card, issuing one signed
+// by the packet controller when none is valid for at least the successor
+// lead.
+func offerKeyCard(ctx context.Context, config NodeConfig, env SetupEnv) (OwnRelayKey, error) {
+	helper, err := env.PacketSigner(config.TOSCTL, env.vaultURL(config.TOSCTL))
+	if err != nil {
+		return OwnRelayKey{}, err
+	}
+	signer, err := NewPacketSigner(helper, config.PacketController, config.PacketKeyID, config.AgentID)
+	if err != nil {
+		return OwnRelayKey{}, err
+	}
+	signer.now = env.Now
+	root := filepath.Join(config.StateDir, relayStateDir)
+	if err = ensurePrivateDirectory(root); err != nil {
+		return OwnRelayKey{}, err
+	}
+	keys, err := OpenRelayKeys(filepath.Join(root, relayKeysDir), config.AgentID, config.RelayURLs, signer, env.Now)
+	if err != nil {
+		return OwnRelayKey{}, err
+	}
+	now := env.Now().Unix()
+	if now <= 0 {
+		return OwnRelayKey{}, errors.New("servicebridge: the clock is not set")
+	}
+	return keys.Current(ctx, saturatingAdd(uint64(now), uint64(RelaySuccessorLead/time.Second)))
 }

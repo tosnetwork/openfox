@@ -63,7 +63,7 @@ func startDirectNode(t *testing.T, root, agent string, peers map[string]string) 
 		defer cancel()
 		_ = server.Shutdown(ctx)
 	})
-	transport, err := openPacketTransport(NodeConfig{AgentID: agent, DirectPeers: peers})
+	transport, err := openPacketTransport(NodeConfig{AgentID: agent, DirectPeers: peers}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +338,7 @@ func TestTheNodeTransportFailsClosedWithoutARoute(t *testing.T) {
 		"a relative messenger socket": {AgentID: testBuyer, MessengerSocket: "messenger.sock"},
 	}
 	for name, config := range cases {
-		if _, err := openPacketTransport(config); err == nil {
+		if _, err := openPacketTransport(config, nil); err == nil {
 			t.Errorf("%s: a transport was opened", name)
 		}
 	}
@@ -346,11 +346,11 @@ func TestTheNodeTransportFailsClosedWithoutARoute(t *testing.T) {
 	for index := 0; index <= maxDirectPeers; index++ {
 		tooMany["agent_"+strings.Repeat("0", 62)+string("0123456789abcdef"[index/16])+string("0123456789abcdef"[index%16])] = socket
 	}
-	if _, err := openPacketTransport(NodeConfig{AgentID: testBuyer, DirectPeers: tooMany}); err == nil {
+	if _, err := openPacketTransport(NodeConfig{AgentID: testBuyer, DirectPeers: tooMany}, nil); err == nil {
 		t.Error("more direct peers than the bound were accepted")
 	}
 	transport, err := openPacketTransport(
-		NodeConfig{AgentID: testBuyer, DirectPeers: map[string]string{testSeller: socket}},
+		NodeConfig{AgentID: testBuyer, DirectPeers: map[string]string{testSeller: socket}}, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -362,7 +362,7 @@ func TestTheNodeTransportFailsClosedWithoutARoute(t *testing.T) {
 	withMessenger, err := openPacketTransport(NodeConfig{
 		AgentID: testBuyer, MessengerSocket: "/run/openfox/messenger.sock",
 		DirectPeers: map[string]string{testSeller: socket},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

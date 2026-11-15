@@ -56,6 +56,12 @@ type TaskHeader struct {
 	RequestID      uint64 `json:"request_id"`
 	CallLT         uint64 `json:"call_lt"`
 	CallHash       string `json:"call_hash"`
+	// BuyerKeyCard is the buyer's current encryption key card packet
+	// (standard base64 of its exact signed JSON), present when the buyer
+	// receives over the relay carrier. It travels inside the signed, and
+	// over the relay encrypted, task; the provider verifies it against
+	// finalized state and seals the result to it.
+	BuyerKeyCard string `json:"buyer_key_card_base64,omitempty"`
 }
 
 // Task is a decoded task message.
@@ -190,6 +196,9 @@ func validateTaskHeader(header TaskHeader, archiveBytes int) error {
 		!sha256Pattern.MatchString(header.SourceDigest) ||
 		!hex64Pattern.MatchString(header.CallHash) || header.CallLT == 0 {
 		return errors.New("servicebridge: the task header is incomplete")
+	}
+	if len(header.BuyerKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
+		return errors.New("servicebridge: the buyer key card exceeds its bound")
 	}
 	if archiveBytes == 0 || archiveBytes > MaxInlineInputBytes {
 		return errors.New("servicebridge: the source archive exceeds the advertised 1 MiB inline input or is empty")

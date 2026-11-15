@@ -23,7 +23,10 @@
 #   E2E_EXECUTOR         the provider's software-work-execute binary: the
 #                        legacy single-user mode, in which both nodes run as
 #                        root. Used only when E2E_EXECUTOR_SOCKET is unset.
-# Optional: E2E_BASE_PORT (tostester ports), E2E_RPC_PORTS (three JSON-RPC
+# Optional: E2E_RELAY_URL, the base URL of an Agent Packet Relay already
+#   running (https, or http on loopback): both nodes are then initialized with
+#   --relay-url and no direct peer, and every packet travels through it sealed
+#   end to end. E2E_BASE_PORT (tostester ports), E2E_RPC_PORTS (three JSON-RPC
 #   ports), E2E_HOLD=1 (keep the network up after the run until
 #   <workdir>/release exists, for inspection), and E2E_ROOT_BASE: both nodes'
 #   state is staged under <E2E_ROOT_BASE>/<workdir name>, which must not exist

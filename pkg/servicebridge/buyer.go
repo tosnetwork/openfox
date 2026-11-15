@@ -107,8 +107,11 @@ type BuyerConfig struct {
 	Confirm Confirmer
 	// Disclose is shown every purchase's costs before the call, whether or
 	// not the policy routes it to the owner.
-	Disclose  func(Costs)
-	Courier   *Courier
+	Disclose func(Costs)
+	Courier  *Courier
+	// RelayKeys, when the node has a relay carrier, supplies the buyer's own
+	// key card for each task.
+	RelayKeys *RelayKeys
 	Lifecycle LifecycleSender
 	Directory string
 	// Manifests receives the manifest bytes of each open purchase's stored
@@ -709,6 +712,10 @@ func (b *Buyer) sendTask(ctx context.Context, record PurchaseRecord) error {
 	if err != nil {
 		return err
 	}
+	card, err := b.ownKeyCard(ctx, record)
+	if err != nil {
+		return err
+	}
 	body, err := EncodeTask(Task{Header: TaskHeader{
 		BuyerAgentID:      b.config.AgentID,
 		BuyerWallet:       b.config.Wallet,
@@ -719,6 +726,7 @@ func (b *Buyer) sendTask(ctx context.Context, record PurchaseRecord) error {
 		RequestID:         *record.RequestID,
 		CallLT:            record.CallLT,
 		CallHash:          record.CallHash,
+		BuyerKeyCard:      card,
 	}, Package: pkg, Archive: archive})
 	if err != nil {
 		return err
@@ -729,6 +737,27 @@ func (b *Buyer) sendTask(ctx context.Context, record PurchaseRecord) error {
 	}
 	_, err = b.config.Courier.Deliver(ctx, envelope, body)
 	return err
+}
+
+// buyerCardMargin is how far beyond the request's last deadline the buyer's
+// card should stay valid, for the provider's redelivery of the result.
+const buyerCardMargin = 24 * time.Hour
+
+// ownKeyCard is the buyer's card for a task: one covering the response and
+// refund deadlines plus a margin, as far as the 30-day card bound allows.
+func (b *Buyer) ownKeyCard(ctx context.Context, record PurchaseRecord) (string, error) {
+	if b.config.RelayKeys == nil {
+		return "", nil
+	}
+	last := record.ResponseDeadline
+	if record.RefundDeadline > last {
+		last = record.RefundDeadline
+	}
+	key, err := b.config.RelayKeys.Current(ctx, saturatingAdd(last, uint64(buyerCardMargin/time.Second)))
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(key.CardJSON), nil
 }
 
 func (b *Buyer) complete(ctx context.Context, record PurchaseRecord) error {

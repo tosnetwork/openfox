@@ -137,8 +137,11 @@ type ProviderConfig struct {
 	Lifecycle          LifecycleSender
 	AttestorController string
 	Courier            *Courier
-	History            railgate.Reader
-	Directory          string
+	// Cards, when the node has a relay carrier, takes the buyer's key card
+	// from an admitted task so results can be sealed back to it.
+	Cards     *PeerCards
+	History   railgate.Reader
+	Directory string
 	// StateDir holds the owner's admission pause marker. Empty means the
 	// provider has no pause control; OpenNode always sets it.
 	StateDir string
@@ -330,12 +333,17 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 	slot, verified, err := p.config.Gate.Admit(ctx, claim)
 	if errors.Is(err, railgate.ErrSlotTaken) {
 		// The buyer resent the task: it is never executed again. A result
-		// already attested is redelivered by the delivery loop.
-		return nil
+		// already attested is redelivered by the delivery loop, sealed to
+		// the newest buyer card a resend brought.
+		return p.learnBuyerCard(ctx, message, task)
 	}
 	if err != nil {
 		return err
 	}
+	// The card is taken only from a task the gate admitted, so storing
+	// cards costs a paid call. A card that is not taken is recorded and a
+	// resend of the task can bring it again.
+	cardErr := p.learnBuyerCard(ctx, message, task)
 	if verified.RequestHash != message.RequestHash ||
 		verified.Actor != "0:"+hex.EncodeToString(message.ActorAccount[:]) {
 		return errors.New("servicebridge: the task frames are bound to another request than the verified one")
@@ -354,6 +362,9 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 		BuyerWallet: claim.BuyerWallet, ExecutionID: hex.EncodeToString(claim.ExecutionID[:]),
 		InputDigest: hex.EncodeToString(claim.InputDigest[:]), CallLT: claim.Call.LT, CallHash: claim.Call.Hash,
 		PriceNanoTOS: verified.Price.String(),
+	}
+	if cardErr != nil {
+		record.Detail = "the buyer's encryption key card was not taken: " + cardErr.Error()
 	}
 	binding := ReceiptBinding{
 		QuoteCommitment: verified.QuoteCommitment, ExecutionID: verified.ExecutionID,
@@ -428,6 +439,20 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 		return err
 	}
 	return nil
+}
+
+// learnBuyerCard verifies the buyer's key card a task carries against
+// finalized state and keeps it. The card must be of the Agent that signed
+// the task packets, which claimFor already required to be the buyer.
+func (p *Provider) learnBuyerCard(ctx context.Context, message Message, task Task) error {
+	if task.Header.BuyerKeyCard == "" || p.config.Cards == nil {
+		return nil
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(task.Header.BuyerKeyCard)
+	if err != nil {
+		return fmt.Errorf("%w: the buyer key card does not decode", ErrCardRefused)
+	}
+	return p.config.Cards.Learn(ctx, raw, message.SenderAgentID, "")
 }
 
 // admissionOpen refuses new admission while the owner's pause marker exists.

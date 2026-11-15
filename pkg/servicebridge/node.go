@@ -51,11 +51,16 @@ type NodeConfig struct {
 	// DirectPeers maps a recipient Agent id to the receiver Unix socket of
 	// its node on this host. A packet to a listed Agent is posted to that
 	// socket instead of going through the Messenger.
-	DirectPeers    map[string]string `json:"direct_peers,omitempty"`
-	ReceiverSocket string            `json:"receiver_socket"`
-	Provider       *ProviderNode     `json:"provider,omitempty"`
-	Buyer          *BuyerNode        `json:"buyer,omitempty"`
-	MaxAssemblies  *AssemblyBounds   `json:"max_assemblies,omitempty"`
+	DirectPeers map[string]string `json:"direct_peers,omitempty"`
+	// RelayURLs are the Agent Packet Relay base URLs this node publishes in
+	// its encryption key card and polls. With them a packet to a peer whose
+	// verified card is known is sealed to that card and deposited at the
+	// peer's relays.
+	RelayURLs      []string        `json:"relay_urls,omitempty"`
+	ReceiverSocket string          `json:"receiver_socket"`
+	Provider       *ProviderNode   `json:"provider,omitempty"`
+	Buyer          *BuyerNode      `json:"buyer,omitempty"`
+	MaxAssemblies  *AssemblyBounds `json:"max_assemblies,omitempty"`
 }
 
 // NetworkConfig is the network domain.
@@ -98,6 +103,9 @@ type ProviderNode struct {
 	ExecutorSHA256   string `json:"executor_sha256,omitempty"`
 	ContainerdSocket string `json:"containerd_socket,omitempty"`
 	FIFODir          string `json:"fifo_dir,omitempty"`
+	// OfferFile is the offer file `offer` wrote. With relays configured the
+	// node rewrites it when it issues a successor key card.
+	OfferFile string `json:"offer_file,omitempty"`
 }
 
 // Executor modes of a provider node.
@@ -170,8 +178,10 @@ type NodeOptions struct {
 	Runner          WorkRunner
 	Artifacts       ArtifactSource
 	ExecutorService ExecutorService
-	Report          func(stage string, err error)
-	Now             func() time.Time
+	// RelayDial replaces the relay HTTP client, for tests.
+	RelayDial relayDialer
+	Report    func(stage string, err error)
+	Now       func() time.Time
 }
 
 // Node is one assembled rail node.
@@ -187,7 +197,11 @@ type Node struct {
 	Buyer     *Buyer
 	Service   *Service
 	Manifests *MemoryManifests
-	closers   []io.Closer
+	// Relay is the Agent Packet Relay carrier, nil without relay_urls.
+	Relay *RelayCarrier
+	// Cards holds the verified key cards of peers, nil without relay_urls.
+	Cards   *PeerCards
+	closers []io.Closer
 }
 
 // Close releases the node's resources.
@@ -348,7 +362,18 @@ func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Nod
 	if err != nil {
 		return fail(err)
 	}
-	transport, err := openPacketTransport(config)
+	agents := FinalizedAgents{Sessions: ChainSessions{Reader: node.Reader}}
+	node.Receiver = &Receiver{LocalAgentID: config.AgentID, Resolver: agents, Verifier: node.Helper, Now: options.Now}
+	if len(config.RelayURLs) > 0 {
+		if err = node.openRelay(signer, agents, options); err != nil {
+			return fail(err)
+		}
+	}
+	var relay *RelayTransport
+	if node.Relay != nil {
+		relay = node.Relay.Transport
+	}
+	transport, err := openPacketTransport(config, relay)
 	if err != nil {
 		return fail(err)
 	}
@@ -385,11 +410,59 @@ func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Nod
 	if err != nil {
 		return fail(err)
 	}
-	node.Receiver = &Receiver{
-		LocalAgentID: config.AgentID, Resolver: FinalizedAgents{Sessions: ChainSessions{Reader: node.Reader}},
-		Verifier: node.Helper, Inbox: node.Inbox, Notify: node.Service.Notify, Now: options.Now,
+	node.Receiver.Inbox, node.Receiver.Notify = node.Inbox, node.Service.Notify
+	if node.Relay != nil && config.Provider != nil && config.Provider.OfferFile != "" {
+		node.Relay.SetRotationHook(node.republishOffer)
 	}
 	return node, nil
+}
+
+// openRelay opens the relay carrier and the peer card directory. The
+// receiver it feeds is completed once the inbox is open.
+func (n *Node) openRelay(signer *PacketSigner, agents FinalizedAgents, options NodeOptions) error {
+	root := filepath.Join(n.Config.StateDir, relayStateDir)
+	if err := ensurePrivateDirectory(root); err != nil {
+		return err
+	}
+	cards, err := OpenPeerCards(filepath.Join(root, relayPeersDir), n.Helper, agents,
+		FinalizedCapabilityOwners{Sessions: ChainSessions{Reader: n.Reader}}, options.Now)
+	if err != nil {
+		return err
+	}
+	report := options.Report
+	if report == nil {
+		report = func(string, error) {}
+	}
+	carrier, err := OpenRelayCarrier(RelayCarrierConfig{
+		StateDir: n.Config.StateDir, AgentID: n.Config.AgentID, Relays: n.Config.RelayURLs, Signer: signer,
+		Cards: cards, Receiver: n.Receiver, Dial: options.RelayDial, Now: options.Now, Report: report,
+	})
+	if err != nil {
+		return err
+	}
+	n.Relay, n.Cards = carrier, cards
+	return nil
+}
+
+// republishOffer rewrites the provider's offer file with a new own card.
+func (n *Node) republishOffer(_ context.Context, key OwnRelayKey) error {
+	provider := n.Config.Provider
+	manifestCBOR, err := os.ReadFile(provider.ManifestFile)
+	if err != nil || len(manifestCBOR) == 0 || len(manifestCBOR) > 1<<20 {
+		return errors.New("servicebridge: read the provider manifest")
+	}
+	manifest, err := nativecore.DecodeCanonicalSoftwareWorkManifestCBOR(manifestCBOR)
+	if err != nil {
+		return err
+	}
+	_, digest, err := nativecore.CanonicalSoftwareWorkManifest(manifest)
+	if err != nil {
+		return err
+	}
+	return writeOfferFile(provider.OfferFile, Offer{
+		CapabilityID: provider.CapabilityID, Version: provider.Version, ProviderAgentID: n.Config.AgentID,
+		ManifestDigest: digest, ManifestCBOR: manifestCBOR, KeyCard: key.CardJSON,
+	}, time.Now())
 }
 
 func (n *Node) openProvider(ctx context.Context, options NodeOptions, lifecycle LifecycleSender) error {
@@ -489,6 +562,7 @@ func (n *Node) openProvider(ctx context.Context, options NodeOptions, lifecycle 
 		Lifecycle:          lifecycle,
 		AttestorController: config.AttestorController,
 		Courier:            n.Courier,
+		Cards:              n.Cards,
 		History:            railReader{reader: n.Reader},
 		Directory:          filepath.Join(n.Config.StateDir, "provider"),
 		StateDir:           n.Config.StateDir,
@@ -563,6 +637,7 @@ func (n *Node) openBuyer(options NodeOptions, lifecycle LifecycleSender, vaultUR
 		Quotes:    quotes,
 		Policy:    policy,
 		Courier:   n.Courier,
+		RelayKeys: n.relayKeys(),
 		Lifecycle: lifecycle,
 		Directory: filepath.Join(n.Config.StateDir, "purchases"),
 		Manifests: n.Manifests,
@@ -682,9 +757,16 @@ func (n *Node) UseOffer(offer Offer, now func() time.Time) error {
 	}
 	quotes.UseSource(OfferQuotes{
 		Sessions: quoteprovider.FromChain(n.Reader), Network: n.Network,
-		RegistryCodeHash: n.Config.RegistryCodeHash, Offer: offer, Now: now,
+		RegistryCodeHash: n.Config.RegistryCodeHash, Offer: offer, Cards: n.Cards, Now: now,
 	})
 	return nil
+}
+
+func (n *Node) relayKeys() *RelayKeys {
+	if n.Relay == nil {
+		return nil
+	}
+	return n.Relay.Keys
 }
 
 // EncodeNodeConfig renders a configuration for an owner to edit.

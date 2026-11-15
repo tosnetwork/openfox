@@ -116,6 +116,12 @@ type ProviderStatus struct {
 	// never claimed (wallet_credit is not_verified).
 	Withdrawals      []WithdrawalRecord `json:"withdrawals"`
 	WithdrawalsError string             `json:"withdrawals_error,omitempty"`
+	// Relay is the relay carrier's delivery state, present when relay_urls
+	// is configured: each relay's polling, the held keys and peer cards as
+	// `serve` last recorded them, and every journaled outgoing envelope with
+	// the relays that accepted it.
+	Relay      *RelayDeliveryReport `json:"relay,omitempty"`
+	RelayError string               `json:"relay_error,omitempty"`
 }
 
 // AdmissionStatus says whether new requests are admitted.
@@ -556,6 +562,12 @@ func ReadProviderStatus(
 	}
 	status.Actor = summarize(actor, facts[actor], session)
 	status.Requests = projectProviderStatus(records, slots, facts)
+	if len(config.RelayURLs) > 0 {
+		status.Relay, err = ReadRelayDelivery(config.StateDir, config.RelayURLs)
+		if err != nil {
+			status.RelayError = err.Error()
+		}
+	}
 	return status, nil
 }
 

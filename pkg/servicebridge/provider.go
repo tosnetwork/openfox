@@ -448,14 +448,20 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 // finalized state and keeps it. The card must be of the Agent that signed
 // the task packets, which claimFor already required to be the buyer.
 func (p *Provider) learnBuyerCard(ctx context.Context, message Message, task Task) error {
-	if task.Header.BuyerKeyCard == "" || p.config.Cards == nil {
+	return p.learnCard(ctx, message.SenderAgentID, task.Header.BuyerKeyCard)
+}
+
+// learnCard verifies a buyer's key card, standard base64 of its packet
+// JSON, against finalized state and keeps it when its Agent is sender.
+func (p *Provider) learnCard(ctx context.Context, sender, encoded string) error {
+	if encoded == "" || p.config.Cards == nil {
 		return nil
 	}
-	raw, err := base64.StdEncoding.Strict().DecodeString(task.Header.BuyerKeyCard)
+	raw, err := base64.StdEncoding.Strict().DecodeString(encoded)
 	if err != nil {
 		return fmt.Errorf("%w: the buyer key card does not decode", ErrCardRefused)
 	}
-	return p.config.Cards.Learn(ctx, raw, message.SenderAgentID, "")
+	return p.config.Cards.Learn(ctx, raw, sender, "")
 }
 
 // admissionOpen refuses new admission while the owner's pause marker exists.
@@ -501,8 +507,8 @@ func (p *Provider) respondFinalized(ctx context.Context, record ProviderRecord) 
 }
 
 // HandleAck records a buyer's acknowledgement of a delivered result.
-func (p *Provider) HandleAck(message Message) error {
-	if p == nil || message.Kind != FrameResultAck {
+func (p *Provider) HandleAck(ctx context.Context, message Message) error {
+	if p == nil || ctx == nil || message.Kind != FrameResultAck {
 		return errors.New("servicebridge: invalid acknowledgement handling")
 	}
 	ack, err := DecodeAck(message.Body)
@@ -521,8 +527,20 @@ func (p *Provider) HandleAck(message Message) error {
 			if record.BuyerAgentID != message.SenderAgentID || record.ResponseHash != ack.ResponseHash {
 				return errors.New("servicebridge: the acknowledgement is not from this request's buyer for its result")
 			}
+			// The acknowledgement is tied to this request's buyer and result,
+			// so its card refreshes the buyer's card in band. A card finalized
+			// state refuses is noted; one it cannot check now is retried.
+			changed := false
+			if cardErr := p.learnCard(ctx, message.SenderAgentID, ack.BuyerKeyCard); cardErr != nil {
+				if !errors.Is(cardErr, ErrCardRefused) {
+					return cardErr
+				}
+				record.Detail, changed = "the buyer's encryption key card was not taken: "+cardErr.Error(), true
+			}
 			if record.State == ProviderDelivering {
-				record.State = ProviderAcked
+				record.State, changed = ProviderAcked, true
+			}
+			if changed {
 				record.Schema, record.UpdatedUnix = providerRecordSchema, p.config.Now().Unix()
 				return writeJSON(path, record, false)
 			}

@@ -16,7 +16,9 @@ const (
 	maxMessageHeaderBytes = 64 << 10
 	maxTaskMessageBytes   = 4 + maxMessageHeaderBytes + MaxInlineInputBytes
 	maxResultMessageBytes = 4 + maxMessageHeaderBytes + MaxResultBytes
-	maxAckMessageBytes    = 4 + 4<<10
+	// An acknowledgement may carry the buyer's key card: its header holds
+	// the base64 of at most maxCardJSON bytes besides its own fields.
+	maxAckMessageBytes = 4 + 4<<10 + (maxCardJSON+2)/3*4
 
 	taskSchema   = "tos.openfox.rail-task.v1"
 	resultSchema = "tos.openfox.rail-result.v1"
@@ -96,6 +98,10 @@ type Result struct {
 type AckHeader struct {
 	Schema       string `json:"schema"`
 	ResponseHash string `json:"response_hash"`
+	// BuyerKeyCard is the buyer's current encryption key card packet
+	// (standard base64 of its exact signed JSON), present when the buyer
+	// receives over the relay carrier, so the card is refreshed in band.
+	BuyerKeyCard string `json:"buyer_key_card_base64,omitempty"`
 }
 
 func encodeMessage(header any, body []byte, bound int) ([]byte, error) {
@@ -260,11 +266,20 @@ func DecodeResult(raw []byte) (Result, error) {
 
 // EncodeAck builds a result acknowledgement.
 func EncodeAck(responseHash [32]byte) ([]byte, error) {
-	return encodeMessage(
-		AckHeader{Schema: ackSchema, ResponseHash: hex.EncodeToString(responseHash[:])},
-		nil,
-		maxAckMessageBytes,
-	)
+	return EncodeAckWithCard(responseHash, nil)
+}
+
+// EncodeAckWithCard builds a result acknowledgement carrying the buyer's
+// key card packet JSON, or none when card is empty.
+func EncodeAckWithCard(responseHash [32]byte, card []byte) ([]byte, error) {
+	if len(card) > maxCardJSON {
+		return nil, errors.New("servicebridge: the buyer key card exceeds its bound")
+	}
+	header := AckHeader{Schema: ackSchema, ResponseHash: hex.EncodeToString(responseHash[:])}
+	if len(card) > 0 {
+		header.BuyerKeyCard = base64.StdEncoding.EncodeToString(card)
+	}
+	return encodeMessage(header, nil, maxAckMessageBytes)
 }
 
 // DecodeAck parses a result acknowledgement.
@@ -274,7 +289,8 @@ func DecodeAck(raw []byte) (AckHeader, error) {
 	if err != nil {
 		return AckHeader{}, err
 	}
-	if len(rest) != 0 || header.Schema != ackSchema || !hex64Pattern.MatchString(header.ResponseHash) {
+	if len(rest) != 0 || header.Schema != ackSchema || !hex64Pattern.MatchString(header.ResponseHash) ||
+		len(header.BuyerKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
 		return AckHeader{}, errors.New("servicebridge: invalid result acknowledgement")
 	}
 	return header, nil

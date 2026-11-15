@@ -49,16 +49,16 @@ func TestTheProviderTakesAnAcknowledgementOnlyFromTheRequestsBuyerForItsResult(t
 			Body:          body,
 		}
 	}
-	if err := provider.HandleAck(ack(testSeller, responseHash)); err == nil {
+	if err := provider.HandleAck(context.Background(), ack(testSeller, responseHash)); err == nil {
 		t.Fatal("an acknowledgement from another Agent than the buyer was taken")
 	}
-	if err := provider.HandleAck(ack(testBuyer, [32]byte{0x43})); err == nil {
+	if err := provider.HandleAck(context.Background(), ack(testBuyer, [32]byte{0x43})); err == nil {
 		t.Fatal("an acknowledgement of another result was taken")
 	}
 	if loaded, _, _ := provider.load(key); loaded.State != ProviderDelivering {
 		t.Fatalf("a refused acknowledgement changed the state to %s", loaded.State)
 	}
-	if err := provider.HandleAck(ack(testBuyer, responseHash)); err != nil {
+	if err := provider.HandleAck(context.Background(), ack(testBuyer, responseHash)); err != nil {
 		t.Fatal(err)
 	}
 	if loaded, _, _ := provider.load(key); loaded.State != ProviderAcked {

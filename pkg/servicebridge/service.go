@@ -93,7 +93,7 @@ func (s *Service) handle(ctx context.Context, message Message) error {
 		if s.Provider == nil {
 			return errors.New("servicebridge: this node does not sell work")
 		}
-		return s.Provider.HandleAck(message)
+		return s.Provider.HandleAck(ctx, message)
 	case FrameResult:
 		if s.Buyer == nil {
 			return errors.New("servicebridge: this node does not buy work")

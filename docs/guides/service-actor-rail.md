@@ -616,7 +616,13 @@ chain** (never from the offer file) before anything is paid; it seals only to
 a card verified within the last 9 minutes. The buyer's card travels inside its
 signed and encrypted task; it is chosen to cover the request's response and
 refund deadlines plus a day, and the provider takes it only from a task the
-gate admitted and only when the card's Agent is the task's sender. A stale
+gate admitted and only when the card's Agent is the task's sender. Each task
+redelivery and each result acknowledgement carries the buyer's then-current
+card again, so a card that would expire before a long response window and
+redelivery horizon end is refreshed in band; the provider takes a card from an
+acknowledgement only when it is from that request's buyer for its result, and
+seals to the newest valid card it holds. A card refused there is noted on the
+provider's record (`detail`) without refusing the acknowledgement. A stale
 offer file may still hand out an older card of the same owner: it is accepted
 as long as it is valid, and of the valid cards the newest is used.
 
@@ -627,7 +633,10 @@ controller from the Agent's finalized policy, which makes every card it signed
 unusable within minutes of the next verification **and also stops every packet
 the node sends** until a new packet controller is registered and `init` is run
 for it. Do this when a node's state directory (and so its HPKE keys) may have
-been exposed.
+been exposed. Envelopes that relays already accepted for a revoked card stay
+there until they expire (at most 24 hours); withdrawing them early with their
+acknowledgement secrets, which the protocol permits, is a planned follow-up and
+is not done yet, since the node does not keep those secrets.
 
 **Status and preflight.** `status` adds `relay`: each relay's polling state
 (last listing, last failure, consecutive failures, next poll), the held keys
@@ -669,7 +678,10 @@ member, `"buyer_key_card_base64"`, with the same encoding and bound, absent
 when the buyer has no relays. The result message header
 (`tos.openfox.rail-result.v1`) likewise gains one optional last member,
 `"provider_key_card_base64"`: the provider's card, same encoding and bound,
-absent when the provider has no relays. Both are inside the signed packets
+absent when the provider has no relays. The result acknowledgement header
+(`tos.openfox.rail-result-ack.v1`) gains one optional last member,
+`"buyer_key_card_base64"`, with the same encoding and bound; the
+acknowledgement message bound grows accordingly to 4 + 4,096 + 21,848 bytes. Both are inside the signed packets
 and, over the relay, inside the encryption. Both headers are decoded
 strictly, so a decoder that predates a member refuses a message carrying it.
 

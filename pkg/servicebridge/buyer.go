@@ -558,7 +558,17 @@ func (b *Buyer) acknowledge(ctx context.Context, record PurchaseRecord) error {
 	if err := decodeHex32(record.ResponseHash, &responseHash); err != nil {
 		return err
 	}
-	body, err := EncodeAck(responseHash)
+	encoded, err := b.ownKeyCard(ctx, record)
+	if err != nil {
+		return err
+	}
+	var card []byte
+	if encoded != "" {
+		if card, err = base64.StdEncoding.DecodeString(encoded); err != nil {
+			return errors.New("servicebridge: encode the buyer key card")
+		}
+	}
+	body, err := EncodeAckWithCard(responseHash, card)
 	if err != nil {
 		return err
 	}

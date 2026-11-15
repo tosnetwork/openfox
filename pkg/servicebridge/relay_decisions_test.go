@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tosnetwork/ai/execution/pkg/railgate"
 	"github.com/tosnetwork/ai/protocol/pkg/agentpacket"
 	"github.com/tosnetwork/ai/protocol/pkg/agentpacketseal"
 )
@@ -297,5 +298,147 @@ func (n *relayTestNode) learnCard(raw []byte) {
 	}
 	if err := n.cards.Learn(context.Background(), raw, packet.SenderAgentID, ""); err != nil {
 		n.t.Fatal(err)
+	}
+}
+
+// ackProvider is a provider with one delivering request from testBuyer and
+// the seller node's card directory.
+func ackProvider(t *testing.T, clock *relayClock, cards *PeerCards) (*Provider, [32]byte) {
+	t.Helper()
+	directory := filepath.Join(t.TempDir(), "provider")
+	if err := ensurePrivateDirectory(directory); err != nil {
+		t.Fatal(err)
+	}
+	provider := &Provider{config: ProviderConfig{Directory: directory, Cards: cards, Now: clock.Now}}
+	responseHash := [32]byte{0x42}
+	record := ProviderRecord{
+		State:           ProviderDelivering,
+		BuyerAgentID:    testBuyer,
+		CapabilityID:    relayCapability,
+		QuoteCommitment: "tvm-cell-sha256:" + strings.Repeat("aa", 32),
+		Actor:           "0:" + hex.EncodeToString(testActor[:]),
+		RequestID:       3,
+		RequestHash:     hex.EncodeToString(testRequest[:]),
+		ResponseHash:    hex.EncodeToString(responseHash[:]),
+	}
+	key := railgate.SlotKey{QuoteCommitment: record.QuoteCommitment, Actor: record.Actor, RequestID: record.RequestID}
+	if err := provider.store(key, record, true); err != nil {
+		t.Fatal(err)
+	}
+	return provider, responseHash
+}
+
+func ackFrom(t *testing.T, sender string, responseHash [32]byte, card []byte) Message {
+	t.Helper()
+	body, err := EncodeAckWithCard(responseHash, card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Message{
+		SenderAgentID: sender, Kind: FrameResultAck, ActorAccount: testActor, RequestID: 3, RequestHash: testRequest,
+		Body: body,
+	}
+}
+
+func TestAnExpiringBuyerCardIsRefreshedByTheAckAndResultsStillArriveAfterItExpired(t *testing.T) {
+	clock := newRelayClock()
+	agents := relayAgents()
+	relay := startFakeRelay(t, clock)
+	seller := newRelayTestNode(t, clock, testSeller, agents, relay)
+	buyer := newRelayTestNode(t, clock, testBuyer, agents, relay)
+	// The first task brought the buyer's first card.
+	first, err := buyer.carrier.Keys.Current(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seller.learnCard(first.CardJSON)
+	// Near its end the buyer rotates; its acknowledgement carries the
+	// successor.
+	clock.Advance(RelayKeyLifetime - time.Hour)
+	if _, err = buyer.carrier.Keys.Maintain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second, err := buyer.carrier.Keys.Current(context.Background(), 0)
+	if err != nil || second.KeyID == first.KeyID {
+		t.Fatalf("no successor: %v", err)
+	}
+	provider, responseHash := ackProvider(t, clock, seller.cards)
+	refresh := ackFrom(t, testBuyer, responseHash, second.CardJSON)
+	if err = provider.HandleAck(context.Background(), refresh); err != nil {
+		t.Fatal(err)
+	}
+	// After the first card expired a packet still reaches the buyer.
+	clock.Advance(2 * time.Hour)
+	if _, err = seller.courier.Deliver(context.Background(), relayEnvelopeTo(testBuyer), markedBody(30)); err != nil {
+		t.Fatalf("no route once the first card expired: %v", err)
+	}
+	buyer.pollAll()
+	if len(buyer.pending()) != 1 {
+		t.Fatal("the packet sealed to the refreshed card was not delivered")
+	}
+}
+
+func TestACardOfAnotherAgentInAnAckIsRefusedAndTheAckStillCounts(t *testing.T) {
+	clock := newRelayClock()
+	agents := relayAgents()
+	relay := startFakeRelay(t, clock)
+	seller := newRelayTestNode(t, clock, testSeller, agents, relay)
+	third := newRelayTestNode(t, clock, relayThird, agents, relay)
+	provider, responseHash := ackProvider(t, clock, seller.cards)
+	// Only the request's buyer may acknowledge, card or not.
+	if err := provider.HandleAck(context.Background(), ackFrom(t, relayThird, responseHash, third.card())); err == nil {
+		t.Fatal("an acknowledgement from another Agent was taken")
+	}
+	if err := provider.HandleAck(context.Background(), ackFrom(t, testBuyer, responseHash, third.card())); err != nil {
+		t.Fatal(err)
+	}
+	if seller.cards.Has(relayThird) || seller.cards.Has(testBuyer) {
+		t.Fatal("a card of another Agent than the acknowledging buyer was taken")
+	}
+	records, err := provider.Records()
+	if err != nil || len(records) != 1 || records[0].State != ProviderAcked ||
+		!strings.Contains(records[0].Detail, "key card was not taken") {
+		t.Fatalf("records = %+v %v", records, err)
+	}
+}
+
+func TestTheBuyersAcknowledgementCarriesItsCurrentCard(t *testing.T) {
+	clock := newRelayClock()
+	relay := startFakeRelay(t, clock)
+	node := newRelayTestNode(t, clock, testBuyer, relayAgents(), relay)
+	sent := &recordingTransport{}
+	courier, err := OpenCourier(filepath.Join(t.TempDir(), "outbox"), testSigner(t, testBuyer), sent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buyer := &Buyer{config: BuyerConfig{Courier: courier, RelayKeys: node.carrier.Keys, Now: clock.Now}}
+	requestID := uint64(3)
+	record := PurchaseRecord{
+		RequestHash: hex.EncodeToString(testRequest[:]), Actor: "0:" + hex.EncodeToString(testActor[:]),
+		RequestID: &requestID, ProviderAgentID: testSeller, CapabilityID: relayCapability,
+		ResponseHash: strings.Repeat("42", 32), RefundDeadline: uint64(clock.Now().Add(40 * 24 * time.Hour).Unix()),
+	}
+	if err = buyer.acknowledge(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	packets := sent.packets()
+	if len(packets) != 1 {
+		t.Fatalf("%d packets", len(packets))
+	}
+	packet, err := agentpacket.DecodeJSON(packets[0].JSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := DecodeFrame(packet.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack, err := DecodeAck(frame.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := node.carrier.Keys.Current(context.Background(), 0)
+	if err != nil || ack.BuyerKeyCard != base64.StdEncoding.EncodeToString(current.CardJSON) {
+		t.Fatalf("the acknowledgement does not carry the buyer's current card: %v", err)
 	}
 }

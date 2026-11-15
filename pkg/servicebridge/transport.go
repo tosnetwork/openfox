@@ -17,9 +17,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tosnetwork/ai/messenger/pkg/localapi"
 	"github.com/tosnetwork/ai/protocol/pkg/agentpacket"
 	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
-	"github.com/tosnetwork/tos-messenger/pkg/localapi"
 )
 
 // PacketLifetime is how long a sent packet stays deliverable; it stays

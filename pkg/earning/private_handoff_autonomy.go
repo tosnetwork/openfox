@@ -6,9 +6,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/tosnetwork/ai/messenger/pkg/fault"
 	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/ai/protocol/pkg/codec"
-	"github.com/tosnetwork/tos-messenger/pkg/fault"
 )
 
 type PrivateHandoffContent struct {

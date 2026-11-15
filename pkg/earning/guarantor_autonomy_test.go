@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/tos-messenger/pkg/fault"
+	"github.com/tosnetwork/ai/messenger/pkg/fault"
 )
 
 func TestGuarantorAutonomyCompletesOnlyDurableHandling(t *testing.T) {

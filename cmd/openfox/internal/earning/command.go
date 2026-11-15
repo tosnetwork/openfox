@@ -18,11 +18,11 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tosnetwork/ai/execution/pkg/commercegate"
+	"github.com/tosnetwork/ai/messenger/pkg/localapi"
 	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
 	"github.com/tosnetwork/ai/protocol/pkg/codec"
 	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
-	"github.com/tosnetwork/tos-messenger/pkg/localapi"
 
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
 	openfoxagent "github.com/tosnetwork/openfox/pkg/agent"

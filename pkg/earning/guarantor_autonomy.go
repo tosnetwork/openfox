@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/tosnetwork/tos-messenger/pkg/fault"
+	"github.com/tosnetwork/ai/messenger/pkg/fault"
 )
 
 // GuarantorProfileEventHandler is the business-profile boundary behind the

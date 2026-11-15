@@ -5,9 +5,10 @@ import (
 	"strings"
 	"sync"
 
+	ownercontrol "github.com/tosnetwork/ai/messenger/pkg/ownercontrol"
+
 	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/web/backend/launcherconfig"
-	ownercontrol "github.com/tosnetwork/tos-messenger/pkg/ownercontrol"
 )
 
 // Handler serves HTTP API requests.

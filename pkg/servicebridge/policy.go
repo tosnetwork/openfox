@@ -6,7 +6,7 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 )
 
 const nanoPerTOS = 1_000_000_000

@@ -17,7 +17,7 @@ import (
 	"strings"
 	"sync"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tosutils-go/address"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 

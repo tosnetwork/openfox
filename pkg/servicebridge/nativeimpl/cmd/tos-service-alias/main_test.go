@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
 )
 
 func TestParseKind(t *testing.T) {

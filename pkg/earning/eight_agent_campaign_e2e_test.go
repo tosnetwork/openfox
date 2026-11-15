@@ -28,10 +28,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/tosnetwork/tos-ai/pkg/commercegate"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	"github.com/tosnetwork/ai/execution/pkg/commercegate"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
 
 	openfoxagent "github.com/tosnetwork/openfox/pkg/agent"
 	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"

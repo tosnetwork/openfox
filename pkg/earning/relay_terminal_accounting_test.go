@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
 )
 
 func TestRelayTerminalAccountingReconcilesCommittedWriteErrorAndRetry(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"sort"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
 )
 
 const RelayClientCorroboratedTerminalProfileURI = agentrelay.ClientCorroboratedTerminalProfileURI

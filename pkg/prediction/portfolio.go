@@ -16,8 +16,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 )

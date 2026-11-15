@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/tos-ai/pkg/railgate"
-	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+	"github.com/tosnetwork/ai/execution/pkg/railgate"
+	"github.com/tosnetwork/ai/protocol/pkg/toschain"
 	"google.golang.org/protobuf/proto"
 )
 

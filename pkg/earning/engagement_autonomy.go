@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/tosnetwork/tos-ai/pkg/commercegate"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	"github.com/tosnetwork/ai/execution/pkg/commercegate"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
 )
 
 type PlannedEngagement struct {

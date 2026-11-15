@@ -11,13 +11,14 @@ import (
 	"fmt"
 	"sync"
 
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
+
 	"github.com/tosnetwork/openfox/pkg/actionauth"
 	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/mcp"
 	"github.com/tosnetwork/openfox/pkg/tools"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 type mcpRuntime struct {

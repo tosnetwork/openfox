@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tosnetwork/tos-ai/pkg/artifactstore"
-	"github.com/tosnetwork/tos-ai/pkg/executorservice"
-	"github.com/tosnetwork/tos-ai/pkg/softwarework"
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
+	"github.com/tosnetwork/ai/execution/pkg/artifactstore"
+	"github.com/tosnetwork/ai/execution/pkg/executorservice"
+	"github.com/tosnetwork/ai/execution/pkg/softwarework"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 )
 
 // memoryExecutor is an in-process executor service client. It hands the

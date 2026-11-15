@@ -10,8 +10,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/tosnetwork/ai/protocol/pkg/toschain"
+
 	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
-	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 )
 
 // StaticAgentGiftAddressAuthority is an owner-configured recipient address.

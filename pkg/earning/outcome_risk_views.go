@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
 )
 
 // LocalOutcomeRiskPolicyRevision binds an advisory projection to the exact

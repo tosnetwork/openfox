@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 )
 
 type IntentContentResolver interface {

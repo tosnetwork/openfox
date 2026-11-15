@@ -9,9 +9,10 @@ import (
 	"sort"
 	"time"
 
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
+
 	"github.com/tosnetwork/openfox/pkg/providers"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 type ContactDrafter interface {

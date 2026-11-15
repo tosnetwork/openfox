@@ -7,8 +7,8 @@ import (
 	"math"
 	"reflect"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 )
 
 const proposedMarketStatus uint8 = 2

@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 
 	"github.com/tosnetwork/openfox/pkg/prediction"
 )

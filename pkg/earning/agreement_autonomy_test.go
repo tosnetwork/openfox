@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 	"github.com/tosnetwork/tos-messenger/pkg/localapi"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 )
 
 type emptyMessengerCaller struct{}

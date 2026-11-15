@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
-	"github.com/tosnetwork/tos-service-protocol/pkg/gatewayfederation"
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativeclient"
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
-	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/ai/protocol/pkg/buyersdk"
+	"github.com/tosnetwork/ai/protocol/pkg/gatewayfederation"
+	"github.com/tosnetwork/ai/protocol/pkg/nativeclient"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
+	"github.com/tosnetwork/ai/protocol/pkg/toschain"
 )
 
 const opportunityCoordinatorConfigSchema = "tos.openfox.opportunity-coordinator-config.v1"

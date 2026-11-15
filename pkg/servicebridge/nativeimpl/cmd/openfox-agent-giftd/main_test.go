@@ -9,9 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/ai/protocol/pkg/chainactionpublisher"
+
 	nativeimpl "github.com/tosnetwork/openfox/pkg/servicebridge/nativeimpl"
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	"github.com/tosnetwork/tos-service-protocol/pkg/chainactionpublisher"
 )
 
 func validConfig() config {

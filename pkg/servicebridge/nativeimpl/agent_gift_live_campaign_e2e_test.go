@@ -16,10 +16,11 @@ import (
 	"testing"
 	"time"
 
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/ai/protocol/pkg/chainactionpublisher"
+	"github.com/tosnetwork/ai/protocol/pkg/toschain"
+
 	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	"github.com/tosnetwork/tos-service-protocol/pkg/chainactionpublisher"
-	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 )
 
 const liveGiftCampaignSchema = "tos.openfox.six-agent-live-gift-campaign.v1"

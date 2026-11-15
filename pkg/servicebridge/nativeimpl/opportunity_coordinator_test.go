@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/openfox/pkg/opportunity"
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
-	"github.com/tosnetwork/tos-service-protocol/pkg/gatewayfederation"
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/ai/protocol/pkg/buyersdk"
+	"github.com/tosnetwork/ai/protocol/pkg/gatewayfederation"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/tosnetwork/openfox/pkg/opportunity"
 )
 
 type opportunityGatewayFake struct {

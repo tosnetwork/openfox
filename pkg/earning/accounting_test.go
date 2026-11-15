@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 )
 
 func TestGiftAccountingIsDurableButCannotCloseAgreement(t *testing.T) {

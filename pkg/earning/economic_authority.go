@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
 )
 
 // EconomicAuthority is the owner-scoped linearization boundary. The personal

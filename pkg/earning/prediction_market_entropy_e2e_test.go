@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
-	"github.com/tosnetwork/tos-service-protocol/pkg/chain"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
+	"github.com/tosnetwork/ai/protocol/pkg/chain"
 	"github.com/tosnetwork/tosutils-go/tlb"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 

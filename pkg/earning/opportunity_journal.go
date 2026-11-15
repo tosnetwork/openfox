@@ -13,8 +13,9 @@ import (
 	"sync"
 	"time"
 
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+
 	"github.com/tosnetwork/openfox/pkg/fileutil"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 )
 
 type observedOpportunity struct {

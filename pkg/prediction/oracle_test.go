@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 )
 

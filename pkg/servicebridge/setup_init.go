@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 )
 
 // InitInput is what the owner chooses for a rail node. Everything else in

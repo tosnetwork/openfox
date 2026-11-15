@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 )
 
 type fixedResolutionEvaluator struct {

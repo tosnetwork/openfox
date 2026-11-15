@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
 	ownercontrol "github.com/tosnetwork/tos-messenger/pkg/ownercontrol"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 func TestOwnerCommandSinkRecoversAppliedActionAfterRestart(t *testing.T) {

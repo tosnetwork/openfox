@@ -8,9 +8,9 @@ import (
 	"errors"
 	"math"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 
 	"github.com/tosnetwork/openfox/pkg/prediction"

@@ -20,13 +20,14 @@ import (
 	"testing"
 	"time"
 
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/chainactionpublisher"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
+	"github.com/tosnetwork/ai/protocol/pkg/toschain"
+
 	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
 	openfoxfile "github.com/tosnetwork/openfox/pkg/fileutil"
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/chainactionpublisher"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
-	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 )
 
 const (

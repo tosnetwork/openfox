@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
 )
 
 func TestBoundedRelayQuotePolicyBindsFixedFeesAndSignedIntent(t *testing.T) {

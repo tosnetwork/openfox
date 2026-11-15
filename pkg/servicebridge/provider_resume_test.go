@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/tos-ai/pkg/railgate"
+	"github.com/tosnetwork/ai/execution/pkg/railgate"
 	"google.golang.org/protobuf/proto"
 )
 

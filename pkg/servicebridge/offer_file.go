@@ -12,10 +12,10 @@ import (
 	"path/filepath"
 	"time"
 
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
-	"github.com/tosnetwork/tos-service-protocol/pkg/quoteprovider"
-	"github.com/tosnetwork/tos-service-protocol/pkg/serviceactor"
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
+	"github.com/tosnetwork/ai/protocol/pkg/quoteprovider"
+	"github.com/tosnetwork/ai/protocol/pkg/serviceactor"
 )
 
 // OfferFileSchema names the offer file a provider hands a buyer.

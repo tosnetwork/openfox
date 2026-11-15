@@ -13,8 +13,9 @@ import (
 	"sync"
 	"time"
 
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
+
 	"github.com/tosnetwork/openfox/pkg/fileutil"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 type fileMonotonicEntry struct {

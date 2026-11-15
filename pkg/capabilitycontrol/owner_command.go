@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"sort"
 
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
 	ownercontrol "github.com/tosnetwork/tos-messenger/pkg/ownercontrol"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 type OwnerCommandParametersV1 struct {

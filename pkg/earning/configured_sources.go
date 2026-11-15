@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
 )
 
 type PinnedIntentAuthorities map[string]ed25519.PublicKey

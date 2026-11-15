@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tosnetwork/tos-ai/pkg/executorservice"
+	"github.com/tosnetwork/ai/execution/pkg/executorservice"
 )
 
 // newSocketPreflightFixture is a ready provider node that executes through

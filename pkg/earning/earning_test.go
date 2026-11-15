@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 )
 
 type testIntentAuthority struct{ key ed25519.PublicKey }

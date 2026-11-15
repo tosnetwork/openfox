@@ -19,9 +19,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
+
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/providers"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 )
 
 type campaignPaymentPreflightProvider struct {

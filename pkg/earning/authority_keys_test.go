@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
-	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44/mldsa44test"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
+	"github.com/tosnetwork/ai/protocol/pkg/mldsa44/mldsa44test"
 )
 
 func TestPersonalAuthorityRefusesInvalidAuthorityKeys(t *testing.T) {

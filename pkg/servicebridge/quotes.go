@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativeclient"
-	"github.com/tosnetwork/tos-service-protocol/pkg/serviceactor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/ai/protocol/pkg/nativeclient"
+	"github.com/tosnetwork/ai/protocol/pkg/serviceactor"
+	"github.com/tosnetwork/ai/protocol/pkg/toschain"
 )
 
 // GatewayQuotes asks a gateway's discovery service for a Quote Proposal.

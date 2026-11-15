@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	guarantor "github.com/tosnetwork/ai/protocol/pkg/agentguarantor"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
 )
 
 type exactSink struct {

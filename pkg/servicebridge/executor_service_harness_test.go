@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/tos-ai/pkg/artifactstore"
-	"github.com/tosnetwork/tos-ai/pkg/executor"
-	"github.com/tosnetwork/tos-ai/pkg/executorservice"
-	"github.com/tosnetwork/tos-ai/pkg/softwarework"
+	"github.com/tosnetwork/ai/execution/pkg/artifactstore"
+	"github.com/tosnetwork/ai/execution/pkg/executor"
+	"github.com/tosnetwork/ai/execution/pkg/executorservice"
+	"github.com/tosnetwork/ai/execution/pkg/softwarework"
 )
 
 // fakeRuntime stands in for the container runtime behind the service's real

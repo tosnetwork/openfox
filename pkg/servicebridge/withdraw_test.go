@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+	"github.com/tosnetwork/ai/protocol/pkg/toschain"
 )
 
 // newWithdrawFixture is a published provider whose actor holds revenue.

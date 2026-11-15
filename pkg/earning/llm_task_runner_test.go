@@ -11,9 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tosnetwork/ai/execution/pkg/commercegate"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+
 	"github.com/tosnetwork/openfox/pkg/providers"
-	"github.com/tosnetwork/tos-ai/pkg/commercegate"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 )
 
 type taskProvider struct {

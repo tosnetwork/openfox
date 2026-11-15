@@ -8,8 +8,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
 )
 
 // OutcomeImportVerifier separates transport retention from the two authorities

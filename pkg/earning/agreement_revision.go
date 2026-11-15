@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
 )
 
 // AgreementRevisionFunc changes a private deep copy of the complete

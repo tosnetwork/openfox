@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sort"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 )
 
 // ObligationRuntimeState is a local evidence projection. It never changes the

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
 )
 
 // RelayTerminalEvidenceRenderer is deliberately weaker than an independent

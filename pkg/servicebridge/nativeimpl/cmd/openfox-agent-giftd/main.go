@@ -18,13 +18,14 @@ import (
 	"syscall"
 	"time"
 
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/ai/protocol/pkg/chainactionpublisher"
+	"github.com/tosnetwork/ai/protocol/pkg/nativeclient"
+	"github.com/tosnetwork/ai/protocol/pkg/toschain"
+	"github.com/tosnetwork/tos-messenger/pkg/localapi"
+
 	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
 	nativeimpl "github.com/tosnetwork/openfox/pkg/servicebridge/nativeimpl"
-	"github.com/tosnetwork/tos-messenger/pkg/localapi"
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	"github.com/tosnetwork/tos-service-protocol/pkg/chainactionpublisher"
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativeclient"
-	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
 )
 
 const configSchema = "tos.openfox.agent-giftd-config.v1"

@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	guarantor "github.com/tosnetwork/ai/protocol/pkg/agentguarantor"
+
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
 	"github.com/tosnetwork/openfox/pkg/config"
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
-	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
 )
 
 type guarantorStatusReport struct {

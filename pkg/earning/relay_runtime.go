@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
 )
 
 // RelayClientHTTPRuntimeConfig contains only owner-controlled runtime inputs.

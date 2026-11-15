@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
-	"github.com/tosnetwork/tos-service-protocol/pkg/serviceactor"
-	"github.com/tosnetwork/tos-service-protocol/pkg/toschain"
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
+	"github.com/tosnetwork/ai/protocol/pkg/serviceactor"
+	"github.com/tosnetwork/ai/protocol/pkg/toschain"
 )
 
 // The preflight fixture's chain values are synthetic shapes checked by the

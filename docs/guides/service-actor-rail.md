@@ -669,8 +669,10 @@ controller from the Agent's finalized policy, which makes every card it signed
 unusable within minutes of the next verification **and also stops every packet
 the node sends** until a new packet controller is registered and `init` is run
 for it. Do this when a node's state directory (and so its HPKE keys) may have
-been exposed. Envelopes that relays already accepted for a revoked card stay
-there until they expire (at most 24 hours); withdrawing them early with their
+been exposed. A compromised offer-card key stays sealable for up to 30 days,
+the offer card's lifetime, unless the controller that signed it is removed.
+Envelopes that relays already accepted for a revoked card stay there until
+they expire (at most 24 hours); withdrawing them early with their
 acknowledgement secrets, which the protocol permits, is a planned follow-up and
 is not done yet, since the node does not keep those secrets.
 

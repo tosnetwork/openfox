@@ -854,9 +854,13 @@ func (b *Buyer) requestResult(ctx context.Context, record *PurchaseRecord) error
 	if err != nil {
 		return err
 	}
+	if _, err = b.config.Courier.Deliver(ctx, envelope, body); err != nil {
+		// Not handed off: the next pass asks again instead of waiting out
+		// the interval.
+		return err
+	}
 	record.ResultRequestUnix = now.Unix()
-	_, err = b.config.Courier.Deliver(ctx, envelope, body)
-	return err
+	return nil
 }
 
 // buyerCardMargin is how far beyond the request's last deadline the buyer's

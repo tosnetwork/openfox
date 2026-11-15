@@ -218,6 +218,15 @@ func TestAResultRequestFromAnotherAgentOrForAnotherRequestIsRefusedAndMovesNothi
 	if err := request(testBuyer, f.buyerN.card(), 3, testRequest); !errors.Is(err, ErrResultRequestRefused) {
 		t.Fatalf("an unresponded request: %v", err)
 	}
+	// A request whose result is no longer retained is refused too.
+	expired := before
+	expired.RetentionEndUnix = uint64(f.clock.Now().Unix())
+	if err := f.provider.store(f.key, expired, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := request(testBuyer, f.buyerN.card(), 3, testRequest); !errors.Is(err, ErrResultRequestRefused) {
+		t.Fatalf("a request past its retention: %v", err)
+	}
 	after := f.record(t)
 	if after.NextDeliveryUnix != before.NextDeliveryUnix || after.ResultRequestUnix != 0 ||
 		f.seller.cards.Has(relayThird) {
@@ -297,5 +306,33 @@ func TestResultRequestsAreBoundedOnBothSides(t *testing.T) {
 	}
 	if generations, err := f.buyerN.courier.Generations(envelope); err != nil || generations != 2 {
 		t.Fatalf("a result request past the retention: %d %v", generations, err)
+	}
+}
+
+func TestAResultRequestThatWasNotHandedOffIsSentAgainAtTheNextPass(t *testing.T) {
+	f := newAwayFixture(t)
+	relay := f.seller.relays[0]
+	relay.failDeposits = 1
+	if err := f.buyer.complete(context.Background(), f.purchase); err == nil {
+		t.Fatal("the failed hand-off was not reported")
+	}
+	stored, err := f.buyer.loadPurchase(f.purchase.RequestHash)
+	if err != nil || stored.ResultRequestUnix != 0 {
+		t.Fatalf("a failed hand-off was recorded as sent: %v", err)
+	}
+	f.clock.Advance(time.Minute)
+	if err = f.buyer.complete(context.Background(), stored); err != nil {
+		t.Fatalf("the next pass: %v", err)
+	}
+	stored, err = f.buyer.loadPurchase(f.purchase.RequestHash)
+	if err != nil || stored.ResultRequestUnix != f.clock.Now().Unix() {
+		t.Fatalf("the request sent at the next pass was not recorded: %v", err)
+	}
+	envelope, err := envelopeFor(stored, testSeller, FrameResultRequest, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generations, countErr := f.buyerN.courier.Generations(envelope); countErr != nil || generations != 2 {
+		t.Fatalf("%d result request generations: %v", generations, countErr)
 	}
 }

@@ -2,6 +2,8 @@ package servicebridge
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -73,6 +75,26 @@ func TestPreflightChecksTheRelaysTheOwnKeyCardAndThePeerCards(t *testing.T) {
 	f.chain.agent = &nativev1.NativeStateV1{Network: testNetwork, State: &nativev1.NativeStateV1_Agent{Agent: revoked}}
 	if _, checks = f.run(t); checks["relay.card"].Status != CheckFail {
 		t.Fatalf("a revoked own card: %+v", checks["relay.card"])
+	}
+}
+
+// The real reader writes a checkpoint fence into the preflight's scratch
+// directory on every registry read, including the own key card's, which
+// runs after the chain checks: the directory must outlive them.
+func TestPreflightKeepsTheCheckpointFencesUntilTheKeyCardIsChecked(t *testing.T) {
+	f, _ := relayPreflight(t, true)
+	opened := ""
+	f.env.OpenChain = func(_ NodeConfig, checkpointDir string) (PreflightChain, error) {
+		opened = checkpointDir
+		f.chain.fenceDir = checkpointDir
+		return f.chain, nil
+	}
+	report, checks := f.run(t)
+	if checks["relay.card"].Status != CheckPass || checks["chain.capability"].Status != CheckPass || !report.OK {
+		t.Fatalf("relay.card %+v, chain.capability %+v", checks["relay.card"], checks["chain.capability"])
+	}
+	if _, err := os.Stat(opened); opened == "" || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the scratch directory %q was left behind: %v", opened, err)
 	}
 }
 

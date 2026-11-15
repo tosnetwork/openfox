@@ -267,7 +267,8 @@ func (f *pfFixture) run(t *testing.T) (*PreflightReport, map[string]PreflightChe
 
 var allPreflightChecks = []string{
 	"config.parse", "config.provider", "state_dir.private", "state_dir.disk_free", "admission.pause",
-	"process.user", "tosctl.pin", "tosctl.config", "tosctl.vault_env", "executor.pin", "containerd.socket",
+	"process.user", "tosctl.pin", "tosctl.config", "tosctl.vault_env", "transport.peers", "executor.pin",
+	"containerd.socket",
 	"manifest.local", "rpc.endpoints", "rpc.independence", "chain.open", "rpc.genesis", "chain.finalized",
 	"clock.skew", "chain.registry", "chain.capability", "chain.actor", "chain.attestor", "chain.admission",
 	"signer.attestor", "signer.packet", "signer.wallet",
@@ -488,5 +489,135 @@ func TestPreflightWritesNothingIntoTheStateDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(opened); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the scratch directory was left behind: %v", err)
+	}
+}
+
+func TestPreflightReportsWhichTransportEachPeerUses(t *testing.T) {
+	f := newPreflightFixture(t)
+	_, checks := f.run(t)
+	if check := checks["transport.peers"]; check.Status != CheckPass || !strings.Contains(check.Message, "Messenger") {
+		t.Fatalf("a Messenger-only node: %+v", check)
+	}
+	// A serving direct peer, and one whose node is not running.
+	socketDir, err := os.MkdirTemp("", "pfd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	serving := filepath.Join(socketDir, "peer.sock")
+	listener, err := net.Listen("unix", serving)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	absent := "agent_" + strings.Repeat("c3", 32)
+	f.config.DirectPeers = map[string]string{testBuyer: serving, absent: filepath.Join(socketDir, "absent.sock")}
+	report, checks := f.run(t)
+	check := checks["transport.peers"]
+	if check.Status != CheckWarn || !report.OK || !strings.Contains(check.Message, testBuyer+": direct") ||
+		!strings.Contains(check.Message, absent+": direct") || !strings.Contains(check.Message, "not present") ||
+		!strings.Contains(check.Message, "every other recipient goes through the Messenger") ||
+		!strings.Contains(check.Message, "no confidentiality") {
+		t.Fatalf("mixed transports: %+v", check)
+	}
+	// Direct peers only: the Messenger is optional, and the report says an
+	// unlisted recipient has no route.
+	f.config.DirectPeers = map[string]string{testBuyer: serving}
+	f.config.MessengerSocket = ""
+	report, checks = f.run(t)
+	check = checks["transport.peers"]
+	if !report.OK || check.Status != CheckPass || !strings.Contains(check.Message, "no route") ||
+		checks["config.provider"].Status != CheckPass {
+		t.Fatalf("direct peers only: %+v, config.provider %+v", check, checks["config.provider"])
+	}
+	// A socket in a directory other users can write could be replaced by
+	// them: outside the one-user scope, as a send would find it.
+	openDir, err := os.MkdirTemp("", "pfo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(openDir) })
+	exposed := filepath.Join(openDir, "peer.sock")
+	exposedListener, err := net.Listen("unix", exposed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exposedListener.Close() })
+	if err = os.Chmod(openDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	for name, peers := range map[string]map[string]string{
+		"no transport":                      nil,
+		"a symbolic link":                   {testBuyer: filepath.Join(socketDir, "link.sock")},
+		"a directory other users can write": {testBuyer: exposed},
+		"its own Agent":                     {testSeller: serving},
+		"a malformed Agent":                 {"agent_zz": serving},
+	} {
+		if name == "a symbolic link" {
+			if linkErr := os.Symlink(serving, filepath.Join(socketDir, "link.sock")); linkErr != nil {
+				t.Fatal(linkErr)
+			}
+		}
+		f.config.DirectPeers = peers
+		report, checks = f.run(t)
+		if report.OK || checks["transport.peers"].Status != CheckFail {
+			t.Errorf("%s: %+v", name, checks["transport.peers"])
+		}
+	}
+}
+
+// One peer's refused socket fails the check whatever the other peers are
+// and in whichever order they are inspected, and every peer is reported.
+func TestARefusedPeerSocketFailsTransportPeersInEitherOrder(t *testing.T) {
+	directory, err := os.MkdirTemp("", "pfr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	regular := filepath.Join(directory, "regular")
+	writeFixtureFile(t, regular, []byte("not a socket"), 0o600)
+	link := filepath.Join(directory, "link.sock")
+	if err = os.Symlink(regular, link); err != nil {
+		t.Fatal(err)
+	}
+	serving := filepath.Join(directory, "peer.sock")
+	listener, err := net.Listen("unix", serving)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	absent := filepath.Join(directory, "absent.sock")
+	// Peers are inspected in sorted Agent order.
+	first, second, third := "agent_"+strings.Repeat("0a", 32), "agent_"+strings.Repeat("7b", 32),
+		"agent_"+strings.Repeat("f0", 32)
+	for name, refused := range map[string]string{"a non-socket": regular, "a symbolic link": link} {
+		for order, peers := range map[string]map[string]string{
+			"refused, then absent, then serving": {first: refused, second: absent, third: serving},
+			"absent, then refused, then serving": {first: absent, second: refused, third: serving},
+			"serving, then absent, then refused": {first: serving, second: absent, third: refused},
+		} {
+			f := newPreflightFixture(t)
+			f.config.DirectPeers = peers
+			report, checks := f.run(t)
+			check := checks["transport.peers"]
+			if report.OK || check.Status != CheckFail {
+				t.Errorf("%s, %s: %+v (ok %v)", name, order, check, report.OK)
+			}
+			for agent, socket := range peers {
+				if !strings.Contains(check.Message, agent+": direct") || !strings.Contains(check.Message, socket) {
+					t.Errorf("%s, %s: the report does not list %s: %s", name, order, agent, check.Message)
+				}
+			}
+			if !strings.Contains(check.Message, "sends are refused") ||
+				!strings.Contains(check.Message, "not present") {
+				t.Errorf("%s, %s: a finding is missing: %s", name, order, check.Message)
+			}
+		}
+	}
+	// Without a refused socket an absent one is only a warning.
+	f := newPreflightFixture(t)
+	f.config.DirectPeers = map[string]string{first: absent, second: serving}
+	if report, checks := f.run(t); !report.OK || checks["transport.peers"].Status != CheckWarn {
+		t.Fatalf("an absent socket alone: %+v", checks["transport.peers"])
 	}
 }

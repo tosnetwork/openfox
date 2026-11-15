@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -63,4 +66,34 @@ func TestNewOpenfoxCommand(t *testing.T) {
 
 		assert.False(t, subcmd.Hidden)
 	}
+}
+
+// TestMain lets a test run the real main() in a child process.
+func TestMain(m *testing.M) {
+	if os.Getenv("OPENFOX_TEST_RUN_MAIN") == "1" {
+		os.Args = []string{"openfox", "version"}
+		main()
+		return
+	}
+	os.Exit(m.Run())
+}
+
+func TestStandardOutputThatIsNotATerminalCarriesNoBanner(t *testing.T) {
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	child := exec.Command(executable)
+	child.Env = append(os.Environ(), "OPENFOX_TEST_RUN_MAIN=1", "TZ=UTC")
+	var stdout, stderr bytes.Buffer
+	child.Stdout, child.Stderr = &stdout, &stderr
+	require.NoError(t, child.Run())
+	require.NotEmpty(t, stdout.String(), "the command printed nothing, so the check below proves nothing")
+	assert.NotContains(t, stdout.String(), "██", "a piped standard output starts with the banner")
+	assert.NotContains(t, stdout.String(), "\x1b[", "a piped standard output carries terminal escapes")
+	assert.NotContains(t, stdout.String(), "TZ environment", "a diagnostic went to standard output")
+	assert.Contains(t, stderr.String(), "TZ environment")
+
+	assert.Equal(t, "", startupBanner(false, false))
+	assert.Equal(t, "", startupBanner(false, true))
+	assert.Equal(t, banner, startupBanner(true, false))
+	assert.Equal(t, plainBanner, startupBanner(true, true))
 }

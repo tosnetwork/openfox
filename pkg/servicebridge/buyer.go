@@ -1,6 +1,7 @@
 package servicebridge
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,8 +18,10 @@ import (
 
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/buyersdk"
+	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
 	"github.com/tosnetwork/tos-service-protocol/pkg/quoteexchange"
 	"github.com/tosnetwork/tos-service-protocol/pkg/serviceactor"
+	"google.golang.org/protobuf/proto"
 )
 
 // Purchase phases. Terminal phases are final.
@@ -108,8 +111,18 @@ type BuyerConfig struct {
 	Courier   *Courier
 	Lifecycle LifecycleSender
 	Directory string
+	// Manifests receives the manifest bytes of each open purchase's stored
+	// Quote package, so a process that did not take the Quote (`serve`
+	// beside a finished `buy`) can still resolve the purchase. The bytes
+	// are untrusted; resolution checks them against the finalized digest.
+	Manifests ManifestSink
 	Now       func() time.Time
 	Random    func([]byte) error
+}
+
+// ManifestSink takes manifest bytes under their claimed digest.
+type ManifestSink interface {
+	Put(digest string, value []byte)
 }
 
 // Buyer runs discovery-started purchases and their result and refund duties.
@@ -366,6 +379,7 @@ func (b *Buyer) Buy(ctx context.Context, capabilityID, version string, archive [
 		return PurchaseRecord{}, err
 	}
 	record := PurchaseRecord{
+		Schema:            purchaseRecordSchema,
 		Phase:             PurchaseCalled,
 		RequestHash:       call.RequestHash,
 		Actor:             call.Actor,
@@ -577,7 +591,46 @@ const actionInterval = time.Minute
 // TaskRedelivery spaces fresh deliveries of a task still awaiting an answer.
 const TaskRedelivery = 10 * time.Minute
 
+// restoreManifest hands the manifest bytes of the purchase's stored Quote
+// package to the manifest source resolution reads.
+func (b *Buyer) restoreManifest(record PurchaseRecord) error {
+	if b.config.Manifests == nil {
+		return nil
+	}
+	raw, err := readPrivateFile(
+		filepath.Join(b.purchaseDir(record.RequestHash), "quote-package"),
+		quoteexchange.MaxPackageBytes+64<<10,
+	)
+	if err != nil {
+		return fmt.Errorf("servicebridge: read the purchase's Quote package: %w", err)
+	}
+	pkg := &nativev1.QuoteProposalPackageV1{}
+	if err = proto.Unmarshal(raw, pkg); err != nil || pkg.GetProposal() == nil ||
+		len(pkg.GetCanonicalManifestCbor()) == 0 {
+		return errors.New("servicebridge: the purchase's Quote package does not decode or holds no manifest")
+	}
+	if pkg.GetProposal().GetManifestDigest() != record.ManifestDigest {
+		return errors.New("servicebridge: the purchase's Quote package names another manifest than its record")
+	}
+	// Only bytes that are the canonical manifest of the recorded digest
+	// are handed on, so a damaged file never replaces a good entry.
+	stored := pkg.GetCanonicalManifestCbor()
+	manifest, err := nativecore.DecodeCanonicalSoftwareWorkManifestCBOR(stored)
+	if err != nil {
+		return errors.New("servicebridge: the purchase's stored manifest is not a canonical software-work manifest")
+	}
+	canonical, digest, err := nativecore.CanonicalSoftwareWorkManifest(manifest)
+	if err != nil || !bytes.Equal(canonical, stored) || digest != record.ManifestDigest {
+		return errors.New("servicebridge: the purchase's stored manifest does not hash to the digest its record names")
+	}
+	b.config.Manifests.Put(record.ManifestDigest, stored)
+	return nil
+}
+
 func (b *Buyer) advance(ctx context.Context, record PurchaseRecord) error {
+	if err := b.restoreManifest(record); err != nil {
+		return err
+	}
 	report, err := b.config.Buyer.Resolve(ctx, record.RequestHash)
 	if err != nil {
 		return err

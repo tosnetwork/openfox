@@ -82,7 +82,7 @@ func ProbeControllerKeyID(
 		command.Env = []string{"VAULT_URL=" + vaultURL}
 	}
 	var stdout, stderr limitedBuffer
-	stdout.limit, stderr.limit = maxLifecycleOutput, maxLifecycleOutput
+	stdout.limit, stderr.limit, stderr.truncate = maxLifecycleOutput, maxLifecycleOutput, true
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if runErr := command.Run(); runErr != nil {
 		return none, fmt.Errorf("tosctl could not resolve controller %q from the vault (%s)", controller,

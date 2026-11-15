@@ -103,7 +103,7 @@ func (r *SubprocessRunner) Execute(ctx context.Context, request softwarework.Req
 		"-manifest-digest", r.manifestDigest, "-output-bytes", strconv.FormatUint(r.outputBytes, 10))
 	command.Env = []string{}
 	var stdout, stderr limitedBuffer
-	stdout.limit, stderr.limit = maxLifecycleOutput, maxLifecycleOutput
+	stdout.limit, stderr.limit, stderr.truncate = maxLifecycleOutput, maxLifecycleOutput, true
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
 		return softwarework.Outcome{}, fmt.Errorf("servicebridge: the executor failed: %s", exitStatus(err))

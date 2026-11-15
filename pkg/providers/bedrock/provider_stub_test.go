@@ -1,7 +1,7 @@
 //go:build !bedrock
 
 // OpenFox - Ultra-lightweight personal AI agent
-// License: MIT
+// License: GPL-3.0; parts are under the MIT License (see LICENSES/)
 //
 // Copyright (c) 2026 OpenFox contributors
 

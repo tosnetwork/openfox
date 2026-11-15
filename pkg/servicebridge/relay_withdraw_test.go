@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tosnetwork/ai/protocol/pkg/agentpacketseal"
+	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
 )
 
 // replacementController is the packet controller switchableAgents.revoke
@@ -381,4 +382,168 @@ func relayKillChild(t *testing.T) {
 	}
 	seller.redeposit()
 	t.Fatal("the pass finished without journaling a withdrawal")
+}
+
+// A replacement that every relay of its card answers 409 for is sealed
+// again under a fresh secret by the background pass, as the courier does
+// for its own sends; otherwise the packet, whose original was withdrawn and
+// which the courier counts as sent, would be lost.
+func TestAReplacementEveryRelayRefusesWithAConflictIsSealedAgainAndDelivered(t *testing.T) {
+	clock := newRelayClock()
+	agents := relayAgents()
+	relayA, relayB := twoRelays(t, clock)
+	seller := newRelayTestNode(t, clock, testSeller, agents, relayA)
+	buyer := newRelayTestNode(t, clock, testBuyer, agents, relayA, relayB)
+	seller.learn(buyer)
+	body := markedBody(40)
+	if _, err := seller.courier.Deliver(context.Background(), relayEnvelopeTo(testBuyer), body); err != nil {
+		t.Fatal(err)
+	}
+	seller.redeposit()
+	revokeAndReplace(clock, agents, seller, buyer)
+	relayA.mutex.Lock()
+	relayA.conflictAll = true
+	relayA.mutex.Unlock()
+	relayB.mutex.Lock()
+	relayB.conflictAll = true
+	relayB.mutex.Unlock()
+	seller.redeposit()
+	record := seller.journal()[0]
+	conflicted := 0
+	for _, relay := range []*fakeRelay{relayA, relayB} {
+		for _, deposit := range relay.depositLog() {
+			if deposit.status == 409 {
+				conflicted++
+			}
+		}
+	}
+	if conflicted != 2 || !record.sealed() || len(record.Conflicts) != 0 || len(record.Accepted) != 0 ||
+		!record.Background {
+		t.Fatalf("after every relay refused the replacement: %d conflicts, %+v", conflicted, record)
+	}
+	resealed := record.EnvelopeID
+	// Bounded: the fresh seal waits for the deposit backoff, so a relay
+	// that refuses every id does not make each pass seal again.
+	depositsBefore := len(relayA.depositLog()) + len(relayB.depositLog())
+	seller.redeposit()
+	if again := seller.journal()[0]; again.EnvelopeID != resealed || again.Seals != record.Seals ||
+		len(relayA.depositLog())+len(relayB.depositLog()) != depositsBefore {
+		t.Fatalf("a pass inside the backoff deposited or sealed again: %+v", again)
+	}
+	relayA.mutex.Lock()
+	relayA.conflictAll = false
+	relayA.mutex.Unlock()
+	relayB.mutex.Lock()
+	relayB.conflictAll = false
+	relayB.mutex.Unlock()
+	clock.Advance(relayRedepositFirst + time.Second)
+	seller.redeposit()
+	after := seller.journal()[0]
+	if after.EnvelopeID != resealed || len(after.Accepted) != 2 {
+		t.Fatalf("the fresh seal was not deposited: %+v", after)
+	}
+	buyer.pollAll()
+	if pending := buyer.pending(); len(pending) != 1 || !bytes.Equal(pending[0].Body, body) {
+		t.Fatalf("pending = %d", len(pending))
+	}
+}
+
+// unavailableVerifier answers as a tosctl that cannot be run.
+type unavailableVerifier struct{}
+
+func (unavailableVerifier) Verify(context.Context, mldsa44.Use, []byte, []byte, []byte) error {
+	return mldsa44.ErrUnavailable
+}
+
+// While finalized state cannot answer whether the card stands, nothing is
+// withdrawn and nothing is sent: an outage is never taken for a revocation.
+func TestAFinalizedStateOutageNeverWithdrawsOrSends(t *testing.T) {
+	// The verifier is consulted only for a card whose signing controller
+	// is still in the finalized policy: a revoked one is refused before any
+	// signature check, so that case keeps the card standing.
+	revoked := map[string]bool{"resolver failure": true, "verifier unavailable": false, "cancelled context": true}
+	for name, outage := range map[string]func(*switchableAgents, *relayTestNode) context.Context{
+		"resolver failure": func(agents *switchableAgents, _ *relayTestNode) context.Context {
+			agents.set(true)
+			return context.Background()
+		},
+		"verifier unavailable": func(_ *switchableAgents, seller *relayTestNode) context.Context {
+			seller.cards.mutex.Lock()
+			seller.cards.verifier = unavailableVerifier{}
+			seller.cards.mutex.Unlock()
+			return context.Background()
+		},
+		"cancelled context": func(*switchableAgents, *relayTestNode) context.Context {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clock := newRelayClock()
+			agents := relayAgents()
+			relay := startFakeRelay(t, clock)
+			seller := newRelayTestNode(t, clock, testSeller, agents, relay)
+			buyer := newRelayTestNode(t, clock, testBuyer, agents, relay)
+			seller.learn(buyer)
+			if _, err := seller.courier.Deliver(context.Background(), relayEnvelopeTo(testBuyer),
+				markedBody(40)); err != nil {
+				t.Fatal(err)
+			}
+			before := seller.journal()[0]
+			if revoked[name] {
+				revokeAndReplace(clock, agents, seller, buyer)
+			} else {
+				clock.Advance(RelayCardReverify + time.Second)
+			}
+			deposits := len(relay.depositLog())
+			ctx := outage(agents, seller)
+			for range 2 {
+				_ = seller.carrier.Transport.Redeposit(ctx)
+				clock.Advance(relayRedepositMax)
+			}
+			after := seller.journal()[0]
+			if requests, _ := relay.ackCounts(); requests != 0 || len(relay.depositLog()) != deposits {
+				t.Fatalf("a request was sent during the outage: %d acks, %d deposits", requests,
+					len(relay.depositLog())-deposits)
+			}
+			if len(after.Withdrawals) != 0 || after.EnvelopeID != before.EnvelopeID || after.Stopped {
+				t.Fatalf("the outage changed the journal: %+v", after)
+			}
+		})
+	}
+}
+
+// A relay that answered 404 to a withdrawal does not hold the envelope; it
+// is never asked again, however long the other relays' withdrawals retry.
+func TestARelayThatAnswered404IsNeverAskedAgain(t *testing.T) {
+	clock := newRelayClock()
+	agents := relayAgents()
+	relayA, relayB := twoRelays(t, clock)
+	seller := newRelayTestNode(t, clock, testSeller, agents, relayA)
+	buyer := newRelayTestNode(t, clock, testBuyer, agents, relayA, relayB)
+	seller.learn(buyer)
+	relayB.failDeposits = 1000
+	if _, err := seller.courier.Deliver(context.Background(), relayEnvelopeTo(testBuyer), markedBody(40)); err != nil {
+		t.Fatal(err)
+	}
+	revokeAndReplace(clock, agents, seller, buyer)
+	relayA.mutex.Lock()
+	relayA.ackFails = 1000
+	relayA.mutex.Unlock()
+	seller.redeposit()
+	first, _ := relayB.ackCounts()
+	if first != 1 {
+		t.Fatalf("relay B was asked %d times in the first pass", first)
+	}
+	for range 5 {
+		clock.Advance(relayRedepositMax + time.Second)
+		seller.redeposit()
+	}
+	if again, _ := relayB.ackCounts(); again != first {
+		t.Fatalf("relay B, which answered 404, was asked %d more times", again-first)
+	}
+	if requests, _ := relayA.ackCounts(); requests < 3 {
+		t.Fatalf("the failing relay was not retried after the backoff: %d requests", requests)
+	}
 }

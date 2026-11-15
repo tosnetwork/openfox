@@ -692,7 +692,12 @@ there). `204` and `404` both mean it is gone, as does any other refusal that
 cannot change (`403`, another `4xx`). Anything else is retried at a later
 pass. In the same pass the packet is sealed to the recipient's current
 valid card under a fresh secret, journaled before its first deposit, and
-deposited at that card's relays by the background loop. Without a valid card
+deposited at that card's relays by the background loop; if every relay of
+that card answers `409` for it, it is sealed again under a fresh secret,
+journaled, and deposited after the deposit backoff, as the courier does for
+its own sends. A finalized-state outage (an unreachable chain, an
+unavailable tosctl) is never taken for a revocation: nothing is withdrawn or
+sent until the card's standing is known. Without a valid card
 the packet waits until one is learned or it expires. A packet the recipient
 already took may so arrive twice; the durable inbox deduplicates it. A card
 refused only because it expired is not a revocation: the recipient keeps its

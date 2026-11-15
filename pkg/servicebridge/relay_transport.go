@@ -620,10 +620,46 @@ func (t *RelayTransport) redepositOne(ctx context.Context, path string, budget *
 	} else if len(pending) == 0 {
 		t.forget(record.IdempotencyKey)
 	}
+	if record.everyRelayConflicts() && record.Background && nowUnix < record.ExpiresAtUnix {
+		// A replacement the courier no longer retries: every relay of its
+		// card holds other bytes under its public id (an observer, or one
+		// relay copying the id to the others, got there first). As the
+		// courier does for its own sends, the packet is sealed again under
+		// a fresh secret and journaled before its first deposit, which
+		// waits for the deposit backoff, so a relay that answers 409 to
+		// every id costs a seal per backoff period at most.
+		if packet, ok := record.journaledPacket(); ok && nowUnix < packet.ExpiresAtUnix {
+			if fresh, sealErr := t.seal(ctx, packet, record.Seals); sealErr == nil {
+				record.replace(fresh)
+				if err = t.store(path, record); err != nil {
+					return err
+				}
+				t.mutex.Lock()
+				retry := t.retry[record.IdempotencyKey]
+				t.mutex.Unlock()
+				t.backoff(record.IdempotencyKey, retry, true, now)
+				return nil
+			}
+		}
+	}
 	if changed {
 		return t.store(path, record)
 	}
 	return nil
+}
+
+// everyRelayConflicts reports a current envelope that no relay of its card
+// accepted and every one answered 409 for.
+func (r relayOutboxRecord) everyRelayConflicts() bool {
+	if !r.sealed() || len(r.Accepted) > 0 || len(r.Relays) == 0 {
+		return false
+	}
+	for _, relay := range r.Relays {
+		if !slices.Contains(r.Conflicts, relay) {
+			return false
+		}
+	}
+	return true
 }
 
 // depositPending deposits the current envelope at the relays that have

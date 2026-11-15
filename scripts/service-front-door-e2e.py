@@ -52,7 +52,8 @@ Two carriers:
   encryption key card, the buyer's task carries the buyer's, and the run
   checks that the provider's outgoing envelopes were accepted by the relay.
   The relay itself is started by the operator beforehand; this script only
-  names its URL.
+  names its URL. E2E_RELAY_CA_FILE additionally pins the relay's certificate
+  authority on both nodes (`--relay-ca-file`).
 
 Run it through scripts/service-front-door-e2e.sh.
 """
@@ -102,6 +103,9 @@ HOLD = os.environ.get("E2E_HOLD") == "1"
 # The Agent Packet Relay both nodes use instead of the direct transport.
 RELAY_URL = os.environ.get("E2E_RELAY_URL", "")
 RELAY_MODE = bool(RELAY_URL)
+# E2E_RELAY_CA_FILE, with E2E_RELAY_URL, pins the relay's certificate
+# authority on both nodes with `init --relay-ca-file`.
+RELAY_CA_FILE = os.environ.get("E2E_RELAY_CA_FILE", "")
 # The registry identity domain names the chain by its global id.
 NETWORK_LABEL = os.environ.get("E2E_NETWORK_LABEL", "tos:global-id:3")
 NANO = 1_000_000_000
@@ -474,7 +478,8 @@ def init_flags(node: str) -> list[str]:
     return flags + ["--global-config", str(ROOT / "etc" / "global.json"), "--network-label", NETWORK_LABEL,
                     "--tosctl", str(ROOT / "bin" / "tosctl"), "--tosctl-config", str(ROOT / node / "tosctl-config.json"),
                     "--wallet", node, "--registry-code-boc", str(ROOT / "etc" / "registry-code.boc"),
-                    "--actor-code-hash", ACTOR_CODE_HASH] + (["--relay-url", RELAY_URL] if RELAY_MODE else [])
+                    "--actor-code-hash", ACTOR_CODE_HASH] + (["--relay-url", RELAY_URL] if RELAY_MODE else []) + \
+        (["--relay-ca-file", RELAY_CA_FILE] if RELAY_MODE and RELAY_CA_FILE else [])
 
 
 def offer_flags() -> list[str]:

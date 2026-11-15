@@ -56,7 +56,14 @@ type NodeConfig struct {
 	// its encryption key card and polls. With them a packet to a peer whose
 	// verified card is known is sealed to that card and deposited at the
 	// peer's relays.
-	RelayURLs      []string        `json:"relay_urls,omitempty"`
+	RelayURLs []string `json:"relay_urls,omitempty"`
+	// RelayCAFile is the owner-only copy, in state_dir/relay, of the
+	// certificate authorities `init --relay-ca-file` pinned, and
+	// RelayCASHA256 its digest. With them this node's own https relays are
+	// verified against those authorities only, never the system trust
+	// store; relays only a peer's card names keep the system trust store.
+	RelayCAFile    string          `json:"relay_ca_file,omitempty"`
+	RelayCASHA256  string          `json:"relay_ca_sha256,omitempty"`
 	ReceiverSocket string          `json:"receiver_socket"`
 	Provider       *ProviderNode   `json:"provider,omitempty"`
 	Buyer          *BuyerNode      `json:"buyer,omitempty"`
@@ -434,9 +441,17 @@ func (n *Node) openRelay(signer *PacketSigner, agents FinalizedAgents, options N
 	if report == nil {
 		report = func(string, error) {}
 	}
+	dial := options.RelayDial
+	if dial == nil {
+		// A pinned CA file that cannot be read stops the node rather than
+		// falling back to the system trust store.
+		if dial, err = relayDialerFor(n.Config); err != nil {
+			return err
+		}
+	}
 	carrier, err := OpenRelayCarrier(RelayCarrierConfig{
 		StateDir: n.Config.StateDir, AgentID: n.Config.AgentID, Relays: n.Config.RelayURLs, Signer: signer,
-		Cards: cards, Receiver: n.Receiver, Dial: options.RelayDial, Now: options.Now, Report: report,
+		Cards: cards, Receiver: n.Receiver, Dial: dial, Now: options.Now, Report: report,
 	})
 	if err != nil {
 		return err

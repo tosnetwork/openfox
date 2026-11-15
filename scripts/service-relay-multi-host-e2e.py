@@ -1022,15 +1022,25 @@ def git(path, *args) -> str:
     return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True).stdout.strip()
 
 
+# The public fields of a node's envelope journal record; the record's
+# acknowledgement secret, envelope and packet bytes are never read out.
+OUTBOX_FIELDS = ("recipient", "envelope_id", "relays", "accepted", "stopped")
+READ_OUTBOX = ("import json,pathlib,sys\nfor p in sorted(pathlib.Path(sys.argv[1]).glob('*.json')):\n"
+               "    r=json.loads(p.read_text())\n    print(json.dumps({k: r.get(k) for k in sys.argv[2:]}))\n")
+
+
 def node_outboxes() -> dict[str, list[dict]]:
-    """Every envelope each node journaled for a relay, as its status reports
-    it (ids and relays only, never a secret)."""
-    return {node: ((fd.fox_json(node, "status", "--rail-config", fd.rail(node)).get("relay") or {}).get("outbox")
-                   or []) for node in fd.NODES}
+    """Every envelope each node journaled for its peer's relays: the
+    provider's read here, the buyer's on its host."""
+    remote = remote_path(ROOT / "buyer" / "state" / "relay" / "outbox")
+    listed = on_buyer(["sh", "-c", 'd=$1 s=$2; shift 2; test -d "$d" || exit 0; exec "$0" -I -c "$s" "$d" "$@"',
+                       SYSTEM_PYTHON, remote, READ_OUTBOX, *OUTBOX_FIELDS]).stdout
+    return {"provider": [{key: row.get(key) for key in OUTBOX_FIELDS} for row in outbox("provider")],
+            "buyer": [json.loads(line) for line in listed.splitlines() if line.strip()]}
 
 
 def accepted_view(outboxes: dict) -> dict:
-    return {node: {row.get("envelope_id"): [redact(url) for url in row.get("accepted_by", [])] for row in rows}
+    return {node: {row.get("envelope_id"): [redact(url) for url in row.get("accepted") or []] for row in rows}
             for node, rows in outboxes.items()}
 
 
@@ -1047,25 +1057,32 @@ def bring_up() -> None:
     """The stopped relay never ran during the sale, it took no envelope of
     either node, and the other relays took every one; then it starts again."""
     live_urls = {relay.url for relay in LIVE}
+    every_url = {relay.url for relay in RELAYS}
     stopped = fd.evidence["relay_down"]["unit_after_stop"]
     outboxes = fd.poll(lambda: (lambda found: found if all(
-        row.get("accepted_by") and live_urls & set(row["accepted_by"]) for rows in found.values() for row in rows)
-        else None)(node_outboxes()), 300, 5) or node_outboxes()
+        live_urls & took(row) for rows in found.values() for row in rows) else None)(node_outboxes()), 300, 5) \
+        or node_outboxes()
     rows = [row for found in outboxes.values() for row in found]
     state = unit_state(DOWN)
     fd.evidence["relay_down"].update({"unit_before_restart": state, "accepted_by": accepted_view(outboxes),
                                       "answers_before_restart": relay_up(DOWN)})
     fd.require(f"{DOWN.name} stayed stopped for the whole sale (its unit did not start again between the stop before "
                "the first purchase and the end of the last sale step) and accepted none of the envelopes either node "
-               "sent; " + " and ".join(relay.name for relay in LIVE) + " accepted every one, so it alone carried "
-               "every task, result and acknowledgement",
+               "sent, although every one was addressed to it by the recipient's card; " +
+               " and ".join(relay.name for relay in LIVE) + " accepted every one, so it alone carried every task, "
+               "result and acknowledgement",
                state.get("ActiveState") == "inactive" and not fd.evidence["relay_down"]["answers_before_restart"] and
                all(state.get(key) == stopped.get(key) for key in ("ExecMainStartTimestampMonotonic",
                                                                   "InactiveEnterTimestampMonotonic")) and
                bool(outboxes.get("provider")) and bool(outboxes.get("buyer")) and
-               all(DOWN.url not in row.get("accepted_by", []) and live_urls & set(row.get("accepted_by", []))
-                   for row in rows), fd.evidence["relay_down"])
+               all(set(row.get("relays") or []) == every_url and DOWN.url not in took(row) and
+                   live_urls & took(row) for row in rows), fd.evidence["relay_down"])
     start_relay(DOWN, "restarted after the sale")
+
+
+def took(row: dict) -> set:
+    """The relays that durably accepted one journaled envelope."""
+    return set(row.get("accepted") or [])
 
 
 def carried_everywhere() -> None:
@@ -1073,14 +1090,15 @@ def carried_everywhere() -> None:
     either node sent at every relay of the recipient's card."""
     urls = {relay.url for relay in RELAYS}
     outboxes = fd.poll(lambda: (lambda found: found if all(
-        urls <= set(row.get("accepted_by", [])) for rows in found.values() for row in rows) else None)(
-        node_outboxes()), 600, 5) or node_outboxes()
+        urls <= took(row) for rows in found.values() for row in rows) else None)(node_outboxes()), 600, 5) \
+        or node_outboxes()
     rows = [row for found in outboxes.values() for row in found]
     fd.evidence["redundant_carriage"] = {"accepted_by": accepted_view(outboxes)}
     fd.require("the second relay carried the sale as well: every envelope either node sent (tasks, results and "
-               "acknowledgements) was accepted by every relay of the recipient's card",
+               "acknowledgements) was addressed to every relay by the recipient's card and accepted by each of them",
                bool(outboxes.get("provider")) and bool(outboxes.get("buyer")) and
-               all(urls <= set(row.get("accepted_by", [])) for row in rows), fd.evidence["redundant_carriage"])
+               all(set(row.get("relays") or []) == urls and urls <= took(row) for row in rows),
+               fd.evidence["redundant_carriage"])
 
 
 def sale() -> None:

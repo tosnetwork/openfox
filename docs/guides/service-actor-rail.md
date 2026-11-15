@@ -569,8 +569,8 @@ the packet is sealed to the recipient's current valid card under a fresh
 acknowledgement secret (a new envelope id), journaled, and deposited instead.
 Without a valid card the send fails and the courier retries; an envelope one
 relay already accepted is not spread to further relays once its card is
-revoked. The
-remaining relays are deposited in the background for redundancy. A relay that
+revoked or expired; once revoked it is withdrawn and the packet sealed again
+(below). The remaining relays are deposited in the background for redundancy. A relay that
 answers `409` holds other bytes under that public envelope id; it is abandoned
 for that envelope, and when no relay accepted and one answered `409` the packet
 is sealed again under a new id, journaled, and the courier retries with it.
@@ -679,10 +679,34 @@ the node sends** until a new packet controller is registered and `init` is run
 for it. Do this when a node's state directory (and so its HPKE keys) may have
 been exposed. A compromised offer-card key stays sealable for up to 30 days,
 the offer card's lifetime, unless the controller that signed it is removed.
-Envelopes that relays already accepted for a revoked card stay there until
-they expire (at most 24 hours); withdrawing them early with their
-acknowledgement secrets, which the protocol permits, is a planned follow-up and
-is not done yet, since the node does not keep those secrets.
+**Withdrawing envelopes sealed to a revoked card.** The envelope journal
+keeps each envelope's acknowledgement secret and the signed packet (as the
+courier outbox already does), owner-only; neither is ever logged or placed in
+`status`. While an envelope stands at a relay, each background pass checks
+its card (verifying it again once the last check is 9 minutes old). When the
+card is refused before its own expiry (it no longer verifies against
+finalized state, or is no longer held), the sender journals the withdrawal,
+then acknowledges the envelope with its secret at every relay of the card
+that did not answer `409` for it (an ambiguous deposit may have left it
+there). `204` and `404` both mean it is gone, as does any other refusal that
+cannot change (`403`, another `4xx`). Anything else is retried at a later
+pass. In the same pass the packet is sealed to the recipient's current
+valid card under a fresh secret, journaled before its first deposit, and
+deposited at that card's relays by the background loop. Without a valid card
+the packet waits until one is learned or it expires. A packet the recipient
+already took may so arrive twice; the durable inbox deduplicates it. A card
+refused only because it expired is not a revocation: the recipient keeps its
+key long enough to open every envelope sealed in time, so those envelopes
+are left to be fetched. Bounds: at most 16 withdrawal requests per pass over
+the whole journal; at most 4 envelopes still to be withdrawn per packet (past
+that the oldest secret is forgotten and its envelope left to expire). A
+withdrawal entry, with its secret, is deleted once every relay answered, or
+when its envelope expires; the journal record, with every secret in it, is
+deleted when its last envelope and, while it waits for a card, its packet
+expired. `status` lists, per journaled envelope, the envelope ids still to be
+withdrawn and their relays (`withdrawing`) and `awaiting_card`, never a
+secret. A sender that did not keep a secret (a record from before this
+change) leaves its envelopes until they expire, at most 24 hours.
 
 **Status and preflight.** `status` adds `relay`: each relay's polling state
 (last listing, last failure, consecutive failures, next poll), the held keys

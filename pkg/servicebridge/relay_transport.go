@@ -27,6 +27,13 @@ const (
 	// deposits to the relays that have not accepted an envelope yet.
 	relayRedepositFirst = 30 * time.Second
 	relayRedepositMax   = 5 * time.Minute
+	// maxRelayWithdrawals bounds the withdrawn envelopes one journal
+	// record keeps secrets for; past it the oldest is forgotten and its
+	// envelope left to expire at the relays.
+	maxRelayWithdrawals = 4
+	// relayWithdrawPerPass bounds the withdrawal requests of one
+	// background pass over the whole journal.
+	relayWithdrawPerPass = 16
 )
 
 // Relay transport failures. They are fixed strings: a transport error is
@@ -48,12 +55,21 @@ const relayOutboxSchema = "tos.openfox.relay-outbox.v1"
 
 // relayOutboxRecord journals the one envelope a packet send uses. It is
 // written before the first deposit, so a retry of an ambiguous deposit
-// sends exactly these bytes and the relay recognizes them. The
-// acknowledgement secret is not kept: the sender never needs it.
+// sends exactly these bytes and the relay recognizes them.
+//
+// The record also keeps the envelope's acknowledgement secret and the
+// signed packet, so that when the card the envelope was sealed to is
+// revoked after relays took it, the sender withdraws it there and seals the
+// packet to the recipient's current card. The file is owner-only like all
+// node state; the secret is never logged, never in status and is deleted
+// with the record or once its withdrawal is done.
 type relayOutboxRecord struct {
-	Schema         string   `json:"schema"`
-	Recipient      string   `json:"recipient"`
-	IdempotencyKey string   `json:"idempotency_key"`
+	Schema         string `json:"schema"`
+	Recipient      string `json:"recipient"`
+	IdempotencyKey string `json:"idempotency_key"`
+	// KeyID, Relays, EnvelopeID, EnvelopeBase64, ExpiresAtUnix, AckSecret
+	// and CardNotAfterUnix describe the current envelope; they are empty
+	// while a replacement waits for a valid card.
 	KeyID          string   `json:"recipient_key_id"`
 	Relays         []string `json:"relays"`
 	EnvelopeID     string   `json:"envelope_id"`
@@ -65,10 +81,101 @@ type relayOutboxRecord struct {
 	// Stopped ends the redundant deposits of an envelope whose card was
 	// revoked or expired after a relay accepted it.
 	Stopped bool `json:"stopped,omitempty"`
+	// AckSecret is the current envelope's acknowledgement secret (hex).
+	AckSecret string `json:"ack_secret,omitempty"`
+	// CardNotAfterUnix is the expiry of the card the envelope is sealed
+	// to: a refusal before it is a revocation, after it an expiry.
+	CardNotAfterUnix uint64 `json:"card_not_after_unix,omitempty"`
+	// PacketBase64 and PacketExpiresAtUnix are the signed packet and its
+	// deliverable expiry, for a seal to the recipient's next card.
+	PacketBase64        string `json:"packet_base64,omitempty"`
+	PacketExpiresAtUnix uint64 `json:"packet_expires_at_unix,omitempty"`
+	// Background marks a replacement the transport delivers itself: the
+	// courier already counted the packet as sent when a relay accepted the
+	// envelope it replaces.
+	Background bool `json:"background,omitempty"`
+	// Withdrawals are earlier envelopes of this packet, sealed to a card
+	// revoked after relays took them, still to be withdrawn.
+	Withdrawals []relayWithdrawal `json:"withdrawals,omitempty"`
+}
+
+// relayWithdrawal is one envelope to withdraw with its acknowledgement
+// secret at the relays that may hold it.
+type relayWithdrawal struct {
+	EnvelopeID    string   `json:"envelope_id"`
+	AckSecret     string   `json:"ack_secret"`
+	Relays        []string `json:"relays"`
+	ExpiresAtUnix uint64   `json:"expires_at_unix"`
+}
+
+// sealed reports whether the record holds a current envelope.
+func (r relayOutboxRecord) sealed() bool { return r.EnvelopeBase64 != "" }
+
+// retireAt is when the record and every secret in it are deleted: once the
+// current envelope, every envelope still to be withdrawn and, while a
+// replacement waits for a card, the packet itself expired.
+func (r relayOutboxRecord) retireAt() uint64 {
+	at := r.ExpiresAtUnix
+	if !r.sealed() && r.PacketExpiresAtUnix > at {
+		at = r.PacketExpiresAtUnix
+	}
+	for _, withdrawal := range r.Withdrawals {
+		if withdrawal.ExpiresAtUnix > at {
+			at = withdrawal.ExpiresAtUnix
+		}
+	}
+	return at
+}
+
+// withdrawCurrent moves the current envelope, sealed to a revoked card, to
+// the withdrawals: every relay of its card except those that hold other
+// bytes under its id may hold it, an ambiguous deposit included. The record
+// then waits for a seal to a valid card.
+func (r *relayOutboxRecord) withdrawCurrent() {
+	if r.AckSecret != "" {
+		var relays []string
+		for _, relay := range r.Relays {
+			if !slices.Contains(r.Conflicts, relay) {
+				relays = append(relays, relay)
+			}
+		}
+		if len(relays) > 0 {
+			r.Withdrawals = append(r.Withdrawals, relayWithdrawal{
+				EnvelopeID: r.EnvelopeID, AckSecret: r.AckSecret, Relays: relays, ExpiresAtUnix: r.ExpiresAtUnix,
+			})
+		}
+		if excess := len(r.Withdrawals) - maxRelayWithdrawals; excess > 0 {
+			r.Withdrawals = append([]relayWithdrawal(nil), r.Withdrawals[excess:]...)
+		}
+	}
+	r.dropCurrent()
+}
+
+// dropCurrent forgets the current envelope and its secret.
+func (r *relayOutboxRecord) dropCurrent() {
+	r.KeyID, r.Relays, r.EnvelopeID, r.EnvelopeBase64, r.AckSecret = "", nil, "", "", ""
+	r.Accepted, r.Conflicts, r.Stopped, r.CardNotAfterUnix = nil, nil, false, 0
+}
+
+// revokedBy reports whether a refusal of the current envelope's card at
+// now is a revocation: the card no longer verifies, or is no longer held,
+// before its own expiry. A card refused only because it expired is not:
+// the recipient keeps its private key past the expiry for as long as an
+// envelope sealed in time can wait, so that envelope is left to be fetched.
+func (r relayOutboxRecord) revokedBy(now uint64) bool {
+	return r.CardNotAfterUnix != 0 && now < r.CardNotAfterUnix
+}
+
+// replace takes a fresh seal of the same packet as the current envelope,
+// keeping the withdrawals still due.
+func (r *relayOutboxRecord) replace(fresh relayOutboxRecord) {
+	withdrawals, background := r.Withdrawals, r.Background
+	*r = fresh
+	r.Withdrawals, r.Background = withdrawals, background
 }
 
 func (r relayOutboxRecord) pending() []string {
-	if r.Stopped {
+	if r.Stopped || !r.sealed() {
 		return nil
 	}
 	var out []string
@@ -101,6 +208,10 @@ type RelayTransport struct {
 	// beforeJournal runs just before a new journal record is created; tests
 	// use it to interleave a second process.
 	beforeJournal func()
+	// afterJournal runs once a background pass journaled a withdrawal or
+	// a replacement, before any request it leads to; tests kill the
+	// process there.
+	afterJournal func()
 }
 
 type relayRetry struct {
@@ -167,15 +278,18 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 	if found && record.Recipient != packet.RecipientAgentID {
 		return errors.New("servicebridge: the journaled envelope is for another recipient")
 	}
-	fresh := !found || now >= record.ExpiresAtUnix
+	fresh := !found || !record.sealed() || now >= record.ExpiresAtUnix
 	if fresh {
-		if record, err = t.seal(ctx, packet, record.Seals); err != nil {
-			return err
+		sealed, sealErr := t.seal(ctx, packet, record.Seals)
+		if sealErr != nil {
+			return sealErr
 		}
 		switch {
 		case found:
+			record.replace(sealed)
 			err = t.store(path, record)
 		default:
+			record = sealed
 			if t.beforeJournal != nil {
 				t.beforeJournal()
 			}
@@ -206,11 +320,22 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 		switch usable := t.sealedCardUsable(ctx, record); {
 		case usable == nil:
 		case errors.Is(usable, ErrCardRefused):
-			if record, err = t.seal(ctx, packet, record.Seals); err != nil {
-				return err
+			sealed, sealErr := t.seal(ctx, packet, record.Seals)
+			if sealErr != nil {
+				return sealErr
 			}
+			// An ambiguous deposit may have left the old bytes at a relay;
+			// sealed to a revoked card, they are withdrawn.
+			withdraw := record.revokedBy(now)
+			if withdraw {
+				record.withdrawCurrent()
+			}
+			record.replace(sealed)
 			if err = t.store(path, record); err != nil {
 				return err
+			}
+			if withdraw {
+				t.signal()
 			}
 		default:
 			return usable
@@ -245,7 +370,8 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 		if err != nil {
 			return errors.Join(ErrRelayResealed, err)
 		}
-		if err := t.store(path, resealed); err != nil {
+		record.replace(resealed)
+		if err := t.store(path, record); err != nil {
 			return err
 		}
 		return ErrRelayResealed
@@ -276,6 +402,7 @@ func (t *RelayTransport) seal(ctx context.Context, packet OutboundPacket, seals 
 		return relayOutboxRecord{}, errors.New("servicebridge: draw an acknowledgement secret")
 	}
 	envelope, err := agentpacketseal.Seal(card.Key, secret, packet.JSON, expires)
+	ackSecret := hex.EncodeToString(secret[:])
 	clear(secret[:])
 	if err != nil {
 		return relayOutboxRecord{}, errors.New("servicebridge: seal the packet to the recipient's key card")
@@ -290,8 +417,25 @@ func (t *RelayTransport) seal(ctx context.Context, packet OutboundPacket, seals 
 		EnvelopeID: hex.EncodeToString(
 			header.EnvelopeID[:],
 		), EnvelopeBase64: base64.StdEncoding.EncodeToString(envelope),
-		ExpiresAtUnix: expires, Seals: seals + 1,
+		ExpiresAtUnix: expires, Seals: seals + 1, AckSecret: ackSecret, CardNotAfterUnix: card.Card.NotAfterUnix,
+		PacketBase64: base64.StdEncoding.EncodeToString(packet.JSON), PacketExpiresAtUnix: packet.ExpiresAtUnix,
 	}, nil
+}
+
+// journaledPacket is the packet a record keeps for a seal to the next
+// card, or false when it keeps none.
+func (r relayOutboxRecord) journaledPacket() (OutboundPacket, bool) {
+	if r.PacketBase64 == "" || r.PacketExpiresAtUnix == 0 {
+		return OutboundPacket{}, false
+	}
+	encoded, err := base64.StdEncoding.Strict().DecodeString(r.PacketBase64)
+	if err != nil || len(encoded) == 0 {
+		return OutboundPacket{}, false
+	}
+	return OutboundPacket{
+		RecipientAgentID: r.Recipient, JSON: encoded, IdempotencyKey: r.IdempotencyKey,
+		ExpiresAtUnix: r.PacketExpiresAtUnix,
+	}, true
 }
 
 // sealedCardUsable reports whether the card a journaled envelope was sealed
@@ -341,8 +485,16 @@ func (t *RelayTransport) load(path string) (relayOutboxRecord, bool, error) {
 		return relayOutboxRecord{}, false, nil
 	}
 	if err != nil || record.Schema != relayOutboxSchema || !agentIDPattern.MatchString(record.Recipient) ||
-		!idempotencyKeyPattern.MatchString(record.IdempotencyKey) || t.recordPath(record.IdempotencyKey) != path {
+		!idempotencyKeyPattern.MatchString(record.IdempotencyKey) || t.recordPath(record.IdempotencyKey) != path ||
+		(record.AckSecret != "" && !hex64Pattern.MatchString(record.AckSecret)) ||
+		len(record.Withdrawals) > maxRelayWithdrawals {
 		return relayOutboxRecord{}, false, errors.New("servicebridge: invalid relay envelope journal record")
+	}
+	for _, withdrawal := range record.Withdrawals {
+		if !hex64Pattern.MatchString(withdrawal.EnvelopeID) || !hex64Pattern.MatchString(withdrawal.AckSecret) ||
+			len(withdrawal.Relays) == 0 || len(withdrawal.Relays) > agentpacketseal.MaxRelays {
+			return relayOutboxRecord{}, false, errors.New("servicebridge: invalid relay envelope journal record")
+		}
 	}
 	return record, true, nil
 }
@@ -372,18 +524,25 @@ func (t *RelayTransport) Redeposit(ctx context.Context) error {
 		return errors.New("servicebridge: read the relay envelope journal")
 	}
 	var failures []error
+	budget := relayWithdrawPerPass
 	for _, entry := range entries {
 		if !relayOutboxFilePattern.MatchString(entry.Name()) {
 			continue
 		}
-		if err := t.redepositOne(ctx, filepath.Join(t.directory, entry.Name())); err != nil {
+		if err := t.redepositOne(ctx, filepath.Join(t.directory, entry.Name()), &budget); err != nil {
 			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)
 }
 
-func (t *RelayTransport) redepositOne(ctx context.Context, path string) error {
+// redepositOne advances one journal record: it retires the record once
+// nothing in it can matter any more, withdraws an accepted envelope whose
+// card was revoked and seals the packet to the recipient's current card,
+// withdraws earlier envelopes still due, and deposits the current envelope
+// at the relays that have not accepted it. Every change is journaled
+// before the request it leads to, so a restart resumes where it stopped.
+func (t *RelayTransport) redepositOne(ctx context.Context, path string, budget *int) error {
 	name := strings.TrimSuffix(filepath.Base(path), ".json")
 	unlock := t.lock("idem_" + name)
 	defer unlock()
@@ -392,38 +551,95 @@ func (t *RelayTransport) redepositOne(ctx context.Context, path string) error {
 		return err
 	}
 	now := t.now()
-	if uint64(now.Unix()) >= record.ExpiresAtUnix {
+	nowUnix := uint64(now.Unix())
+	if nowUnix >= record.retireAt() {
+		// The secrets kept for withdrawals go with the record.
 		t.forget(record.IdempotencyKey)
+		t.forget(relayWithdrawRetryKey(record.IdempotencyKey))
 		if err = os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return errors.New("servicebridge: remove an expired relay envelope")
 		}
 		return syncDirectory(t.directory)
 	}
+	changed, depositable := false, false
+	live := record.sealed() && nowUnix < record.ExpiresAtUnix && !record.Stopped &&
+		(len(record.Accepted) > 0 || record.Background)
+	// The card of an envelope that stands at a relay is watched while its
+	// secret is kept, so a revocation withdraws it; legacy records without
+	// a secret are watched only while redundant deposits are due.
+	if live && (len(record.pending()) > 0 || record.AckSecret != "") {
+		switch usable := t.sealedCardUsable(ctx, record); {
+		case usable == nil:
+			depositable = true
+		case errors.Is(usable, ErrCardRefused) && record.revokedBy(nowUnix) && record.AckSecret != "":
+			record.withdrawCurrent()
+			record.Background, changed = true, true
+		case errors.Is(usable, ErrCardRefused) && len(record.Accepted) == 0:
+			// A replacement no relay took yet whose card expired: sealed
+			// again to the current card below.
+			record.dropCurrent()
+			changed = true
+		case errors.Is(usable, ErrCardRefused):
+			// Already durably held by one relay; it is not spread further
+			// to a key whose card no longer stands, and its card was not
+			// revoked: the recipient can still open it until it expires.
+			record.Stopped, changed = true, true
+			t.forget(record.IdempotencyKey)
+		default:
+			// Finalized state cannot answer now: nothing is sent to that
+			// card this pass.
+		}
+	}
+	if !record.sealed() && record.Background {
+		if packet, ok := record.journaledPacket(); ok && nowUnix < packet.ExpiresAtUnix {
+			// Without a valid card the record waits; a later pass seals it
+			// once one is learned, until the packet expires.
+			if fresh, sealErr := t.seal(ctx, packet, record.Seals); sealErr == nil {
+				record.replace(fresh)
+				changed, depositable = true, true
+			}
+		}
+	}
+	if changed {
+		if err = t.store(path, record); err != nil {
+			return err
+		}
+		changed = false
+		if t.afterJournal != nil {
+			t.afterJournal()
+		}
+	}
+	if t.withdraw(ctx, &record, now, budget) {
+		changed = true
+	}
 	pending := record.pending()
-	if len(record.Accepted) == 0 || len(pending) == 0 || record.Stopped {
+	if depositable && len(pending) > 0 && (len(record.Accepted) > 0 || record.Background) {
+		if t.depositPending(ctx, &record, pending, now) {
+			changed = true
+		}
+	} else if len(pending) == 0 {
 		t.forget(record.IdempotencyKey)
-		return nil
 	}
-	switch usable := t.sealedCardUsable(ctx, record); {
-	case usable == nil:
-	case errors.Is(usable, ErrCardRefused):
-		// Already durably held by one relay; it is not spread further to
-		// a key whose card no longer stands.
-		record.Stopped = true
-		t.forget(record.IdempotencyKey)
+	if changed {
 		return t.store(path, record)
-	default:
-		return nil
 	}
+	return nil
+}
+
+// depositPending deposits the current envelope at the relays that have
+// not accepted it, backing off after a failure.
+func (t *RelayTransport) depositPending(ctx context.Context, record *relayOutboxRecord, pending []string,
+	now time.Time,
+) bool {
 	t.mutex.Lock()
 	retry := t.retry[record.IdempotencyKey]
 	t.mutex.Unlock()
 	if now.Before(retry.at) {
-		return nil
+		return false
 	}
 	envelope, err := base64.StdEncoding.Strict().DecodeString(record.EnvelopeBase64)
 	if err != nil {
-		return errors.New("servicebridge: the journaled envelope does not decode")
+		return false
 	}
 	changed, failed := false, false
 	for _, relay := range pending {
@@ -436,24 +652,104 @@ func (t *RelayTransport) redepositOne(ctx context.Context, path string) error {
 			failed = true
 		}
 	}
-	if failed {
-		backoff := retry.backoff * 2
-		if backoff < relayRedepositFirst {
-			backoff = relayRedepositFirst
-		}
-		if backoff > relayRedepositMax {
-			backoff = relayRedepositMax
-		}
-		t.mutex.Lock()
-		t.retry[record.IdempotencyKey] = relayRetry{at: now.Add(backoff), backoff: backoff}
-		t.mutex.Unlock()
-	} else {
-		t.forget(record.IdempotencyKey)
+	t.backoff(record.IdempotencyKey, retry, failed, now)
+	return changed
+}
+
+func (t *RelayTransport) backoff(key string, retry relayRetry, failed bool, now time.Time) {
+	if !failed {
+		t.forget(key)
+		return
 	}
-	if changed {
-		return t.store(path, record)
+	backoff := retry.backoff * 2
+	if backoff < relayRedepositFirst {
+		backoff = relayRedepositFirst
 	}
-	return nil
+	if backoff > relayRedepositMax {
+		backoff = relayRedepositMax
+	}
+	t.mutex.Lock()
+	t.retry[key] = relayRetry{at: now.Add(backoff), backoff: backoff}
+	t.mutex.Unlock()
+}
+
+func relayWithdrawRetryKey(idempotencyKey string) string { return "withdraw:" + idempotencyKey }
+
+// withdraw acknowledges each envelope still to be withdrawn, with its
+// secret, at the relays that may hold it, within the pass budget. 204 and
+// 404 both mean it is gone there; a refusal that cannot change (403, other
+// 4xx, an unusable URL) ends the attempt at that relay; anything else is
+// retried at a later pass. An entry is deleted, secret and all, once no
+// relay is left or its envelope expired.
+func (t *RelayTransport) withdraw(ctx context.Context, record *relayOutboxRecord, now time.Time, budget *int) bool {
+	if len(record.Withdrawals) == 0 {
+		return false
+	}
+	key := relayWithdrawRetryKey(record.IdempotencyKey)
+	t.mutex.Lock()
+	retry := t.retry[key]
+	t.mutex.Unlock()
+	if now.Before(retry.at) {
+		return false
+	}
+	nowUnix := uint64(now.Unix())
+	changed, failed := false, false
+	var kept []relayWithdrawal
+	for _, withdrawal := range record.Withdrawals {
+		var id, secret [32]byte
+		idOK := decodeHex32(withdrawal.EnvelopeID, &id) == nil
+		secretOK := decodeHex32(withdrawal.AckSecret, &secret) == nil
+		if nowUnix >= withdrawal.ExpiresAtUnix || !idOK || !secretOK {
+			clear(secret[:])
+			changed = true
+			continue
+		}
+		var remaining []string
+		for _, relay := range withdrawal.Relays {
+			if *budget <= 0 {
+				remaining = append(remaining, relay)
+				continue
+			}
+			*budget--
+			if t.acknowledge(ctx, relay, record.Recipient, id, secret) {
+				changed = true
+			} else {
+				remaining, failed = append(remaining, relay), true
+			}
+		}
+		clear(secret[:])
+		if len(remaining) > 0 {
+			withdrawal.Relays = remaining
+			kept = append(kept, withdrawal)
+		}
+	}
+	record.Withdrawals = kept
+	t.backoff(key, retry, failed, now)
+	return changed
+}
+
+// acknowledge withdraws one envelope at one relay; true means the attempt
+// at that relay is over.
+func (t *RelayTransport) acknowledge(ctx context.Context, relay, agent string, id, secret [32]byte) bool {
+	client, err := t.pool.client(relay)
+	if err != nil {
+		return true
+	}
+	bounded, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
+	err = client.Ack(bounded, agent, id, secret)
+	switch {
+	case err == nil, errors.Is(err, agentpacketrelay.ErrNotFound):
+		return true
+	case errors.Is(err, agentpacketrelay.ErrRateLimited), errors.Is(err, agentpacketrelay.ErrUnavailable),
+		errors.Is(err, agentpacketrelay.ErrRequestTimeout):
+		return false
+	case errors.Is(err, agentpacketrelay.ErrForbidden), errors.Is(err, agentpacketrelay.ErrRejected),
+		errors.Is(err, agentpacketrelay.ErrInvalidArgument):
+		return true
+	default:
+		return false
+	}
 }
 
 func (t *RelayTransport) forget(key string) {
@@ -472,6 +768,19 @@ type RelayOutboxView struct {
 	Conflicts     []string `json:"conflicts,omitempty"`
 	Pending       []string `json:"pending"`
 	Seals         int      `json:"seals"`
+	// AwaitingCard reports a packet whose envelope was withdrawn and that
+	// waits for a valid card of the recipient to be sealed again.
+	AwaitingCard bool `json:"awaiting_card,omitempty"`
+	// Withdrawing lists the envelopes still to be withdrawn, by id and
+	// relay; never their secrets.
+	Withdrawing []RelayWithdrawalView `json:"withdrawing,omitempty"`
+}
+
+// RelayWithdrawalView is one envelope still to be withdrawn.
+type RelayWithdrawalView struct {
+	EnvelopeID    string   `json:"envelope_id"`
+	Relays        []string `json:"relays"`
+	ExpiresAtUnix uint64   `json:"expires_at_unix"`
 }
 
 // ReadRelayOutbox lists the envelope journal without taking ownership of it.
@@ -496,11 +805,19 @@ func ReadRelayOutbox(directory string) ([]RelayOutboxView, error) {
 		if !found {
 			continue
 		}
-		out = append(out, RelayOutboxView{
+		view := RelayOutboxView{
 			Recipient: record.Recipient, EnvelopeID: record.EnvelopeID, KeyID: record.KeyID,
 			ExpiresAtUnix: record.ExpiresAtUnix, Accepted: append([]string{}, record.Accepted...),
 			Conflicts: record.Conflicts, Pending: append([]string{}, record.pending()...), Seals: record.Seals,
-		})
+			AwaitingCard: !record.sealed(),
+		}
+		for _, withdrawal := range record.Withdrawals {
+			view.Withdrawing = append(view.Withdrawing, RelayWithdrawalView{
+				EnvelopeID: withdrawal.EnvelopeID, Relays: append([]string{}, withdrawal.Relays...),
+				ExpiresAtUnix: withdrawal.ExpiresAtUnix,
+			})
+		}
+		out = append(out, view)
 	}
 	return out, nil
 }

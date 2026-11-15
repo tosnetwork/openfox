@@ -27,6 +27,11 @@ const (
 
 var assemblyNamePattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// ErrInboxRefused reports a frame the inbox refuses for what it is or for
+// the inbox's bounds, not for a failing disk: storing it again later gives
+// the same answer until the sender delivers again.
+var ErrInboxRefused = errors.New("servicebridge: the inbox refuses the frame")
+
 // InboxStatus tells what a Put did.
 type InboxStatus int
 
@@ -95,7 +100,7 @@ func (inbox *Inbox) Put(sender string, frame Frame) (InboxStatus, *Message, erro
 		return 0, nil, errors.New("servicebridge: invalid inbox write")
 	}
 	if err := validateFrame(frame); err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("%w: %w", ErrInboxRefused, err)
 	}
 	inbox.mutex.Lock()
 	defer inbox.mutex.Unlock()
@@ -131,7 +136,8 @@ func (inbox *Inbox) Put(sender string, frame Frame) (InboxStatus, *Message, erro
 	path := filepath.Join(directory, strconv.Itoa(int(frame.Index)))
 	if existing, existingErr := readPrivateFile(path, frameHeader+MaxChunkData); existingErr == nil {
 		if string(existing) != string(encoded) {
-			return 0, nil, errors.New("servicebridge: a frame conflicts with the stored frame of the same index")
+			return 0, nil, fmt.Errorf("%w: a frame conflicts with the stored frame of the same index",
+				ErrInboxRefused)
 		}
 	} else if errors.Is(existingErr, os.ErrNotExist) {
 		if existingErr = writeSynced(path, encoded); existingErr != nil {
@@ -223,7 +229,7 @@ func (inbox *Inbox) admitAssembly(sender string) error {
 		return err
 	}
 	if open >= inbox.maxAll || fromSender >= inbox.maxPerSender {
-		return errors.New("servicebridge: too many open rail messages; retry later")
+		return fmt.Errorf("%w: too many open rail messages; retry later", ErrInboxRefused)
 	}
 	return nil
 }

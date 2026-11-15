@@ -90,6 +90,7 @@ func resultBuyer(t *testing.T, clock *relayClock, owners ownersMap) (*Buyer, Pur
 	if err != nil {
 		t.Fatal(err)
 	}
+	cards.AllowLoopbackRelays(true)
 	buyer := &Buyer{config: BuyerConfig{Directory: directory, Now: clock.Now, Cards: cards}}
 	requestID := uint64(3)
 	record := PurchaseRecord{

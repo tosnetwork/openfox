@@ -190,7 +190,7 @@ func (p *preflight) checkPeerCards(verifier mldsa44.Verifier, agents agentpacket
 	}
 	checker := &PeerCards{
 		verifier: verifier, agents: agents, owners: sessionOwners{session: p.session},
-		now: p.env.Now,
+		now: p.env.Now, loopback: ownRelaysOnLoopback(p.config.RelayURLs),
 	}
 	status := CheckPass
 	var lines []string

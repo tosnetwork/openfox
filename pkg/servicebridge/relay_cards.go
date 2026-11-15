@@ -7,9 +7,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -107,8 +110,34 @@ type PeerCards struct {
 	agents    agentpacket.AgentResolver
 	owners    CapabilityOwners
 	now       func() time.Time
-	mutex     sync.Mutex
-	cards     map[string][]*peerCard
+	// loopback lets peer cards name relays on a loopback host. Only a
+	// node whose own relays are on loopback (a single-host test setup)
+	// allows it; otherwise a verified peer could make this node send
+	// requests to services on its own host.
+	loopback bool
+	mutex    sync.Mutex
+	cards    map[string][]*peerCard
+}
+
+// AllowLoopbackRelays sets whether peer cards may name loopback relays.
+func (p *PeerCards) AllowLoopbackRelays(allowed bool) {
+	p.mutex.Lock()
+	p.loopback = allowed
+	p.mutex.Unlock()
+}
+
+// loopbackRelay reports whether a relay base URL names a loopback host.
+func loopbackRelay(relay string) bool {
+	parsed, err := url.Parse(relay)
+	if err != nil {
+		return true
+	}
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 
 // OpenPeerCards opens the owner-private card directory. Stored cards are
@@ -236,6 +265,14 @@ func (p *PeerCards) verify(ctx context.Context, card *peerCard) error {
 	packet, err := agentpacket.DecodeJSON(card.JSON)
 	if err != nil {
 		return fmt.Errorf("%w: the card packet does not decode", ErrCardRefused)
+	}
+	if !p.loopback {
+		for _, relay := range card.Card.Relays {
+			if loopbackRelay(relay) {
+				return fmt.Errorf("%w: the card names a relay on a loopback host, which only a node whose own "+
+					"relays are on loopback accepts", ErrCardRefused)
+			}
+		}
 	}
 	if card.CapabilityID != "" {
 		owner, ownerErr := p.owners.CapabilityOwner(ctx, card.CapabilityID)

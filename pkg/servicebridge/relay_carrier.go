@@ -35,8 +35,8 @@ type RelayCarrier struct {
 	stateDir  string
 	now       func() time.Time
 	report    func(string, error)
-	// onRotate is told when a new own card was issued, so the provider can
-	// republish its offer file with it.
+	// onRotate is given the current own card at every maintenance pass, so
+	// the provider's offer file always carries it.
 	onRotate func(context.Context, OwnRelayKey) error
 }
 
@@ -88,25 +88,28 @@ func OpenRelayCarrier(config RelayCarrierConfig) (*RelayCarrier, error) {
 	}, nil
 }
 
-// SetRotationHook registers what runs after a new own card was issued.
+// SetRotationHook registers what every maintenance pass hands the current
+// own card to.
 func (c *RelayCarrier) SetRotationHook(hook func(context.Context, OwnRelayKey) error) {
 	c.onRotate = hook
 }
 
 // Maintain rotates and destroys keys and runs the rotation hook.
 func (c *RelayCarrier) Maintain(ctx context.Context) error {
-	issued, err := c.Keys.Maintain(ctx)
+	if _, err := c.Keys.Maintain(ctx); err != nil {
+		return err
+	}
+	if c.onRotate == nil {
+		return nil
+	}
+	// Every pass, not only the one that issued a card: a republish that
+	// failed, or a crash after the successor was stored, is caught up here.
+	// The hook writes only when what it publishes differs.
+	key, err := c.Keys.Current(ctx, 0)
 	if err != nil {
 		return err
 	}
-	if issued && c.onRotate != nil {
-		key, err := c.Keys.Current(ctx, 0)
-		if err != nil {
-			return err
-		}
-		return c.onRotate(ctx, key)
-	}
-	return nil
+	return c.onRotate(ctx, key)
 }
 
 // Run polls the relays, keeps redundant deposits going and maintains keys

@@ -576,7 +576,10 @@ decode and the durable inbox write. Only after that write is the envelope
 acknowledged, at every relay that listed it. A packet that opens but is
 refused for good (malformed, another recipient, a signer that is not a
 finalized controller) is acknowledged too, so junk sealed to the node's key
-does not hold its quota; the refusal is reported without contents. An
+does not hold its quota; the refusal is reported without contents. So is a
+frame the inbox refuses for what it is or for its bounds (a frame conflicting
+with a stored one, the open-message limit): the sender's own redelivery brings
+the message again. An
 unavailable chain or a failing inbox write leaves the envelope for a later
 poll. An envelope that does not open, or that names a key the node does not
 hold, is remembered by relay and envelope id (never by the id alone, so a junk
@@ -601,7 +604,15 @@ through tosctl, naming the public key, its validity window and the node's
 relay URLs. A card is valid for 7 days; `serve` issues a successor 48 hours
 before expiry (and whenever `relay_urls` changes) and keeps every private key
 until 24 hours and 5 minutes after its card expired, the longest an envelope
-sealed in time can wait at a relay, then destroys it.
+sealed in time can wait at a relay, then destroys it. A card handed out for a
+request that runs past the 7 days is issued for the full 30 days and handed
+out again for any long request while it still runs at least 15 days, so a node
+holds a few keys at most whatever its requests' deadlines; such a request may
+outlive its card, and the newer card reaches the peer in band. Each
+maintenance pass also picks up and destroys on time keys that `offer` or `buy`
+wrote while `serve` ran, and rewrites the provider's offer file whenever the
+card it carries is no longer the current one (a failed rewrite is retried at
+the next pass).
 
 **How cards travel.** The provider's card is in its offer file; `serve`
 rewrites the offer file when it issues a successor, and the owner hands the
@@ -613,7 +624,10 @@ provider, verifies it like an offer-file card, and records a refused card on
 the purchase (`provider_card_refused`) without refusing the result. The buyer verifies the card against finalized state
 and requires its Agent to be the Capability's **finalized owner, read from
 chain** (never from the offer file) before anything is paid; it seals only to
-a card verified within the last 9 minutes. The buyer's card travels inside its
+a card verified within the last 9 minutes. A peer card that names a relay on a
+loopback host is refused unless this node's own relays are on loopback (a
+single-host test setup), so a verified peer cannot make the node send requests
+to services on its own host. The buyer's card travels inside its
 signed and encrypted task; it is chosen to cover the request's response and
 refund deadlines plus a day, and the provider takes it only from a task the
 gate admitted and only when the card's Agent is the task's sender. Each task

@@ -160,6 +160,41 @@ func (k *RelayKeys) load() error {
 	return nil
 }
 
+// rescanLocked adds keys another process of this node wrote since the
+// directory was loaded (`offer` and `buy` run beside `serve`), so they are
+// polled for and destroyed on time like the node's own.
+func (k *RelayKeys) rescanLocked() error {
+	entries, err := os.ReadDir(k.directory)
+	if err != nil {
+		return errors.New("servicebridge: read the relay key directory")
+	}
+	added := false
+	for _, entry := range entries {
+		if !relayKeyFilePattern.MatchString(entry.Name()) {
+			continue
+		}
+		known := false
+		for _, key := range k.keys {
+			if hex.EncodeToString(key.KeyID[:])+".json" == entry.Name() {
+				known = true
+				break
+			}
+		}
+		if known {
+			continue
+		}
+		key, err := k.readKey(filepath.Join(k.directory, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("servicebridge: relay key file %s: %w", entry.Name(), err)
+		}
+		k.keys, added = append(k.keys, key), true
+	}
+	if added {
+		k.sortKeys()
+	}
+	return nil
+}
+
 // readKey decodes one key file and requires every part of it to agree: the
 // seed derives the named key id, which is the file name, and the card is a
 // card of this Agent for exactly that key, window and relay list.
@@ -278,6 +313,9 @@ func (k *RelayKeys) Maintain(ctx context.Context) (bool, error) {
 	}
 	k.mutex.Lock()
 	defer k.mutex.Unlock()
+	if err := k.rescanLocked(); err != nil {
+		return false, err
+	}
 	if err := k.destroyExpired(); err != nil {
 		return false, err
 	}
@@ -291,8 +329,11 @@ func (k *RelayKeys) Maintain(ctx context.Context) (bool, error) {
 }
 
 // Current returns the card to hand out now: valid now, naming the
-// configured relays, and expiring no earlier than coverUntil when that can
-// be met within the 30-day card bound. A new card is issued when needed.
+// configured relays, and expiring no earlier than coverUntil when a held
+// card does. A cover past the default lifetime is met by a 30-day card that
+// is reused while it runs at least relayLongCoverFloor longer, so it may end
+// before a far coverUntil; the peer gets later cards in band. A new card is
+// issued only when no held card qualifies.
 func (k *RelayKeys) Current(ctx context.Context, coverUntil uint64) (OwnRelayKey, error) {
 	if k == nil || ctx == nil {
 		return OwnRelayKey{}, errors.New("servicebridge: invalid relay key request")
@@ -307,31 +348,55 @@ func (k *RelayKeys) Current(ctx context.Context, coverUntil uint64) (OwnRelayKey
 	return key, err
 }
 
+// relayLongCoverFloor is how long a card issued for a long cover must still
+// run to be handed out again for another long cover. A target past the
+// default lifetime is met by a card of the longest lifetime; until that card
+// runs within this floor it is reused, whatever the target, and later cards
+// reach the peer in band (each task redelivery, result and acknowledgement
+// carries the sender's current card). So a target that moves with the clock,
+// or many requests with different deadlines, never issue a key per call.
+const relayLongCoverFloor = agentpacketseal.MaxKeyCardLifetime / 2
+
 func (k *RelayKeys) currentLocked(ctx context.Context, now, coverUntil uint64) (OwnRelayKey, bool, error) {
 	longest := saturatingAdd(now, uint64(agentpacketseal.MaxKeyCardLifetime/time.Second))
-	if coverUntil > longest {
-		coverUntil = longest
+	target := coverUntil
+	if target > longest {
+		target = longest
 	}
-	for _, key := range k.keys {
-		if key.NotBeforeUnix <= now && now < key.NotAfterUnix && key.NotAfterUnix >= coverUntil &&
-			slices.Equal(key.Relays, k.relays) {
-			return key, false, nil
+	long := target > saturatingAdd(now, uint64(RelayKeyLifetime/time.Second))
+	var latest *OwnRelayKey
+	for index := range k.keys {
+		key := &k.keys[index]
+		if key.NotBeforeUnix > now || now >= key.NotAfterUnix || !slices.Equal(key.Relays, k.relays) {
+			continue
+		}
+		if key.NotAfterUnix >= target {
+			return *key, false, nil
+		}
+		if latest == nil || key.NotAfterUnix > latest.NotAfterUnix {
+			latest = key
 		}
 	}
-	key, err := k.issueLocked(ctx, now, coverUntil)
+	if long && latest != nil &&
+		latest.NotAfterUnix >= saturatingAdd(now, uint64(relayLongCoverFloor/time.Second)) {
+		return *latest, false, nil
+	}
+	notAfter := saturatingAdd(now, uint64(RelayKeyLifetime/time.Second))
+	if long {
+		notAfter = longest
+	} else if target > notAfter {
+		notAfter = target
+	}
+	key, err := k.issueLocked(ctx, now, notAfter)
 	return key, err == nil, err
 }
 
 // issueLocked draws a new key, signs its card with the packet controller
 // and writes both in one owner-only file before the key is used.
-func (k *RelayKeys) issueLocked(ctx context.Context, now, coverUntil uint64) (OwnRelayKey, error) {
+func (k *RelayKeys) issueLocked(ctx context.Context, now, notAfter uint64) (OwnRelayKey, error) {
 	if len(k.keys) >= maxRelayKeys {
 		return OwnRelayKey{}, fmt.Errorf("servicebridge: %d relay keys are held; no further key is issued until "+
 			"older ones are destroyed", maxRelayKeys)
-	}
-	notAfter := saturatingAdd(now, uint64(RelayKeyLifetime/time.Second))
-	if coverUntil > notAfter {
-		notAfter = coverUntil
 	}
 	seed, err := agentpacketseal.GenerateSeed()
 	if err != nil {

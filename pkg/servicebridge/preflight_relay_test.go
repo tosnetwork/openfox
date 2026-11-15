@@ -42,6 +42,7 @@ func relayPreflight(t *testing.T, issueKey bool) (*pfFixture, *fakeRelay) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		cards.AllowLoopbackRelays(true)
 		buyer := newRelayTestNode(t, clock, testBuyer, relayAgents(), relay)
 		if err = cards.Learn(context.Background(), buyer.card(), testBuyer, ""); err != nil {
 			t.Fatal(err)

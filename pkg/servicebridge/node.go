@@ -429,6 +429,7 @@ func (n *Node) openRelay(signer *PacketSigner, agents FinalizedAgents, options N
 	if err != nil {
 		return err
 	}
+	cards.AllowLoopbackRelays(ownRelaysOnLoopback(n.Config.RelayURLs))
 	report := options.Report
 	if report == nil {
 		report = func(string, error) {}
@@ -459,10 +460,21 @@ func (n *Node) republishOffer(_ context.Context, key OwnRelayKey) error {
 	if err != nil {
 		return err
 	}
-	return writeOfferFile(provider.OfferFile, Offer{
+	offer := Offer{
 		CapabilityID: provider.CapabilityID, Version: provider.Version, ProviderAgentID: n.Config.AgentID,
 		ManifestDigest: digest, ManifestCBOR: manifestCBOR, KeyCard: key.CardJSON,
-	}, time.Now())
+	}
+	if published, readErr := ReadOfferFile(provider.OfferFile); readErr == nil && sameOffer(published, offer) {
+		return nil
+	}
+	return writeOfferFile(provider.OfferFile, offer, time.Now())
+}
+
+// sameOffer reports whether two offers publish the same thing.
+func sameOffer(a, b Offer) bool {
+	return a.CapabilityID == b.CapabilityID && a.Version == b.Version && a.ProviderAgentID == b.ProviderAgentID &&
+		a.ManifestDigest == b.ManifestDigest && bytes.Equal(a.ManifestCBOR, b.ManifestCBOR) &&
+		bytes.Equal(a.KeyCard, b.KeyCard)
 }
 
 func (n *Node) openProvider(ctx context.Context, options NodeOptions, lifecycle LifecycleSender) error {
@@ -808,4 +820,15 @@ func ReadPurchases(stateDir string) ([]PurchaseRecord, error) {
 	}
 	buyer := &Buyer{config: BuyerConfig{Directory: directory, Now: time.Now}}
 	return buyer.Purchases()
+}
+
+// ownRelaysOnLoopback reports whether any of the node's own relays is on a
+// loopback host: a single-host test setup, whose peers' relays are too.
+func ownRelaysOnLoopback(relays []string) bool {
+	for _, relay := range relays {
+		if loopbackRelay(relay) {
+			return true
+		}
+	}
+	return false
 }

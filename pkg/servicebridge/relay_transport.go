@@ -98,6 +98,9 @@ type RelayTransport struct {
 	mutex     sync.Mutex
 	retry     map[string]relayRetry
 	wake      chan struct{}
+	// beforeJournal runs just before a new journal record is created; tests
+	// use it to interleave a second process.
+	beforeJournal func()
 }
 
 type relayRetry struct {
@@ -169,7 +172,25 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 		if record, err = t.seal(ctx, packet, record.Seals); err != nil {
 			return err
 		}
-		if err = t.store(path, record, !found); err != nil {
+		switch {
+		case found:
+			err = t.store(path, record)
+		default:
+			if t.beforeJournal != nil {
+				t.beforeJournal()
+			}
+			err = writeJSON(path, record, true)
+			if errors.Is(err, os.ErrExist) {
+				// Another sender journaled this packet first: its envelope
+				// may already be at a relay, so it is the one used.
+				existing, held, loadErr := t.load(path)
+				if loadErr != nil || !held || existing.Recipient != packet.RecipientAgentID {
+					return errors.Join(errors.New("servicebridge: read the journaled envelope"), loadErr)
+				}
+				record, fresh, err = existing, false, nil
+			}
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -188,7 +209,7 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 			if record, err = t.seal(ctx, packet, record.Seals); err != nil {
 				return err
 			}
-			if err = t.store(path, record, false); err != nil {
+			if err = t.store(path, record); err != nil {
 				return err
 			}
 		default:
@@ -205,14 +226,14 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 		switch outcome {
 		case depositAccepted:
 			record.Accepted = append(record.Accepted, relay)
-			if err := t.store(path, record, false); err != nil {
+			if err := t.store(path, record); err != nil {
 				return err
 			}
 			t.signal()
 			return nil
 		case depositConflict:
 			record.Conflicts = append(record.Conflicts, relay)
-			if err := t.store(path, record, false); err != nil {
+			if err := t.store(path, record); err != nil {
 				return err
 			}
 		default:
@@ -224,7 +245,7 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 		if err != nil {
 			return errors.Join(ErrRelayResealed, err)
 		}
-		if err := t.store(path, resealed, false); err != nil {
+		if err := t.store(path, resealed); err != nil {
 			return err
 		}
 		return ErrRelayResealed
@@ -326,12 +347,8 @@ func (t *RelayTransport) load(path string) (relayOutboxRecord, bool, error) {
 	return record, true, nil
 }
 
-func (t *RelayTransport) store(path string, record relayOutboxRecord, create bool) error {
-	if create {
-		if err := writeJSON(path, record, true); !errors.Is(err, os.ErrExist) {
-			return err
-		}
-	}
+// store replaces a journal record that exists.
+func (t *RelayTransport) store(path string, record relayOutboxRecord) error {
 	return writeJSON(path, record, false)
 }
 
@@ -394,7 +411,7 @@ func (t *RelayTransport) redepositOne(ctx context.Context, path string) error {
 		// a key whose card no longer stands.
 		record.Stopped = true
 		t.forget(record.IdempotencyKey)
-		return t.store(path, record, false)
+		return t.store(path, record)
 	default:
 		return nil
 	}
@@ -434,7 +451,7 @@ func (t *RelayTransport) redepositOne(ctx context.Context, path string) error {
 		t.forget(record.IdempotencyKey)
 	}
 	if changed {
-		return t.store(path, record, false)
+		return t.store(path, record)
 	}
 	return nil
 }

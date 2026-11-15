@@ -128,6 +128,7 @@ func openRelayTestNode(t *testing.T, dir string, clock *relayClock, agent string
 	if err != nil {
 		t.Fatal(err)
 	}
+	node.cards.AllowLoopbackRelays(true)
 	urls := make([]string, 0, len(relays))
 	for _, relay := range relays {
 		urls = append(urls, relay.URL)
@@ -951,6 +952,7 @@ func TestACardTakenByBuyIsUsedByTheRunningServeOfTheSameNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	buying.AllowLoopbackRelays(true)
 	if err = buying.Learn(context.Background(), seller.card(), testSeller, relayCapability); err != nil {
 		t.Fatal(err)
 	}

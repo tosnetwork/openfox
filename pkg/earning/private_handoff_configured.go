@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 )
 
 type PrivateContentUploaderSet map[string]PrivateContentUploader

@@ -13,11 +13,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tosnetwork/ai/execution/pkg/privateingress"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/tos-messenger/pkg/localapi"
+
 	"github.com/tosnetwork/openfox/pkg/config"
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
-	"github.com/tosnetwork/tos-ai/pkg/privateingress"
-	"github.com/tosnetwork/tos-messenger/pkg/localapi"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 )
 
 type privateHandoffRuntime struct {

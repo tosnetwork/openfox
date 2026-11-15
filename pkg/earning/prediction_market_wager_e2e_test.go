@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentgift"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	"github.com/tosnetwork/ai/protocol/pkg/agentgift"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 	"github.com/tosnetwork/tosutils-go/address"
 	"github.com/tosnetwork/tosutils-go/tlb"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"

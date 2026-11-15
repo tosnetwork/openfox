@@ -5,8 +5,9 @@ import (
 	"math/big"
 	"time"
 
+	guarantor "github.com/tosnetwork/ai/protocol/pkg/agentguarantor"
+
 	"github.com/tosnetwork/openfox/pkg/config"
-	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
 )
 
 const guarantorPPM = uint64(1_000_000)

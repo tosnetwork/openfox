@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tosnetwork/tos-ai/pkg/railgate"
-	"github.com/tosnetwork/tos-ai/pkg/softwarework"
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
+	"github.com/tosnetwork/ai/execution/pkg/railgate"
+	"github.com/tosnetwork/ai/execution/pkg/softwarework"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 )
 
 // objectSweepInterval is how often the provider deletes stored objects whose

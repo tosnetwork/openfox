@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
 )
 
 func (s *Store) revalidatePublisherLocked(entry *Entry, now uint64) error {

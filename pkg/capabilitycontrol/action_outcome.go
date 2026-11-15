@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
 )
 
 func capabilityUseRequestDigest(domainKind uint8, domainID []byte, binding trusted.CapabilityUseBindingV1) ([]byte, error) {

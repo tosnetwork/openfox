@@ -17,11 +17,12 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
+
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
 	"github.com/tosnetwork/openfox/pkg/config"
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
 )
 
 func authorityCommand() *cobra.Command {

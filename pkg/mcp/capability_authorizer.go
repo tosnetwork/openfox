@@ -12,11 +12,12 @@ import (
 	"path/filepath"
 	"sort"
 
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
+
 	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/pkg/isolation"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 type CapabilityAuthorizationBundle struct {

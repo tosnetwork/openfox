@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 )
 
 type EvidenceMetadataV1 struct {

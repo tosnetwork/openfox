@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 )
 
 type hsmArchiveReceiptTestSigner struct {

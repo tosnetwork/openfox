@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
+	guarantor "github.com/tosnetwork/ai/protocol/pkg/agentguarantor"
 )
 
 // GuarantorProviderRuntimeConfig is the explicit production assembly boundary

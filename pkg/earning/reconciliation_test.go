@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 )
 
 func TestReconciliationReleasesOnlyTerminalExactReservations(t *testing.T) {

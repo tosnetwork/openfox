@@ -5,8 +5,9 @@ import (
 	"crypto/sha256"
 	"testing"
 
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
+
 	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 func TestMCPEffectActionIsReleasedExecutorEffectIdentity(t *testing.T) {

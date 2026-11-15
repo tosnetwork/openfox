@@ -11,9 +11,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
 )
 
 // AgreementSponsorshipProcessor is the production bridge from agentrelay's

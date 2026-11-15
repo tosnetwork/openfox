@@ -9,8 +9,8 @@ import (
 	"io"
 	"math/big"
 
-	"github.com/tosnetwork/tos-ai/pkg/softwarework"
-	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
+	"github.com/tosnetwork/ai/execution/pkg/softwarework"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 )
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 )
 
 const testTOS = uint64(1_000_000_000)

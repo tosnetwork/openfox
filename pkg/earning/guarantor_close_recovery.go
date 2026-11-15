@@ -7,8 +7,8 @@ import (
 	"math/big"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	guarantor "github.com/tosnetwork/ai/protocol/pkg/agentguarantor"
 )
 
 // resumeCoverageClosureFromTerminalSet completes the two remaining economic

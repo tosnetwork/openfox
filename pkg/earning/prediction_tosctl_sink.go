@@ -14,9 +14,9 @@ import (
 	"strconv"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentgift"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentgift"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
 	"github.com/tosnetwork/tosutils-go/tvm/cell"
 
 	"github.com/tosnetwork/openfox/pkg/prediction"

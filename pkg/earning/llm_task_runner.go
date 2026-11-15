@@ -15,11 +15,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tosnetwork/ai/execution/pkg/commercegate"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+
 	"github.com/tosnetwork/openfox/pkg/logger"
 	"github.com/tosnetwork/openfox/pkg/providers"
 	"github.com/tosnetwork/openfox/pkg/skills"
-	"github.com/tosnetwork/tos-ai/pkg/commercegate"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
 )
 
 const MaxLLMTaskInputBytes = 4 << 20

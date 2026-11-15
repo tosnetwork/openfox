@@ -16,12 +16,13 @@ import (
 	"testing"
 	"time"
 
-	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	protocolgift "github.com/tosnetwork/ai/protocol/pkg/agentgift"
 	"github.com/tosnetwork/tos-messenger/pkg/envelope"
 	"github.com/tosnetwork/tos-messenger/pkg/localapi"
 	"github.com/tosnetwork/tos-messenger/pkg/payload"
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	protocolgift "github.com/tosnetwork/tos-service-protocol/pkg/agentgift"
+
+	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
 )
 
 const rustGiftBOC = "te6ccgEBAgEApgABRYn/gcFMuh/DSQZFasqNaT3ITOt7HHKnDMUAP9yhpWvoLEIMAQD7qWXpKJPScATturw4khEH749KXPRHgxeHEe/xQnydpujylIqd7JfcJr42YcyR+CxCy9kgme+pEhmIeRPzWqBYBUFHUAQAAAAqAAAAAAAAAAAAAAAAdzWUAIAEREREREREREREREREREREREREREREREREREREREREREh3NZQB"

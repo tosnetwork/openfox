@@ -18,8 +18,9 @@ import (
 	"strings"
 	"time"
 
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
+
 	"github.com/tosnetwork/openfox/pkg/utils"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 type HTTPSControlAuthority struct {

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 )
 
 const maxPrivateIngressControlBytes = 2 << 20

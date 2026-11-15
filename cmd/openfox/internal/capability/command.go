@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
 
 	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 type options struct {

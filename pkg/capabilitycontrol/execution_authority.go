@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
 )
 
 type ExecutionAuthoritySnapshot struct {

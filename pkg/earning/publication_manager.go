@@ -11,9 +11,10 @@ import (
 	"sort"
 	"time"
 
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
+
 	"github.com/tosnetwork/openfox/pkg/fileutil"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 const publicationJournalSchema = "tos.openfox.autonomous-publications.v1"

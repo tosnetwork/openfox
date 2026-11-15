@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 )
 
 const probabilityScale = uint64(1_000_000)

@@ -12,10 +12,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tosnetwork/ai/execution/pkg/capabilitygate"
+	"github.com/tosnetwork/ai/execution/pkg/commercegate"
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
+
 	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
-	"github.com/tosnetwork/tos-ai/pkg/capabilitygate"
-	"github.com/tosnetwork/tos-ai/pkg/commercegate"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 type TrustedCapabilityExecutionBundle struct {

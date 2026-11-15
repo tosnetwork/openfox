@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
 )
 
 func TestUseResolutionRequiresOriginalCapability(t *testing.T) {

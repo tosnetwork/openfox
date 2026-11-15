@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tosnetwork/tos-ai/pkg/executorservice"
+	"github.com/tosnetwork/ai/execution/pkg/executorservice"
 )
 
 // socketOffer is an offer that names no executor of its own.

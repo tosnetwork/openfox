@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tosnetwork/tos-ai/pkg/artifactstore"
-	"github.com/tosnetwork/tos-ai/pkg/softwarework"
+	"github.com/tosnetwork/ai/execution/pkg/artifactstore"
+	"github.com/tosnetwork/ai/execution/pkg/softwarework"
 )
 
 func testArtifact(t *testing.T, members map[string][]byte, order []string) []byte {

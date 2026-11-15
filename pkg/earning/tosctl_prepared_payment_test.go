@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
 )
 
 func TestValidateTOSCTLPreparedPaymentBindsFullNetworkDomain(t *testing.T) {

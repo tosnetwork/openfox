@@ -6,9 +6,10 @@ import (
 	"net/http"
 	"time"
 
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
+
 	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 func (h *Handler) registerCapabilityRoutes(mux *http.ServeMux) {

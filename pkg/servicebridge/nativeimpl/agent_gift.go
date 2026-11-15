@@ -12,13 +12,14 @@ import (
 	"sync"
 	"time"
 
-	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	protocolgift "github.com/tosnetwork/ai/protocol/pkg/agentgift"
 	"github.com/tosnetwork/tos-messenger/pkg/envelope"
 	"github.com/tosnetwork/tos-messenger/pkg/localapi"
 	"github.com/tosnetwork/tos-messenger/pkg/payload"
-	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
-	protocolgift "github.com/tosnetwork/tos-service-protocol/pkg/agentgift"
 	"google.golang.org/protobuf/proto"
+
+	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
 )
 
 // AgentGiftFinalizedChain is the narrow finalized-chain authority needed by

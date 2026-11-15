@@ -17,7 +17,11 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/tosnetwork/tos-ai/pkg/commercegate"
+	"github.com/tosnetwork/ai/execution/pkg/commercegate"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
 	"github.com/tosnetwork/tos-messenger/pkg/localapi"
 
 	"github.com/tosnetwork/openfox/cmd/openfox/internal"
@@ -26,10 +30,6 @@ import (
 	"github.com/tosnetwork/openfox/pkg/config"
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"
 	"github.com/tosnetwork/openfox/pkg/providers"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 func NewCommand() *cobra.Command {

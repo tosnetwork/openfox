@@ -4,8 +4,8 @@ import (
 	"errors"
 	"sort"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	guarantor "github.com/tosnetwork/tos-service-protocol/pkg/agentguarantor"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	guarantor "github.com/tosnetwork/ai/protocol/pkg/agentguarantor"
 )
 
 // buildGuarantorEligibilityProofSet turns authority-finality evidence into the

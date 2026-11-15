@@ -12,9 +12,10 @@ import (
 	"strings"
 	"sync"
 
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
+
 	"github.com/tosnetwork/openfox/pkg/fileutil"
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
 )
 
 // DirectoryPublicationSink is the independently implemented local Carrier

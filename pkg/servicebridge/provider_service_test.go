@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/tos-ai/pkg/executorservice"
-	"github.com/tosnetwork/tos-ai/pkg/railgate"
+	"github.com/tosnetwork/ai/execution/pkg/executorservice"
+	"github.com/tosnetwork/ai/execution/pkg/railgate"
 )
 
 var serviceFixtureStart = time.Unix(2_000_000_000, 0)

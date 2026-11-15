@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tosnetwork/tos-service-protocol/pkg/agentrelay"
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	"github.com/tosnetwork/ai/protocol/pkg/agentrelay"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 	"github.com/tosnetwork/openfox/pkg/prediction"

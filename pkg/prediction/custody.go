@@ -11,9 +11,9 @@ import (
 	"math"
 	"time"
 
-	commerce "github.com/tosnetwork/tos-service-protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-service-protocol/pkg/codec"
-	protocol "github.com/tosnetwork/tos-service-protocol/pkg/predictionmarket"
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	"github.com/tosnetwork/ai/protocol/pkg/codec"
+	protocol "github.com/tosnetwork/ai/protocol/pkg/predictionmarket"
 )
 
 const authorizeOrderAction = "prediction.order.authorize"

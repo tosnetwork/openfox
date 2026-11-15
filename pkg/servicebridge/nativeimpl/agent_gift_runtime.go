@@ -10,11 +10,12 @@ import (
 	"sync"
 	"time"
 
-	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
+	protocolgift "github.com/tosnetwork/ai/protocol/pkg/agentgift"
 	"github.com/tosnetwork/tos-messenger/pkg/envelope"
 	"github.com/tosnetwork/tos-messenger/pkg/fault"
 	"github.com/tosnetwork/tos-messenger/pkg/localapi"
-	protocolgift "github.com/tosnetwork/tos-service-protocol/pkg/agentgift"
+
+	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
 )
 
 type AgentGiftRuntimeConfig struct {

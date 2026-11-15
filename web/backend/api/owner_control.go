@@ -8,11 +8,12 @@ import (
 	"net/http"
 	"path/filepath"
 
+	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
+	ownercontrol "github.com/tosnetwork/tos-messenger/pkg/ownercontrol"
+
 	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"
 	"github.com/tosnetwork/openfox/web/backend/authcontext"
-	ownercontrol "github.com/tosnetwork/tos-messenger/pkg/ownercontrol"
-	trusted "github.com/tosnetwork/tos-service-protocol/pkg/trustedcapability"
 )
 
 func (h *Handler) registerOwnerControlRoutes(mux *http.ServeMux) {

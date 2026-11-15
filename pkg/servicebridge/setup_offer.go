@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tosnetwork/tos-ai/pkg/softwarework"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
@@ -24,7 +25,12 @@ type OfferInput struct {
 	Version            string     `json:"version"`
 	RetentionSeconds   uint64     `json:"retention_seconds"`
 	AttestorController string     `json:"attestor_controller"`
-	ExecutorBinary     string     `json:"executor_binary"`
+	// ExecutorSocket is the socket of the root-run executor service. It is
+	// the default when no executor binary is given.
+	ExecutorSocket string `json:"executor_socket"`
+	// ExecutorBinary selects the executor run as the node's own child; it
+	// needs ContainerdSocket.
+	ExecutorBinary string `json:"executor_binary"`
 	// ExecutorSHA256 pins the executor; empty pins the binary found.
 	ExecutorSHA256       string `json:"executor_sha256"`
 	ContainerdSocket     string `json:"containerd_socket"`
@@ -120,6 +126,8 @@ type OfferResult struct {
 	RailConfig string        `json:"rail_config"`
 	Preview    *OfferPreview `json:"preview,omitempty"`
 	OfferFile  string        `json:"offer_file,omitempty"`
+	// ExecutorSocket is the executor service the provider section names.
+	ExecutorSocket string `json:"executor_socket,omitempty"`
 	// ExecutorSHA256 and ExecutorPin say how the executor was pinned.
 	ExecutorSHA256 string           `json:"executor_sha256,omitempty"`
 	ExecutorPin    string           `json:"executor_pin,omitempty"`
@@ -162,12 +170,27 @@ func (in *OfferInput) fill(stateDir string) {
 	if in.DeployFundingNano == 0 {
 		in.DeployFundingNano = MinimumDeployFundingNano
 	}
-	if in.FIFODir == "" {
-		in.FIFODir = filepath.Join(stateDir, "fifo")
+	switch {
+	case in.subprocess():
+		if in.FIFODir == "" {
+			in.FIFODir = filepath.Join(stateDir, "fifo")
+		}
+	case in.ExecutorSocket == "":
+		// The default selects the executor service. It cannot quietly
+		// select something that does not work: `offer` asks the service to
+		// describe itself before it sends anything, and stops if no root
+		// process answers on this socket.
+		in.ExecutorSocket = DefaultExecutorSocket
 	}
 	if in.OfferPath == "" {
 		in.OfferPath = filepath.Join(stateDir, setupDirectory, "offer.json")
 	}
+}
+
+// subprocess reports whether any flag of the executor run as the node's own
+// child was given.
+func (in *OfferInput) subprocess() bool {
+	return in.ExecutorBinary != "" || in.ExecutorSHA256 != "" || in.ContainerdSocket != "" || in.FIFODir != ""
 }
 
 // validate applies every bound before tosctl or the chain is touched.
@@ -197,10 +220,21 @@ func (in *OfferInput) validate() error {
 	if in.ExecutorSHA256 != "" && !hex64Pattern.MatchString(in.ExecutorSHA256) {
 		problems = append(problems, "--executor-sha256 must be 64 lowercase hex digits")
 	}
-	for name, path := range map[string]string{
-		"the executor binary": in.ExecutorBinary, "the containerd socket": in.ContainerdSocket,
-		"the FIFO directory": in.FIFODir, "the offer file path": in.OfferPath,
-	} {
+	paths := map[string]string{"the offer file path": in.OfferPath}
+	switch {
+	case in.ExecutorSocket != "" && in.subprocess():
+		problems = append(problems, "--executor-socket cannot be combined with --executor, --executor-sha256, "+
+			"--containerd-socket or --fifo-dir; choose one executor")
+	case in.ExecutorSocket != "":
+		paths["the executor socket"] = in.ExecutorSocket
+	case in.ExecutorBinary == "" || in.ContainerdSocket == "":
+		problems = append(problems, "--executor and --containerd-socket are needed together; give neither to use "+
+			"the executor service")
+	default:
+		paths["the executor binary"], paths["the containerd socket"] = in.ExecutorBinary, in.ContainerdSocket
+		paths["the FIFO directory"] = in.FIFODir
+	}
+	for name, path := range paths {
 		if !cleanAbsolute(path) {
 			problems = append(problems, name+" must be an absolute clean path")
 		}
@@ -332,6 +366,34 @@ func offerIdentityDifference(a, b OfferIdentity) string {
 	default:
 		return ""
 	}
+}
+
+// probeExecutorService requires, before anything is signed or sent, that a
+// root process serves socket, that its backend is ready and that it runs
+// the image and limits every offer's manifest commits to.
+func probeExecutorService(ctx context.Context, env SetupEnv, socket string) error {
+	advice := "; install and start the executor service as root and allow this user, or pass --executor and " +
+		"--containerd-socket to run the executor as this user"
+	client, err := env.ExecutorService(socket)
+	if err != nil {
+		return err
+	}
+	probe, cancel := context.WithTimeout(ctx, describeTimeout)
+	defer cancel()
+	description, err := client.Describe(probe)
+	if err != nil {
+		return fmt.Errorf("servicebridge: the executor service at %s does not answer: %w%s", socket, err, advice)
+	}
+	if !description.Ready {
+		return fmt.Errorf("servicebridge: the executor service at %s is not ready: %s", socket, notReadyReason)
+	}
+	if problem := describedImageProblem(description, softwarework.FrozenV1Contract().ToolchainDigest); problem != "" {
+		return errors.New("servicebridge: " + problem)
+	}
+	if problem := describedLimitsProblem(description, RailLimits()); problem != "" {
+		return errors.New("servicebridge: " + problem)
+	}
+	return nil
 }
 
 // pinExecutor decides the executor pin the same way init pins tosctl.
@@ -466,11 +528,18 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		return result, errors.New("servicebridge: the rail configuration lacks the Agent, wallet address or chain " +
 			"global configuration `init` records; run `openfox earning service init` first")
 	}
-	executorPin, executorHow, err := pinExecutor(in, config.Provider)
-	if err != nil {
-		return result, err
+	var executorPin, executorHow string
+	if in.ExecutorSocket != "" {
+		if err = probeExecutorService(ctx, env, in.ExecutorSocket); err != nil {
+			return result, err
+		}
+		result.ExecutorSocket = in.ExecutorSocket
+	} else {
+		if executorPin, executorHow, err = pinExecutor(in, config.Provider); err != nil {
+			return result, err
+		}
+		result.ExecutorSHA256, result.ExecutorPin = executorPin, executorHow
 	}
-	result.ExecutorSHA256, result.ExecutorPin = executorPin, executorHow
 	journal, err := loadSetupJournal(config.StateDir)
 	if err != nil {
 		return result, err
@@ -480,8 +549,13 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		endpoints: append([]string(nil), config.RPCEndpoints...),
 	}
 	defer func() { result.Steps = run.steps }()
-	run.notef("executor.pin", SetupDone, "the executor is pinned to SHA-256 %s (%s)", executorPin,
-		pinNoteFor(executorHow, "--executor-sha256"))
+	if in.ExecutorSocket != "" {
+		run.notef("executor.service", SetupDone, "the executor service at %s answers as root, is ready, and runs "+
+			"the offered image under the offered limits", in.ExecutorSocket)
+	} else {
+		run.notef("executor.pin", SetupDone, "the executor is pinned to SHA-256 %s (%s)", executorPin,
+			pinNoteFor(executorHow, "--executor-sha256"))
+	}
 	runner, err := env.Runner(config.TOSCTL, env.vaultURL(config.TOSCTL))
 	if err != nil {
 		return result, err
@@ -709,6 +783,7 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 	config.Provider = &ProviderNode{
 		CapabilityID: capabilityID, Version: in.Version, ManifestFile: manifestFile,
 		AttestorController: in.AttestorController, RespondBudgetSecond: in.RespondBudgetSeconds,
+		ExecutorSocket: in.ExecutorSocket,
 		ExecutorBinary: in.ExecutorBinary, ExecutorSHA256: executorPin, ContainerdSocket: in.ContainerdSocket,
 		FIFODir: in.FIFODir,
 	}

@@ -19,14 +19,23 @@ JSON-RPC, not taken from an OpenFox report.
 
 Not OpenFox, and said so in the evidence: booting the network, creating,
 funding and activating the two wallets (`tosctl wallet create`, the zerostate
-faucet, `tosctl wallet activate`), staging files root-owned, and the container
-runtime with its imported image.
+faucet, `tosctl wallet activate`), staging files for the nodes' user, and the
+container runtime with its imported image (with E2E_EXECUTOR_SOCKET also the
+executor service in front of it).
 
-Root: the executor accepts only a container runtime socket owned by its own
-user in a private directory, and OpenFox runs the executor as its own child
-and reads its artifact store, so the provider node runs as root. The direct
-transport joins nodes of one user, so the buyer node runs as root too. Every
-root command goes through sudo() below and is listed in the evidence.
+Two executor modes:
+
+- E2E_EXECUTOR_SOCKET set: the provider executes through the root-run executor
+  service at that socket (`offer --executor-socket`). Both nodes run as the
+  invoking user, their files are staged under that user, and the run uses no
+  root command at all. The service itself is installed by the operator
+  beforehand; this script only talks to its socket.
+- otherwise (legacy single-user mode): the executor accepts only a container
+  runtime socket owned by its own user in a private directory, and OpenFox
+  runs the executor as its own child and reads its artifact store, so the
+  provider node runs as root. The direct transport joins nodes of one user, so
+  the buyer node runs as root too. Every root command goes through as_node()
+  below and is listed in the evidence.
 
 The network boot, faucet funding, RPC polling, exact transaction decoding and
 secret redaction are taken from the Service Actor buyer acceptance run
@@ -58,13 +67,23 @@ BIN = Path(os.environ["E2E_BIN"])
 WORK = Path(os.environ["E2E_WORKDIR"])
 REGISTRY_BOC = Path(os.environ["REGISTRY_CODE_BOC"])
 ACTOR_CODE_HASH = os.environ["ACTOR_CODE_HASH"]
-EXECUTOR = Path(os.environ["E2E_EXECUTOR"])
+# The socket of the root-run executor service. Set, it selects the mode in
+# which neither node runs as root.
+EXECUTOR_SOCKET = os.environ.get("E2E_EXECUTOR_SOCKET", "")
+SERVICE_MODE = bool(EXECUTOR_SOCKET)
+EXECUTOR = None if SERVICE_MODE else Path(os.environ["E2E_EXECUTOR"])
 CONTAINERD_SOCKET = os.environ.get("E2E_CONTAINERD_SOCKET", "/run/tos-service-containerd/containerd.sock")
 BASE_PORT = int(os.environ["E2E_BASE_PORT"])
 RPC_PORTS = [int(port) for port in os.environ["E2E_RPC_PORTS"].split(",")]
-# tosctl run as root refuses a configuration under a directory another user
-# can modify, so the root-owned state needs root-owned ancestors.
-ROOT = Path(os.environ.get("E2E_ROOT_BASE", "/var/lib/openfox-front-door-e2e")) / WORK.name
+# Where both nodes' files are staged. As root: tosctl run as root refuses a
+# configuration under a directory another user can modify, so the root-owned
+# state needs root-owned ancestors. With the executor service the nodes run
+# as the invoking user and their state is private to that user.
+if SERVICE_MODE:
+    ROOT = (Path(os.environ["E2E_ROOT_BASE"]) / WORK.name if os.environ.get("E2E_ROOT_BASE")
+            else WORK / "private" / "nodes")
+else:
+    ROOT = Path(os.environ.get("E2E_ROOT_BASE", "/var/lib/openfox-front-door-e2e")) / WORK.name
 HOLD = os.environ.get("E2E_HOLD") == "1"
 # The registry identity domain names the chain by its global id.
 NETWORK_LABEL = os.environ.get("E2E_NETWORK_LABEL", "tos:global-id:3")
@@ -317,9 +336,13 @@ def tosctl_user(node: str, *args: str) -> subprocess.CompletedProcess:
     return run_logged([str(TOSCTL), *args, "-c", str(PRIVATE / node / "tosctl-config.json")], env=user_env(node))
 
 
-def sudo(*args, env: dict | None = None, check: bool = True, timeout: float = 240) -> subprocess.CompletedProcess:
-    """A root command. Each distinct program run as root is listed in the
-    evidence."""
+def as_node(*args, env: dict | None = None, check: bool = True, timeout: float = 240) -> subprocess.CompletedProcess:
+    """A command run as the user the nodes run as. With the executor service
+    that is the invoking user and the command runs directly. Otherwise it is
+    root: the command goes through `sudo -n`, and each distinct program run as
+    root is listed in the evidence."""
+    if SERVICE_MODE:
+        return run_logged([str(part) for part in args], env=env or dict(os.environ), check=check, timeout=timeout)
     program = next(str(part) for part in args if not str(part).startswith("-"))
     label = Path(program).name
     if label == "openfox":
@@ -340,13 +363,14 @@ OPENFOX = ROOT / "bin" / "openfox"
 
 def fox_argv(*args: str) -> list[str]:
     # The vault URL reaches the node in its environment, never on a command
-    # line.
-    return ["--preserve-env=VAULT_URL", str(OPENFOX), "earning", "service", *args]
+    # line; under sudo it has to be let through explicitly.
+    through_sudo = [] if SERVICE_MODE else ["--preserve-env=VAULT_URL"]
+    return [*through_sudo, str(OPENFOX), "earning", "service", *args]
 
 
 def fox(node: str, *args: str, check: bool = True, timeout: float = 900) -> subprocess.CompletedProcess:
     """One `openfox earning service` command of a node."""
-    return sudo(*fox_argv(*args), env=node_env(node), check=check, timeout=timeout)
+    return as_node(*fox_argv(*args), env=node_env(node), check=check, timeout=timeout)
 
 
 # What OpenFox prints when its finalized reads did not reach a quorum in
@@ -382,11 +406,11 @@ def rail(node: str) -> str:
 
 
 def root_json(path) -> dict:
-    return json.loads(sudo("cat", path).stdout)
+    return json.loads(as_node("cat", path).stdout)
 
 
 def root_sha256(path) -> str | None:
-    result = sudo("sha256sum", path, check=False)
+    result = as_node("sha256sum", path, check=False)
     return result.stdout.split()[0] if result.returncode == 0 else None
 
 
@@ -395,9 +419,10 @@ SERVING: dict = {}
 
 def start_serve(node: str) -> None:
     log = (WORK / f"{node}-serve.log").open("ab")
-    SERVING[node] = subprocess.Popen(["sudo", "-n", *fox_argv("serve", "--rail-config", rail(node))],
+    launcher = [] if SERVICE_MODE else ["sudo", "-n"]
+    SERVING[node] = subprocess.Popen([*launcher, *fox_argv("serve", "--rail-config", rail(node))],
                                      env=node_env(node), stdin=subprocess.DEVNULL, stdout=log, stderr=log)
-    if "openfox serve --rail-config" not in root_commands:
+    if not SERVICE_MODE and "openfox serve --rail-config" not in root_commands:
         root_commands.append("openfox serve --rail-config")
 
 
@@ -409,14 +434,14 @@ def stop_serve(node: str) -> int | None:
     # reliably relay a signal sent to it from outside its terminal.
     pattern = f"^{OPENFOX} earning service serve --rail-config {rail(node)}$"
     if process.poll() is None:
-        sudo("pkill", "-TERM", "-f", pattern, check=False)
+        as_node("pkill", "-TERM", "-f", pattern, check=False)
     try:
         return process.wait(timeout=60)
     except subprocess.TimeoutExpired:
         # A node that does not stop leaves its goroutine dump in its log.
-        sudo("pkill", "-QUIT", "-f", pattern, check=False)
+        as_node("pkill", "-QUIT", "-f", pattern, check=False)
         time.sleep(3)
-        sudo("kill", "-KILL", process.pid, check=False)
+        as_node("kill", "-KILL", process.pid, check=False)
         return process.wait(timeout=30)
 
 
@@ -436,10 +461,13 @@ def init_flags(node: str) -> list[str]:
 
 
 def offer_flags() -> list[str]:
+    if SERVICE_MODE:
+        executor = ["--executor-socket", EXECUTOR_SOCKET]
+    else:
+        executor = ["--executor", str(ROOT / "bin" / "software-work-execute"), "--containerd-socket", CONTAINERD_SOCKET,
+                    "--fifo-dir", str(FIFO_DIR)]
     return ["--rail-config", rail("provider"), "--price", PRICE, "--storage-fee", STORAGE_FEE,
-            "--cleanup-bounty", CLEANUP_BOUNTY, "--response-sla", "3600", "--refund-claim-window", "3600",
-            "--executor", str(ROOT / "bin" / "software-work-execute"), "--containerd-socket", CONTAINERD_SOCKET,
-            "--fifo-dir", str(FIFO_DIR)]
+            "--cleanup-bounty", CLEANUP_BOUNTY, "--response-sla", "3600", "--refund-claim-window", "3600", *executor]
 
 
 # The executor refuses a FIFO directory with residue; a directory of this
@@ -462,8 +490,13 @@ def source_archive() -> bytes:
     return buffer.getvalue()
 
 
-def install_root(source: Path, target: Path, mode: str = "0600") -> None:
-    sudo("install", "-o", "root", "-g", "root", "-m", mode, source, target)
+# `install` options that give a staged file to root; the invoking user's own
+# files need none.
+OWNER = [] if SERVICE_MODE else ["-o", "root", "-g", "root"]
+
+
+def install_node(source: Path, target: Path, mode: str = "0600") -> None:
+    as_node("install", *OWNER, "-m", mode, source, target)
 
 
 # --- Not OpenFox: wallets and staging -----------------------------------------
@@ -500,36 +533,51 @@ async def provision(faucet) -> dict:
     return wallets
 
 
-def stage_root() -> None:
-    """Root-owned private files outside the invoking user's work directory:
-    the three binaries, the chain files and each node's tosctl configuration
-    and vault. tosctl and the executor refuse files their user does not own."""
+def stage_nodes() -> None:
+    """Private files of the nodes' user, outside what the run leaves as
+    evidence: the binaries, the chain files and each node's tosctl
+    configuration and vault. tosctl and the executor refuse files their user
+    does not own."""
     base = ROOT.parent
-    sudo("install", "-d", "-o", "root", "-g", "root", "-m", "0700", base)
-    if sudo("test", "-e", ROOT, check=False).returncode == 0:
-        raise RuntimeError(f"{ROOT} already exists; every run stages a fresh root")
-    if sudo("test", "-e", FIFO_DIR, check=False).returncode == 0:
+    as_node("install", "-d", *OWNER, "-m", "0700", base)
+    if as_node("test", "-e", ROOT, check=False).returncode == 0:
+        raise RuntimeError(f"{ROOT} already exists; every run stages a fresh directory")
+    if not SERVICE_MODE and as_node("test", "-e", FIFO_DIR, check=False).returncode == 0:
         raise RuntimeError(f"{FIFO_DIR} already exists")
-    sudo("install", "-d", "-o", "root", "-g", "root", "-m", "0700", ROOT, ROOT / "bin", ROOT / "etc",
-         *(ROOT / node for node in NODES))
-    install_root(BIN / "openfox", OPENFOX, "0755")
-    install_root(TOSCTL, ROOT / "bin" / "tosctl", "0700")
-    install_root(EXECUTOR, ROOT / "bin" / "software-work-execute", "0755")
-    install_root(WORK / "global.json", ROOT / "etc" / "global.json")
-    install_root(REGISTRY_BOC, ROOT / "etc" / "registry-code.boc")
+    as_node("install", "-d", *OWNER, "-m", "0700", ROOT, ROOT / "bin", ROOT / "etc", *(ROOT / node for node in NODES))
+    install_node(BIN / "openfox", OPENFOX, "0755")
+    install_node(TOSCTL, ROOT / "bin" / "tosctl", "0700")
+    binaries = {"openfox": BIN / "openfox", "tosctl": TOSCTL}
+    if not SERVICE_MODE:
+        install_node(EXECUTOR, ROOT / "bin" / "software-work-execute", "0755")
+        binaries["software-work-execute"] = EXECUTOR
+    install_node(WORK / "global.json", ROOT / "etc" / "global.json")
+    install_node(REGISTRY_BOC, ROOT / "etc" / "registry-code.boc")
     (PRIVATE / "source.tar").write_bytes(source_archive())
-    install_root(PRIVATE / "source.tar", ROOT / "buyer" / "source.tar")
+    install_node(PRIVATE / "source.tar", ROOT / "buyer" / "source.tar")
     for node in NODES:
-        install_root(PRIVATE / node / "tosctl-config.json", ROOT / node / "tosctl-config.json")
-        install_root(PRIVATE / node / "vault.json", ROOT / node / "vault.json")
-    staged = {name: root_sha256(ROOT / "bin" / name) for name in ("openfox", "tosctl", "software-work-execute")}
-    built = {"openfox": hashlib.sha256((BIN / "openfox").read_bytes()).hexdigest(),
-             "tosctl": hashlib.sha256(TOSCTL.read_bytes()).hexdigest(),
-             "software-work-execute": hashlib.sha256(EXECUTOR.read_bytes()).hexdigest()}
-    ownership = sudo("stat", "-c", "%U:%G %a %n", ROOT, ROOT / "bin", OPENFOX, ROOT / "provider", ROOT / "buyer",
-                     ROOT / "provider" / "vault.json").stdout.split("\n")
-    socket = sudo("stat", "-c", "%U:%G %a %n", Path(CONTAINERD_SOCKET).parent, CONTAINERD_SOCKET).stdout.split("\n")
+        install_node(PRIVATE / node / "tosctl-config.json", ROOT / node / "tosctl-config.json")
+        install_node(PRIVATE / node / "vault.json", ROOT / node / "vault.json")
+    staged = {name: root_sha256(ROOT / "bin" / name) for name in binaries}
+    built = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in binaries.items()}
+    ownership = as_node("stat", "-c", "%U:%G %a %n", ROOT, ROOT / "bin", OPENFOX, ROOT / "provider", ROOT / "buyer",
+                        ROOT / "provider" / "vault.json").stdout.split("\n")
     evidence["binaries"] = {name: {"sha256": digest} for name, digest in built.items()}
+    if SERVICE_MODE:
+        socket = as_node("stat", "-c", "%U:%G %a %n", Path(EXECUTOR_SOCKET).parent, EXECUTOR_SOCKET,
+                         check=False).stdout.split("\n")
+        evidence["node_user"] = {"staged_under": str(ROOT), "uid": os.geteuid(),
+                                 "ownership": [line for line in ownership if line],
+                                 "executor_service_socket": [line for line in socket if line],
+                                 "why": "the provider node executes through the root-run executor service and reads "
+                                        "none of its files, so neither node needs root. The service, its unit and "
+                                        "its allow-list were installed by the operator before this run; the run "
+                                        "itself uses no root command."}
+        require("neither node runs as root: the run itself is unprivileged and stages the nodes' files as its own user",
+                os.geteuid() != 0 and staged == built and not root_commands,
+                {"uid": os.geteuid(), "staged": staged, "built": built, "ownership": ownership})
+        return
+    socket = as_node("stat", "-c", "%U:%G %a %n", Path(CONTAINERD_SOCKET).parent, CONTAINERD_SOCKET).stdout.split("\n")
     evidence["root"] = {"staged_under": str(ROOT), "ownership": [line for line in ownership if line],
                         "container_runtime_socket": [line for line in socket if line],
                         "why": "the executor accepts only a runtime socket its own user owns, in a private directory; "
@@ -562,7 +610,7 @@ def setup_nodes() -> None:
     planned = fox_again("provider", "init", *init_flags("provider"))
     record("provider init without --yes creates, signs and sends nothing",
            planned.returncode != 0 and strict_json(planned).get("confirmed") is False and
-           sudo("test", "-e", rail("provider"), check=False).returncode != 0 and
+           as_node("test", "-e", rail("provider"), check=False).returncode != 0 and
            chain_snapshot({"wallet": provider_wallet}) == before, planned.stderr[-1500:])
     init = fox_json("provider", "init", *init_flags("provider"), "--yes")
     provider_agent, agent_address = init.get("agent_id", ""), init.get("agent_address", "")
@@ -627,7 +675,7 @@ def setup_nodes() -> None:
 
     # Buyer serves first so the provider's preflight sees its socket.
     start_serve("buyer")
-    require("buyer serve is running", bool(poll(lambda: sudo("test", "-S", buyer_socket, check=False).returncode == 0, 60, 1))
+    require("buyer serve is running", bool(poll(lambda: as_node("test", "-S", buyer_socket, check=False).returncode == 0, 60, 1))
             and SERVING["buyer"].poll() is None, serve_log("buyer"))
     preflight = fox_again("provider", "preflight", "--rail-config", rail("provider"))
     report = strict_json(preflight)
@@ -636,7 +684,7 @@ def setup_nodes() -> None:
     require("provider preflight is ok", preflight.returncode == 0 and report.get("ok") is True and
             not any(check["status"] == "fail" for check in not_passing), not_passing)
     start_serve("provider")
-    require("provider serve is running", bool(poll(lambda: sudo("test", "-S", provider_socket, check=False).returncode == 0,
+    require("provider serve is running", bool(poll(lambda: as_node("test", "-S", provider_socket, check=False).returncode == 0,
                                                     60, 1)) and SERVING["provider"].poll() is None, serve_log("provider"))
 
 
@@ -661,9 +709,14 @@ def provider_status() -> dict:
 
 
 def executions() -> list[str]:
-    """The executor's own at-most-once journal: one entry per job it ran."""
-    listing = sudo("find", ROOT / "provider" / "state" / "executor" / "journal", "-name", "*.json", "-printf", "%f\n",
-                   check=False).stdout.split()
+    """One entry per job that ran. As root that is the executor's own
+    at-most-once journal. With the executor service the journal belongs to
+    root and the node cannot read it; what the node holds is one retention
+    record per execution whose verified objects it keeps."""
+    state = ROOT / "provider" / "state"
+    directory = (state / "executor-service" / "artifacts" / "retention" if SERVICE_MODE
+                 else state / "executor" / "journal")
+    listing = as_node("find", directory, "-name", "*.json", "-printf", "%f\n", check=False).stdout.split()
     return sorted(listing)
 
 
@@ -751,7 +804,9 @@ def verify_sale(purchase: dict) -> None:
     require("the artifact the buyer received hashes to the artifact digest inside the Receipt",
             received is not None and stated == "sha256:" + received and in_receipt,
             {"received_sha256": received, "provider_artifact_digest": stated, "digest_in_receipt_cells": in_receipt})
-    record("the executor ran exactly one job, the purchase's execution id, in the private sandbox",
+    record("the provider holds the verified objects of exactly one execution, the purchase's execution id"
+           if SERVICE_MODE else
+           "the executor ran exactly one job, the purchase's execution id, in the private sandbox",
            journal == [done.get("execution_id", "") + ".json"], journal)
     RUN["first"] = {"request_hash": request_hash, "response_hash": chain_hash}
     evidence["sale"] = {"request_hash": request_hash, "request_id": done.get("request_id"), "response_hash": chain_hash,
@@ -840,7 +895,7 @@ def tampered_offer() -> None:
         local = PRIVATE / f"offer-{name}.json"
         local.write_text(json.dumps(value))
         staged = ROOT / "buyer" / f"offer-{name}.json"
-        install_root(local, staged)
+        install_node(local, staged)
         for _ in range(6):
             refused = fox("buyer", "buy", "--rail-config", rail("buyer"), "--offer", str(staged),
                           "--source", str(ROOT / "buyer" / "source.tar"), "--yes", check=False)
@@ -926,7 +981,9 @@ async def main() -> int:
     tree_status = tree.strip().splitlines()
     evidence.update({"schema": "tos.openfox.service-front-door.local-acceptance.v1",
                      "qualifies_as_public_acceptance": False,
-                     "reason": "one host runs every validator, every endpoint and both nodes, and both nodes run as root",
+                     "reason": "one host runs every validator, every endpoint and both nodes" +
+                               ("" if SERVICE_MODE else ", and both nodes run as root"),
+                     "executor_mode": "executor service socket" if SERVICE_MODE else "executor as the node's child",
                      "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                      "openfox_commit": subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True,
                                                       text=True).stdout.strip(),
@@ -939,8 +996,10 @@ async def main() -> int:
                          "booting the three-validator network (tostester)",
                          "creating each wallet (`tosctl wallet create`), funding it from the zerostate faucet and "
                          "activating it (`tosctl wallet activate`)",
-                         "staging the binaries, chain files, tosctl configurations and vaults root-owned (`sudo install`)",
-                         "the private container runtime and its imported toolchain image",
+                         "staging the binaries, chain files, tosctl configurations and vaults for the nodes' user "
+                         "(`install`; as root in the legacy mode)",
+                         "the private container runtime and its imported toolchain image" +
+                         (", and the root-run executor service in front of it" if SERVICE_MODE else ""),
                          "this script's own JSON-RPC reads, used only to verify"]})
     record("the OpenFox tree is clean at the commit the evidence names", not tree_status, tree_status or "clean")
     try:
@@ -993,7 +1052,7 @@ async def main() -> int:
 
 
 def sale() -> None:
-    stage_root()
+    stage_nodes()
     RUN["wallet_lt"] = {node: chain_snapshot({"w": RUN["wallets"][node]})["w"]["last_lt"] for node in NODES}
     setup_nodes()
     verify_sale(buy("first purchase"))

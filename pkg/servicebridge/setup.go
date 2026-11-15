@@ -72,6 +72,8 @@ type SetupEnv struct {
 	Runner func(config TOSCTLConfig, vaultURL string) (TOSCTLRunner, error)
 	// OpenChain opens the finalized reader.
 	OpenChain func(config NodeConfig) (RailChain, error)
+	// ExecutorService opens the client of the executor service socket.
+	ExecutorService func(socket string) (ExecutorService, error)
 	// Report prints one diagnostic line (previews, progress) for the owner.
 	Report func(line string)
 	// WaitBudget bounds how long one run waits for a sent message to
@@ -98,6 +100,9 @@ func (e *SetupEnv) fill() {
 	}
 	if e.Getenv == nil {
 		e.Getenv = os.Getenv
+	}
+	if e.ExecutorService == nil {
+		e.ExecutorService = OpenExecutorService
 	}
 	if e.Random == nil {
 		e.Random = func(value []byte) error { _, err := rand.Read(value); return err }

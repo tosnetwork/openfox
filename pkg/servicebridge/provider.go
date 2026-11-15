@@ -26,6 +26,12 @@ import (
 
 // Provider request states.
 const (
+	// ProviderExecuting: admitted and handed to the executor service, whose
+	// outcome the node does not hold yet.
+	ProviderExecuting = "executing"
+	// ProviderUnknown: the executor service cannot account for the
+	// execution; it is never attested.
+	ProviderUnknown    = "unknown"
 	ProviderExecuted   = "executed"
 	ProviderResponding = "responding"
 	ProviderDelivering = "delivering"
@@ -60,17 +66,37 @@ type ProviderRecord struct {
 	ResponseDeadline uint64 `json:"response_deadline,omitempty"`
 	RespondedAtUnix  int64  `json:"respond_attempt_unix,omitempty"`
 	// The claim and the verified values the fresh pre-respond check needs.
-	PackageBase64    string `json:"package_base64,omitempty"`
-	BuyerWallet      string `json:"buyer_wallet,omitempty"`
-	ExecutionID      string `json:"execution_id,omitempty"`
-	InputDigest      string `json:"input_digest,omitempty"`
-	CallLT           uint64 `json:"call_lt,omitempty"`
-	CallHash         string `json:"call_hash,omitempty"`
-	PriceNanoTOS     string `json:"price_nanotos,omitempty"`
-	NextDeliveryUnix int64  `json:"next_delivery_unix,omitempty"`
-	BackoffSeconds   int64  `json:"backoff_seconds,omitempty"`
-	Deliveries       int    `json:"deliveries"`
-	UpdatedUnix      int64  `json:"updated_unix"`
+	PackageBase64 string `json:"package_base64,omitempty"`
+	BuyerWallet   string `json:"buyer_wallet,omitempty"`
+	ExecutionID   string `json:"execution_id,omitempty"`
+	InputDigest   string `json:"input_digest,omitempty"`
+	CallLT        uint64 `json:"call_lt,omitempty"`
+	CallHash      string `json:"call_hash,omitempty"`
+	PriceNanoTOS  string `json:"price_nanotos,omitempty"`
+	// What a restarted node needs to send an executing request to the
+	// executor service again and attest its outcome.
+	SourceDigest    string `json:"source_digest,omitempty"`
+	ToolchainDigest string `json:"toolchain_digest,omitempty"`
+	SandboxDigest   string `json:"sandbox_digest,omitempty"`
+	// ExecutionLimits are the admitted manifest's limits, sent to the
+	// executor service unchanged every time the request is sent.
+	ExecutionLimits *ExecutionLimits `json:"execution_limits,omitempty"`
+	// Recovered marks an outcome read from the executor service after a
+	// restart, which the gate's slot does not record.
+	Recovered        bool  `json:"recovered_after_restart,omitempty"`
+	NextDeliveryUnix int64 `json:"next_delivery_unix,omitempty"`
+	BackoffSeconds   int64 `json:"backoff_seconds,omitempty"`
+	Deliveries       int   `json:"deliveries"`
+	UpdatedUnix      int64 `json:"updated_unix"`
+}
+
+// ExecutionLimits are a manifest's limits as a provider record keeps them.
+type ExecutionLimits struct {
+	CPUMillis       uint64 `json:"cpu_millis"`
+	MemoryBytes     uint64 `json:"memory_bytes"`
+	ScratchBytes    uint64 `json:"scratch_bytes"`
+	OutputBytes     uint64 `json:"output_bytes"`
+	WallClockMillis uint64 `json:"wall_clock_millis"`
 }
 
 // WorkRunner executes one bound software-work request at most once and
@@ -84,14 +110,23 @@ type ArtifactSource interface {
 	Get(ctx context.Context, digest string) ([]byte, error)
 }
 
-// ProviderConfig wires a provider worker.
+// ProviderConfig wires a provider worker. Exactly one of Runner and Service
+// executes the work.
 type ProviderConfig struct {
-	AgentID            string
-	CapabilityID       string
-	Version            string
-	Network            *nativev1.NetworkDomain
-	Gate               *railgate.Gate
-	Runner             WorkRunner
+	AgentID      string
+	CapabilityID string
+	Version      string
+	Network      *nativev1.NetworkDomain
+	Gate         *railgate.Gate
+	// Runner executes as part of this process: an execution that has no
+	// outcome when the node restarts is ambiguous for good.
+	Runner WorkRunner
+	// Service executes through a service that owns the run. It needs
+	// Verifier, the gate's own verifier, and RespondBudget, the time kept
+	// for respond after an outcome arrives.
+	Service            ServiceRunner
+	Verifier           respondVerifier
+	RespondBudget      time.Duration
 	Store              ArtifactSource
 	Lifecycle          LifecycleSender
 	AttestorController string
@@ -115,8 +150,9 @@ type preRespondChecker interface {
 type Provider struct {
 	config ProviderConfig
 	// checker replaces the gate's pre-respond check when set.
-	checker preRespondChecker
-	mutex   sync.Mutex
+	checker   preRespondChecker
+	mutex     sync.Mutex
+	lastSweep time.Time
 }
 
 func (p *Provider) preRespond() preRespondChecker {
@@ -136,7 +172,8 @@ func NewProvider(config ProviderConfig) (*Provider, error) {
 		config.Version == "" ||
 		config.Network == nil ||
 		config.Gate == nil ||
-		config.Runner == nil ||
+		(config.Runner == nil) == (config.Service == nil) ||
+		(config.Service != nil && (config.Verifier == nil || config.RespondBudget <= 0)) ||
 		config.Store == nil ||
 		config.Lifecycle == nil ||
 		!walletNamePattern.MatchString(config.AttestorController) ||
@@ -275,6 +312,13 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 	if pauseErr := p.admissionOpen(); pauseErr != nil {
 		return pauseErr
 	}
+	if p.config.Service != nil {
+		// Asked before the claim takes its slot: a task refused here stays
+		// in the inbox and is admitted once the service can run it.
+		if readyErr := p.config.Service.Ready(ctx); readyErr != nil {
+			return fmt.Errorf("%w; the task is not admitted", readyErr)
+		}
+	}
 	slot, verified, err := p.config.Gate.Admit(ctx, claim)
 	if errors.Is(err, railgate.ErrSlotTaken) {
 		// The buyer resent the task: it is never executed again. A result
@@ -308,6 +352,16 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 		InputDigest: verified.InputDigest, SourceDigest: task.Header.SourceDigest, Price: verified.Price,
 		ProviderAgentID: verified.ProviderAgentID, ToolchainDigest: verified.Manifest.ToolchainDigest,
 		SandboxDigest: pkg.GetProposal().GetManifestDigest(),
+	}
+	if p.config.Service != nil {
+		record.SourceDigest, record.ToolchainDigest = task.Header.SourceDigest, verified.Manifest.ToolchainDigest
+		record.SandboxDigest = pkg.GetProposal().GetManifestDigest()
+		limits := verified.Manifest.Limits
+		record.ExecutionLimits = &ExecutionLimits{
+			CPUMillis: limits.CPUMillis, MemoryBytes: limits.MemoryBytes, ScratchBytes: limits.ScratchBytes,
+			OutputBytes: limits.OutputBytes, WallClockMillis: limits.WallClockMillis,
+		}
+		return p.startService(ctx, key, record, task.Archive)
 	}
 	var outcome softwarework.Outcome
 	runErr := p.config.Gate.Run(ctx, slot, claim, func(runCtx context.Context, _ *railgate.Verified) error {
@@ -495,6 +549,15 @@ func (p *Provider) Tick(ctx context.Context) error {
 	var failures []error
 	for path, record := range records {
 		switch record.State {
+		case ProviderExecuting:
+			if p.config.Service == nil {
+				failures = append(failures, errors.New(
+					"servicebridge: a request is executing but this node has no executor service",
+				))
+			} else if err := p.advanceExecuting(ctx, path, record); err != nil {
+				failures = append(failures, err)
+			}
+			continue
 		case ProviderExecuted:
 			if err := p.resumeExecuted(ctx, path, record, now); err != nil {
 				failures = append(failures, err)
@@ -562,6 +625,9 @@ func (p *Provider) Tick(ctx context.Context) error {
 		}
 	}
 	if err := p.config.Courier.Resume(ctx); err != nil && !errors.Is(err, ErrGenerationExpired) {
+		failures = append(failures, err)
+	}
+	if err := p.sweepObjects(ctx, now); err != nil {
 		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
@@ -634,38 +700,48 @@ func decodeHex32(text string, out *[32]byte) error {
 	return nil
 }
 
-// recheck rebuilds a record's claim and runs the gate's pre-respond check.
-func (p *Provider) recheck(ctx context.Context, record ProviderRecord) error {
+// claimOf rebuilds the claim of a record and the verified values a fresh
+// check must reproduce.
+func claimOf(record ProviderRecord) (railgate.Claim, *railgate.Verified, error) {
 	raw, err := base64.StdEncoding.Strict().DecodeString(record.PackageBase64)
 	if err != nil || len(raw) == 0 {
-		return errors.New("servicebridge: the record holds no Quote package to recheck")
+		return railgate.Claim{}, nil, errors.New("servicebridge: the record holds no Quote package to recheck")
 	}
 	pkg := &nativev1.QuoteProposalPackageV1{}
 	if err = proto.Unmarshal(raw, pkg); err != nil {
-		return errors.New("servicebridge: the recorded Quote package does not decode")
+		return railgate.Claim{}, nil, errors.New("servicebridge: the recorded Quote package does not decode")
 	}
 	claim := railgate.Claim{
 		Package: pkg, BuyerWallet: record.BuyerWallet, RequestID: record.RequestID,
 		Call: toschain.ActorTxID{LT: record.CallLT, Hash: record.CallHash},
 	}
 	if err = decodeHex32(record.ExecutionID, &claim.ExecutionID); err != nil {
-		return err
+		return railgate.Claim{}, nil, err
 	}
 	if err = decodeHex32(record.InputDigest, &claim.InputDigest); err != nil {
-		return err
+		return railgate.Claim{}, nil, err
 	}
 	expected := &railgate.Verified{
 		Actor: record.Actor, RequestID: record.RequestID, QuoteCommitment: record.QuoteCommitment,
 		ResponseDeadline: record.ResponseDeadline,
 	}
 	if err = decodeHex32(record.RequestHash, &expected.RequestHash); err != nil {
-		return err
+		return railgate.Claim{}, nil, err
 	}
 	price, ok := new(big.Int).SetString(record.PriceNanoTOS, 10)
 	if !ok || price.Sign() <= 0 {
-		return errors.New("servicebridge: the record holds no request price")
+		return railgate.Claim{}, nil, errors.New("servicebridge: the record holds no request price")
 	}
 	expected.Price = price
+	return claim, expected, nil
+}
+
+// recheck rebuilds a record's claim and runs the gate's pre-respond check.
+func (p *Provider) recheck(ctx context.Context, record ProviderRecord) error {
+	claim, expected, err := claimOf(record)
+	if err != nil {
+		return err
+	}
 	checker := p.preRespond()
 	if checker == nil {
 		return errors.New("servicebridge: no gate to recheck the request with")
@@ -676,6 +752,17 @@ func (p *Provider) recheck(ctx context.Context, record ProviderRecord) error {
 	}
 	if !found {
 		return errors.New("servicebridge: the request has no execution slot")
+	}
+	if record.Recovered && slot.State == railgate.SlotAmbiguous {
+		// The gate only rechecks a slot it completed itself, and it calls
+		// every slot that was started when the node restarted ambiguous.
+		// This record's outcome was read from the executor service, which
+		// ran the execution exactly once, so the same fresh finalized check
+		// is made with the gate's verifier.
+		if p.config.Verifier == nil {
+			return errors.New("servicebridge: no verifier to recheck a recovered execution with")
+		}
+		return p.config.Verifier.Recheck(ctx, claim, expected)
 	}
 	return checker.Recheck(ctx, slot, claim, expected)
 }

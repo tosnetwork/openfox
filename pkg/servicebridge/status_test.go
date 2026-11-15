@@ -57,6 +57,14 @@ func TestEveryRequestProjectsToOneExplicitOperatorState(t *testing.T) {
 		},
 		{"ambiguous slot", "", railgate.SlotAmbiguous, nil, OperatorOutcomeUnknown, ChainFactNotRead},
 		{
+			"executing through the service, pending", ProviderExecuting, "", readFacts(nil, true, []uint64{7}, nil),
+			OperatorExecuting, ChainFactPending,
+		},
+		{
+			"the service cannot account for the execution", ProviderUnknown, "",
+			readFacts(nil, true, []uint64{7}, nil), OperatorOutcomeUnknown, ChainFactPending,
+		},
+		{
 			"executed, pending", ProviderExecuted, "", readFacts(nil, true, []uint64{7}, nil),
 			OperatorResultAvailable, ChainFactPending,
 		},

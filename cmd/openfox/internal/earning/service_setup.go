@@ -212,7 +212,10 @@ func serviceOfferCommand() *cobra.Command {
 	flags.StringVar(&in.Version, "version", servicebridge.DefaultOfferVersion, "Capability version")
 	flags.StringVar(&in.AttestorController, "attestor-controller", servicebridge.DefaultAttestorController,
 		"vault controller that attests responses (created if absent)")
-	flags.StringVar(&in.ExecutorBinary, "executor", "", "software-work executor binary")
+	flags.StringVar(&in.ExecutorSocket, "executor-socket", "", "socket of the root-run executor service (default "+
+		servicebridge.DefaultExecutorSocket+" unless --executor is given)")
+	flags.StringVar(&in.ExecutorBinary, "executor", "", "software-work executor binary to run as this user instead "+
+		"of the executor service (needs --containerd-socket)")
 	flags.StringVar(&in.ExecutorSHA256, "executor-sha256", "", "SHA-256 the executor must have (default: pin the "+
 		"binary found, trust on first use)")
 	flags.StringVar(&in.ContainerdSocket, "containerd-socket", "", "private container runtime socket")
@@ -227,8 +230,7 @@ func serviceOfferCommand() *cobra.Command {
 		"<state_dir>/setup/offer.json)")
 	flags.BoolVar(&in.Yes, "yes", false, "create the controller, sign and send as previewed")
 	for _, name := range []string{
-		"price", "storage-fee", "cleanup-bounty", "response-sla", "refund-claim-window", "executor",
-		"containerd-socket",
+		"price", "storage-fee", "cleanup-bounty", "response-sla", "refund-claim-window",
 	} {
 		_ = command.MarkFlagRequired(name)
 	}

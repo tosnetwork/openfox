@@ -325,6 +325,12 @@ func projectRequest(record *ProviderRecord, slot *railgate.Slot, fact string) (s
 	pending := fact == ChainFactPending
 	if record != nil {
 		switch record.State {
+		case ProviderExecuting:
+			return OperatorExecuting, "handed to the executor service; the node asks for its outcome until the " +
+				"respond budget no longer fits before the response deadline"
+		case ProviderUnknown:
+			return OperatorOutcomeUnknown, "the executor service cannot account for the execution; it is never " +
+				"attested and the request resolves by expire and claim_refund or by sweep"
 		case ProviderExecuted:
 			return OperatorResultAvailable, "executed and attested locally; respond not yet sent"
 		case ProviderResponding:

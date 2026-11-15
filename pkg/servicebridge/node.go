@@ -79,17 +79,56 @@ type AssemblyBounds struct {
 	Total     int `json:"total"`
 }
 
-// ProviderNode configures the selling side.
+// ProviderNode configures the selling side. Exactly one executor is
+// configured: ExecutorSocket, or ExecutorBinary with its pin, runtime socket
+// and FIFO directory.
 type ProviderNode struct {
 	CapabilityID        string `json:"capability_id"`
 	Version             string `json:"version"`
 	ManifestFile        string `json:"manifest_file"`
 	AttestorController  string `json:"attestor_controller"`
 	RespondBudgetSecond int    `json:"respond_budget_seconds"`
-	ExecutorBinary      string `json:"executor_binary"`
-	ExecutorSHA256      string `json:"executor_sha256"`
-	ContainerdSocket    string `json:"containerd_socket"`
-	FIFODir             string `json:"fifo_dir"`
+	// ExecutorSocket is the Unix socket of the root-run executor service.
+	// With it the node needs no container runtime privilege and runs as an
+	// ordinary user.
+	ExecutorSocket string `json:"executor_socket,omitempty"`
+	// ExecutorBinary is the executor the node runs as its own child, for an
+	// operator who runs the node and the container runtime as one user.
+	ExecutorBinary   string `json:"executor_binary,omitempty"`
+	ExecutorSHA256   string `json:"executor_sha256,omitempty"`
+	ContainerdSocket string `json:"containerd_socket,omitempty"`
+	FIFODir          string `json:"fifo_dir,omitempty"`
+}
+
+// Executor modes of a provider node.
+const (
+	ExecutorModeSocket     = "socket"
+	ExecutorModeSubprocess = "subprocess"
+)
+
+// ExecutorMode says which executor the section configures. Naming both, or
+// neither, is refused: the node never picks one for the owner.
+func (p *ProviderNode) ExecutorMode() (string, error) {
+	if p == nil {
+		return "", errors.New("servicebridge: the rail configuration has no provider section")
+	}
+	socket := p.ExecutorSocket != ""
+	subprocess := p.ExecutorBinary != "" || p.ExecutorSHA256 != "" || p.ContainerdSocket != "" || p.FIFODir != ""
+	switch {
+	case socket && subprocess:
+		return "", errors.New("servicebridge: provider.executor_socket is set together with executor_binary, " +
+			"executor_sha256, containerd_socket or fifo_dir; configure exactly one executor")
+	case socket:
+		if !cleanAbsolute(p.ExecutorSocket) {
+			return "", errors.New("servicebridge: provider.executor_socket must be an absolute clean path")
+		}
+		return ExecutorModeSocket, nil
+	case subprocess:
+		return ExecutorModeSubprocess, nil
+	default:
+		return "", errors.New("servicebridge: the provider section names no executor; set provider.executor_socket, " +
+			"or executor_binary with executor_sha256, containerd_socket and fifo_dir")
+	}
 }
 
 // BuyerNode configures the buying side.
@@ -125,12 +164,14 @@ func LoadNodeConfig(path string) (NodeConfig, error) {
 }
 
 // NodeOptions adjusts an assembled node. Runner and Artifacts replace the
-// subprocess executor, for a host without the container runtime.
+// subprocess executor, for a host without the container runtime;
+// ExecutorService replaces the client of the configured executor socket.
 type NodeOptions struct {
-	Runner    WorkRunner
-	Artifacts ArtifactSource
-	Report    func(stage string, err error)
-	Now       func() time.Time
+	Runner          WorkRunner
+	Artifacts       ArtifactSource
+	ExecutorService ExecutorService
+	Report          func(stage string, err error)
+	Now             func() time.Time
 }
 
 // Node is one assembled rail node.
@@ -386,11 +427,35 @@ func (n *Node) openProvider(ctx context.Context, options NodeOptions, lifecycle 
 		return err
 	}
 	n.closers = append(n.closers, gate)
+	// The verifier reserves its default when none is configured; the
+	// provider stops waiting for an outcome by the same budget.
+	providerRespond := respond
+	if providerRespond == 0 {
+		providerRespond = railgate.DefaultRespondBudget
+	}
 	var runner WorkRunner
+	var service ServiceRunner
 	var store ArtifactSource
-	if options.Runner != nil {
+	mode, err := config.ExecutorMode()
+	switch {
+	case options.Runner != nil:
 		runner, store = options.Runner, options.Artifacts
-	} else {
+	case err != nil:
+		return err
+	case mode == ExecutorModeSocket:
+		socket, socketErr := NewSocketRunner(SocketRunnerConfig{
+			SocketPath:      config.ExecutorSocket,
+			StateDir:        filepath.Join(n.Config.StateDir, "executor-service"),
+			ManifestDigest:  digest,
+			ToolchainDigest: manifest.ToolchainDigest,
+			Limits:          manifest.Limits,
+			Client:          options.ExecutorService,
+		})
+		if socketErr != nil {
+			return socketErr
+		}
+		service, store = socket, socket
+	default:
 		subprocess, subprocessErr := NewSubprocessRunner(SubprocessRunnerConfig{
 			BinaryPath:       config.ExecutorBinary,
 			BinarySHA256:     config.ExecutorSHA256,
@@ -408,7 +473,7 @@ func (n *Node) openProvider(ctx context.Context, options NodeOptions, lifecycle 
 		}
 		runner, store = subprocess, subprocess
 	}
-	if runner == nil || store == nil {
+	if (runner == nil && service == nil) || store == nil {
 		return errors.New("servicebridge: the provider has no executor")
 	}
 	n.Provider, err = NewProvider(ProviderConfig{
@@ -418,6 +483,9 @@ func (n *Node) openProvider(ctx context.Context, options NodeOptions, lifecycle 
 		Network:            n.Network,
 		Gate:               gate,
 		Runner:             runner,
+		Service:            service,
+		Verifier:           verifier,
+		RespondBudget:      providerRespond,
 		Store:              store,
 		Lifecycle:          lifecycle,
 		AttestorController: config.AttestorController,

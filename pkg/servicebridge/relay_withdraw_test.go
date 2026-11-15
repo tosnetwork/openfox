@@ -461,7 +461,7 @@ func TestAFinalizedStateOutageNeverWithdrawsOrSends(t *testing.T) {
 	// The verifier is consulted only for a card whose signing controller
 	// is still in the finalized policy: a revoked one is refused before any
 	// signature check, so that case keeps the card standing.
-	revoked := map[string]bool{"resolver failure": true, "verifier unavailable": false, "cancelled context": true}
+	revoked := map[string]bool{"resolver failure": true, "verifier unavailable": false, "canceled context": true}
 	for name, outage := range map[string]func(*switchableAgents, *relayTestNode) context.Context{
 		"resolver failure": func(agents *switchableAgents, _ *relayTestNode) context.Context {
 			agents.set(true)
@@ -473,7 +473,7 @@ func TestAFinalizedStateOutageNeverWithdrawsOrSends(t *testing.T) {
 			seller.cards.mutex.Unlock()
 			return context.Background()
 		},
-		"cancelled context": func(*switchableAgents, *relayTestNode) context.Context {
+		"canceled context": func(*switchableAgents, *relayTestNode) context.Context {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			return ctx

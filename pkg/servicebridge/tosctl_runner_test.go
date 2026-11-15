@@ -43,7 +43,12 @@ func standInTOSCTL(mode string, rest []string) {
 		fmt.Fprint(os.Stderr, strings.Repeat("d", 200<<10))
 		fmt.Print("{\"address\":\"0:aa\"}\n")
 	case "sleep":
-		time.Sleep(30 * time.Second)
+		// Shorter than the default timeout, so only a call's own shorter
+		// timeout cuts it off before the marker is written.
+		time.Sleep(standInSleep)
+		if len(rest) > 0 && filepath.IsAbs(rest[0]) {
+			_ = os.WriteFile(rest[0], nil, 0o600)
+		}
 	case "text-then-json":
 		fmt.Print("Transfer summary:\n  {not json}\nOK sent\n{\"address\":\"0:aa\"}\n")
 	case "trailing":
@@ -53,6 +58,12 @@ func standInTOSCTL(mode string, rest []string) {
 	}
 	os.Exit(0)
 }
+
+// standInSleep is how long the "sleep" stand-in runs: derived from the
+// default timeout so that a runner applying the default instead of a call's
+// own timeout lets it finish, and long enough that no plausible pause of
+// the test lets it finish before a one-second timeout's kill lands.
+const standInSleep = defaultLifecycleTime * 3 / 4
 
 func standInRunner(t *testing.T) (*SealedTOSCTL, TOSCTLConfig) {
 	t.Helper()
@@ -147,13 +158,26 @@ func TestTheSealedRunnerBoundsOutputAndTimeAndRedactsFailures(t *testing.T) {
 		!strings.Contains(string(output), "0:aa") {
 		t.Fatalf("long diagnostics failed a successful call: %v", err)
 	}
-	slow := standIn("sleep")
+	// The stand-in sleeps for less than the default timeout and then
+	// leaves a marker. The call's own one-second timeout must end it: the
+	// error says it timed out, no marker exists (the stand-in was killed
+	// before its end, so neither its own exit nor the default timeout ended
+	// the call), and at least the timeout elapsed. No upper bound is put on
+	// the elapsed wall-clock time: a pause of the whole process group (a
+	// thermal guard's SIGSTOP) stretches it without the bound being broken.
+	finished := filepath.Join(t.TempDir(), "finished")
+	slow := standIn("sleep", finished)
 	slow.Timeout = time.Second
 	started := time.Now()
+	signalSlowCall(t)
 	_, err := runner.Run(context.Background(), slow)
+	elapsed := time.Since(started)
 	var failure *TOSCTLError
-	if !errors.As(err, &failure) || failure.Status != "timed out" || time.Since(started) > 10*time.Second {
-		t.Fatalf("a slow tosctl was not cut off: %v after %s", err, time.Since(started))
+	if !errors.As(err, &failure) || failure.Status != "timed out" || elapsed < slow.Timeout {
+		t.Fatalf("a slow tosctl was not cut off at its timeout: %v after %s", err, elapsed)
+	}
+	if _, statErr := os.Stat(finished); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the slow tosctl ran to its end instead of being cut off at its timeout: %v", statErr)
 	}
 	// The diagnostic quotes the vault URL and the configuration path; the
 	// error carries the label, the exit status and a fixed class only.

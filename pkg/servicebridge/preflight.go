@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tosnetwork/tos-ai/pkg/executorservice"
 	nativev1 "github.com/tosnetwork/tos-service-protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/tos-service-protocol/pkg/mldsa44"
 	"github.com/tosnetwork/tos-service-protocol/pkg/nativecore"
@@ -100,6 +103,12 @@ type PreflightEnv struct {
 	FreeBytes       func(path string) (uint64, error)
 	Euid            func() int
 	Getenv          func(name string) string
+	// ExecutorService opens the client of the executor service socket.
+	ExecutorService func(socket string) (ExecutorService, error)
+	// SocketGroupHint explains why this process cannot reach a socket in a
+	// group-only directory, or returns "" when its groups are not the
+	// reason.
+	SocketGroupHint func(socket string) string
 }
 
 func (e *PreflightEnv) fill() {
@@ -134,6 +143,63 @@ func (e *PreflightEnv) fill() {
 	if e.Euid == nil {
 		e.Euid = os.Geteuid
 	}
+	if e.ExecutorService == nil {
+		e.ExecutorService = OpenExecutorService
+	}
+	if e.SocketGroupHint == nil {
+		e.SocketGroupHint = socketGroupHint
+	}
+}
+
+// socketGroupHint inspects the socket's directory, never the socket: without
+// the directory's group nothing inside it is visible.
+func socketGroupHint(socket string) string {
+	info, err := os.Stat(filepath.Dir(socket))
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o005 != 0 || os.Geteuid() == 0 {
+		return ""
+	}
+	gid, ok := fileGroupID(info)
+	if !ok {
+		return ""
+	}
+	if owner, ownerErr := fileOwnerID(info); ownerErr != nil || owner == os.Geteuid() {
+		return ""
+	}
+	process, err := os.Getgroups()
+	if err != nil {
+		return ""
+	}
+	process = append(process, os.Getegid())
+	name := strconv.Itoa(gid)
+	if group, lookupErr := user.LookupGroupId(name); lookupErr == nil {
+		name = group.Name
+	}
+	var database []string
+	if account, accountErr := user.Current(); accountErr == nil {
+		// An unreadable group database only loses the more precise hint.
+		database, _ = account.GroupIds()
+	}
+	return groupSessionHint(gid, name, process, database)
+}
+
+// groupSessionHint tells apart a user who is not in the socket's group from
+// one who was added to it after this process's login session began: group
+// membership is fixed when a session starts.
+func groupSessionHint(gid int, name string, process []int, database []string) string {
+	for _, held := range process {
+		if held == gid {
+			return ""
+		}
+	}
+	for _, listed := range database {
+		if listed == strconv.Itoa(gid) {
+			return fmt.Sprintf("this user is a member of group %s in the group database, but this process does not "+
+				"carry the group: membership takes effect in a new login session, so log in again or run the "+
+				"node with `sg %s -c ...`", name, name)
+		}
+	}
+	return fmt.Sprintf("the socket's directory is open only to group %s and this user is not a member; add the "+
+		"user to it and start a new login session", name)
 }
 
 type preflight struct {
@@ -143,10 +209,16 @@ type preflight struct {
 	config    NodeConfig
 	endpoints []string
 	passed    map[string]bool
+	// executorMode is empty when the provider section names no single
+	// executor.
+	executorMode string
 	// From the local manifest.
-	manifestDigest string
-	actor          string
-	attestor       [32]byte
+	manifestDigest    string
+	manifestToolchain string
+	manifestLimits    nativecore.SoftwareWorkLimitsV1
+	manifestRetention uint64
+	actor             string
+	attestor          [32]byte
 	// From the chain.
 	chain   PreflightChain
 	session serviceactor.Session
@@ -213,6 +285,7 @@ func RunPreflight(ctx context.Context, configPath string, env PreflightEnv) *Pre
 	p.checkExecutor()
 	p.checkContainerd()
 	p.checkManifest()
+	p.checkExecutorService()
 	p.checkEndpoints()
 	p.checkChain()
 	p.checkSigners()
@@ -256,9 +329,17 @@ func (p *preflight) checkProviderConfig() {
 		problems = append(problems, "provider.respond_budget_seconds must be positive")
 	}
 	paths := map[string]string{
-		"provider.manifest_file": provider.ManifestFile, "provider.fifo_dir": provider.FIFODir,
-		"receiver_socket": p.config.ReceiverSocket, "registry_code_boc_file": p.config.RegistryCodeBOC,
+		"provider.manifest_file": provider.ManifestFile,
+		"receiver_socket":        p.config.ReceiverSocket, "registry_code_boc_file": p.config.RegistryCodeBOC,
 	}
+	mode, modeErr := provider.ExecutorMode()
+	switch {
+	case modeErr != nil:
+		problems = append(problems, strings.TrimPrefix(modeErr.Error(), "servicebridge: "))
+	case mode == ExecutorModeSubprocess:
+		paths["provider.fifo_dir"] = provider.FIFODir
+	}
+	p.executorMode = mode
 	// The Messenger is optional only when direct peers are configured.
 	if p.config.MessengerSocket != "" || len(p.config.DirectPeers) == 0 {
 		paths["messenger_socket"] = p.config.MessengerSocket
@@ -346,11 +427,20 @@ func (p *preflight) checkPause() {
 }
 
 func (p *preflight) checkUser() {
-	if p.env.Euid() == 0 {
+	switch {
+	case p.env.Euid() != 0:
+		p.addf("process.user", CheckPass, "running as an unprivileged user")
+	case p.executorMode == ExecutorModeSocket:
+		// With the executor service nothing in the node needs root, and a
+		// root node gives away what the service exists for: the pinned
+		// tosctl, the vault access and the listeners would all run with the
+		// privilege the service confines to one sandboxed operation.
+		p.addf("process.user", CheckFail, "running as root with provider.executor_socket; the executor service "+
+			"is the only part that needs root: run the provider node as an unprivileged owner user whose uid "+
+			"the service allows")
+	default:
 		p.addf("process.user", CheckWarn, "running as root; run the provider node as an unprivileged owner user")
-		return
 	}
-	p.addf("process.user", CheckPass, "running as an unprivileged user")
 }
 
 func (p *preflight) checkTOSCTL() {
@@ -444,6 +534,9 @@ func (p *preflight) checkTransport() {
 }
 
 func (p *preflight) checkExecutor() {
+	if p.executorMode != ExecutorModeSubprocess && p.passed[providerSection] {
+		return
+	}
 	if !p.requires("executor.pin", providerSection) {
 		return
 	}
@@ -457,6 +550,9 @@ func (p *preflight) checkExecutor() {
 
 // checkContainerd inspects the socket without connecting to it.
 func (p *preflight) checkContainerd() {
+	if p.executorMode != ExecutorModeSubprocess && p.passed[providerSection] {
+		return
+	}
 	if !p.requires("containerd.socket", providerSection) {
 		return
 	}
@@ -535,9 +631,92 @@ func (p *preflight) checkManifest() {
 		return
 	}
 	p.manifestDigest, p.attestor = digest, attestor
+	p.manifestToolchain, p.manifestLimits = manifest.ToolchainDigest, manifest.Limits
+	p.manifestRetention = manifest.RetentionSeconds
 	p.actor = "0:" + hex.EncodeToString(settlement.ActorAccountID)
 	p.addf("manifest.local", CheckPass, "the local manifest %s names actor %s and attestor %s", digest, p.actor,
 		mldsa44.KeyIDText(attestor))
+}
+
+// checkExecutorService asks the executor service to describe itself. The
+// node reads no path of the service: what it runs jobs in and under which
+// limits is what the service, proven to be served by root, says.
+func (p *preflight) checkExecutorService() {
+	if p.executorMode != ExecutorModeSocket {
+		if p.executorMode == "" && p.passed[providerSection] {
+			p.addf("executor.service", CheckUnknown, "not run: the provider section names no single executor")
+		}
+		return
+	}
+	socket := p.config.Provider.ExecutorSocket
+	client, err := p.env.ExecutorService(socket)
+	if err != nil {
+		p.addf("executor.service", CheckFail, "%v", err)
+		p.skipExecutorService()
+		return
+	}
+	probe, cancel := context.WithTimeout(p.ctx, describeTimeout)
+	defer cancel()
+	description, err := client.Describe(probe)
+	switch {
+	case errors.Is(err, executorservice.ErrServerIdentity):
+		p.addf("executor.service", CheckFail, "the socket %s is not served by root, so nothing it says is "+
+			"trusted; point provider.executor_socket at the socket of the root-run executor service", socket)
+	case errors.Is(err, executorservice.ErrNotAllowed):
+		p.addf("executor.service", CheckFail, "the executor service at %s refuses this user (uid %d); the service "+
+			"admits exactly one uid: set TOS_EXECUTOR_ALLOWED_UID to it in the service's environment file and "+
+			"restart the service", socket, p.env.Euid())
+	case err != nil:
+		if hint := p.env.SocketGroupHint(socket); hint != "" {
+			p.addf("executor.service", CheckFail, "the executor service at %s cannot be reached (%v): %s", socket,
+				err, hint)
+			break
+		}
+		p.addf("executor.service", CheckFail, "the executor service at %s does not answer (%v); install and start "+
+			"it as root and put this user in the socket's group", socket, err)
+	case !description.Ready:
+		p.addf("executor.service", CheckFail, "the executor service at %s answers as root but is not ready: %s",
+			socket, notReadyReason)
+	default:
+		p.addf("executor.service", CheckPass, "the executor service at %s answers as root and its container "+
+			"backend is ready (version %s, commit %s, %d job(s) at once)", socket, description.Version,
+			description.Commit, description.MaxExecutions)
+	}
+	if err != nil {
+		p.skipExecutorService()
+		return
+	}
+	// What the service runs does not depend on its backend being up.
+	if !p.passed["manifest.local"] {
+		p.skipExecutorService()
+		return
+	}
+	if problem := describedImageProblem(description, p.manifestToolchain); problem != "" {
+		p.addf("executor.image", CheckFail, "%s; every result would be refused before it is attested", problem)
+	} else if !description.Ready {
+		// The digest is the one the service is built for, not proof that
+		// the runtime holds the image.
+		p.addf("executor.image", CheckFail, "the service names the manifest toolchain image %s (%s) but is not "+
+			"ready, so the image may not be imported and unpacked in its runtime; import it as the service's "+
+			"runbook describes", description.ImageDigest, description.ImageReference)
+	} else {
+		p.addf("executor.image", CheckPass, "the service runs jobs in the manifest toolchain image %s (%s)",
+			description.ImageDigest, description.ImageReference)
+	}
+	if problem := describedLimitsProblem(description, p.manifestLimits); problem != "" {
+		p.addf("executor.limits", CheckFail, "%s; the service would refuse every job", problem)
+	} else {
+		p.addf("executor.limits", CheckPass, "the manifest limits fit the limits the service enforces; the service "+
+			"keeps its copy of a job's objects for at most %d s after the job, and the node serves results from "+
+			"its own copy for the manifest's %d s", description.MaxRetentionSeconds, p.manifestRetention)
+	}
+}
+
+func (p *preflight) skipExecutorService() {
+	for _, id := range []string{"executor.image", "executor.limits"} {
+		p.addf(id, CheckUnknown, "not run: the executor service did not describe itself or the local manifest "+
+			"did not pass")
+	}
 }
 
 func endpointHost(endpoint string) string {

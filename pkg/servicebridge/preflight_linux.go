@@ -46,6 +46,15 @@ func fileOwnerID(info os.FileInfo) (int, error) {
 	return int(stat.Uid), nil
 }
 
+// fileGroupID returns the group that owns info's file.
+func fileGroupID(info os.FileInfo) (int, bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int(stat.Gid), true
+}
+
 // errPeerUserUnsupported is never returned on Linux.
 var errPeerUserUnsupported = errors.New("peer credentials are only read on Linux")
 

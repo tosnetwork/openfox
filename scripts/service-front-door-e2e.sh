@@ -14,26 +14,40 @@
 #   E2E_WORKDIR       owner-private evidence directory (must not exist yet)
 #   REGISTRY_CODE_BOC Native Registry code BOC (base64) that tosctl embeds
 #   ACTOR_CODE_HASH   tvm-cell-sha256:<hex> of the pinned Service Actor release
-#   E2E_EXECUTOR      the provider's software-work-execute binary
 #   THERMAL_GUARD     script taking a process-group id to pause on heat
+# and one executor:
+#   E2E_EXECUTOR_SOCKET  socket of the root-run executor service (normally
+#                        /run/tos-service-executor/executor.sock). Both nodes
+#                        then run as the invoking user, whose uid the service
+#                        must allow, and the run uses no root command.
+#   E2E_EXECUTOR         the provider's software-work-execute binary: the
+#                        legacy single-user mode, in which both nodes run as
+#                        root. Used only when E2E_EXECUTOR_SOCKET is unset.
 # Optional: E2E_BASE_PORT (tostester ports), E2E_RPC_PORTS (three JSON-RPC
-#   ports), E2E_CONTAINERD_SOCKET (the private container runtime socket),
-#   E2E_ROOT_BASE (default /var/lib/openfox-front-door-e2e; every ancestor
-#   must be root-owned): both nodes' root-owned state is staged under
-#   <E2E_ROOT_BASE>/<workdir name>, which must not exist yet, and
-#   E2E_HOLD=1 (keep the network up after the run until <workdir>/release
-#   exists, for inspection).
+#   ports), E2E_HOLD=1 (keep the network up after the run until
+#   <workdir>/release exists, for inspection), and E2E_ROOT_BASE: both nodes'
+#   state is staged under <E2E_ROOT_BASE>/<workdir name>, which must not exist
+#   yet. With E2E_EXECUTOR_SOCKET it defaults to <workdir>/private/nodes and
+#   belongs to the invoking user; choose a work directory outside the home
+#   directory, since the run refuses evidence that names a home path. In the
+#   legacy mode it defaults to /var/lib/openfox-front-door-e2e, every ancestor
+#   must be root-owned, and E2E_CONTAINERD_SOCKET names the private container
+#   runtime socket.
 #
-# Root: the executor only accepts a container runtime socket its own user
-# owns, and OpenFox runs the executor as its own child, so the provider node
-# runs as root (`sudo -n`). The direct transport joins nodes of one user, so
-# the buyer node does too. The script lists every root command in its
-# evidence. Nothing here changes a permission of the socket or the executor.
+# Root, legacy mode only: the executor only accepts a container runtime socket
+# its own user owns, and OpenFox runs the executor as its own child, so the
+# provider node runs as root (`sudo -n`). The direct transport joins nodes of
+# one user, so the buyer node does too. The script lists every root command in
+# its evidence. Nothing here changes a permission of the socket or the
+# executor, and nothing here installs or starts the executor service.
 set -euo pipefail
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo=$(dirname "$here")
 : "${TOS_SOURCE:?}" "${TOS_BUILD:?}" "${TOSCTL:?}" "${E2E_WORKDIR:?}" "${REGISTRY_CODE_BOC:?}" "${ACTOR_CODE_HASH:?}"
-: "${E2E_EXECUTOR:?}" "${THERMAL_GUARD:?}"
+: "${THERMAL_GUARD:?}"
+if [ -z "${E2E_EXECUTOR_SOCKET:-}" ]; then
+  : "${E2E_EXECUTOR:?set E2E_EXECUTOR_SOCKET, or E2E_EXECUTOR for the legacy root mode}"
+fi
 export E2E_BASE_PORT=${E2E_BASE_PORT:-49800}
 export E2E_RPC_PORTS=${E2E_RPC_PORTS:-49880,49881,49882}
 for port in $(seq "$E2E_BASE_PORT" $((E2E_BASE_PORT + 79))) ${E2E_RPC_PORTS//,/ }; do
@@ -53,7 +67,10 @@ mkdir -p "$E2E_BIN"
 export E2E_REPO="$repo"
 cd "$TOS_SOURCE"
 export PYTHONPATH="$TOS_SOURCE/test/tostester/src"
-setsid uv run --frozen python "$here/service-front-door-e2e.py" > "$E2E_WORKDIR/run.log" 2>&1 &
+# No bytecode cache is written next to the script: the run checks that the
+# tree is clean at the commit its evidence names.
+export PYTHONDONTWRITEBYTECODE=1
+setsid uv run --frozen python -B "$here/service-front-door-e2e.py" > "$E2E_WORKDIR/run.log" 2>&1 &
 pg=$!
 echo "$pg" > "$E2E_WORKDIR/run.pgid"
 "$THERMAL_GUARD" "$pg" > "$E2E_WORKDIR/guard.log" 2>&1 &

@@ -39,19 +39,18 @@ Three things still need other tools:
 - **A carrier for Agent Packets.** Across hosts that is a `tos-messengerd`
   daemon per Agent (below); on one host two nodes of one user can use the
   direct transport instead.
-- **The provider's executor.** The private containerd executor (tos-ai
-  `software-work-execute`) and its container runtime are installed as root;
-  `offer` only pins the binary and records the socket. OpenFox runs the
-  executor as its own child process and reads the executor's artifact store,
-  and the executor accepts only a runtime socket, in a private directory, that
-  its own user owns. **The provider node therefore runs as the user that owns
-  the runtime socket.** With a root-only runtime that user is root, for every
-  provider command, and tosctl run as root refuses a configuration under a
-  directory another user can modify; `preflight` then warns `process.user`.
-  A provider that is not root needs a runtime whose socket that user owns.
+- **The provider's executor.** The jobs run in a private container runtime
+  that only root can reach. The operator installs that runtime and the
+  **executor service** (tos-ai `software-work-executord`) as root, once; see
+  [Executor](#executor) below. **The provider node itself runs as an ordinary
+  user**: it sends each job to the service over a Unix socket and never opens
+  the runtime socket or a root-owned file. `offer` asks the service to
+  describe itself and records the socket.
 
 `scripts/service-front-door-e2e.sh` runs the whole sequence below, two nodes
-and one paid job, on a local network and checks every chain fact itself.
+and one paid job, on a local network and checks every chain fact itself. With
+`E2E_EXECUTOR_SOCKET` both nodes run as the invoking user; without it the
+script runs the legacy single-user mode as root.
 
 ## Setting up a node: `init`
 
@@ -177,9 +176,18 @@ that a re-run adopts the Agent the configuration names.
    ```
    openfox earning service offer --rail-config /…/rail.json \
      --price 0.3 --storage-fee 0.25 --cleanup-bounty 0.1 \
-     --response-sla 3600 --refund-claim-window 3600 \
-     --executor /…/software-work-execute --containerd-socket /…/containerd.sock
+     --response-sla 3600 --refund-claim-window 3600
    ```
+
+   The executor is the executor service at
+   `/run/tos-service-executor/executor.sock` unless another one is named:
+   `--executor-socket <path>` for a service on another socket, or `--executor
+   <binary> --containerd-socket <socket>` for the legacy single-user mode
+   (below). The two cannot be combined. The default never selects something
+   that does not work: before `offer` creates a key or sends a message it asks
+   the service to describe itself and stops unless a root process answers on
+   that socket, its container backend is ready, and it runs the image and the
+   limits the manifest commits to.
 
    Amounts are decimal TOS and are handled as checked nanoTOS integers. The
    contract's bounds are applied before anything is sent: the price is
@@ -187,10 +195,10 @@ that a re-run adopts the Agent the configuration names.
    0.1 TOS plus the cleanup bounty; the response SLA and the refund-claim
    window are 3600 to 2592000 seconds. Optional: `--version` (default
    `1.0.0`), `--attestor-controller` (default `service-attestor`, created if
-   absent), `--executor-sha256` (otherwise the executor is pinned on first
-   use, as tosctl is), `--deploy-funding` (default and minimum 1.2 TOS),
-   `--retention-seconds`, `--respond-budget-seconds`, `--fifo-dir`,
-   `--offer-out`.
+   absent), `--deploy-funding` (default and minimum 1.2 TOS),
+   `--retention-seconds`, `--respond-budget-seconds`, `--offer-out`, and for
+   the legacy mode `--executor-sha256` (otherwise the executor is pinned on
+   first use, as tosctl is) and `--fifo-dir`.
 
    `offer` prints a preview of everything that is signed or sent: the owner
    wallet, the actor address (computed by tosctl without signing), the pinned
@@ -227,13 +235,16 @@ that a re-run adopts the Agent the configuration names.
    verifies the packets and the Quote, refuses input over the quoted bound,
    admits the request once through the finalized rail gate (pending, call
    proven, lifecycle replayed, getters cross-checked, time left to execute and
-   respond), re-checks immediately before execution, runs the executor, builds
+   respond), re-checks immediately before execution, sends the job to the
+   executor, verifies the outcome and its objects, builds
    the `SoftwareWorkReceiptV1`, checks it against the attestor policy (exact
    request bindings, charge equal to the price, the runner's own outcome), re-
    checks the request is still pending, and sends `respond`. After the respond
    is final it delivers the result and redelivers it in fresh packets until the
    buyer acknowledges it or the manifest retention ends. A failed or ambiguous
-   execution is never attested; the buyer's refund path applies.
+   execution is never attested; the buyer's refund path applies. What each
+   answer of the executor service leads to is listed under
+   [Executor](#executor).
 5. `openfox earning service status` lists the requests, the actor's credited
    revenue and the last withdrawals (below).
 6. Withdraw credited revenue:
@@ -307,12 +318,16 @@ prerequisite did not pass is `unknown` with the prerequisite named.
 | `state_dir.private` | `state_dir` is missing, a symbolic link, not `0700` or owned by another user |
 | `state_dir.disk_free` | less than 1 GiB is free under `state_dir` |
 | `admission.pause` | warns while admission is paused; fails if the pause marker is unreadable |
-| `process.user` | warns when running as root |
-| `tosctl.pin`, `executor.pin` | the binary is missing or does not hash to its pin |
+| `process.user` | passes for an ordinary user. With `executor_socket` a root node **fails**: nothing in it needs root, and a root node runs tosctl, the vault access and the listeners with the privilege the executor service exists to confine. In the legacy mode, where a root-only runtime forces root, it warns |
+| `tosctl.pin` | the binary is missing or does not hash to its pin |
+| `executor.service` | (`executor_socket`) nothing answers on the socket, the process serving it is not root (the kernel's peer credential of the connection), the service refuses this user's uid (it admits one: `TOS_EXECUTOR_ALLOWED_UID`), or it is not ready. When the socket's directory is closed to this process, the message says whether the user is missing from the group or only needs a new login session |
+| `executor.image` | (`executor_socket`) the image the service says it runs jobs in is not the manifest's toolchain digest, or the service is not ready, which is also what a pinned image that is not imported and unpacked in the runtime looks like |
+| `executor.limits` | (`executor_socket`) a manifest limit is zero or looser than the limit the service enforces, or the service takes less source than a task may carry |
+| `executor.pin` | (legacy mode) the executor binary is missing or does not hash to its pin |
 | `tosctl.config` | the tosctl configuration is missing or world-accessible |
 | `tosctl.vault_env` | the variable `vault_url_env` names is unset (its value is never printed) |
 | `transport.peers` | reports which transport each configured peer uses; fails when neither `messenger_socket` nor `direct_peers` is set, a direct peer is malformed, or its socket is a symbolic link, not a socket, owned by another user or in a directory group or others can write; warns when a direct peer's socket is absent (that node is not serving) |
-| `containerd.socket` | the runtime socket is missing, cannot be inspected by this user (a socket in a root-only directory reads as missing to any other user), not a socket, or world-accessible; it is never connected to |
+| `containerd.socket` | (legacy mode) the runtime socket is missing, cannot be inspected by this user (a socket in a root-only directory reads as missing to any other user), not a socket, or world-accessible; it is never connected to |
 | `manifest.local` | the manifest is not canonical, or its actor code hash, version or transport differ from the configuration |
 | `rpc.endpoints` | fewer than 3 or more than 8 endpoints, duplicate authorities, plain HTTP off loopback, or a quorum that is not a strict majority |
 | `rpc.independence` | always `unknown`: distinct authorities are enforced, distinct operators are not verified |
@@ -326,6 +341,12 @@ prerequisite did not pass is `unknown` with the prerequisite named.
 | `chain.admission` | the protocol's own admission verification (binding, metadata hash, proof scheme, policy bounds) refuses the offer |
 | `signer.attestor`, `signer.packet` | the controller does not resolve in the tosctl vault, or resolves to another key than the manifest attestor or `packet_key_id` |
 | `signer.wallet` | always `unknown`: tosctl cannot resolve a wallet without signing |
+
+The executor checks are those of the configured mode only; a section that
+names both executors, or neither, fails `config.provider`. The service checks
+read no path of the service: `executor.image` and `executor.limits` are what
+the service, proven to be served by root, says about itself, and they are
+`unknown` when it did not answer.
 
 Preflight sends nothing to the chain and signs nothing. The signer checks run
 `tosctl agent native-registry controller`, which prints a controller's public
@@ -366,12 +387,12 @@ bound) or `actor_not_active`.
 | `operator_state` | Meaning |
 |---|---|
 | `admitted` | the rail gate admitted the request; execution has not started |
-| `executing` | the execution was handed to the executor |
+| `executing` | the execution was handed to the executor. With the executor service the record's `state` is `executing` while the node has no verified outcome yet and keeps asking for it |
 | `result_available` | executed and attested locally; respond not sent, or sent and the request still pending |
 | `responded` | a finalized `respond` carries this request's attested response hash (price and storage fee credited to the actor) |
 | `refunded` | a finalized `expire` made the price refundable, or `claim_refund` paid it to the caller |
 | `swept` | a finalized `sweep_expired_request` returned the price to the caller |
-| `outcome_unknown` | anything not established: a failed or ambiguous execution awaiting expiry, a respond whose finality was not read, a chain read that failed, an incomplete history, or local and chain facts that disagree |
+| `outcome_unknown` | anything not established: a failed or ambiguous execution awaiting expiry, an execution the executor service cannot account for (record `state` `unknown`), a respond whose finality was not read, a chain read that failed, an incomplete history, or local and chain facts that disagree |
 
 These are projections of local records and finalized facts, not contract
 states. `status` reads one finalized checkpoint through the node's own
@@ -523,8 +544,7 @@ write it; it can also be written by hand:
   "receiver_socket": "/…/rail-receiver.sock",
   "provider": {"capability_id": "cap_…", "version": "1.0.0", "manifest_file": "/…/<digest>.cbor",
                "attestor_controller": "service-attestor", "respond_budget_seconds": 120,
-               "executor_binary": "/…/software-work-execute", "executor_sha256": "…",
-               "containerd_socket": "/…/containerd.sock", "fifo_dir": "/…/fifo"},
+               "executor_socket": "/run/tos-service-executor/executor.sock"},
   "buyer": {"gateway_url": "https://…", "gateway_token_file": "/…/token", "caller_id": "…",
             "policy": {"max_committed_per_purchase_nanotos": "2000000000", "max_committed_in_window_nanotos": "10000000000",
                        "window_seconds": 86400, "max_open_purchases": 4, "refund_reserve_nanotos": "300000000",
@@ -536,5 +556,159 @@ write it; it can also be written by hand:
 identity domain from it). `messenger_socket` may be omitted when
 `direct_peers` is set, and `direct_peers` when `messenger_socket` is.
 
-The executor runs as a separate pinned binary (tos-ai `software-work-execute`),
-so the container runtime client stays outside OpenFox.
+The provider section names exactly one executor: `executor_socket`, or the
+legacy `executor_binary` with `executor_sha256`, `containerd_socket` and
+`fifo_dir`. A section with both, or with neither, is refused by `serve` and
+fails `preflight`; the node never chooses for the owner.
+
+## Executor
+
+A job is a sandboxed `go test` run in a pinned image, started through a
+private container runtime. Reaching that runtime is equivalent to being root
+on the host, so only root may. Nothing else a provider node does needs root:
+not tosctl, not the vault, not the Agent Packet listener.
+
+### The executor service (default)
+
+The operator installs, as root, the private container runtime and the
+executor service in front of it. The steps, the unit and the service's own
+statement of what it permits are in the executor repository:
+[deploy/provider/README.md](https://github.com/tosnetwork/tos-ai/blob/main/deploy/provider/README.md),
+section "Executor service: an unprivileged provider node". In short: the
+service listens on `/run/tos-service-executor/executor.sock`, owned by root
+and a dedicated group, in a directory only that group can enter, and admits
+exactly one uid. The operator puts the node's user in that group (`tos-executor`
+in the runbook) and sets `TOS_EXECUTOR_ALLOWED_UID` to its uid in the
+service's environment file. A user newly added to the group reaches the
+socket only from a new login session (or through `sg tos-executor -c …`);
+`preflight` says so when that is why the socket cannot be reached. A
+second provider node needs its own service instance. The service's storage
+bounds are its own flags (`--min-free-bytes`, `--min-free-inodes`,
+`--default-retention`, `--max-retention`). OpenFox does not install, start or
+configure the service.
+
+**The provider node then runs as that ordinary user**, with `state_dir`,
+the tosctl configuration and the vault owned by it. Set `executor_socket`
+(`offer` does, by default).
+
+What the node's uid is able to make root do is exactly what the service
+offers, and it is the service that enforces it:
+
+- run the one frozen job (the pinned image, `go test ./... -count=1`, an
+  unprivileged uid inside the sandbox, no network, no device, read-only root,
+  no host mount), a bounded number at a time, under limits a request can only
+  tighten;
+- keep each job's journal record, artifact and report in the service's own
+  root-only directories until a deadline, within the service's storage bounds.
+  The service decides the deadline: what a request asks for is capped at the
+  service's maximum (31 days after the job by default), and a request that
+  asks for none gets the service's default (7 days);
+- spend execution identities: an identity is run at most once, whatever its
+  outcome.
+
+A request has no field for a path, an image, a command, an argument, an
+environment variable, a mount, a network, a device or a user. The node sends
+the source archive bytes and four digests; it receives the outcome and the
+artifact and report bytes. It never reads a file of the service.
+
+What the node does with an answer:
+
+- **It trusts only a root server.** Every connection is refused unless the
+  kernel reports that root serves the socket.
+- **It verifies every success itself**: the outcome must name exactly this
+  request (Quote commitment, execution id, input digest, source digest), this
+  manifest as its sandbox and the manifest's toolchain image, be a completed
+  run with exit code zero, and the artifact and report bytes must have the
+  sizes and SHA-256 digests the outcome states. The same Receipt and attestor
+  policy checks as before follow.
+- **It keeps its own copy.** The verified artifact and report are stored
+  under `state_dir/executor-service/artifacts`, and delivery, redelivery and
+  the manifest retention use only that copy. The node never assumes the
+  service still holds a result: it asks the service to keep its copy only
+  until the request's response deadline, and ignores how long the service
+  says it will. The node deletes its copy after the manifest retention ends.
+
+| Answer of the service | The request |
+|---|---|
+| success, verified | is attested: `executed`, then `responding` |
+| `execution_failed` | failed; never attested |
+| `ambiguous`, `conflict` | `unknown`: the service holds the execution id without an outcome for this request (`conflict`: bound to other commitments or other limits); never run again, never attested |
+| `in_progress` | stays `executing`: the run is in flight, nothing is spent or failed; the same request is sent again until its outcome is there |
+| `busy`, `unavailable` (the runtime is down, or the pinned image is not imported and unpacked), `timeout`, `storage_full`, `retention_full`, `objects_unavailable` | stays `executing`: nothing was claimed, so the execution id is not spent; the same request is sent again |
+| `not_allowed`, `invalid_request`, `limits_refused` | stays `executing`, since nothing ran, and the error is logged every round: fix the service's configuration |
+| no answer, a dropped connection, a response that breaks the protocol or fails a check, a server that is not root | stays `executing`; nothing in such an answer is trusted, and the same request is sent again |
+
+Sending the same request again is always safe: the service runs an execution
+id at most once and answers a repeated request from its journal, so asking
+never starts a second run. `serve` asks again every round (five seconds).
+"The same request" includes its limits: they are taken from the manifest the
+request was admitted under, recorded with the request, and sent unchanged
+every time, whatever manifest the node is configured with later.
+
+- **Before admission.** The node asks the service to describe itself before a
+  task takes its execution slot. While the service is down, not ready, would
+  not run this manifest or does not answer in time, the task is not admitted:
+  nothing is verified, claimed or spent, so an outage of the service (a
+  restart of its unit, for example) does not use up a paid request's one
+  execution. Such a task is not a failed handling and does not count toward
+  the inbox's attempt cap; it waits, outside the inbox's open-message bounds
+  and under the same held bounds as a paused task, and is tried again every
+  round. `serve` logs one `executor not ready` line per round with the number
+  waiting. The node cannot know a request's response deadline before it
+  admits the task, so the wait is bounded by the inbox instead: after one
+  hour the task is retired with a logged reason. Retiring claims nothing
+  either. A buyer delivers an unanswered task again every ten minutes, and a
+  delivery of a retired task is handled again, so the request is still
+  admitted if the service is back while it can be answered; otherwise the
+  buyer's refund path applies. Any other failure of a task still counts
+  toward the attempt cap.
+- **Restart.** A run belongs to the service and outlives the node. A node
+  that stops or dies during a run finds the request `executing` when it
+  starts again and sends the same request (the source archive is kept in
+  `state_dir/provider/` for this). The rail gate marks every slot that was
+  started when the node stopped as `ambiguous`, with the restart as its
+  recorded cause, and an ambiguous slot is never attested. So the node hands
+  the gate the response hash of the outcome the service recorded; the gate
+  verifies the request afresh from finalized state and completes the slot
+  itself (`slot_state` `completed`, the slot marked `reconciled`). Only then
+  does the usual pre-respond check and `respond` follow.
+  If the node died after the gate started the slot and before the service
+  was asked, the request sent after the restart runs the job for the first
+  time, without the gate's pre-execution check that execution and respond
+  still fit: at worst the provider runs a job it can no longer be paid for,
+  never a wrong attestation, since the gate verifies the request again before
+  it reconciles.
+
+  | The gate's answer to the recovered outcome | The request |
+  |---|---|
+  | reconciled (or the slot already holds this response hash) | `executed`, then `responding` |
+  | no finalized checkpoint could be read | stays `executing`; asked again next round |
+  | the slot cannot be reconciled (not ambiguous because of a restart, or it is another request's) | `unknown`, with the gate's reason in the record's `detail`; never attested |
+  | the slot is completed with another response hash | `unknown`, with the reason in `detail`; never attested |
+  | the verifier refuses the request (no longer pending, respond budget gone) | not attested; stays `executing` until the deadline rule below abandons it |
+
+- **Deadline.** The node waits for an outcome only while `respond` would
+  still fit: until `respond_budget_seconds` before the request's response
+  deadline. After that the request is `abandoned`, the service is no longer
+  asked, and the buyer's refund path applies. A run that finishes later is
+  never attested.
+
+### Legacy single-user mode
+
+An operator who runs the node and a container runtime as **one** user can
+keep the earlier arrangement: `offer --executor <binary> --containerd-socket
+<socket>` (optionally `--executor-sha256`, `--fifo-dir`). OpenFox then runs
+the pinned executor binary (tos-ai `software-work-execute`) as its own child
+process and reads the executor's artifact store under
+`state_dir/executor`. The executor accepts only a runtime socket, in a
+private directory, that its own user owns, so **the node runs as the user
+that owns the runtime socket**.
+
+With a root-only runtime that user is root, for every provider command: the
+pinned tosctl, the vault access and the receiver socket then run as root,
+tosctl run as root refuses a configuration under a directory another user can
+modify, on the same-host direct transport the buyer node has to be root too,
+and `preflight` warns `process.user`. That is what the executor service
+removes; use this mode only with a runtime whose socket an ordinary user owns,
+or when no service can be installed. In this mode an execution that has no
+outcome when the node restarts is ambiguous for good and is never attested.

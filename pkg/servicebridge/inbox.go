@@ -238,6 +238,61 @@ var ErrHoldFull = errors.New("servicebridge: too many held rail messages")
 // held messages have the same bounds of their own. Holding an already held
 // or processed message does nothing.
 func (inbox *Inbox) Hold(key string) error {
+	return inbox.hold(key, holdForPause)
+}
+
+// Why a message is held. A held marker written before causes existed holds
+// the pause's value.
+const (
+	holdForPause    = "1"
+	holdForExecutor = "executor"
+)
+
+// HoldForExecutor parks a task that was not admitted because the executor
+// service could not run it then. It is held as Hold holds a paused task, and
+// UnreadySince finds it.
+func (inbox *Inbox) HoldForExecutor(key string) error {
+	return inbox.hold(key, holdForExecutor)
+}
+
+// UnreadySince lists the pending messages held for the executor, with the
+// time each was first held.
+func (inbox *Inbox) UnreadySince() (map[string]time.Time, error) {
+	if inbox == nil {
+		return nil, errors.New("servicebridge: invalid inbox")
+	}
+	inbox.mutex.Lock()
+	defer inbox.mutex.Unlock()
+	entries, err := os.ReadDir(inbox.root)
+	if err != nil {
+		return nil, errors.New("servicebridge: read inbox")
+	}
+	out := map[string]time.Time{}
+	for _, entry := range entries {
+		if !assemblyNamePattern.MatchString(entry.Name()) {
+			continue
+		}
+		directory := filepath.Join(inbox.root, entry.Name())
+		if _, doneErr := os.Lstat(filepath.Join(directory, doneMarker)); doneErr == nil {
+			continue
+		}
+		marker := filepath.Join(directory, heldMarker)
+		info, statErr := os.Lstat(marker)
+		if statErr != nil {
+			continue
+		}
+		cause, readErr := readPrivateFile(marker, 16)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if string(cause) == holdForExecutor {
+			out[entry.Name()] = info.ModTime()
+		}
+	}
+	return out, nil
+}
+
+func (inbox *Inbox) hold(key, cause string) error {
 	if inbox == nil || !assemblyNamePattern.MatchString(key) {
 		return errors.New("servicebridge: invalid inbox hold")
 	}
@@ -263,7 +318,7 @@ func (inbox *Inbox) Hold(key string) error {
 	if held >= inbox.maxAll || fromSender >= inbox.maxPerSender {
 		return ErrHoldFull
 	}
-	if err := writeSynced(filepath.Join(directory, heldMarker), []byte("1")); err != nil &&
+	if err := writeSynced(filepath.Join(directory, heldMarker), []byte(cause)); err != nil &&
 		!errors.Is(err, os.ErrExist) {
 		return err
 	}

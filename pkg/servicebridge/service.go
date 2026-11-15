@@ -17,7 +17,43 @@ type Service struct {
 	Provider *Provider
 	Buyer    *Buyer
 	Report   func(stage string, err error)
-	wake     chan struct{}
+	// Now is the clock of the inbox's time bounds; nil means time.Now.
+	Now  func() time.Time
+	wake chan struct{}
+}
+
+func (s *Service) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+// ExecutorWait is how long a task is kept for an executor service that
+// cannot run it. The node cannot know the request's response deadline before
+// it admits the task, so the bound is the inbox's own lifetime of an entry
+// that is not processed.
+const ExecutorWait = IncompleteRetention
+
+// retireUnready ends the wait of tasks no executor could run for
+// ExecutorWait, saying so, before the inbox would prune them silently.
+func (s *Service) retireUnready(now time.Time) error {
+	held, err := s.Inbox.UnreadySince()
+	if err != nil {
+		return err
+	}
+	for key, since := range held {
+		if now.Sub(since) < ExecutorWait {
+			continue
+		}
+		s.Report("executor not ready", fmt.Errorf("a task was retired after %s without an executor service that "+
+			"could run it; nothing was admitted or spent, and the request is answered only if its buyer "+
+			"delivers the task again in time", ExecutorWait))
+		if err := s.Inbox.Done(key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // NewService wires the dispatcher; either role may be absent.
@@ -75,7 +111,15 @@ func (s *Service) Dispatch(ctx context.Context) error {
 		return err
 	}
 	held, retired := 0, 0
-	var pauseErr error
+	unready, unreadyRetired := 0, 0
+	var pauseErr, unreadyErr error
+	defer func() {
+		// One line per round while tasks wait for the executor service.
+		if unready > 0 || unreadyRetired > 0 {
+			s.Report("executor not ready", fmt.Errorf("%d task(s) wait unadmitted, %d retired over the hold "+
+				"bound: %w", unready, unreadyRetired, unreadyErr))
+		}
+	}()
 	defer func() {
 		// One line per round while tasks are held, not one per task.
 		if held > 0 || retired > 0 || pauseErr != nil {
@@ -109,6 +153,26 @@ func (s *Service) Dispatch(ctx context.Context) error {
 				}
 				continue
 			}
+			if errors.Is(err, ErrExecutorNotReady) {
+				// Not a failed handling: nothing about the task was wrong
+				// and nothing was claimed, so an outage of the executor
+				// service must not use up the task's attempts. It waits,
+				// outside the open-message bounds, and is handled again
+				// every round.
+				unreadyErr = err
+				switch holdErr := s.Inbox.HoldForExecutor(message.Key); {
+				case errors.Is(holdErr, ErrHoldFull):
+					unreadyRetired++
+					if doneErr := s.Inbox.Done(message.Key); doneErr != nil {
+						return doneErr
+					}
+				case holdErr != nil:
+					s.Report("rail message hold", holdErr)
+				default:
+					unready++
+				}
+				continue
+			}
 			s.Report("rail message", err)
 			if err := s.Inbox.Failed(message.Key); err != nil {
 				s.Report("rail message attempt", err)
@@ -125,7 +189,11 @@ func (s *Service) Dispatch(ctx context.Context) error {
 // Step runs one round: dispatch, then the provider's delivery and the
 // buyer's purchase duties.
 func (s *Service) Step(ctx context.Context) {
-	if err := s.Inbox.Prune(time.Now(), IncompleteRetention, DoneRetention); err != nil {
+	now := s.now()
+	if err := s.retireUnready(now); err != nil {
+		s.Report("executor not ready", err)
+	}
+	if err := s.Inbox.Prune(now, IncompleteRetention, DoneRetention); err != nil {
 		s.Report("inbox prune", err)
 	}
 	if err := s.Dispatch(ctx); err != nil {

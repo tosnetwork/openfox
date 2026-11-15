@@ -19,3 +19,5 @@ func ownedByCurrentUser(os.FileInfo) (bool, error) {
 var errOwnerUnsupported = errors.New("file ownership is only checked on Linux")
 
 func fileOwnerID(os.FileInfo) (int, error) { return 0, errOwnerUnsupported }
+
+func fileGroupID(os.FileInfo) (int, bool) { return 0, false }

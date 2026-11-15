@@ -534,6 +534,14 @@ to `127.0.0.1`, `localhost` or `::1`; it has a lowercase host, no user, query,
 fragment, escape or trailing slash. Anything else is refused by `init`, by
 `preflight` and by the client.
 
+The node verifies a relay's TLS certificate against the system trust store.
+There is no per-relay certificate authority option yet (a planned
+follow-up), so a relay whose certificate comes from a private authority
+needs that authority in the system trust store, or in a file named by
+`SSL_CERT_FILE` in the node's environment (with `SSL_CERT_DIR` naming an
+empty directory, it is then the node's only trust root). Verification is
+never turned off.
+
 **What a relay operator can and cannot do.** A relay has no authority and
 never decrypts. It sees the recipient Agent id, the recipient's key id, the
 envelope sizes and counts, the deposit, fetch and acknowledgement times and
@@ -693,7 +701,11 @@ Setup across two hosts, in order:
    `serve`, and `buy --offer <file>`.
 
 `scripts/service-front-door-e2e.sh` runs both nodes against a relay when
-`E2E_RELAY_URL` names one.
+`E2E_RELAY_URL` names one. `scripts/service-relay-two-host-e2e.sh` runs the
+sale with the buyer, the provider and the relay daemon in three Linux network
+namespaces with no path between the nodes, the relay serving TLS under a
+certificate authority generated for the run, and the relay stopped and
+restarted twice during the sale.
 
 #### Offer file and task fields
 

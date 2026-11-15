@@ -332,14 +332,18 @@ func TestTheProviderSectionNamesExactlyOneExecutor(t *testing.T) {
 		t.Fatalf("subprocess: %s %v", mode, err)
 	}
 	refused := map[string]ProviderNode{
-		"neither":                  {},
-		"a relative socket":        {ExecutorSocket: "run/executor.sock"},
-		"an unclean socket":        {ExecutorSocket: "/run/../run/executor.sock"},
-		"socket and binary":        {ExecutorSocket: DefaultExecutorSocket, ExecutorBinary: "/opt/executor"},
-		"socket and pin":           {ExecutorSocket: DefaultExecutorSocket, ExecutorSHA256: "00"},
-		"socket and runtime":       {ExecutorSocket: DefaultExecutorSocket, ContainerdSocket: "/run/c.sock"},
-		"socket and FIFO":          {ExecutorSocket: DefaultExecutorSocket, FIFODir: "/var/fifo"},
-		"socket and whole section": {ExecutorSocket: DefaultExecutorSocket, ExecutorBinary: "/opt/executor", ContainerdSocket: "/run/c.sock"},
+		"neither":            {},
+		"a relative socket":  {ExecutorSocket: "run/executor.sock"},
+		"an unclean socket":  {ExecutorSocket: "/run/../run/executor.sock"},
+		"socket and binary":  {ExecutorSocket: DefaultExecutorSocket, ExecutorBinary: "/opt/executor"},
+		"socket and pin":     {ExecutorSocket: DefaultExecutorSocket, ExecutorSHA256: "00"},
+		"socket and runtime": {ExecutorSocket: DefaultExecutorSocket, ContainerdSocket: "/run/c.sock"},
+		"socket and FIFO":    {ExecutorSocket: DefaultExecutorSocket, FIFODir: "/var/fifo"},
+		"socket and whole section": {
+			ExecutorSocket:   DefaultExecutorSocket,
+			ExecutorBinary:   "/opt/executor",
+			ContainerdSocket: "/run/c.sock",
+		},
 	}
 	for name, section := range refused {
 		if mode, err := section.ExecutorMode(); err == nil {

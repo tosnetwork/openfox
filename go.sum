@@ -323,6 +323,8 @@ github.com/tosnetwork/tos-ai v0.0.0-20261115012309-c2a2d5ba01fc h1:+H9l6YLX/jO/l
 github.com/tosnetwork/tos-ai v0.0.0-20261115012309-c2a2d5ba01fc/go.mod h1:lzZ46cGHCjKCYLJHzYnedo7KrPXgHbf+hWObSxflZcc=
 github.com/tosnetwork/tos-ai v0.0.0-20261115014624-45337861d129 h1:ULBBpUvkWELMQQ9kI+SGgulit2qopqDMFFBU9l6bkCk=
 github.com/tosnetwork/tos-ai v0.0.0-20261115014624-45337861d129/go.mod h1:lzZ46cGHCjKCYLJHzYnedo7KrPXgHbf+hWObSxflZcc=
+github.com/tosnetwork/tos-ai v0.0.0-20261115021415-619084c45385 h1:O4B0d+iYiBU+A95HVcCt2nzH2aokroOLW4N1wwhqmkE=
+github.com/tosnetwork/tos-ai v0.0.0-20261115021415-619084c45385/go.mod h1:lzZ46cGHCjKCYLJHzYnedo7KrPXgHbf+hWObSxflZcc=
 github.com/tosnetwork/tos-messenger v0.0.0-20261108093725-c04f384f1344 h1:UFm6AcIdbHwLouI58KJpivtrt7hTmMd1lMbun5cmZtM=
 github.com/tosnetwork/tos-messenger v0.0.0-20261108093725-c04f384f1344/go.mod h1:aOgkbO+2CrZRNkbmz1CzL5CXya5muT0/bYbP+F3Me5A=
 github.com/tosnetwork/tos-service-protocol v0.0.0-20261108125119-62f5b740bc77 h1:rwF7aEZPphwEPIGnnXMMaOrHVQrhTInSjAh+UiAL1vc=

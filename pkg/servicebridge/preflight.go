@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -103,6 +105,10 @@ type PreflightEnv struct {
 	Getenv          func(name string) string
 	// ExecutorService opens the client of the executor service socket.
 	ExecutorService func(socket string) (ExecutorService, error)
+	// SocketGroupHint explains why this process cannot reach a socket in a
+	// group-only directory, or returns "" when its groups are not the
+	// reason.
+	SocketGroupHint func(socket string) string
 }
 
 func (e *PreflightEnv) fill() {
@@ -140,6 +146,60 @@ func (e *PreflightEnv) fill() {
 	if e.ExecutorService == nil {
 		e.ExecutorService = OpenExecutorService
 	}
+	if e.SocketGroupHint == nil {
+		e.SocketGroupHint = socketGroupHint
+	}
+}
+
+// socketGroupHint inspects the socket's directory, never the socket: without
+// the directory's group nothing inside it is visible.
+func socketGroupHint(socket string) string {
+	info, err := os.Stat(filepath.Dir(socket))
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o005 != 0 || os.Geteuid() == 0 {
+		return ""
+	}
+	gid, ok := fileGroupID(info)
+	if !ok {
+		return ""
+	}
+	if owner, ownerErr := fileOwnerID(info); ownerErr != nil || owner == os.Geteuid() {
+		return ""
+	}
+	process, err := os.Getgroups()
+	if err != nil {
+		return ""
+	}
+	process = append(process, os.Getegid())
+	name := strconv.Itoa(gid)
+	if group, lookupErr := user.LookupGroupId(name); lookupErr == nil {
+		name = group.Name
+	}
+	var database []string
+	if account, accountErr := user.Current(); accountErr == nil {
+		// An unreadable group database only loses the more precise hint.
+		database, _ = account.GroupIds()
+	}
+	return groupSessionHint(gid, name, process, database)
+}
+
+// groupSessionHint tells apart a user who is not in the socket's group from
+// one who was added to it after this process's login session began: group
+// membership is fixed when a session starts.
+func groupSessionHint(gid int, name string, process []int, database []string) string {
+	for _, held := range process {
+		if held == gid {
+			return ""
+		}
+	}
+	for _, listed := range database {
+		if listed == strconv.Itoa(gid) {
+			return fmt.Sprintf("this user is a member of group %s in the group database, but this process does not "+
+				"carry the group: membership takes effect in a new login session, so log in again or run the "+
+				"node with `sg %s -c ...`", name, name)
+		}
+	}
+	return fmt.Sprintf("the socket's directory is open only to group %s and this user is not a member; add the "+
+		"user to it and start a new login session", name)
 }
 
 type preflight struct {
@@ -607,6 +667,11 @@ func (p *preflight) checkExecutorService() {
 			"admits exactly one uid: set TOS_EXECUTOR_ALLOWED_UID to it in the service's environment file and "+
 			"restart the service", socket, p.env.Euid())
 	case err != nil:
+		if hint := p.env.SocketGroupHint(socket); hint != "" {
+			p.addf("executor.service", CheckFail, "the executor service at %s cannot be reached (%v): %s", socket,
+				err, hint)
+			break
+		}
 		p.addf("executor.service", CheckFail, "the executor service at %s does not answer (%v); install and start "+
 			"it as root and put this user in the socket's group", socket, err)
 	case !description.Ready:

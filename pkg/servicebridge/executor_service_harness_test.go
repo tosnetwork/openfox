@@ -44,8 +44,10 @@ func (f *fakeRuntime) RunIsolated(ctx context.Context, _ executor.ContainerReque
 			return executor.Result{}, ctx.Err()
 		}
 	}
-	return executor.Result{ExitCode: exit, Output: []byte("ok  \texample.test/rail\t0.002s\n"),
-		Usage: executor.Usage{CPUMillis: 1, PeakMemory: 1024, DiskWritten: 10, Duration: time.Millisecond}}, nil
+	return executor.Result{
+		ExitCode: exit, Output: []byte("ok  \texample.test/rail\t0.002s\n"),
+		Usage: executor.Usage{CPUMillis: 1, PeakMemory: 1024, DiskWritten: 10, Duration: time.Millisecond},
+	}, nil
 }
 
 func (f *fakeRuntime) runs() int {
@@ -147,7 +149,7 @@ func startRealExecutor(
 	return service
 }
 
-// stop shuts the service down; a run still held by its gate is cancelled.
+// stop shuts the service down; a run still held by its gate is canceled.
 func (s *realExecutor) stop(t *testing.T) {
 	t.Helper()
 	s.stopped.Do(func() {

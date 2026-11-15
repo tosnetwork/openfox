@@ -138,36 +138,96 @@ func TestEveryServiceAnswerLeadsToItsProviderState(t *testing.T) {
 		class error
 		is    error
 	}{
-		{"busy", scriptedAnswer{Status: executorservice.StatusBusy}, pending, railgate.SlotStarted,
-			ErrExecutionPending, executorservice.ErrBusy},
-		{"unavailable", scriptedAnswer{Status: executorservice.StatusUnavailable}, pending, railgate.SlotStarted,
-			ErrExecutionPending, executorservice.ErrUnavailable},
-		{"in_progress", scriptedAnswer{Status: executorservice.StatusInProgress}, pending, railgate.SlotStarted,
-			ErrExecutionPending, executorservice.ErrInProgress},
-		{"timeout", scriptedAnswer{Status: executorservice.StatusTimeout}, pending, railgate.SlotStarted,
-			ErrExecutionPending, executorservice.ErrTimeout},
-		{"storage_full", scriptedAnswer{Status: executorservice.StatusStorageFull}, pending, railgate.SlotStarted,
-			ErrExecutionPending, executorservice.ErrStorageFull},
-		{"retention_full", scriptedAnswer{Status: executorservice.StatusRetentionFull}, pending,
-			railgate.SlotStarted, ErrExecutionPending, executorservice.ErrRetentionFull},
-		{"objects_unavailable", scriptedAnswer{Status: executorservice.StatusObjectsUnavailable}, pending,
-			railgate.SlotStarted, ErrExecutionPending, executorservice.ErrObjectsUnavailable},
-		{"not_allowed", scriptedAnswer{Status: executorservice.StatusNotAllowed}, pending, railgate.SlotStarted,
-			ErrExecutionPending, executorservice.ErrNotAllowed},
-		{"invalid_request", scriptedAnswer{Status: executorservice.StatusInvalidRequest}, pending,
-			railgate.SlotStarted, ErrExecutionPending, executorservice.ErrInvalidRequest},
-		{"limits_refused", scriptedAnswer{Status: executorservice.StatusLimitsRefused}, pending,
-			railgate.SlotStarted, ErrExecutionPending, executorservice.ErrLimitsRefused},
-		{"an unknown status", scriptedAnswer{Status: "paused"}, pending, railgate.SlotStarted,
-			ErrExecutionPending, executorservice.ErrProtocol},
-		{"a dropped connection", scriptedAnswer{Drop: true}, pending, railgate.SlotStarted,
-			ErrExecutionPending, executorservice.ErrProtocol},
-		{"ambiguous", scriptedAnswer{Status: executorservice.StatusAmbiguous}, ProviderUnknown,
-			railgate.SlotStarted, ErrExecutionUnknown, executorservice.ErrAmbiguous},
-		{"conflict", scriptedAnswer{Status: executorservice.StatusConflict}, ProviderUnknown,
-			railgate.SlotStarted, ErrExecutionUnknown, executorservice.ErrConflict},
-		{"execution_failed", scriptedAnswer{Status: executorservice.StatusExecutionFailed}, ProviderFailed,
-			railgate.SlotFailed, ErrExecutionFailed, executorservice.ErrExecutionFailed},
+		{
+			"busy",
+			scriptedAnswer{Status: executorservice.StatusBusy},
+			pending, railgate.SlotStarted,
+			ErrExecutionPending, executorservice.ErrBusy,
+		},
+		{
+			"unavailable",
+			scriptedAnswer{Status: executorservice.StatusUnavailable},
+			pending, railgate.SlotStarted,
+			ErrExecutionPending, executorservice.ErrUnavailable,
+		},
+		{
+			"in_progress",
+			scriptedAnswer{Status: executorservice.StatusInProgress},
+			pending, railgate.SlotStarted,
+			ErrExecutionPending, executorservice.ErrInProgress,
+		},
+		{
+			"timeout",
+			scriptedAnswer{Status: executorservice.StatusTimeout},
+			pending, railgate.SlotStarted,
+			ErrExecutionPending, executorservice.ErrTimeout,
+		},
+		{
+			"storage_full",
+			scriptedAnswer{Status: executorservice.StatusStorageFull},
+			pending, railgate.SlotStarted,
+			ErrExecutionPending, executorservice.ErrStorageFull,
+		},
+		{
+			"retention_full",
+			scriptedAnswer{Status: executorservice.StatusRetentionFull},
+			pending,
+			railgate.SlotStarted, ErrExecutionPending, executorservice.ErrRetentionFull,
+		},
+		{
+			"objects_unavailable",
+			scriptedAnswer{Status: executorservice.StatusObjectsUnavailable},
+			pending,
+			railgate.SlotStarted, ErrExecutionPending, executorservice.ErrObjectsUnavailable,
+		},
+		{
+			"not_allowed",
+			scriptedAnswer{Status: executorservice.StatusNotAllowed},
+			pending, railgate.SlotStarted,
+			ErrExecutionPending, executorservice.ErrNotAllowed,
+		},
+		{
+			"invalid_request",
+			scriptedAnswer{Status: executorservice.StatusInvalidRequest},
+			pending,
+			railgate.SlotStarted, ErrExecutionPending, executorservice.ErrInvalidRequest,
+		},
+		{
+			"limits_refused",
+			scriptedAnswer{Status: executorservice.StatusLimitsRefused},
+			pending,
+			railgate.SlotStarted, ErrExecutionPending, executorservice.ErrLimitsRefused,
+		},
+		{
+			"an unknown status",
+			scriptedAnswer{Status: "paused"},
+			pending, railgate.SlotStarted,
+			ErrExecutionPending, executorservice.ErrProtocol,
+		},
+		{
+			"a dropped connection",
+			scriptedAnswer{Drop: true},
+			pending, railgate.SlotStarted,
+			ErrExecutionPending, executorservice.ErrProtocol,
+		},
+		{
+			"ambiguous",
+			scriptedAnswer{Status: executorservice.StatusAmbiguous},
+			ProviderUnknown,
+			railgate.SlotStarted, ErrExecutionUnknown, executorservice.ErrAmbiguous,
+		},
+		{
+			"conflict",
+			scriptedAnswer{Status: executorservice.StatusConflict},
+			ProviderUnknown,
+			railgate.SlotStarted, ErrExecutionUnknown, executorservice.ErrConflict,
+		},
+		{
+			"execution_failed",
+			scriptedAnswer{Status: executorservice.StatusExecutionFailed},
+			ProviderFailed,
+			railgate.SlotFailed, ErrExecutionFailed, executorservice.ErrExecutionFailed,
+		},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -385,7 +445,11 @@ func TestANodeKilledDuringARunAttestsItsOneOutcomeAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if theirs, getErr := service.store.Get(ctx, record.ArtifactDigest); getErr != nil || !bytes.Equal(artifact, theirs) {
+	if theirs, getErr := service.store.Get(
+		ctx,
+		record.ArtifactDigest,
+	); getErr != nil ||
+		!bytes.Equal(artifact, theirs) {
 		t.Fatalf("the recovered artifact is not the service's: %v", getErr)
 	}
 	// An ambiguous respond is sent again only through the fresh check, and

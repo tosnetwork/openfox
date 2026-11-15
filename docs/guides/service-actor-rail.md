@@ -320,7 +320,7 @@ prerequisite did not pass is `unknown` with the prerequisite named.
 | `admission.pause` | warns while admission is paused; fails if the pause marker is unreadable |
 | `process.user` | passes for an ordinary user. With `executor_socket` a root node **fails**: nothing in it needs root, and a root node runs tosctl, the vault access and the listeners with the privilege the executor service exists to confine. In the legacy mode, where a root-only runtime forces root, it warns |
 | `tosctl.pin` | the binary is missing or does not hash to its pin |
-| `executor.service` | (`executor_socket`) nothing answers on the socket, the process serving it is not root (the kernel's peer credential of the connection), the service refuses this user's uid (it admits one: `TOS_EXECUTOR_ALLOWED_UID`), or it is not ready |
+| `executor.service` | (`executor_socket`) nothing answers on the socket, the process serving it is not root (the kernel's peer credential of the connection), the service refuses this user's uid (it admits one: `TOS_EXECUTOR_ALLOWED_UID`), or it is not ready. When the socket's directory is closed to this process, the message says whether the user is missing from the group or only needs a new login session |
 | `executor.image` | (`executor_socket`) the image the service says it runs jobs in is not the manifest's toolchain digest, or the service is not ready, which is also what a pinned image that is not imported and unpacked in the runtime looks like |
 | `executor.limits` | (`executor_socket`) a manifest limit is zero or looser than the limit the service enforces, or the service takes less source than a task may carry |
 | `executor.pin` | (legacy mode) the executor binary is missing or does not hash to its pin |
@@ -577,8 +577,11 @@ statement of what it permits are in the executor repository:
 section "Executor service: an unprivileged provider node". In short: the
 service listens on `/run/tos-service-executor/executor.sock`, owned by root
 and a dedicated group, in a directory only that group can enter, and admits
-exactly one uid. The operator puts the node's user in that group and sets
-`TOS_EXECUTOR_ALLOWED_UID` to its uid in the service's environment file; a
+exactly one uid. The operator puts the node's user in that group (`tos-executor`
+in the runbook) and sets `TOS_EXECUTOR_ALLOWED_UID` to its uid in the
+service's environment file. A user newly added to the group reaches the
+socket only from a new login session (or through `sg tos-executor -c …`);
+`preflight` says so when that is why the socket cannot be reached. A
 second provider node needs its own service instance. The service's storage
 bounds are its own flags (`--min-free-bytes`, `--min-free-inodes`,
 `--default-retention`, `--max-retention`). OpenFox does not install, start or

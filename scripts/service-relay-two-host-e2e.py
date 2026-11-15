@@ -596,6 +596,7 @@ async def main() -> int:
         "carrier": f"Agent Packet Relay daemon at {RELAY_URL}, the only transport of both nodes",
         "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "openfox_commit": git(fd.REPO, "rev-parse", "HEAD"), "openfox_tree_status": tree, "openfox_tree_dirty": bool(tree),
+        "tos_commit": git(fd.SOURCE, "rev-parse", "HEAD"),
         "relay_daemon": {"ai_commit": git(relay_source, "rev-parse", "HEAD"), "ai_tree_status": relay_tree,
                          "build": "GOWORK=off go build -trimpath ./protocol/cmd/tos-service-packet-relay",
                          "argv": [part.replace(str(WORK), "<workdir>") for part in RELAY_ARGV],

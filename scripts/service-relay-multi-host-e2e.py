@@ -454,6 +454,17 @@ def spki_of_der(der: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def validity(pem_or_der: bytes, form: str) -> dict:
+    """notBefore, notAfter and the length in days of one certificate."""
+    out = subprocess.run(["openssl", "x509", "-inform", form, "-noout", "-startdate", "-enddate"], input=pem_or_der,
+                         capture_output=True, check=True, text=False).stdout.decode()
+    fields = dict(line.split("=", 1) for line in out.strip().splitlines())
+    parse = lambda value: datetime.datetime.strptime(value.strip(), "%b %d %H:%M:%S %Y %Z")  # noqa: E731
+    start, end = parse(fields["notBefore"]), parse(fields["notAfter"])
+    return {"not_before": start.isoformat() + "Z", "not_after": end.isoformat() + "Z",
+            "days": round((end - start).total_seconds() / 86400, 2)}
+
+
 def tls_mode() -> None:
     with socket.create_connection((RELAY_HOST, RELAY_PORT), timeout=15) as raw, \
             TLS_CONTEXT.wrap_socket(raw, server_hostname=RELAY_HOST) as tls:
@@ -479,12 +490,17 @@ def tls_mode() -> None:
                 "this run (SAN: the relay's public IP address); both nodes pin that CA with init --relay-ca-file",
         "relay_spki_sha256": live, "relay_certificate_file_spki_sha256": stored, "tls_version": version,
         "pinned_ca_sha256": ca_sha, "node_pins": pins,
+        "ca_validity": validity(CA.read_bytes(), "PEM"), "relay_certificate_validity": validity(der, "DER"),
         "system_trust_store_from_provider_host": here, "system_trust_store_from_buyer_host": there,
         "ssl_cert_env_in_provider_run": sorted(k for k in ("SSL_CERT_FILE", "SSL_CERT_DIR") if k in os.environ),
         "ssl_cert_env_on_buyer_host": buyer_env,
         "provider_preflight_relay_trust": {k: trust.get(k) for k in ("status", "detail", "message") if k in trust},
         "provider_preflight_relay_reachable": checks.get("relay.reachable", {}).get("status"),
         "plain_http": False}
+    fd.require("the run's CA and the relay certificate are each valid for at least 90 days, so no pinned-certificate "
+               "expiry warning applies", all(fd.evidence["tls"][key]["days"] >= 90
+                                             for key in ("ca_validity", "relay_certificate_validity")),
+               {key: fd.evidence["tls"][key] for key in ("ca_validity", "relay_certificate_validity")})
     fd.require("TLS pinned-CA mode: the live relay presents the certificate key of the file on the relay host; both "
                "nodes pin the run's CA in their own state; neither node's environment names SSL_CERT_FILE or "
                "SSL_CERT_DIR; the system trust store refuses the relay on both hosts; preflight verifies the relay "

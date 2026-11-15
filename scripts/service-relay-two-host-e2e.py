@@ -143,6 +143,42 @@ def start_serve(node: str) -> None:
 fd.node_env, fd.fox, fd.start_serve = node_env, fox, start_serve
 
 
+def serve_pattern(node: str) -> str:
+    # The node itself is signalled, by its exact command line, as stop_serve
+    # does: sudo does not reliably relay a signal sent to it.
+    return f"^{fd.OPENFOX} earning service serve --rail-config {fd.rail(node)}$"
+
+
+def serve_states(node: str) -> list[str]:
+    # Reading process command lines and states needs no privilege.
+    pids = subprocess.run(["pgrep", "-f", serve_pattern(node)], capture_output=True, text=True,
+                          check=False).stdout.split()
+    states = []
+    for pid in pids:
+        try:
+            fields = Path(f"/proc/{int(pid)}/stat").read_text().rsplit(")", 1)[1].split()
+            states.append(fields[0])
+        except (OSError, ValueError, IndexError):
+            states.append("?")
+    return states
+
+
+def pause_serve(node: str) -> None:
+    """Stop a running serve with SIGSTOP and require that it is stopped."""
+    fd.require(f"{node} serve is running before it is paused", fd.SERVING[node].poll() is None, fd.serve_log(node))
+    fd.as_node("pkill", "-STOP", "-f", serve_pattern(node))
+    stopped = fd.poll(lambda: (lambda states: states if states and all(s == "T" for s in states) else None)(
+        serve_states(node)), 10, 0.2)
+    fd.require(f"{node} serve is stopped (state T) while it is paused", bool(stopped), serve_states(node))
+
+
+def resume_serve(node: str) -> None:
+    fd.as_node("pkill", "-CONT", "-f", serve_pattern(node), check=False)
+    resumed = fd.poll(lambda: (lambda states: states if states and "T" not in states else None)(
+        serve_states(node)), 10, 0.2)
+    fd.require(f"{node} serve runs again after the pause", bool(resumed), serve_states(node))
+
+
 # --- Network, forwarders and relay -------------------------------------------
 
 def netsh(action: str) -> None:
@@ -337,9 +373,19 @@ def relay_outages() -> dict:
     fd.require("outage 1: the provider runs and its relay polls fail; nothing is admitted, executed or responded",
                bool(failing) and len(calls_down["responds"]) == 0 and fd.executions() == [],
                {"poller": failing, "responds": len(calls_down["responds"]), "executions": fd.executions()})
-    start_relay("outage 1, restart on the same state directory")
-    after_restart = listing(provider)
-    fd.require("outage 1: after the restart the relay still lists the task, from its durable store",
+    # The provider is the only party that can acknowledge the task, and it
+    # could do so from its first poll after the relay is back. It is held
+    # stopped (SIGSTOP, so it keeps its poller state) from before the relay
+    # restarts until the listing is read, so the listing shows what the
+    # relay restored and nothing has consumed it yet.
+    pause_serve("provider")
+    try:
+        start_relay("outage 1, restart on the same state directory")
+        after_restart = listing(provider)
+    finally:
+        resume_serve("provider")
+    fd.require("outage 1: after the restart the relay still lists the task, from its durable store (the provider "
+               "held stopped until the listing was read)",
                set(task_ids) <= set(after_restart), {"task": task_ids, "listed": after_restart})
 
     # The provider acknowledges the task only after its durable inbox

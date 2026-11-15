@@ -91,28 +91,50 @@ func (r *Receiver) accept(ctx context.Context, body io.Reader) (InboxStatus, *Me
 		return 0, nil, errors.New("servicebridge: receiver is not configured")
 	}
 	raw, err := io.ReadAll(io.LimitReader(body, maxPacketJSON+1))
-	if err != nil || len(raw) == 0 || len(raw) > maxPacketJSON {
+	if err != nil {
 		return 0, nil, errors.New("servicebridge: packet body is outside its bounds")
+	}
+	status, message, _, err := r.acceptPacket(ctx, raw)
+	return status, message, err
+}
+
+// acceptPacket runs one packet through the receiver's checks and stores its
+// frame durably. transient reports a failure that may pass later (finalized
+// state or the signature helper unavailable, or the durable write failing);
+// every other failure is the packet's own and permanent.
+func (r *Receiver) acceptPacket(ctx context.Context, raw []byte) (InboxStatus, *Message, bool, error) {
+	if r == nil || r.Resolver == nil || r.Verifier == nil || r.Inbox == nil ||
+		!agentIDPattern.MatchString(r.LocalAgentID) {
+		return 0, nil, true, errors.New("servicebridge: receiver is not configured")
+	}
+	if len(raw) == 0 || len(raw) > maxPacketJSON {
+		return 0, nil, false, errors.New("servicebridge: packet body is outside its bounds")
 	}
 	packet, err := agentpacket.DecodeJSON(raw)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	if packet.RecipientAgentID != r.LocalAgentID {
-		return 0, nil, errors.New("servicebridge: the packet names another recipient")
+		return 0, nil, false, errors.New("servicebridge: the packet names another recipient")
 	}
 	now := time.Now
 	if r.Now != nil {
 		now = r.Now
 	}
+	resolver := &recordingResolver{next: r.Resolver}
 	// Replay is handled by the durable inbox; the guard here only lets
 	// agentpacket.Verify run every signature and finalized-state check.
-	if err = agentpacket.Verify(ctx, r.Verifier, r.Resolver, &agentpacket.ReplayGuard{}, packet, now()); err != nil {
-		return 0, nil, err
+	if err = agentpacket.Verify(ctx, r.Verifier, resolver, &agentpacket.ReplayGuard{}, packet, now()); err != nil {
+		transient := resolver.failed() || errors.Is(err, mldsa44.ErrUnavailable) || ctx.Err() != nil
+		return 0, nil, transient, err
 	}
 	frame, err := DecodeFrame(packet.Payload)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
-	return r.Inbox.Put(packet.SenderAgentID, frame)
+	status, message, err := r.Inbox.Put(packet.SenderAgentID, frame)
+	// A refusal of the frame itself or of the inbox bounds is final for
+	// this packet (the sender's redelivery brings a new one); a failing
+	// write may pass later.
+	return status, message, err != nil && !errors.Is(err, ErrInboxRefused), err
 }

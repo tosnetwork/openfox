@@ -40,6 +40,9 @@ type InitInput struct {
 	MessengerSocket  string            `json:"messenger_socket"`
 	ReceiverSocket   string            `json:"receiver_socket"`
 	DirectPeers      map[string]string `json:"direct_peers"`
+	// RelayURLs are the Agent Packet Relay base URLs the node publishes in
+	// its encryption key card and polls (1 to 4).
+	RelayURLs []string `json:"relay_urls"`
 	// Buyer, when set, becomes the buyer section.
 	Buyer *BuyerNode `json:"buyer"`
 	// Yes confirms the previewed actions.
@@ -164,6 +167,11 @@ func (in InitInput) validate() error {
 	}
 	if err := validateDirectPeers(in.DirectPeers); err != nil {
 		problems = append(problems, strings.TrimPrefix(err.Error(), "servicebridge: "))
+	}
+	if len(in.RelayURLs) > 0 {
+		if _, err := canonicalRelayURLs(in.RelayURLs); err != nil {
+			problems = append(problems, strings.TrimPrefix(err.Error(), "servicebridge: "))
+		}
 	}
 	if in.Buyer != nil {
 		if _, err := in.Buyer.Policy.parse(); err != nil {
@@ -370,6 +378,9 @@ func normalizeConfig(config NodeConfig) NodeConfig {
 	if len(config.RPCEndpoints) == 0 {
 		config.RPCEndpoints = nil
 	}
+	if len(config.RelayURLs) == 0 {
+		config.RelayURLs = nil
+	}
 	if config.Buyer != nil {
 		buyer := *config.Buyer
 		if len(buyer.Policy.AllowedProviders) == 0 {
@@ -408,8 +419,9 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 	var existing *NodeConfig
 	if loaded, err := LoadNodeConfig(in.RailConfigPath); err == nil {
 		existing = &loaded
-		if in.MessengerSocket == "" && len(in.DirectPeers) == 0 {
-			in.MessengerSocket, in.DirectPeers = loaded.MessengerSocket, loaded.DirectPeers
+		if in.MessengerSocket == "" && len(in.DirectPeers) == 0 && len(in.RelayURLs) == 0 {
+			in.MessengerSocket, in.DirectPeers, in.RelayURLs = loaded.MessengerSocket, loaded.DirectPeers,
+				loaded.RelayURLs
 		}
 		if in.ReceiverSocket == "" && loaded.StateDir == in.StateDir {
 			in.ReceiverSocket = loaded.ReceiverSocket
@@ -423,6 +435,14 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 	}
 	if err := in.validate(); err != nil {
 		return result, err
+	}
+	var relays []string
+	if len(in.RelayURLs) > 0 {
+		canonical, err := canonicalRelayURLs(in.RelayURLs)
+		if err != nil {
+			return result, err
+		}
+		relays = canonical
 	}
 	journal, err := loadSetupJournal(in.StateDir)
 	if err != nil {
@@ -474,8 +494,8 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 		GlobalConfigFile: in.GlobalConfigFile, RPCEndpoints: in.RPCEndpoints, Quorum: in.Quorum,
 		RegistryCodeBOC: in.RegistryCodeBOC, RegistryCodeHash: domain.CodeHash, ActorCodeHash: in.ActorCodeHash,
 		StateDir: in.StateDir, PacketController: in.PacketController, TOSCTL: tosctl, WalletName: in.WalletName,
-		MessengerSocket: in.MessengerSocket, DirectPeers: in.DirectPeers, ReceiverSocket: in.ReceiverSocket,
-		Buyer: in.Buyer,
+		MessengerSocket: in.MessengerSocket, DirectPeers: in.DirectPeers, RelayURLs: relays,
+		ReceiverSocket: in.ReceiverSocket, Buyer: in.Buyer,
 	}
 	if existing != nil {
 		config.Provider, config.MaxAssemblies = existing.Provider, existing.MaxAssemblies
@@ -649,12 +669,12 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 	// id, which exists only after that node's own init. A node may therefore
 	// be established without a transport; it cannot serve or buy until one
 	// is added.
-	if config.MessengerSocket == "" && len(config.DirectPeers) == 0 {
+	if config.MessengerSocket == "" && len(config.DirectPeers) == 0 && len(config.RelayURLs) == 0 {
 		run.notef("transport", SetupMissing, "no packet transport is configured: serve and buy refuse to start "+
-			"until this command is run again with --direct-peer or --messenger-socket")
+			"until this command is run again with --direct-peer, --relay-url or --messenger-socket")
 		result.NextSteps = append([]string{
 			"add a packet transport: run init again with --direct-peer agent_<hex>=<socket> (the peer's Agent id " +
-				"and receiver socket) or --messenger-socket <socket>",
+				"and receiver socket), --relay-url <https URL> or --messenger-socket <socket>",
 		}, result.NextSteps...)
 	}
 	return result, nil

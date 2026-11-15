@@ -16,11 +16,18 @@ const (
 	maxMessageHeaderBytes = 64 << 10
 	maxTaskMessageBytes   = 4 + maxMessageHeaderBytes + MaxInlineInputBytes
 	maxResultMessageBytes = 4 + maxMessageHeaderBytes + MaxResultBytes
-	maxAckMessageBytes    = 4 + 4<<10
+	// An acknowledgement may carry the buyer's key card: its header holds
+	// the base64 of at most maxCardJSON bytes besides its own fields.
+	maxAckMessageBytes = 4 + 4<<10 + (maxCardJSON+2)/3*4
+	// A result request carries nothing but its schema and the buyer's card;
+	// the request it names is the frame's own binding.
+	maxResultRequestBytes = maxAckMessageBytes
 
 	taskSchema   = "tos.openfox.rail-task.v1"
 	resultSchema = "tos.openfox.rail-result.v1"
 	ackSchema    = "tos.openfox.rail-result-ack.v1"
+
+	resultRequestSchema = "tos.openfox.rail-result-request.v1"
 
 	// inputDomain separates the request's input digest from the raw
 	// source digest it commits to.
@@ -56,6 +63,12 @@ type TaskHeader struct {
 	RequestID      uint64 `json:"request_id"`
 	CallLT         uint64 `json:"call_lt"`
 	CallHash       string `json:"call_hash"`
+	// BuyerKeyCard is the buyer's current encryption key card packet
+	// (standard base64 of its exact signed JSON), present when the buyer
+	// receives over the relay carrier. It travels inside the signed, and
+	// over the relay encrypted, task; the provider verifies it against
+	// finalized state and seals the result to it.
+	BuyerKeyCard string `json:"buyer_key_card_base64,omitempty"`
 }
 
 // Task is a decoded task message.
@@ -70,6 +83,13 @@ type ResultHeader struct {
 	Schema           string `json:"schema"`
 	ResponseHash     string `json:"response_hash"`
 	ReceiptBOCBase64 string `json:"receipt_boc_base64"`
+	// ProviderKeyCard is the provider's current encryption key card packet
+	// (standard base64 of its exact signed JSON), present when the provider
+	// receives over the relay carrier. It gives a buyer whose offer-file
+	// card expired during a long request a route back for its
+	// acknowledgement; the buyer binds it to the Capability's finalized
+	// owner before sealing to it.
+	ProviderKeyCard string `json:"provider_key_card_base64,omitempty"`
 }
 
 // Result is a decoded result message: the Receipt and the artifact.
@@ -83,6 +103,10 @@ type Result struct {
 type AckHeader struct {
 	Schema       string `json:"schema"`
 	ResponseHash string `json:"response_hash"`
+	// BuyerKeyCard is the buyer's current encryption key card packet
+	// (standard base64 of its exact signed JSON), present when the buyer
+	// receives over the relay carrier, so the card is refreshed in band.
+	BuyerKeyCard string `json:"buyer_key_card_base64,omitempty"`
 }
 
 func encodeMessage(header any, body []byte, bound int) ([]byte, error) {
@@ -191,6 +215,9 @@ func validateTaskHeader(header TaskHeader, archiveBytes int) error {
 		!hex64Pattern.MatchString(header.CallHash) || header.CallLT == 0 {
 		return errors.New("servicebridge: the task header is incomplete")
 	}
+	if len(header.BuyerKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
+		return errors.New("servicebridge: the buyer key card exceeds its bound")
+	}
 	if archiveBytes == 0 || archiveBytes > MaxInlineInputBytes {
 		return errors.New("servicebridge: the source archive exceeds the advertised 1 MiB inline input or is empty")
 	}
@@ -199,12 +226,24 @@ func validateTaskHeader(header TaskHeader, archiveBytes int) error {
 
 // EncodeResult builds a result message.
 func EncodeResult(responseHash [32]byte, receiptBOC, artifact []byte) ([]byte, error) {
+	return EncodeResultWithCard(responseHash, receiptBOC, artifact, nil)
+}
+
+// EncodeResultWithCard builds a result message carrying the provider's key
+// card packet JSON, or none when card is empty.
+func EncodeResultWithCard(responseHash [32]byte, receiptBOC, artifact, card []byte) ([]byte, error) {
 	header := ResultHeader{
 		Schema: resultSchema, ResponseHash: hex.EncodeToString(responseHash[:]),
 		ReceiptBOCBase64: base64.StdEncoding.EncodeToString(receiptBOC),
 	}
 	if len(receiptBOC) == 0 || len(artifact) == 0 || len(artifact) > MaxResultBytes {
 		return nil, errors.New("servicebridge: the result is empty or oversized")
+	}
+	if len(card) > maxCardJSON {
+		return nil, errors.New("servicebridge: the provider key card exceeds its bound")
+	}
+	if len(card) > 0 {
+		header.ProviderKeyCard = base64.StdEncoding.EncodeToString(card)
 	}
 	return encodeMessage(header, artifact, maxResultMessageBytes)
 }
@@ -220,6 +259,9 @@ func DecodeResult(raw []byte) (Result, error) {
 		len(artifact) == 0 || len(artifact) > MaxResultBytes {
 		return Result{}, errors.New("servicebridge: the result header is incomplete")
 	}
+	if len(header.ProviderKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
+		return Result{}, errors.New("servicebridge: the provider key card exceeds its bound")
+	}
 	receipt, err := base64.StdEncoding.Strict().DecodeString(header.ReceiptBOCBase64)
 	if err != nil || len(receipt) == 0 {
 		return Result{}, errors.New("servicebridge: the result Receipt does not decode")
@@ -229,11 +271,20 @@ func DecodeResult(raw []byte) (Result, error) {
 
 // EncodeAck builds a result acknowledgement.
 func EncodeAck(responseHash [32]byte) ([]byte, error) {
-	return encodeMessage(
-		AckHeader{Schema: ackSchema, ResponseHash: hex.EncodeToString(responseHash[:])},
-		nil,
-		maxAckMessageBytes,
-	)
+	return EncodeAckWithCard(responseHash, nil)
+}
+
+// EncodeAckWithCard builds a result acknowledgement carrying the buyer's
+// key card packet JSON, or none when card is empty.
+func EncodeAckWithCard(responseHash [32]byte, card []byte) ([]byte, error) {
+	if len(card) > maxCardJSON {
+		return nil, errors.New("servicebridge: the buyer key card exceeds its bound")
+	}
+	header := AckHeader{Schema: ackSchema, ResponseHash: hex.EncodeToString(responseHash[:])}
+	if len(card) > 0 {
+		header.BuyerKeyCard = base64.StdEncoding.EncodeToString(card)
+	}
+	return encodeMessage(header, nil, maxAckMessageBytes)
 }
 
 // DecodeAck parses a result acknowledgement.
@@ -243,10 +294,46 @@ func DecodeAck(raw []byte) (AckHeader, error) {
 	if err != nil {
 		return AckHeader{}, err
 	}
-	if len(rest) != 0 || header.Schema != ackSchema || !hex64Pattern.MatchString(header.ResponseHash) {
+	if len(rest) != 0 || header.Schema != ackSchema || !hex64Pattern.MatchString(header.ResponseHash) ||
+		len(header.BuyerKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
 		return AckHeader{}, errors.New("servicebridge: invalid result acknowledgement")
 	}
 	return header, nil
 }
 
 func sha256Sum(value []byte) [32]byte { return sha256.Sum256(value) }
+
+// ResultRequestHeader asks for a responded request's result again. The
+// request is named by the frame binding (actor, request id, request hash);
+// the header holds only the buyer's current key card.
+type ResultRequestHeader struct {
+	Schema       string `json:"schema"`
+	BuyerKeyCard string `json:"buyer_key_card_base64,omitempty"`
+}
+
+// EncodeResultRequest builds a result request carrying the buyer's key card
+// packet JSON, or none when card is empty.
+func EncodeResultRequest(card []byte) ([]byte, error) {
+	if len(card) > maxCardJSON {
+		return nil, errors.New("servicebridge: the buyer key card exceeds its bound")
+	}
+	header := ResultRequestHeader{Schema: resultRequestSchema}
+	if len(card) > 0 {
+		header.BuyerKeyCard = base64.StdEncoding.EncodeToString(card)
+	}
+	return encodeMessage(header, nil, maxResultRequestBytes)
+}
+
+// DecodeResultRequest parses a result request.
+func DecodeResultRequest(raw []byte) (ResultRequestHeader, error) {
+	var header ResultRequestHeader
+	rest, err := decodeMessage(raw, maxResultRequestBytes, &header)
+	if err != nil {
+		return ResultRequestHeader{}, err
+	}
+	if len(rest) != 0 || header.Schema != resultRequestSchema ||
+		len(header.BuyerKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
+		return ResultRequestHeader{}, errors.New("servicebridge: invalid result request")
+	}
+	return header, nil
+}

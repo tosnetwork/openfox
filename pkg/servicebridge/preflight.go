@@ -109,6 +109,11 @@ type PreflightEnv struct {
 	// group-only directory, or returns "" when its groups are not the
 	// reason.
 	SocketGroupHint func(socket string) string
+	// PacketVerifier opens the pinned tosctl's ML-DSA-44 verification, for
+	// the key card checks. It never signs.
+	PacketVerifier func(config NodeConfig) (mldsa44.Verifier, error)
+	// RelayDial opens the client of one relay base URL.
+	RelayDial relayDialer
 }
 
 func (e *PreflightEnv) fill() {
@@ -117,6 +122,21 @@ func (e *PreflightEnv) fill() {
 	}
 	if e.Getenv == nil {
 		e.Getenv = os.Getenv
+	}
+	if e.PacketVerifier == nil {
+		e.PacketVerifier = func(config NodeConfig) (mldsa44.Verifier, error) {
+			vaultURL := ""
+			if config.TOSCTL.VaultURLEnv != "" {
+				vaultURL = e.Getenv(config.TOSCTL.VaultURLEnv)
+			}
+			return mldsa44.NewTosctl(mldsa44.TosctlConfig{
+				Binary: config.TOSCTL.Binary, SHA256: config.TOSCTL.SHA256, ConfigPath: config.TOSCTL.ConfigPath,
+				VaultURL: vaultURL,
+			})
+		}
+	}
+	if e.RelayDial == nil {
+		e.RelayDial = dialRelay
 	}
 	if e.OpenChain == nil {
 		e.OpenChain = func(config NodeConfig, checkpointDir string) (PreflightChain, error) {
@@ -289,6 +309,7 @@ func RunPreflight(ctx context.Context, configPath string, env PreflightEnv) *Pre
 	p.checkEndpoints()
 	p.checkChain()
 	p.checkSigners()
+	p.checkRelay()
 	return p.report
 }
 
@@ -340,8 +361,9 @@ func (p *preflight) checkProviderConfig() {
 		paths["provider.fifo_dir"] = provider.FIFODir
 	}
 	p.executorMode = mode
-	// The Messenger is optional only when direct peers are configured.
-	if p.config.MessengerSocket != "" || len(p.config.DirectPeers) == 0 {
+	// The Messenger is optional only when direct peers or relays are
+	// configured.
+	if p.config.MessengerSocket != "" || (len(p.config.DirectPeers) == 0 && len(p.config.RelayURLs) == 0) {
 		paths["messenger_socket"] = p.config.MessengerSocket
 	}
 	for name, path := range paths {
@@ -492,11 +514,19 @@ func (p *preflight) checkTransport() {
 		return
 	}
 	rest := "every other recipient goes through the Messenger"
+	if len(p.config.RelayURLs) > 0 {
+		rest = "a recipient whose verified key card is held goes through its relays, every other one through " +
+			"the Messenger"
+	}
 	if p.config.MessengerSocket == "" {
 		rest = "no Messenger is configured, so any other recipient has no route and a send to it fails"
-		if len(p.config.DirectPeers) == 0 {
-			p.addf("transport.peers", CheckFail, "neither messenger_socket nor direct_peers is configured: no "+
-				"packet can be sent")
+		if len(p.config.RelayURLs) > 0 {
+			rest = "a recipient whose verified key card is held goes through its relays; any other recipient has " +
+				"no route and a send to it fails"
+		}
+		if len(p.config.DirectPeers) == 0 && len(p.config.RelayURLs) == 0 {
+			p.addf("transport.peers", CheckFail, "none of messenger_socket, direct_peers or relay_urls is "+
+				"configured: no packet can be sent")
 			return
 		}
 	}

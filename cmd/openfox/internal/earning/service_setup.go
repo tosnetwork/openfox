@@ -142,6 +142,9 @@ func serviceInitCommand() *cobra.Command {
 		"<state-dir>/rail-receiver.sock)")
 	flags.StringArrayVar(&directPeers, "direct-peer", nil, "agent_<hex>=<socket>: deliver that Agent's packets to "+
 		"its receiver socket on this host instead of the Messenger (repeatable; same host and user only)")
+	flags.StringArrayVar(&in.RelayURLs, "relay-url", nil, "Agent Packet Relay base URL this node publishes in its "+
+		"encryption key card and polls (repeatable, at most 4; https, or http only to a loopback host): packets "+
+		"to peers whose verified card is known are sealed end to end and deposited at the peer's relays")
 	flags.StringArrayVar(&allowProviders, "allow-provider", nil, "provider Agent this node may buy from "+
 		"(repeatable; adds the buyer section)")
 	flags.StringVar(&perPurchase, "max-per-purchase", "2", "buyer: most TOS one purchase may commit")

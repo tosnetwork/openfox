@@ -87,7 +87,10 @@ type ProviderRecord struct {
 	NextDeliveryUnix int64  `json:"next_delivery_unix,omitempty"`
 	BackoffSeconds   int64  `json:"backoff_seconds,omitempty"`
 	Deliveries       int    `json:"deliveries"`
-	UpdatedUnix      int64  `json:"updated_unix"`
+	// ResultRequestUnix is when a buyer's result request last moved the
+	// next delivery forward.
+	ResultRequestUnix int64 `json:"result_request_unix,omitempty"`
+	UpdatedUnix       int64 `json:"updated_unix"`
 }
 
 // ErrExecutorNotReady reports a task that was not admitted because the
@@ -137,8 +140,14 @@ type ProviderConfig struct {
 	Lifecycle          LifecycleSender
 	AttestorController string
 	Courier            *Courier
-	History            railgate.Reader
-	Directory          string
+	// Cards, when the node has a relay carrier, takes the buyer's key card
+	// from an admitted task so results can be sealed back to it.
+	Cards *PeerCards
+	// RelayKeys, when the node has a relay carrier, supplies the provider's
+	// own key card for each result delivery.
+	RelayKeys *RelayKeys
+	History   railgate.Reader
+	Directory string
 	// StateDir holds the owner's admission pause marker. Empty means the
 	// provider has no pause control; OpenNode always sets it.
 	StateDir string
@@ -330,12 +339,17 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 	slot, verified, err := p.config.Gate.Admit(ctx, claim)
 	if errors.Is(err, railgate.ErrSlotTaken) {
 		// The buyer resent the task: it is never executed again. A result
-		// already attested is redelivered by the delivery loop.
-		return nil
+		// already attested is redelivered by the delivery loop, sealed to
+		// the newest buyer card a resend brought.
+		return p.learnBuyerCard(ctx, message, task)
 	}
 	if err != nil {
 		return err
 	}
+	// The card is taken only from a task the gate admitted, so storing
+	// cards costs a paid call. A card that is not taken is recorded and a
+	// resend of the task can bring it again.
+	cardErr := p.learnBuyerCard(ctx, message, task)
 	if verified.RequestHash != message.RequestHash ||
 		verified.Actor != "0:"+hex.EncodeToString(message.ActorAccount[:]) {
 		return errors.New("servicebridge: the task frames are bound to another request than the verified one")
@@ -354,6 +368,9 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 		BuyerWallet: claim.BuyerWallet, ExecutionID: hex.EncodeToString(claim.ExecutionID[:]),
 		InputDigest: hex.EncodeToString(claim.InputDigest[:]), CallLT: claim.Call.LT, CallHash: claim.Call.Hash,
 		PriceNanoTOS: verified.Price.String(),
+	}
+	if cardErr != nil {
+		record.Detail = "the buyer's encryption key card was not taken: " + cardErr.Error()
 	}
 	binding := ReceiptBinding{
 		QuoteCommitment: verified.QuoteCommitment, ExecutionID: verified.ExecutionID,
@@ -430,6 +447,92 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 	return nil
 }
 
+// ResultRequestInterval bounds how often a buyer's result requests move a
+// request's next delivery forward; requests in between only refresh the card.
+const ResultRequestInterval = 10 * time.Minute
+
+// ErrResultRequestRefused reports a result request this provider does not
+// act on: from another Agent than the request's buyer, or for a request it
+// has not responded to or no longer retains.
+var ErrResultRequestRefused = errors.New("servicebridge: the result request is refused")
+
+// HandleResultRequest takes a buyer's request to deliver a responded
+// request's result again. It only refreshes the buyer's key card and moves
+// the next delivery forward; it never admits, executes or responds.
+func (p *Provider) HandleResultRequest(ctx context.Context, message Message) error {
+	if p == nil || ctx == nil || message.Kind != FrameResultRequest {
+		return errors.New("servicebridge: invalid result request handling")
+	}
+	request, err := DecodeResultRequest(message.Body)
+	if err != nil {
+		return err
+	}
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	records, err := p.records()
+	if err != nil {
+		return err
+	}
+	now := p.config.Now()
+	for path, record := range records {
+		if record.Actor != "0:"+hex.EncodeToString(message.ActorAccount[:]) || record.RequestID != message.RequestID ||
+			record.RequestHash != hex.EncodeToString(message.RequestHash[:]) {
+			continue
+		}
+		if record.BuyerAgentID != message.SenderAgentID {
+			return fmt.Errorf("%w: it is not from this request's buyer", ErrResultRequestRefused)
+		}
+		switch record.State {
+		case ProviderResponding, ProviderDelivering:
+		case ProviderAcked:
+			// The buyer already acknowledged this result; nothing to do.
+			return nil
+		default:
+			return fmt.Errorf("%w: the request has no response to deliver", ErrResultRequestRefused)
+		}
+		if uint64(now.Unix()) >= record.RetentionEndUnix {
+			return fmt.Errorf("%w: the result is no longer retained", ErrResultRequestRefused)
+		}
+		changed := false
+		if cardErr := p.learnCard(ctx, message.SenderAgentID, request.BuyerKeyCard); cardErr != nil {
+			if !errors.Is(cardErr, ErrCardRefused) {
+				return cardErr
+			}
+			record.Detail, changed = "the buyer's encryption key card was not taken: "+cardErr.Error(), true
+		}
+		if record.State == ProviderDelivering && record.NextDeliveryUnix > now.Unix() &&
+			now.Unix()-record.ResultRequestUnix >= int64(ResultRequestInterval/time.Second) {
+			record.NextDeliveryUnix, record.ResultRequestUnix, changed = now.Unix(), now.Unix(), true
+		}
+		if changed {
+			record.Schema, record.UpdatedUnix = providerRecordSchema, now.Unix()
+			return writeJSON(path, record, false)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: it names no request of this provider", ErrResultRequestRefused)
+}
+
+// learnBuyerCard verifies the buyer's key card a task carries against
+// finalized state and keeps it. The card must be of the Agent that signed
+// the task packets, which claimFor already required to be the buyer.
+func (p *Provider) learnBuyerCard(ctx context.Context, message Message, task Task) error {
+	return p.learnCard(ctx, message.SenderAgentID, task.Header.BuyerKeyCard)
+}
+
+// learnCard verifies a buyer's key card, standard base64 of its packet
+// JSON, against finalized state and keeps it when its Agent is sender.
+func (p *Provider) learnCard(ctx context.Context, sender, encoded string) error {
+	if encoded == "" || p.config.Cards == nil {
+		return nil
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil {
+		return fmt.Errorf("%w: the buyer key card does not decode", ErrCardRefused)
+	}
+	return p.config.Cards.Learn(ctx, raw, sender, "")
+}
+
 // admissionOpen refuses new admission while the owner's pause marker exists.
 // An unreadable marker counts as paused: the owner asked for a stop and an
 // unreadable answer is not permission to start work.
@@ -473,8 +576,8 @@ func (p *Provider) respondFinalized(ctx context.Context, record ProviderRecord) 
 }
 
 // HandleAck records a buyer's acknowledgement of a delivered result.
-func (p *Provider) HandleAck(message Message) error {
-	if p == nil || message.Kind != FrameResultAck {
+func (p *Provider) HandleAck(ctx context.Context, message Message) error {
+	if p == nil || ctx == nil || message.Kind != FrameResultAck {
 		return errors.New("servicebridge: invalid acknowledgement handling")
 	}
 	ack, err := DecodeAck(message.Body)
@@ -493,8 +596,20 @@ func (p *Provider) HandleAck(message Message) error {
 			if record.BuyerAgentID != message.SenderAgentID || record.ResponseHash != ack.ResponseHash {
 				return errors.New("servicebridge: the acknowledgement is not from this request's buyer for its result")
 			}
+			// The acknowledgement is tied to this request's buyer and result,
+			// so its card refreshes the buyer's card in band. A card finalized
+			// state refuses is noted; one it cannot check now is retried.
+			changed := false
+			if cardErr := p.learnCard(ctx, message.SenderAgentID, ack.BuyerKeyCard); cardErr != nil {
+				if !errors.Is(cardErr, ErrCardRefused) {
+					return cardErr
+				}
+				record.Detail, changed = "the buyer's encryption key card was not taken: "+cardErr.Error(), true
+			}
 			if record.State == ProviderDelivering {
-				record.State = ProviderAcked
+				record.State, changed = ProviderAcked, true
+			}
+			if changed {
 				record.Schema, record.UpdatedUnix = providerRecordSchema, p.config.Now().Unix()
 				return writeJSON(path, record, false)
 			}
@@ -687,7 +802,17 @@ func (p *Provider) deliver(ctx context.Context, record ProviderRecord) error {
 	if err = decodeHex32(record.Actor[2:], &actor); err != nil {
 		return err
 	}
-	body, err := EncodeResult(responseHash, receipt, artifact)
+	var card []byte
+	if p.config.RelayKeys != nil {
+		// The card covers the redelivery window, so the buyer can still
+		// acknowledge a result delivered near its end.
+		key, keyErr := p.config.RelayKeys.Current(ctx, record.RetentionEndUnix)
+		if keyErr != nil {
+			return keyErr
+		}
+		card = key.CardJSON
+	}
+	body, err := EncodeResultWithCard(responseHash, receipt, artifact, card)
 	if err != nil {
 		return err
 	}

@@ -179,10 +179,12 @@ func (t DirectTransport) Send(ctx context.Context, packet OutboundPacket) error 
 }
 
 // RoutedTransport sends a packet directly when its recipient is a direct
-// peer and through Fallback otherwise. Without a Fallback an unlisted
-// recipient has no route, and the send fails rather than being dropped.
+// peer, through the relay carrier when a key card of the recipient is held,
+// and through Fallback otherwise. Without a route the send fails rather than
+// being dropped.
 type RoutedTransport struct {
 	Direct   DirectTransport
+	Relay    *RelayTransport
 	Fallback PacketTransport
 }
 
@@ -190,6 +192,9 @@ type RoutedTransport struct {
 func (t RoutedTransport) Route(recipient string) string {
 	if _, ok := t.Direct.Peers[recipient]; ok {
 		return RouteDirect
+	}
+	if t.Relay.Reaches(recipient) {
+		return RouteRelay
 	}
 	if t.Fallback != nil {
 		return RouteMessenger
@@ -200,6 +205,7 @@ func (t RoutedTransport) Route(recipient string) string {
 // Packet routes.
 const (
 	RouteDirect    = "direct"
+	RouteRelay     = "relay"
 	RouteMessenger = "messenger"
 	RouteNone      = "none"
 )
@@ -209,6 +215,8 @@ func (t RoutedTransport) Send(ctx context.Context, packet OutboundPacket) error 
 	switch t.Route(packet.RecipientAgentID) {
 	case RouteDirect:
 		return t.Direct.Send(ctx, packet)
+	case RouteRelay:
+		return t.Relay.Send(ctx, packet)
 	case RouteMessenger:
 		return t.Fallback.Send(ctx, packet)
 	default:
@@ -218,14 +226,14 @@ func (t RoutedTransport) Send(ctx context.Context, packet OutboundPacket) error 
 
 // openPacketTransport builds the node's transport from its configuration
 // and fails closed when no recipient could ever be reached.
-func openPacketTransport(config NodeConfig) (PacketTransport, error) {
+func openPacketTransport(config NodeConfig, relay *RelayTransport) (PacketTransport, error) {
 	if err := validateDirectPeers(config.DirectPeers); err != nil {
 		return nil, err
 	}
 	if _, self := config.DirectPeers[config.AgentID]; self {
 		return nil, errors.New("servicebridge: direct_peers names this node's own Agent")
 	}
-	routed := RoutedTransport{Direct: DirectTransport{Peers: config.DirectPeers}}
+	routed := RoutedTransport{Direct: DirectTransport{Peers: config.DirectPeers}, Relay: relay}
 	if config.MessengerSocket != "" {
 		client, err := newMessengerClient(config.MessengerSocket)
 		if err != nil {
@@ -233,9 +241,9 @@ func openPacketTransport(config NodeConfig) (PacketTransport, error) {
 		}
 		routed.Fallback = MessengerTransport{Client: client}
 	}
-	if routed.Fallback == nil && len(config.DirectPeers) == 0 {
-		return nil, errors.New("servicebridge: the rail node has no packet transport: configure messenger_socket " +
-			"or direct_peers")
+	if routed.Fallback == nil && len(config.DirectPeers) == 0 && relay == nil {
+		return nil, errors.New("servicebridge: the rail node has no packet transport: configure messenger_socket, " +
+			"direct_peers or relay_urls")
 	}
 	return routed, nil
 }

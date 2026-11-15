@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
 	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 	"github.com/tosnetwork/ai/protocol/pkg/serviceactor"
 	"github.com/tosnetwork/ai/protocol/pkg/toschain"
@@ -74,6 +75,9 @@ type SetupEnv struct {
 	OpenChain func(config NodeConfig) (RailChain, error)
 	// ExecutorService opens the client of the executor service socket.
 	ExecutorService func(socket string) (ExecutorService, error)
+	// PacketSigner opens the pinned tosctl's packet signing, which signs
+	// the node's encryption key card with the packet controller.
+	PacketSigner func(config TOSCTLConfig, vaultURL string) (mldsa44.Signer, error)
 	// Report prints one diagnostic line (previews, progress) for the owner.
 	Report func(line string)
 	// WaitBudget bounds how long one run waits for a sent message to
@@ -114,6 +118,13 @@ func (e *SetupEnv) fill() {
 	}
 	if e.OpenChain == nil {
 		e.OpenChain = OpenRailChain
+	}
+	if e.PacketSigner == nil {
+		e.PacketSigner = func(config TOSCTLConfig, vaultURL string) (mldsa44.Signer, error) {
+			return mldsa44.NewTosctl(mldsa44.TosctlConfig{
+				Binary: config.Binary, SHA256: config.SHA256, ConfigPath: config.ConfigPath, VaultURL: vaultURL,
+			})
+		}
 	}
 	if e.Report == nil {
 		e.Report = func(string) {}

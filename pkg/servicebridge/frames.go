@@ -20,6 +20,10 @@ const (
 	FrameTask      byte = 1
 	FrameResult    byte = 2
 	FrameResultAck byte = 3
+	// FrameResultRequest asks the provider of a responded request to deliver
+	// its result again, carrying the buyer's current key card. It never
+	// admits, executes or responds.
+	FrameResultRequest byte = 4
 )
 
 const (
@@ -109,6 +113,8 @@ func messageBound(kind byte) (uint32, error) {
 		return maxResultMessageBytes, nil
 	case FrameResultAck:
 		return maxAckMessageBytes, nil
+	case FrameResultRequest:
+		return maxResultRequestBytes, nil
 	default:
 		return 0, errors.New("servicebridge: unknown frame kind")
 	}

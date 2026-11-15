@@ -84,8 +84,14 @@ type PurchaseRecord struct {
 	Disclosure        string  `json:"cost_disclosure"`
 	LastActionUnix    int64   `json:"last_action_unix,omitempty"`
 	Failure           string  `json:"failure,omitempty"`
-	CreatedUnix       int64   `json:"created_unix"`
-	UpdatedUnix       int64   `json:"updated_unix"`
+	// ProviderCardRefused says why the key card the provider's result
+	// carried was not taken; the result itself was.
+	ProviderCardRefused string `json:"provider_card_refused,omitempty"`
+	// ResultRequestUnix is when the buyer last asked the provider for the
+	// result of this responded request.
+	ResultRequestUnix int64 `json:"result_request_unix,omitempty"`
+	CreatedUnix       int64 `json:"created_unix"`
+	UpdatedUnix       int64 `json:"updated_unix"`
 }
 
 // QuoteSource fetches a non-canonical Quote Proposal package.
@@ -107,8 +113,14 @@ type BuyerConfig struct {
 	Confirm Confirmer
 	// Disclose is shown every purchase's costs before the call, whether or
 	// not the policy routes it to the owner.
-	Disclose  func(Costs)
-	Courier   *Courier
+	Disclose func(Costs)
+	Courier  *Courier
+	// RelayKeys, when the node has a relay carrier, supplies the buyer's own
+	// key card for each task.
+	RelayKeys *RelayKeys
+	// Cards, when the node has a relay carrier, takes the provider's key
+	// card from a result of one of this buyer's purchases.
+	Cards     *PeerCards
 	Lifecycle LifecycleSender
 	Directory string
 	// Manifests receives the manifest bytes of each open purchase's stored
@@ -515,7 +527,8 @@ func (b *Buyer) HandleResult(ctx context.Context, message Message) error {
 	if b == nil || message.Kind != FrameResult {
 		return errors.New("servicebridge: invalid result handling")
 	}
-	if _, err := DecodeResult(message.Body); err != nil {
+	result, err := DecodeResult(message.Body)
+	if err != nil {
 		return err
 	}
 	b.mutex.Lock()
@@ -534,6 +547,9 @@ func (b *Buyer) HandleResult(ctx context.Context, message Message) error {
 	if err := writeSynced(path, message.Body); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
 	}
+	if err := b.learnProviderCard(ctx, &record, result.Header.ProviderKeyCard); err != nil {
+		return err
+	}
 	if record.Phase == PurchaseCompleted {
 		return b.acknowledge(ctx, record)
 	}
@@ -545,7 +561,17 @@ func (b *Buyer) acknowledge(ctx context.Context, record PurchaseRecord) error {
 	if err := decodeHex32(record.ResponseHash, &responseHash); err != nil {
 		return err
 	}
-	body, err := EncodeAck(responseHash)
+	encoded, err := b.ownKeyCard(ctx, record)
+	if err != nil {
+		return err
+	}
+	var card []byte
+	if encoded != "" {
+		if card, err = base64.StdEncoding.DecodeString(encoded); err != nil {
+			return errors.New("servicebridge: encode the buyer key card")
+		}
+	}
+	body, err := EncodeAckWithCard(responseHash, card)
 	if err != nil {
 		return err
 	}
@@ -597,34 +623,56 @@ func (b *Buyer) restoreManifest(record PurchaseRecord) error {
 	if b.config.Manifests == nil {
 		return nil
 	}
+	_, stored, err := b.readStoredManifest(record)
+	if err != nil {
+		return err
+	}
+	b.config.Manifests.Put(record.ManifestDigest, stored)
+	return nil
+}
+
+// storedManifest decodes the manifest of the purchase's stored Quote
+// package, checked against the digest its record names.
+func (b *Buyer) storedManifest(record PurchaseRecord) (nativecore.SoftwareWorkManifestV1, error) {
+	manifest, _, err := b.readStoredManifest(record)
+	return manifest, err
+}
+
+func (b *Buyer) readStoredManifest(record PurchaseRecord) (nativecore.SoftwareWorkManifestV1, []byte, error) {
+	var none nativecore.SoftwareWorkManifestV1
 	raw, err := readPrivateFile(
 		filepath.Join(b.purchaseDir(record.RequestHash), "quote-package"),
 		quoteexchange.MaxPackageBytes+64<<10,
 	)
 	if err != nil {
-		return fmt.Errorf("servicebridge: read the purchase's Quote package: %w", err)
+		return none, nil, fmt.Errorf("servicebridge: read the purchase's Quote package: %w", err)
 	}
 	pkg := &nativev1.QuoteProposalPackageV1{}
 	if err = proto.Unmarshal(raw, pkg); err != nil || pkg.GetProposal() == nil ||
 		len(pkg.GetCanonicalManifestCbor()) == 0 {
-		return errors.New("servicebridge: the purchase's Quote package does not decode or holds no manifest")
+		return none, nil, errors.New("servicebridge: the purchase's Quote package does not decode or holds no manifest")
 	}
 	if pkg.GetProposal().GetManifestDigest() != record.ManifestDigest {
-		return errors.New("servicebridge: the purchase's Quote package names another manifest than its record")
+		return none, nil, errors.New(
+			"servicebridge: the purchase's Quote package names another manifest than its record",
+		)
 	}
 	// Only bytes that are the canonical manifest of the recorded digest
 	// are handed on, so a damaged file never replaces a good entry.
 	stored := pkg.GetCanonicalManifestCbor()
 	manifest, err := nativecore.DecodeCanonicalSoftwareWorkManifestCBOR(stored)
 	if err != nil {
-		return errors.New("servicebridge: the purchase's stored manifest is not a canonical software-work manifest")
+		return none, nil, errors.New(
+			"servicebridge: the purchase's stored manifest is not a canonical software-work manifest",
+		)
 	}
 	canonical, digest, err := nativecore.CanonicalSoftwareWorkManifest(manifest)
 	if err != nil || !bytes.Equal(canonical, stored) || digest != record.ManifestDigest {
-		return errors.New("servicebridge: the purchase's stored manifest does not hash to the digest its record names")
+		return none, nil, errors.New(
+			"servicebridge: the purchase's stored manifest does not hash to the digest its record names",
+		)
 	}
-	b.config.Manifests.Put(record.ManifestDigest, stored)
-	return nil
+	return manifest, stored, nil
 }
 
 func (b *Buyer) advance(ctx context.Context, record PurchaseRecord) error {
@@ -709,6 +757,10 @@ func (b *Buyer) sendTask(ctx context.Context, record PurchaseRecord) error {
 	if err != nil {
 		return err
 	}
+	card, err := b.ownKeyCard(ctx, record)
+	if err != nil {
+		return err
+	}
 	body, err := EncodeTask(Task{Header: TaskHeader{
 		BuyerAgentID:      b.config.AgentID,
 		BuyerWallet:       b.config.Wallet,
@@ -719,6 +771,7 @@ func (b *Buyer) sendTask(ctx context.Context, record PurchaseRecord) error {
 		RequestID:         *record.RequestID,
 		CallLT:            record.CallLT,
 		CallHash:          record.CallHash,
+		BuyerKeyCard:      card,
 	}, Package: pkg, Archive: archive})
 	if err != nil {
 		return err
@@ -731,11 +784,112 @@ func (b *Buyer) sendTask(ctx context.Context, record PurchaseRecord) error {
 	return err
 }
 
+// learnProviderCard takes the key card a result of this purchase carried,
+// verified like an offer-file card: against finalized state, and only as a
+// card of the Capability's finalized owner. A card finalized state refuses
+// is recorded on the purchase and does not refuse the result; a check that
+// cannot be made now fails the handling, which is retried.
+func (b *Buyer) learnProviderCard(ctx context.Context, record *PurchaseRecord, encoded string) error {
+	if encoded == "" || b.config.Cards == nil {
+		return nil
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err == nil {
+		err = b.config.Cards.Learn(ctx, raw, record.ProviderAgentID, record.CapabilityID)
+	} else {
+		err = fmt.Errorf("%w: the provider key card does not decode", ErrCardRefused)
+	}
+	switch {
+	case err == nil:
+		if record.ProviderCardRefused == "" {
+			return nil
+		}
+		record.ProviderCardRefused = ""
+	case errors.Is(err, ErrCardRefused):
+		record.ProviderCardRefused = err.Error()
+	default:
+		return err
+	}
+	return b.savePurchase(*record, false)
+}
+
+// ResultRequestEvery is the pause between a buyer's result requests for one
+// responded request whose result has not arrived.
+const ResultRequestEvery = 6 * time.Hour
+
+// requestResult asks the provider of a responded request to deliver its
+// result again and hands it this buyer's current key card, so a provider
+// whose copy of the card expired while the buyer was away can deliver. It is
+// sent when the state is first seen and then at most every
+// ResultRequestEvery, until the result's retention ends. Only a buyer that
+// receives over the relay carrier sends it.
+func (b *Buyer) requestResult(ctx context.Context, record *PurchaseRecord) error {
+	if b.config.RelayKeys == nil {
+		return nil
+	}
+	now := b.config.Now()
+	if record.ResultRequestUnix != 0 && now.Unix()-record.ResultRequestUnix < int64(ResultRequestEvery/time.Second) {
+		return nil
+	}
+	manifest, err := b.storedManifest(*record)
+	if err != nil {
+		return err
+	}
+	retentionEnd, err := resultRetentionEnd(record.ResponseDeadline, manifest.RetentionSeconds)
+	if err != nil {
+		return err
+	}
+	if uint64(now.Unix()) >= retentionEnd {
+		return nil
+	}
+	key, err := b.config.RelayKeys.Current(ctx, retentionEnd)
+	if err != nil {
+		return err
+	}
+	body, err := EncodeResultRequest(key.CardJSON)
+	if err != nil {
+		return err
+	}
+	envelope, err := envelopeFor(*record, record.ProviderAgentID, FrameResultRequest, retentionEnd)
+	if err != nil {
+		return err
+	}
+	if _, err = b.config.Courier.Deliver(ctx, envelope, body); err != nil {
+		// Not handed off: the next pass asks again instead of waiting out
+		// the interval.
+		return err
+	}
+	record.ResultRequestUnix = now.Unix()
+	return nil
+}
+
+// buyerCardMargin is how far beyond the request's last deadline the buyer's
+// card should stay valid, for the provider's redelivery of the result.
+const buyerCardMargin = 24 * time.Hour
+
+// ownKeyCard is the buyer's card for a task: one covering the response and
+// refund deadlines plus a margin, as far as the 30-day card bound allows.
+func (b *Buyer) ownKeyCard(ctx context.Context, record PurchaseRecord) (string, error) {
+	if b.config.RelayKeys == nil {
+		return "", nil
+	}
+	last := record.ResponseDeadline
+	if record.RefundDeadline > last {
+		last = record.RefundDeadline
+	}
+	key, err := b.config.RelayKeys.Current(ctx, saturatingAdd(last, uint64(buyerCardMargin/time.Second)))
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(key.CardJSON), nil
+}
+
 func (b *Buyer) complete(ctx context.Context, record PurchaseRecord) error {
 	raw, err := readPrivateFile(filepath.Join(b.purchaseDir(record.RequestHash), "result"), maxResultMessageBytes)
 	if errors.Is(err, os.ErrNotExist) {
-		// Attested on chain; the result packets are still on their way.
-		return b.savePurchase(record, false)
+		// Attested on chain; the result packets are still on their way. The
+		// provider is asked for them, with this buyer's current card.
+		return errors.Join(b.requestResult(ctx, &record), b.savePurchase(record, false))
 	}
 	if err != nil {
 		return err

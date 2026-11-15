@@ -147,7 +147,21 @@ func serviceServeCommand() *cobra.Command {
 			}
 			served := make(chan error, 1)
 			go func() { served <- server.Serve() }()
+			relayed := make(chan error, 1)
+			relayCtx, stopRelay := context.WithCancel(ctx)
+			defer stopRelay()
+			if node.Relay != nil {
+				// The relay carrier polls the node's relays, keeps redundant
+				// deposits going and rotates the node's encryption keys.
+				go func() { relayed <- node.Relay.Run(relayCtx) }()
+			} else {
+				relayed <- nil
+			}
 			runErr := node.Service.Run(ctx, 5*time.Second)
+			stopRelay()
+			if relayErr := <-relayed; relayErr != nil && !errors.Is(relayErr, context.Canceled) {
+				runErr = errors.Join(runErr, relayErr)
+			}
 			shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			shutdownErr := server.Shutdown(shutdown)
@@ -297,7 +311,9 @@ func serviceStatusCommand() *cobra.Command {
 		Use: "status", Short: "Show admission, the actor's credited revenue and each request's operator state",
 		Long: "Show whether new admissions are paused, the actor's finalized accounting (credited revenue is a " +
 			"contract balance, not wallet receipt) and one operator state per request: admitted, executing, " +
-			"result_available, responded, refunded, swept or outcome_unknown. Without --offline it reads one " +
+			"result_available, responded, refunded, swept or outcome_unknown. With relays configured it also " +
+			"shows the relay delivery state: each relay's polling, the held encryption keys, the peer key cards " +
+			"and every outgoing envelope with the relays that accepted it. Without --offline it reads one " +
 			"finalized checkpoint; a failed read is reported, and states it would have decided stay outcome_unknown.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {

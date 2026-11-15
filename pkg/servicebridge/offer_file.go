@@ -18,8 +18,10 @@ import (
 	"github.com/tosnetwork/ai/protocol/pkg/serviceactor"
 )
 
-// OfferFileSchema names the offer file a provider hands a buyer.
-const OfferFileSchema = "tos.openfox.rail-offer.v1"
+// OfferFileSchema names the offer file a provider hands a buyer. Version 2
+// adds the provider's encryption key card for the relay carrier; a decoder
+// accepts only this version.
+const OfferFileSchema = "tos.openfox.rail-offer.v2"
 
 // maxOfferFile bounds an offer file: a manifest is at most 1 MiB before
 // base64.
@@ -36,7 +38,12 @@ type OfferFile struct {
 	ProviderAgentID string `json:"provider_agent_id"`
 	ManifestDigest  string `json:"manifest_digest"`
 	ManifestCBOR    string `json:"manifest_cbor_base64"`
-	UpdatedUnix     int64  `json:"updated_unix"`
+	// RelayKeyCard is the provider's current encryption key card packet:
+	// standard base64 of its exact signed Agent Packet JSON. It is absent
+	// when the provider receives over no relay. The card names the relay
+	// URLs under the provider's signature, so the file repeats none of them.
+	RelayKeyCard string `json:"relay_key_card_base64,omitempty"`
+	UpdatedUnix  int64  `json:"updated_unix"`
 }
 
 // Offer is a decoded offer file whose manifest bytes are canonical and hash
@@ -47,6 +54,10 @@ type Offer struct {
 	ProviderAgentID string
 	ManifestDigest  string
 	ManifestCBOR    []byte
+	// KeyCard is the provider's key card packet JSON, or nil. The buyer
+	// verifies it against finalized state and the Capability's finalized
+	// owner before sealing to it; the file's word is never trusted.
+	KeyCard []byte
 }
 
 // EncodeOfferFile renders an offer file.
@@ -54,10 +65,15 @@ func EncodeOfferFile(offer Offer, now time.Time) ([]byte, error) {
 	if _, err := checkOffer(offer); err != nil {
 		return nil, err
 	}
+	card := ""
+	if len(offer.KeyCard) > 0 {
+		card = base64.StdEncoding.EncodeToString(offer.KeyCard)
+	}
 	encoded, err := json.MarshalIndent(OfferFile{
 		Schema: OfferFileSchema, CapabilityID: offer.CapabilityID, Version: offer.Version,
 		ProviderAgentID: offer.ProviderAgentID, ManifestDigest: offer.ManifestDigest,
-		ManifestCBOR: base64.StdEncoding.EncodeToString(offer.ManifestCBOR), UpdatedUnix: now.Unix(),
+		ManifestCBOR: base64.StdEncoding.EncodeToString(offer.ManifestCBOR), RelayKeyCard: card,
+		UpdatedUnix: now.Unix(),
 	}, "", "  ")
 	if err != nil {
 		return nil, errors.New("servicebridge: encode the offer file")
@@ -90,6 +106,16 @@ func checkOffer(offer Offer) (nativecore.SoftwareWorkManifestV1, error) {
 	if manifest.Version != offer.Version {
 		return none, errors.New("servicebridge: the offer's manifest is for another version than the offer states")
 	}
+	if offer.KeyCard != nil {
+		// Shape only: whether the card may be sealed to is decided against
+		// finalized state when the buyer takes it.
+		if len(offer.KeyCard) == 0 || len(offer.KeyCard) > maxCardJSON {
+			return none, errors.New("servicebridge: the offer's key card is outside its bounds")
+		}
+		if _, err := decodeOwnCard(offer.ProviderAgentID, offer.KeyCard); err != nil {
+			return none, errors.New("servicebridge: the offer's key card is not a key card of the provider it names")
+		}
+	}
 	return manifest, nil
 }
 
@@ -120,6 +146,13 @@ func DecodeOfferFile(raw []byte) (Offer, error) {
 	offer := Offer{
 		CapabilityID: file.CapabilityID, Version: file.Version, ProviderAgentID: file.ProviderAgentID,
 		ManifestDigest: file.ManifestDigest, ManifestCBOR: manifest,
+	}
+	if file.RelayKeyCard != "" {
+		card, err := base64.StdEncoding.Strict().DecodeString(file.RelayKeyCard)
+		if err != nil || len(card) == 0 {
+			return Offer{}, errors.New("servicebridge: the offer's key card is not standard base64")
+		}
+		offer.KeyCard = card
 	}
 	if _, err := checkOffer(offer); err != nil {
 		return Offer{}, err
@@ -176,8 +209,11 @@ type OfferQuotes struct {
 	Network          *nativev1.NetworkDomain
 	RegistryCodeHash string
 	Offer            Offer
-	Now              func() time.Time
-	Random           func([]byte) error
+	// Cards, when the buyer has a relay carrier, takes the offer's key card
+	// once it is bound to the Capability's finalized owner.
+	Cards  *PeerCards
+	Now    func() time.Time
+	Random func([]byte) error
 }
 
 // ErrOfferMismatch reports an offer file that finalized state contradicts.
@@ -205,6 +241,14 @@ func (o OfferQuotes) Quote(
 	owner, err := finalizedOfferOwner(ctx, session, o.Offer)
 	if err != nil {
 		return nil, err
+	}
+	if o.Cards != nil && o.Offer.KeyCard != nil {
+		// The card must be of the Capability's finalized owner, read from
+		// chain by Learn itself; a card the buyer cannot seal to is refused
+		// here, before anything is paid.
+		if err = o.Cards.Learn(ctx, o.Offer.KeyCard, owner, o.Offer.CapabilityID); err != nil {
+			return nil, fmt.Errorf("servicebridge: the offer's encryption key card: %w", err)
+		}
 	}
 	transport, _, err := RailTransport(owner)
 	if err != nil {

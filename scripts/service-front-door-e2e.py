@@ -6,7 +6,8 @@ Boots three ML-DSA-44 validators serving JSON-RPC on loopback, creates and
 funds one wallet per node, then uses only `openfox earning service` commands:
 
 1. provider: `init`, `offer`, `preflight`, `serve`;
-2. buyer: `init --allow-provider --direct-peer`, `serve`, `buy --offer`;
+2. buyer: `init --allow-provider --direct-peer` (or, with E2E_RELAY_URL,
+   `--relay-url` on both nodes), `serve`, `buy --offer`;
 3. the provider executes the job in the private containerd sandbox, responds
    and delivers; the buyer accepts and acknowledges the result;
 4. provider: `withdraw --all`;
@@ -40,6 +41,18 @@ Two executor modes:
 The network boot, faucet funding, RPC polling, exact transaction decoding and
 secret redaction are taken from the Service Actor buyer acceptance run
 (service-actor-buyer-e2e.py and its redaction helper).
+
+Two carriers:
+
+- default: the same-host direct transport (`--direct-peer`), each node naming
+  the other's receiver socket;
+- E2E_RELAY_URL set: both nodes are initialized with `--relay-url` at that
+  Agent Packet Relay and no direct peer, so every packet is sealed end to end
+  and travels through the relay. The provider's offer file then carries its
+  encryption key card, the buyer's task carries the buyer's, and the run
+  checks that the provider's outgoing envelopes were accepted by the relay.
+  The relay itself is started by the operator beforehand; this script only
+  names its URL.
 
 Run it through scripts/service-front-door-e2e.sh.
 """
@@ -86,6 +99,9 @@ if SERVICE_MODE:
 else:
     ROOT = Path(os.environ.get("E2E_ROOT_BASE", "/var/lib/openfox-front-door-e2e")) / WORK.name
 HOLD = os.environ.get("E2E_HOLD") == "1"
+# The Agent Packet Relay both nodes use instead of the direct transport.
+RELAY_URL = os.environ.get("E2E_RELAY_URL", "")
+RELAY_MODE = bool(RELAY_URL)
 # The registry identity domain names the chain by its global id.
 NETWORK_LABEL = os.environ.get("E2E_NETWORK_LABEL", "tos:global-id:3")
 NANO = 1_000_000_000
@@ -458,7 +474,7 @@ def init_flags(node: str) -> list[str]:
     return flags + ["--global-config", str(ROOT / "etc" / "global.json"), "--network-label", NETWORK_LABEL,
                     "--tosctl", str(ROOT / "bin" / "tosctl"), "--tosctl-config", str(ROOT / node / "tosctl-config.json"),
                     "--wallet", node, "--registry-code-boc", str(ROOT / "etc" / "registry-code.boc"),
-                    "--actor-code-hash", ACTOR_CODE_HASH]
+                    "--actor-code-hash", ACTOR_CODE_HASH] + (["--relay-url", RELAY_URL] if RELAY_MODE else [])
 
 
 def offer_flags() -> list[str]:
@@ -646,6 +662,19 @@ def setup_nodes() -> None:
             offer_file.get("capability_id") == plan.get("capability_id") and
             offer_file.get("manifest_digest") == plan.get("manifest_digest"),
             {key: value for key, value in offer_file.items() if key != "manifest_cbor_base64"})
+    if RELAY_MODE:
+        card = offer_file.get("relay_key_card_base64", "")
+        try:
+            card_packet = json.loads(base64.b64decode(card, validate=True)) if card else {}
+        except ValueError:
+            card_packet = {}
+        require("the offer file carries the provider's encryption key card for the relay, signed as the provider "
+                "Agent and addressed to the key card audience",
+                offer_file.get("schema") == "tos.openfox.rail-offer.v2" and
+                card_packet.get("sender_agent_id") == provider_agent and
+                card_packet.get("recipient_agent_id") == "agent_" + "0" * 64 and
+                card_packet.get("capability_id") == "cap_" + "0" * 64,
+                {key: card_packet.get(key) for key in ("sender_agent_id", "recipient_agent_id", "capability_id")})
     RUN.update(provider_agent=provider_agent, provider_agent_address=agent_address, actor=actor,
                capability_address=capability_address, offer_path=offer_path, offer_file=offer_file, offer=offer)
     evidence["objects"] = {"provider_agent_id": provider_agent, "provider_agent_address": agent_address, "actor": actor,
@@ -654,9 +683,10 @@ def setup_nodes() -> None:
                            "metadata_hash": plan.get("metadata_hash")}
 
     # Buyer: init, allowing the provider the offer file names and reaching
-    # it directly.
+    # it directly, or through the relay its key card names.
+    reach = [] if RELAY_MODE else ["--direct-peer", f"{offer_file['provider_agent_id']}={provider_socket}"]
     buyer_init = fox_json("buyer", "init", *init_flags("buyer"), "--allow-provider", offer_file["provider_agent_id"],
-                          "--direct-peer", f"{offer_file['provider_agent_id']}={provider_socket}", "--yes")
+                          *reach, "--yes")
     buyer_agent = buyer_init.get("agent_id", "")
     require("buyer init registered the buyer's Agent with a spending policy that allows the provider",
             buyer_init.get("confirmed") is True and buyer_agent.startswith("agent_") and
@@ -664,15 +694,25 @@ def setup_nodes() -> None:
     RUN.update(buyer_agent=buyer_agent, buyer_agent_address=buyer_init["agent_address"])
     evidence["objects"].update(buyer_agent_id=buyer_agent, buyer_agent_address=buyer_init["agent_address"])
 
-    # Provider: the buyer's Agent id exists now; add it as a direct peer.
-    before = chain_snapshot(watched_accounts())
-    peered = fox_json("provider", "init", *init_flags("provider"), "--direct-peer", f"{buyer_agent}={buyer_socket}",
-                      "--yes")
-    config = root_json(rail("provider"))
-    require("provider init run again adds the buyer as a direct peer, keeps its Agent and sends nothing",
-            peered.get("confirmed") is True and peered.get("agent_id") == provider_agent and
-            config.get("direct_peers") == {buyer_agent: buyer_socket} and config.get("provider") is not None and
-            chain_snapshot(watched_accounts()) == before, peered.get("steps"))
+    if RELAY_MODE:
+        # The provider reaches the buyer through the card the buyer's task
+        # carries; neither node names a direct peer.
+        configs = {node: root_json(rail(node)) for node in NODES}
+        require("both nodes are configured for the relay and name no direct peer",
+                all(config.get("relay_urls") == [RELAY_URL] and not config.get("direct_peers") and
+                    not config.get("messenger_socket") for config in configs.values()),
+                {node: {key: config.get(key) for key in ("relay_urls", "direct_peers", "messenger_socket")}
+                 for node, config in configs.items()})
+    else:
+        # Provider: the buyer's Agent id exists now; add it as a direct peer.
+        before = chain_snapshot(watched_accounts())
+        peered = fox_json("provider", "init", *init_flags("provider"), "--direct-peer",
+                          f"{buyer_agent}={buyer_socket}", "--yes")
+        config = root_json(rail("provider"))
+        require("provider init run again adds the buyer as a direct peer, keeps its Agent and sends nothing",
+                peered.get("confirmed") is True and peered.get("agent_id") == provider_agent and
+                config.get("direct_peers") == {buyer_agent: buyer_socket} and config.get("provider") is not None and
+                chain_snapshot(watched_accounts()) == before, peered.get("steps"))
 
     # Buyer serves first so the provider's preflight sees its socket.
     start_serve("buyer")
@@ -855,6 +895,23 @@ def withdraw() -> None:
     evidence["withdrawal"] = {"amount_nanotos": credited, "query_id": withdrawal.get("query_id"), "transaction": sent[0]}
 
 
+def relay_delivery() -> None:
+    """With the relay carrier, the provider's results went out as sealed
+    envelopes that the relay durably accepted, and its keys are reported
+    without their private parts."""
+    relay = provider_status().get("relay") or {}
+    outbox = relay.get("outbox") or []
+    keys = ((relay.get("poller") or {}).get("keys")) or []
+    require("the provider's outgoing packets were sealed and accepted by the relay",
+            bool(outbox) and all(RELAY_URL in entry.get("accepted_by", []) for entry in outbox) and
+            relay.get("configured_relays") == [RELAY_URL],
+            {"envelopes": len(outbox), "accepted_by": sorted({url for entry in outbox
+                                                             for url in entry.get("accepted_by", [])})})
+    record("the relay status names the provider's keys by id and validity only",
+           bool(keys) and all(set(key) == {"key_id", "not_before_unix", "not_after_unix", "destroy_at_unix", "relays"}
+                              for key in keys), [key.get("key_id") for key in keys])
+
+
 def run_again() -> None:
     """`init` and `offer` after success: no message, no new object."""
     before = chain_snapshot(watched_accounts())
@@ -1000,6 +1057,7 @@ async def main() -> int:
                      "reason": "one host runs every validator, every endpoint and both nodes" +
                                ("" if SERVICE_MODE else ", and both nodes run as root"),
                      "executor_mode": "executor service socket" if SERVICE_MODE else "executor as the node's child",
+                     "carrier": f"Agent Packet Relay at {RELAY_URL}" if RELAY_MODE else "same-host direct transport",
                      "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                      "openfox_commit": subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True,
                                                       text=True).stdout.strip(),
@@ -1076,6 +1134,8 @@ def sale() -> None:
     RUN["wallet_lt"] = {node: chain_snapshot({"w": RUN["wallets"][node]})["w"]["last_lt"] for node in NODES}
     setup_nodes()
     verify_sale(buy("first purchase"))
+    if RELAY_MODE:
+        relay_delivery()
     withdraw()
     run_again()
     tampered_offer()

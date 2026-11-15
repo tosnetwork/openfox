@@ -79,7 +79,8 @@ func TestAnOfferFileIsDecodedStrictly(t *testing.T) {
 		"malformed capability":        edit(func(f map[string]any) { f["capability_id"] = "cap_zz" }),
 		"malformed provider":          edit(func(f map[string]any) { f["provider_agent_id"] = "agent" }),
 		"unknown field":               edit(func(f map[string]any) { f["gateway"] = "https://example.invalid" }),
-		"another schema":              edit(func(f map[string]any) { f["schema"] = "tos.openfox.rail-offer.v2" }),
+		"another schema":              edit(func(f map[string]any) { f["schema"] = "tos.openfox.rail-offer.v3" }),
+		"the previous schema":         edit(func(f map[string]any) { f["schema"] = "tos.openfox.rail-offer.v1" }),
 		"non-canonical manifest": edit(func(f map[string]any) {
 			f["manifest_cbor_base64"] = base64.StdEncoding.EncodeToString(append(offer.ManifestCBOR, 0))
 		}),

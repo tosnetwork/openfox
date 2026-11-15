@@ -36,9 +36,9 @@ Three things still need other tools:
   TOS and activate it with `tosctl wallet activate`. `init` and `offer` stop
   with the wallet address and the amount needed when it is missing, inactive
   or short.
-- **A carrier for Agent Packets.** Across hosts that is a `tos-messengerd`
-  daemon per Agent (below); on one host two nodes of one user can use the
-  direct transport instead.
+- **A carrier for Agent Packets.** Across hosts that is an Agent Packet Relay
+  (end-to-end encrypted, below) or a `tos-messengerd` daemon per Agent; on one
+  host two nodes of one user can use the direct transport instead.
 - **The provider's executor.** The jobs run in a private container runtime
   that only root can reach. The operator installs that runtime and the
   **executor service** (tos-ai `software-work-executord`) as root, once; see
@@ -67,15 +67,15 @@ openfox earning service init \
   --wallet provider \
   --registry-code-boc /…/tos-service-native-registry-v1.boc.base64 \
   --actor-code-hash tvm-cell-sha256:… \
-  --messenger-socket /…/messenger.sock        # or --direct-peer, below
+  --relay-url https://relay.example          # or --messenger-socket, --direct-peer, below
 ```
 
 The transport may be left out of the first run. Two nodes that reach each
 other directly each need the other's Agent id, which only that node's `init`
 produces; so `init` without a transport establishes the node, reports
 `transport: missing`, and `serve`, `buy` and `preflight` refuse until `init`
-is run again with `--direct-peer` or `--messenger-socket`. That second run
-sends nothing.
+is run again with `--direct-peer`, `--relay-url` or `--messenger-socket`. That
+second run sends nothing.
 
 Only choices the owner must make are inputs. Everything else is derived and
 checked:
@@ -227,9 +227,11 @@ that a re-run adopts the Agent the configuration names.
      then writes the provider section of the configuration and the **offer
      file** (default `state_dir/setup/offer.json`).
 
-   The offer file (`tos.openfox.rail-offer.v1`) holds the Capability id, the
-   version, the provider Agent id, the manifest digest and the manifest bytes.
-   It holds nothing secret and carries no authority; give it to buyers.
+   The offer file (`tos.openfox.rail-offer.v2`) holds the Capability id, the
+   version, the provider Agent id, the manifest digest and the manifest bytes,
+   and, when `relay_urls` is configured, the provider's current encryption key
+   card ([Relay](#relay-any-hosts-end-to-end-encrypted)). It holds nothing
+   secret and carries no authority; give it to buyers.
 3. `openfox earning service preflight --rail-config <file>` (below).
 4. Run `openfox earning service serve --rail-config <file>`. For each task it
    verifies the packets and the Quote, refuses input over the quoted bound,
@@ -519,6 +521,213 @@ provider's is in the offer file. In order:
 manifest from the Quote package the purchase stored, so it needs neither the
 offer file nor a gateway to deliver a task bought with `buy --offer`.
 
+### Relay (any hosts, end-to-end encrypted)
+
+`init --relay-url <base URL>` (repeatable, at most 4) records `relay_urls`.
+The node then carries packets through Agent Packet Relays
+(`AGENT_PACKET_RELAY_V1` of the protocol specification): store-and-forward
+mailboxes that hold sealed envelopes and nothing else. A packet to a peer
+whose verified encryption key card the node holds is sealed to that card and
+deposited at the relays the card names; every other recipient goes to a
+direct peer or the Messenger as before. A relay URL is `https`, or `http` only
+to `127.0.0.1`, `localhost` or `::1`; it has a lowercase host, no user, query,
+fragment, escape or trailing slash. Anything else is refused by `init`, by
+`preflight` and by the client.
+
+**What a relay operator can and cannot do.** A relay has no authority and
+never decrypts. It sees the recipient Agent id, the recipient's key id, the
+envelope sizes and counts, the deposit, fetch and acknowledgement times and
+the IP addresses of both sides; listing and download are open, so anyone who
+knows an Agent id learns the same. It never sees the sender Agent, the
+Capability, the Quote or any content. It can drop, delay, reorder, duplicate
+or replay envelopes, refuse service and lie about status codes, which costs
+availability only: the courier retries and redelivers, the durable inbox
+deduplicates, and the Native Execution Gate keeps execution at most once. It
+cannot read a packet (HPKE with the hybrid post-quantum MLKEM768-X25519 KEM),
+forge or alter one (the inner ML-DSA-44 signature is verified against
+finalized state after opening, and the AEAD covers the header), re-address an
+envelope, or delete one without its acknowledgement secret.
+
+**Sending.** The transport seals the exact signed packet JSON (sign, then
+encrypt) under a fresh acknowledgement secret, journals the envelope in
+`state_dir/relay/outbox` **before** the first deposit, and deposits it at the
+card's relays in order, each bounded to 30 seconds. A send is done only when
+one relay answers `200`, `201` or `410`; a retry after an ambiguous answer or
+a restart sends the journaled bytes again, so the relay recognizes them. Before
+journaled bytes are sent again, the card they were sealed to is checked: if it
+was last verified 9 minutes ago or more it is verified again, and if it has
+expired, was revoked or is no longer held, those bytes are never sent again;
+the packet is sealed to the recipient's current valid card under a fresh
+acknowledgement secret (a new envelope id), journaled, and deposited instead.
+Without a valid card the send fails and the courier retries; an envelope one
+relay already accepted is not spread to further relays once its card is
+revoked. The
+remaining relays are deposited in the background for redundancy. A relay that
+answers `409` holds other bytes under that public envelope id; it is abandoned
+for that envelope, and when no relay accepted and one answered `409` the packet
+is sealed again under a new id, journaled, and the courier retries with it.
+
+**Receiving.** `serve` lists each relay of every key it holds every 15 seconds
+(plus up to 20 % jitter), backing off to 5 minutes on errors and honouring
+`Retry-After`. Each envelope is opened under the key its header names, then
+handed to the same accept path as a Messenger or direct delivery: packet
+decode, recipient check, `agentpacket.Verify` against finalized state, frame
+decode and the durable inbox write. Only after that write is the envelope
+acknowledged, at every relay that listed it. A packet that opens but is
+refused for good (malformed, another recipient, a signer that is not a
+finalized controller) is acknowledged too, so junk sealed to the node's key
+does not hold its quota; the refusal is reported without contents. So is a
+frame the inbox refuses for what it is or for its bounds (a frame conflicting
+with a stored one, the open-message limit): the sender's own redelivery brings
+the message again. An
+unavailable chain or a failing inbox write leaves the envelope for a later
+poll. An envelope that does not open, or that names a key the node does not
+hold, is remembered by relay and envelope id (never by the id alone, so a junk
+copy at one relay never hides the genuine envelope at another) and left to
+expire. An envelope whose listing names a key id the node does not hold is
+remembered without being downloaded: the key id in a listing is the relay's
+unauthenticated word, and a relay that lies about it can only hide that
+envelope, which it could do anyway.
+
+Implementation bounds: the not-again memory and the memory of settled
+envelope ids each hold at most 8,192 entries and forget an entry after its
+listed expiry, at most 24 hours and 5 minutes; evicting one only costs a
+repeated download. At most 8 cards are kept per peer Agent (the least
+preferred is dropped) and at most 1,024 peers; a node holds at most 16 own
+keys.
+
+**Keys.** Each node holds HPKE private keys in `state_dir/relay/keys`, one
+owner-only (`0600`) file per key, written atomically; a key is never printed,
+logged or placed in a report. Each key is published by a **key card**: an
+Agent Packet to the all-zero audience, signed by the node's packet controller
+through tosctl, naming the public key, its validity window and the node's
+relay URLs. A card is valid for 7 days; `serve` issues a successor 48 hours
+before expiry (and whenever `relay_urls` changes) and keeps every private key
+until 24 hours and 5 minutes after its card expired, the longest an envelope
+sealed in time can wait at a relay, then destroys it. A card handed out for a
+request that runs past the 7 days is issued for the full 30 days and handed
+out again for any long request while it still runs at least 15 days, so a node
+holds a few keys at most whatever its requests' deadlines; such a request may
+outlive its card, and the newer card reaches the peer in band. Each
+maintenance pass also picks up and destroys on time keys that `offer` or `buy`
+wrote while `serve` ran, and rewrites the provider's offer file whenever the
+card it carries is no longer the current one (a failed rewrite is retried at
+the next pass).
+
+**How cards travel.** The provider's card is in its offer file; `serve`
+rewrites the offer file when it issues a successor, and the owner hands the
+new file out as before. Each result also carries the provider's current card,
+valid until the end of the redelivery window, so a buyer whose offer-file card
+expired during a long request keeps a route back for its acknowledgement. The
+buyer takes it only from a result of one of its own purchases from that
+provider, verifies it like an offer-file card, and records a refused card on
+the purchase (`provider_card_refused`) without refusing the result. The card
+in the offer file is a long one (30 days, reissued once it runs under 15), so
+a buyer that was away longer than a short card lives can still reach the
+provider.
+
+**Asking for a result again.** After the respond is final the buyer has
+nothing else to send until the result arrives, so the provider's copy of the
+buyer's card is not refreshed. A buyer that sees a finalized respond and has
+no result sends a result request carrying its current card (valid to the end
+of the result's retention): at once when it first sees that state, also after
+`serve` restarts, and then at most every 6 hours until the result arrives or
+the retention ends. The provider takes it only from the request's buyer and
+only for a request it has responded to and still retains; it verifies the
+card like a task card, keeps the newest valid one and delivers the result at
+its next pass (at most one such moved delivery every 10 minutes). A result
+request never admits, executes or responds. Anything else is refused and
+changes nothing. A buyer away for longer than the provider card it holds can
+reach the provider only after it takes a newer offer file. The buyer verifies the card against finalized state
+and requires its Agent to be the Capability's **finalized owner, read from
+chain** (never from the offer file) before anything is paid; it seals only to
+a card verified within the last 9 minutes. A peer card that names a relay on a
+loopback host is refused unless this node's own relays are on loopback (a
+single-host test setup), so a verified peer cannot make the node send requests
+to services on its own host. A numeric host must be four canonical decimal
+octets or an IPv6 literal; short, octal, hex and integer forms such as
+`127.1` are refused everywhere, in peer cards and in `--relay-url`. A name
+that resolves to a loopback address through DNS is not caught: the node would
+only POST a ciphertext envelope to, or list and download from, whatever
+answers there, and opens nothing it gets back. The buyer's card travels inside its
+signed and encrypted task; it is chosen to cover the request's response and
+refund deadlines plus a day, and the provider takes it only from a task the
+gate admitted and only when the card's Agent is the task's sender. Each task
+redelivery and each result acknowledgement carries the buyer's then-current
+card again, so a card that would expire before a long response window and
+redelivery horizon end is refreshed in band; the provider takes a card from an
+acknowledgement only when it is from that request's buyer for its result, and
+seals to the newest valid card it holds. A card refused there is noted on the
+provider's record (`detail`) without refusing the acknowledgement. A stale
+offer file may still hand out an older card of the same owner: it is accepted
+as long as it is valid, and of the valid cards the newest is used.
+
+**Revoking a card.** Publishing a new card does not revoke the old one: until
+its expiry a stale offer file can keep handing it out. Cards are signed by the
+packet controller, so the only early revocation is removing the packet
+controller from the Agent's finalized policy, which makes every card it signed
+unusable within minutes of the next verification **and also stops every packet
+the node sends** until a new packet controller is registered and `init` is run
+for it. Do this when a node's state directory (and so its HPKE keys) may have
+been exposed. A compromised offer-card key stays sealable for up to 30 days,
+the offer card's lifetime, unless the controller that signed it is removed.
+Envelopes that relays already accepted for a revoked card stay there until
+they expire (at most 24 hours); withdrawing them early with their
+acknowledgement secrets, which the protocol permits, is a planned follow-up and
+is not done yet, since the node does not keep those secrets.
+
+**Status and preflight.** `status` adds `relay`: each relay's polling state
+(last listing, last failure, consecutive failures, next poll), the held keys
+(key id, validity, destruction time; never the key), the peer cards and every
+journaled outgoing envelope with the relays that accepted it, answered `409`
+or are still pending. `preflight` checks `relay.config`, `relay.reachable`
+(each relay described and the mailbox listed), `relay.key` (a key valid now
+for the configured relays), `relay.card` (the own card verifies against
+finalized state) and `relay.peers` (each held peer card verifies).
+
+Setup across two hosts, in order:
+
+1. provider: `init --relay-url <relay>`, then `offer` (the offer file now
+   carries the card), `preflight` and `serve`;
+2. buyer: `init --allow-provider <provider Agent> --relay-url <relay>`, then
+   `serve`, and `buy --offer <file>`.
+
+`scripts/service-front-door-e2e.sh` runs both nodes against a relay when
+`E2E_RELAY_URL` names one.
+
+#### Offer file and task fields
+
+The offer file is a JSON object decoded strictly (unknown fields and trailing
+data are refused, and only version 2 is accepted). Version 2 adds one optional
+member, written after `manifest_cbor_base64`:
+
+- `"relay_key_card_base64"`: standard base64 (RFC 4648 section 4, padded, no
+  line breaks) of the exact signed Agent Packet V1 JSON bytes of the
+  provider's key card packet, at most 16,384 bytes before encoding. It is
+  absent when the provider has no relays. The decoder requires the packet to
+  decode, its sender to be `provider_agent_id`, its recipient the all-zero
+  audience, its Capability the all-zero Capability, no Quote commitment, and
+  its payload a well-formed key card body; whether the card may be sealed to
+  is decided only by the buyer's finalized-state and owner checks. The relay
+  URLs are inside the card, under its signature, and are not repeated.
+
+The task message header (`tos.openfox.rail-task.v1`) gains one optional last
+member, `"buyer_key_card_base64"`, with the same encoding and bound, absent
+when the buyer has no relays. The result message header
+(`tos.openfox.rail-result.v1`) likewise gains one optional last member,
+`"provider_key_card_base64"`: the provider's card, same encoding and bound,
+absent when the provider has no relays. The result acknowledgement header
+(`tos.openfox.rail-result-ack.v1`) gains one optional last member,
+`"buyer_key_card_base64"`, with the same encoding and bound; the
+acknowledgement message bound grows accordingly to 4 + 4,096 + 21,848 bytes.
+The result request is frame kind 4 with message header
+`{"schema":"tos.openfox.rail-result-request.v1"}` plus the optional member
+`"buyer_key_card_base64"` (same encoding and bound) and no body; the request
+it names is the frame's own binding (actor account, request id and request
+hash), and its message bound is that of the acknowledgement. Both are inside the signed packets
+and, over the relay, inside the encryption. Both headers are decoded
+strictly, so a decoder that predates a member refuses a message carrying it.
+
 ## Configuration
 
 `--rail-config` names an owner-only (`0600`) JSON file. `init` and `offer`
@@ -541,10 +750,12 @@ write it; it can also be written by hand:
   "wallet_address": "0:…",
   "messenger_socket": "/…/messenger.sock",
   "direct_peers": {"agent_…": "/…/peer/rail-receiver.sock"},
+  "relay_urls": ["https://relay-a.example", "https://relay-b.example"],
   "receiver_socket": "/…/rail-receiver.sock",
   "provider": {"capability_id": "cap_…", "version": "1.0.0", "manifest_file": "/…/<digest>.cbor",
                "attestor_controller": "service-attestor", "respond_budget_seconds": 120,
-               "executor_socket": "/run/tos-service-executor/executor.sock"},
+               "executor_socket": "/run/tos-service-executor/executor.sock",
+               "offer_file": "/…/rail/setup/offer.json"},
   "buyer": {"gateway_url": "https://…", "gateway_token_file": "/…/token", "caller_id": "…",
             "policy": {"max_committed_per_purchase_nanotos": "2000000000", "max_committed_in_window_nanotos": "10000000000",
                        "window_seconds": 86400, "max_open_purchases": 4, "refund_reserve_nanotos": "300000000",
@@ -553,8 +764,10 @@ write it; it can also be written by hand:
 ```
 
 `chain_global_config_file` is used by `offer` (tosctl derives the registry
-identity domain from it). `messenger_socket` may be omitted when
-`direct_peers` is set, and `direct_peers` when `messenger_socket` is.
+identity domain from it). Any of `messenger_socket`, `direct_peers` and
+`relay_urls` may be omitted as long as one is set. `relay_urls` is in ascending
+byte order, as the key card lists it. `provider.offer_file` is the offer file
+`offer` wrote; with relays, `serve` rewrites it with each successor key card.
 
 The provider section names exactly one executor: `executor_socket`, or the
 legacy `executor_binary` with `executor_sha256`, `containerd_socket` and

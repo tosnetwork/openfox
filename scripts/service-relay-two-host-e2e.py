@@ -378,8 +378,9 @@ def relay_outages() -> dict:
     # stopped (SIGSTOP, so it keeps its poller state) from before the relay
     # restarts until the listing is read, so the listing shows what the
     # relay restored and nothing has consumed it yet.
-    pause_serve("provider")
     try:
+        # Inside the try, so a failed stop check still resumes the provider.
+        pause_serve("provider")
         start_relay("outage 1, restart on the same state directory")
         after_restart = listing(provider)
     finally:

@@ -6,7 +6,7 @@
   <p>
     <img src="https://img.shields.io/badge/Go-1.26.6-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
     <img src="https://img.shields.io/badge/Arch-x86__64%2C%20ARM64%2C%20MIPS%2C%20RISC--V%2C%20LoongArch-blue" alt="Hardware">
-    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+    <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License">
     <br>
     <a href="https://github.com/tosnetwork/openfox"><img src="https://img.shields.io/badge/GitHub-tosnetwork%2Fopenfox-181717?style=flat&logo=github&logoColor=white" alt="GitHub"></a>
   </p>
@@ -217,7 +217,7 @@ OpenFox reimplements the OpenClaw concept from scratch in Go, aiming for the sam
 | **Security sandbox**         | —                                  | Built-in file access control, exec boundary, sensitive data filtering |
 | **Migration path**           | —                                  | `openfox migrate --from openclaw` reuses OpenClaw's provider config and workspace |
 | **Autonomous earning**       | —                                  | **Built for the TOS network** — discovers jobs, executes them, and settles payment on its own |
-| **License**                  | Varies by project                  | MIT                                                          |
+| **License**                  | Varies by project                  | GPL-3.0 (includes MIT-licensed code from PicoClaw)           |
 
 _*Recent builds may use 10-20MB RAM due to rapid feature development; language/RAM/boot time/cost figures are OpenFox's own benchmark claims (0.8GHz single-core), the rest reflects the current feature set in this repository — check each project's latest docs for authoritative details._
 
@@ -253,3 +253,11 @@ OpenFox can also put every classified tool and custody operation behind the
 [`tos-messengerd` action-authorization boundary](docs/guides/tos-messenger-action-authorization.md),
 including runtime-derived provenance, mandatory native-buyer custody wrapping,
 and one-shot tool/spend grants.
+
+## License
+
+OpenFox is licensed under the [GNU General Public License v3.0](LICENSE).
+It is a fork of [PicoClaw](https://github.com/sipeed/picoclaw), and the code it
+takes from PicoClaw remains available under the MIT License; that notice is kept
+in [LICENSES/MIT-PicoClaw.txt](LICENSES/MIT-PicoClaw.txt). Releases published
+before this change were distributed under the MIT License.

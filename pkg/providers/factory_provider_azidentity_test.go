@@ -1,7 +1,8 @@
 //go:build azidentity
 
 // OpenFox - Ultra-lightweight personal AI agent
-// License: MIT
+// License: GPL-3.0; includes code from PicoClaw under the MIT License
+// (see LICENSES/MIT-PicoClaw.txt)
 //
 // Copyright (c) 2026 OpenFox contributors
 

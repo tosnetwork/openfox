@@ -181,7 +181,7 @@ nfpms:
     homepage: https://github.com/{{ .Env.GITHUB_REPOSITORY_OWNER }}/openfox
     maintainer: openfox contributors
     description: openfox - a tool for managing and running tasks
-    license: MIT
+    license: GPL-3.0
     formats:
       - rpm
       - deb

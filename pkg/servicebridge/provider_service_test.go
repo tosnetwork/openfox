@@ -843,3 +843,167 @@ func TestAnOutcomeThatDiffersFromTheGatesRecordIsNeverAttested(t *testing.T) {
 		})
 	}
 }
+
+// taskInInbox stores the fixture's task as its buyer's packets would and
+// returns a dispatcher over it that records what it reports.
+func taskInInbox(t *testing.T, fixture *gateFixture, node *serviceNode) (*Service, *Inbox, *[]string) {
+	t.Helper()
+	inbox, _ := openTestInbox(t, 2, 4)
+	putFixtureTask(t, fixture, inbox)
+	reports := &[]string{}
+	service := &Service{Inbox: inbox, Provider: node.provider, Report: func(stage string, err error) {
+		*reports = append(*reports, stage+": "+err.Error())
+	}}
+	return service, inbox, reports
+}
+
+func putFixtureTask(t *testing.T, fixture *gateFixture, inbox *Inbox) (InboxStatus, *Message) {
+	t.Helper()
+	message := fixture.message
+	frames, err := SplitMessage(FrameTask, message.ActorAccount, message.RequestID, message.RequestHash, message.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status InboxStatus
+	var stored *Message
+	for _, frame := range frames {
+		if status, stored, err = inbox.Put(testBuyer, frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return status, stored
+}
+
+func pendingCount(t *testing.T, inbox *Inbox) int {
+	t.Helper()
+	pending, err := inbox.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(pending)
+}
+
+// An outage of the executor service, however many rounds it lasts, must not
+// use up the handling attempts of a paid task: nothing about the task failed.
+func TestAnExecutorOutageDoesNotUseUpATasksHandlingAttempts(t *testing.T) {
+	ctx := context.Background()
+	service := startScriptedExecutor(t, func(request scriptedRequest) scriptedAnswer {
+		return scriptedSuccess(request, []byte("artifact"), []byte("report"))
+	})
+	down := goodDescription()
+	down.Ready = false
+	service.setDescription(down)
+	fixture := newGateFixture(t, serviceFixtureStart)
+	node := openServiceNode(t, fixture, serviceState(t), ownClient(t, service.socket))
+	dispatcher, inbox, reports := taskInInbox(t, fixture, node)
+	for round := 0; round < 3*maxHandlingAttempts; round++ {
+		if err := dispatcher.Dispatch(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pendingCount(t, inbox) != 1 || slotCount(t, node.state) != 0 || len(service.seen()) != 0 {
+		t.Fatalf("during the outage: %d pending, %d slots, %d requests", pendingCount(t, inbox),
+			slotCount(t, node.state), len(service.seen()))
+	}
+	if len(*reports) != 3*maxHandlingAttempts {
+		t.Fatalf("%d reports over %d rounds: %v", len(*reports), 3*maxHandlingAttempts, *reports)
+	}
+	for _, line := range *reports {
+		if !strings.HasPrefix(line, "executor not ready: 1 task(s) wait unadmitted") {
+			t.Fatalf("a waiting task was reported as %q", line)
+		}
+	}
+	service.setDescription(goodDescription())
+	for round := 0; round < 2; round++ {
+		if err := dispatcher.Dispatch(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pendingCount(t, inbox) != 0 || node.record(t).State != ProviderResponding || node.lifecycle.responds != 1 ||
+		len(service.seen()) != 1 {
+		t.Fatalf("after the outage: %d pending, state %s, %d responds, %d runs", pendingCount(t, inbox),
+			node.record(t).State, node.lifecycle.responds, len(service.seen()))
+	}
+}
+
+// A task no executor could run for the whole wait is retired with that
+// reason, having claimed nothing. Its buyer's next delivery of the same task
+// is handled again, not ignored.
+func TestATaskIsRetiredWithItsReasonWhenNoExecutorCameBack(t *testing.T) {
+	ctx := context.Background()
+	service := startScriptedExecutor(t, func(request scriptedRequest) scriptedAnswer {
+		return scriptedSuccess(request, []byte("artifact"), []byte("report"))
+	})
+	down := goodDescription()
+	down.Ready = false
+	service.setDescription(down)
+	fixture := newGateFixture(t, serviceFixtureStart)
+	node := openServiceNode(t, fixture, serviceState(t), ownClient(t, service.socket))
+	dispatcher, inbox, reports := taskInInbox(t, fixture, node)
+	ahead := time.Duration(0)
+	dispatcher.Now = func() time.Time { return time.Now().Add(ahead) }
+	dispatcher.Step(ctx)
+	ahead = ExecutorWait - time.Minute
+	dispatcher.Step(ctx)
+	if pendingCount(t, inbox) != 1 {
+		t.Fatalf("the task was given up before the wait ended: %v", *reports)
+	}
+	ahead = ExecutorWait + time.Second
+	dispatcher.Step(ctx)
+	retired := false
+	for _, line := range *reports {
+		retired = retired || strings.Contains(line, "retired after") && strings.Contains(line, "nothing was admitted")
+	}
+	records, err := node.provider.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retired || pendingCount(t, inbox) != 0 || slotCount(t, node.state) != 0 || len(records) != 0 ||
+		len(service.seen()) != 0 {
+		t.Fatalf("after the wait: retired %v, %d pending, %d slots, %d records: %v", retired,
+			pendingCount(t, inbox), slotCount(t, node.state), len(records), *reports)
+	}
+	// The executor is back and the buyer delivers the task again.
+	service.setDescription(goodDescription())
+	status, message := putFixtureTask(t, fixture, inbox)
+	if status != InboxDuplicate || message == nil {
+		t.Fatalf("the redelivered task was stored as %d", status)
+	}
+	dispatcher.Notify(status, *message)
+	if node.record(t).State != ProviderResponding || node.lifecycle.responds != 1 || len(service.seen()) != 1 {
+		t.Fatalf("the redelivered task was not run: %s", node.record(t).State)
+	}
+}
+
+// Only the executor's readiness is free: any other failed handling of a
+// task still counts toward the attempt cap.
+func TestAnOrdinaryTaskFailureStillCountsTowardTheAttemptCap(t *testing.T) {
+	ctx := context.Background()
+	service := startScriptedExecutor(t, func(request scriptedRequest) scriptedAnswer {
+		return scriptedSuccess(request, []byte("artifact"), []byte("report"))
+	})
+	fixture := newGateFixture(t, serviceFixtureStart)
+	node := openServiceNode(t, fixture, serviceState(t), ownClient(t, service.socket))
+	dispatcher, inbox, reports := taskInInbox(t, fixture, node)
+	// The executor is ready; the chain cannot be read, so admission fails.
+	fixture.chain.setUnavailable(true)
+	for round := 1; round < maxHandlingAttempts; round++ {
+		if err := dispatcher.Dispatch(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if pendingCount(t, inbox) != 1 {
+			t.Fatalf("after %d failed handlings the task is not retried", round)
+		}
+	}
+	if err := dispatcher.Dispatch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pendingCount(t, inbox) != 0 || len(*reports) != maxHandlingAttempts {
+		t.Fatalf("a task that keeps failing: %d pending, %d reports", pendingCount(t, inbox), len(*reports))
+	}
+	for _, line := range *reports {
+		if !strings.HasPrefix(line, "rail message: ") {
+			t.Fatalf("an admission failure was reported as %q", line)
+		}
+	}
+}

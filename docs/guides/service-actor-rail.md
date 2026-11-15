@@ -646,9 +646,22 @@ request was admitted under, recorded with the request, and sent unchanged
 every time, whatever manifest the node is configured with later.
 
 - **Before admission.** The node asks the service to describe itself before a
-  task takes its execution slot. While the service is down, not ready or would
-  not run this manifest, the task is not admitted and stays in the inbox, so
-  an outage of the service does not use up a paid request's one execution.
+  task takes its execution slot. While the service is down, not ready, would
+  not run this manifest or does not answer in time, the task is not admitted:
+  nothing is verified, claimed or spent, so an outage of the service (a
+  restart of its unit, for example) does not use up a paid request's one
+  execution. Such a task is not a failed handling and does not count toward
+  the inbox's attempt cap; it waits, outside the inbox's open-message bounds
+  and under the same held bounds as a paused task, and is tried again every
+  round. `serve` logs one `executor not ready` line per round with the number
+  waiting. The node cannot know a request's response deadline before it
+  admits the task, so the wait is bounded by the inbox instead: after one
+  hour the task is retired with a logged reason. Retiring claims nothing
+  either. A buyer delivers an unanswered task again every ten minutes, and a
+  delivery of a retired task is handled again, so the request is still
+  admitted if the service is back while it can be answered; otherwise the
+  buyer's refund path applies. Any other failure of a task still counts
+  toward the attempt cap.
 - **Restart.** A run belongs to the service and outlives the node. A node
   that stops or dies during a run finds the request `executing` when it
   starts again and sends the same request (the source archive is kept in
@@ -659,6 +672,12 @@ every time, whatever manifest the node is configured with later.
   verifies the request afresh from finalized state and completes the slot
   itself (`slot_state` `completed`, the slot marked `reconciled`). Only then
   does the usual pre-respond check and `respond` follow.
+  If the node died after the gate started the slot and before the service
+  was asked, the request sent after the restart runs the job for the first
+  time, without the gate's pre-execution check that execution and respond
+  still fit: at worst the provider runs a job it can no longer be paid for,
+  never a wrong attestation, since the gate verifies the request again before
+  it reconciles.
 
   | The gate's answer to the recovered outcome | The request |
   |---|---|

@@ -90,6 +90,12 @@ type ProviderRecord struct {
 	UpdatedUnix      int64  `json:"updated_unix"`
 }
 
+// ErrExecutorNotReady reports a task that was not admitted because the
+// executor service could not run it at that moment. Nothing was claimed,
+// verified or spent for it. Only the readiness question in front of
+// admission returns it.
+var ErrExecutorNotReady = errors.New("servicebridge: the executor service cannot run work now; the task is not admitted")
+
 // ExecutionLimits are a manifest's limits as a provider record keeps them.
 type ExecutionLimits struct {
 	CPUMillis       uint64 `json:"cpu_millis"`
@@ -311,10 +317,12 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 		return pauseErr
 	}
 	if p.config.Service != nil {
-		// Asked before the claim takes its slot: a task refused here stays
-		// in the inbox and is admitted once the service can run it.
+		// Asked before the claim takes its slot. A task refused here is
+		// reported as ErrExecutorNotReady, which the dispatcher holds
+		// without counting a failed handling, so it is admitted once the
+		// service can run it.
 		if readyErr := p.config.Service.Ready(ctx); readyErr != nil {
-			return fmt.Errorf("%w; the task is not admitted", readyErr)
+			return fmt.Errorf("%w: %w", ErrExecutorNotReady, readyErr)
 		}
 	}
 	slot, verified, err := p.config.Gate.Admit(ctx, claim)

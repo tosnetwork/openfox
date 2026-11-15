@@ -67,6 +67,8 @@ type fakeRelay struct {
 	// conflictAll answers 409 to every deposit, as if an observer had
 	// pre-empted every envelope id.
 	conflictAll bool
+	// conflictIDs answers 409 to deposits under these envelope ids only.
+	conflictIDs map[[32]byte]bool
 	// listFails answers 503 to listings.
 	listFails bool
 	// replay keeps acknowledged envelopes listed and downloadable, as a
@@ -200,7 +202,7 @@ func (f *fakeRelay) deposit(w http.ResponseWriter, request *http.Request, agent 
 		answer(http.StatusUnprocessableEntity, "expiry_out_of_bounds")
 		return
 	}
-	if f.conflictAll {
+	if f.conflictAll || f.conflictIDs[id] {
 		answer(http.StatusConflict, "conflict")
 		return
 	}

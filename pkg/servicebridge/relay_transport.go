@@ -626,18 +626,25 @@ func (t *RelayTransport) redepositOne(ctx context.Context, path string, budget *
 		// relay copying the id to the others, got there first). As the
 		// courier does for its own sends, the packet is sealed again under
 		// a fresh secret and journaled before its first deposit, which
-		// waits for the deposit backoff, so a relay that answers 409 to
-		// every id costs a seal per backoff period at most.
+		// waits for the deposit backoff; that backoff grows across
+		// consecutive rounds of 409s (depositPending counts them as
+		// failures), so a relay that answers 409 to every id costs one seal
+		// per growing backoff period.
 		if packet, ok := record.journaledPacket(); ok && nowUnix < packet.ExpiresAtUnix {
 			if fresh, sealErr := t.seal(ctx, packet, record.Seals); sealErr == nil {
 				record.replace(fresh)
 				if err = t.store(path, record); err != nil {
 					return err
 				}
+				// The round that met the 409s already grew the backoff;
+				// one is set here only when none is running (the
+				// conflicts were journaled before a restart).
 				t.mutex.Lock()
 				retry := t.retry[record.IdempotencyKey]
 				t.mutex.Unlock()
-				t.backoff(record.IdempotencyKey, retry, true, now)
+				if !now.Before(retry.at) {
+					t.backoff(record.IdempotencyKey, retry, true, now)
+				}
 				return nil
 			}
 		}
@@ -687,6 +694,12 @@ func (t *RelayTransport) depositPending(ctx context.Context, record *relayOutbox
 		default:
 			failed = true
 		}
+	}
+	// A round that leaves a replacement refused by every relay counts as a
+	// failure: the backoff keeps growing across consecutive rounds of 409s
+	// instead of starting again at its first step with each fresh seal.
+	if record.Background && record.everyRelayConflicts() {
+		failed = true
 	}
 	t.backoff(record.IdempotencyKey, retry, failed, now)
 	return changed

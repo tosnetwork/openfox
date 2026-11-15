@@ -695,7 +695,10 @@ valid card under a fresh secret, journaled before its first deposit, and
 deposited at that card's relays by the background loop; if every relay of
 that card answers `409` for it, it is sealed again under a fresh secret,
 journaled, and deposited after the deposit backoff, as the courier does for
-its own sends. A finalized-state outage (an unreachable chain, an
+its own sends. Consecutive rounds of `409` at every relay count as failures:
+the backoff doubles from 30 seconds to its 5-minute cap, so a relay refusing
+every id costs one seal per backoff period, at most about 300 a day per
+packet once at the cap. A finalized-state outage (an unreachable chain, an
 unavailable tosctl) is never taken for a revocation: nothing is withdrawn or
 sent until the card's standing is known. Without a valid card
 the packet waits until one is learned or it expires. A packet the recipient

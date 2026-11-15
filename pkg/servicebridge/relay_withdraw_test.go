@@ -401,13 +401,26 @@ func TestAReplacementEveryRelayRefusesWithAConflictIsSealedAgainAndDelivered(t *
 	}
 	seller.redeposit()
 	revokeAndReplace(clock, agents, seller, buyer)
-	relayA.mutex.Lock()
-	relayA.conflictAll = true
-	relayA.mutex.Unlock()
-	relayB.mutex.Lock()
-	relayB.conflictAll = true
-	relayB.mutex.Unlock()
+	// The replacement is captured once it is journaled, before its first
+	// deposit, and both relays answer 409 to its id for the rest of the
+	// test, so only a fresh seal can deliver the packet.
+	var replacement relayOutboxRecord
+	seller.carrier.Transport.afterJournal = func() {
+		if replacement.EnvelopeID != "" {
+			return
+		}
+		replacement = seller.journal()[0]
+		id := envelopeID(t, replacement.EnvelopeID)
+		for _, relay := range []*fakeRelay{relayA, relayB} {
+			relay.mutex.Lock()
+			relay.conflictIDs = map[[32]byte]bool{id: true}
+			relay.mutex.Unlock()
+		}
+	}
 	seller.redeposit()
+	if replacement.EnvelopeID == "" || !replacement.sealed() {
+		t.Fatal("no replacement was journaled")
+	}
 	record := seller.journal()[0]
 	conflicted := 0
 	for _, relay := range []*fakeRelay{relayA, relayB} {
@@ -417,9 +430,11 @@ func TestAReplacementEveryRelayRefusesWithAConflictIsSealedAgainAndDelivered(t *
 			}
 		}
 	}
-	if conflicted != 2 || !record.sealed() || len(record.Conflicts) != 0 || len(record.Accepted) != 0 ||
+	if conflicted != 2 || !record.sealed() || record.EnvelopeID == replacement.EnvelopeID ||
+		record.Seals != replacement.Seals+1 || len(record.Conflicts) != 0 || len(record.Accepted) != 0 ||
 		!record.Background {
-		t.Fatalf("after every relay refused the replacement: %d conflicts, %+v", conflicted, record)
+		t.Fatalf("after every relay refused the replacement %s: %d conflicts, journal %+v",
+			replacement.EnvelopeID, conflicted, record)
 	}
 	resealed := record.EnvelopeID
 	// Bounded: the fresh seal waits for the deposit backoff, so a relay
@@ -430,12 +445,6 @@ func TestAReplacementEveryRelayRefusesWithAConflictIsSealedAgainAndDelivered(t *
 		len(relayA.depositLog())+len(relayB.depositLog()) != depositsBefore {
 		t.Fatalf("a pass inside the backoff deposited or sealed again: %+v", again)
 	}
-	relayA.mutex.Lock()
-	relayA.conflictAll = false
-	relayA.mutex.Unlock()
-	relayB.mutex.Lock()
-	relayB.conflictAll = false
-	relayB.mutex.Unlock()
 	clock.Advance(relayRedepositFirst + time.Second)
 	seller.redeposit()
 	after := seller.journal()[0]
@@ -445,6 +454,52 @@ func TestAReplacementEveryRelayRefusesWithAConflictIsSealedAgainAndDelivered(t *
 	buyer.pollAll()
 	if pending := buyer.pending(); len(pending) != 1 || !bytes.Equal(pending[0].Body, body) {
 		t.Fatalf("pending = %d", len(pending))
+	}
+}
+
+// Consecutive rounds in which every relay answers 409 back off as failures
+// do, doubling up to the cap, so a relay refusing every id costs a seal per
+// growing backoff period rather than one every first step.
+func TestConsecutiveAllConflictRoundsBackOff(t *testing.T) {
+	clock := newRelayClock()
+	agents := relayAgents()
+	relayA, relayB := twoRelays(t, clock)
+	seller := newRelayTestNode(t, clock, testSeller, agents, relayA)
+	buyer := newRelayTestNode(t, clock, testBuyer, agents, relayA, relayB)
+	seller.learn(buyer)
+	if _, err := seller.courier.Deliver(context.Background(), relayEnvelopeTo(testBuyer), markedBody(40)); err != nil {
+		t.Fatal(err)
+	}
+	seller.redeposit()
+	revokeAndReplace(clock, agents, seller, buyer)
+	for _, relay := range []*fakeRelay{relayA, relayB} {
+		relay.mutex.Lock()
+		relay.conflictAll = true
+		relay.mutex.Unlock()
+	}
+	deposits := func() int { return len(relayA.depositLog()) + len(relayB.depositLog()) }
+	seller.redeposit()
+	seals := seller.journal()[0].Seals
+	// After the n-th refused round the next deposit waits
+	// relayRedepositFirst * 2^(n-1), capped at relayRedepositMax.
+	wait := relayRedepositFirst
+	for round := range 6 {
+		before := deposits()
+		clock.Advance(wait - time.Second)
+		seller.redeposit()
+		if deposits() != before || seller.journal()[0].Seals != seals {
+			t.Fatalf("round %d: a deposit or seal %s into a %s backoff", round, wait-time.Second, wait)
+		}
+		clock.Advance(2 * time.Second)
+		seller.redeposit()
+		if deposits() != before+2 || seller.journal()[0].Seals != seals+1 {
+			t.Fatalf("round %d: no deposit and seal once the %s backoff passed", round, wait)
+		}
+		seals++
+		wait *= 2
+		if wait > relayRedepositMax {
+			wait = relayRedepositMax
+		}
 	}
 }
 

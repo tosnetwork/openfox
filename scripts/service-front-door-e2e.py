@@ -52,8 +52,10 @@ Two carriers:
   encryption key card, the buyer's task carries the buyer's, and the run
   checks that the provider's outgoing envelopes were accepted by the relay.
   The relay itself is started by the operator beforehand; this script only
-  names its URL. E2E_RELAY_CA_FILE additionally pins the relay's certificate
-  authority on both nodes (`--relay-ca-file`).
+  names its URL. E2E_RELAY_URLS (space-separated) names several relays
+  instead, each passed with its own `--relay-url`. E2E_RELAY_CA_FILE
+  additionally pins the relays' certificate authority on both nodes
+  (`--relay-ca-file`).
 
 Run it through scripts/service-front-door-e2e.sh.
 """
@@ -100,9 +102,14 @@ if SERVICE_MODE:
 else:
     ROOT = Path(os.environ.get("E2E_ROOT_BASE", "/var/lib/openfox-front-door-e2e")) / WORK.name
 HOLD = os.environ.get("E2E_HOLD") == "1"
-# The Agent Packet Relay both nodes use instead of the direct transport.
-RELAY_URL = os.environ.get("E2E_RELAY_URL", "")
-RELAY_MODE = bool(RELAY_URL)
+# The Agent Packet Relay both nodes use instead of the direct transport:
+# E2E_RELAY_URL names one; E2E_RELAY_URLS (space-separated) names one or
+# more, and every node then names all of them. `init` keeps them sorted, so
+# the list is compared sorted.
+RELAY_URLS = sorted(os.environ.get("E2E_RELAY_URLS", "").split() or
+                    ([os.environ["E2E_RELAY_URL"]] if os.environ.get("E2E_RELAY_URL") else []))
+RELAY_URL = RELAY_URLS[0] if RELAY_URLS else ""
+RELAY_MODE = bool(RELAY_URLS)
 # E2E_RELAY_CA_FILE, with E2E_RELAY_URL, pins the relay's certificate
 # authority on both nodes with `init --relay-ca-file`.
 RELAY_CA_FILE = os.environ.get("E2E_RELAY_CA_FILE", "")
@@ -478,7 +485,7 @@ def init_flags(node: str) -> list[str]:
     return flags + ["--global-config", str(ROOT / "etc" / "global.json"), "--network-label", NETWORK_LABEL,
                     "--tosctl", str(ROOT / "bin" / "tosctl"), "--tosctl-config", str(ROOT / node / "tosctl-config.json"),
                     "--wallet", node, "--registry-code-boc", str(ROOT / "etc" / "registry-code.boc"),
-                    "--actor-code-hash", ACTOR_CODE_HASH] + (["--relay-url", RELAY_URL] if RELAY_MODE else []) + \
+                    "--actor-code-hash", ACTOR_CODE_HASH] + [flag for url in RELAY_URLS for flag in ("--relay-url", url)] + \
         (["--relay-ca-file", RELAY_CA_FILE] if RELAY_MODE and RELAY_CA_FILE else [])
 
 
@@ -704,7 +711,7 @@ def setup_nodes() -> None:
         # carries; neither node names a direct peer.
         configs = {node: root_json(rail(node)) for node in NODES}
         require("both nodes are configured for the relay and name no direct peer",
-                all(config.get("relay_urls") == [RELAY_URL] and not config.get("direct_peers") and
+                all(config.get("relay_urls") == RELAY_URLS and not config.get("direct_peers") and
                     not config.get("messenger_socket") for config in configs.values()),
                 {node: {key: config.get(key) for key in ("relay_urls", "direct_peers", "messenger_socket")}
                  for node, config in configs.items()})
@@ -907,9 +914,11 @@ def relay_delivery() -> None:
     relay = provider_status().get("relay") or {}
     outbox = relay.get("outbox") or []
     keys = ((relay.get("poller") or {}).get("keys")) or []
+    # Each envelope counts once one relay of the recipient's card took it;
+    # with one relay that is exactly that relay.
     require("the provider's outgoing packets were sealed and accepted by the relay",
-            bool(outbox) and all(RELAY_URL in entry.get("accepted_by", []) for entry in outbox) and
-            relay.get("configured_relays") == [RELAY_URL],
+            bool(outbox) and all(set(RELAY_URLS) & set(entry.get("accepted_by", [])) for entry in outbox) and
+            relay.get("configured_relays") == RELAY_URLS,
             {"envelopes": len(outbox), "accepted_by": sorted({url for entry in outbox
                                                              for url in entry.get("accepted_by", [])})})
     record("the relay status names the provider's keys by id and validity only",
@@ -1062,7 +1071,8 @@ async def main() -> int:
                      "reason": "one host runs every validator, every endpoint and both nodes" +
                                ("" if SERVICE_MODE else ", and both nodes run as root"),
                      "executor_mode": "executor service socket" if SERVICE_MODE else "executor as the node's child",
-                     "carrier": f"Agent Packet Relay at {RELAY_URL}" if RELAY_MODE else "same-host direct transport",
+                     "carrier": f"Agent Packet Relay at {', '.join(RELAY_URLS)}" if RELAY_MODE
+                     else "same-host direct transport",
                      "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                      "openfox_commit": subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True,
                                                       text=True).stdout.strip(),

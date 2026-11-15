@@ -38,6 +38,19 @@ held the result and after the run, and its journal, are searched for the
 source archive, the artifact, the buyer wallet address and the Quote
 package: none is found; a control file proves the search finds each.
 
+External relays (RELAY_EXTERNAL=1): instead of a transient unit, the run uses
+relays already installed as systemd units, one host each, and both nodes
+name all of them (`--relay-url` once per relay). The run checks each unit is
+active and enabled and runs the binary built here, stops and starts the units
+for its outages, and leaves every unit running. The carrier outage above
+stops every relay still up, so no relay of either card can take the result.
+With every relay up for the sale, the run also requires that every relay
+holds the task and that every envelope either node sent was accepted by every
+relay of the recipient's card. With RELAY_DOWN naming one relay, that relay is
+stopped before the first purchase and started only after the last sale step:
+the run requires that its unit did not run in between, that it accepted none
+of the nodes' envelopes, and that the other relays accepted every one.
+
 Public addresses, SSH targets and key paths are replaced by labels in every
 transcript and in the evidence; the relay is identified by its TLS public
 key hash. No live adversarial case runs here. Run it through
@@ -73,38 +86,82 @@ fd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fd)
 
 WORK, PRIVATE, ROOT, BIN = fd.WORK, fd.PRIVATE, fd.ROOT, fd.BIN
-RELAY_URL = fd.RELAY_URL
 UID = os.getuid()
 BUYER_SSH, BUYER_KEY = os.environ["BUYER_SSH"], os.environ["BUYER_SSH_KEY"]
-RELAY_SSH, RELAY_KEY = os.environ["RELAY_SSH"], os.environ["RELAY_SSH_KEY"]
-RELAY_USER = os.environ["RELAY_RUN_USER"]
-RELAY_UNIT = os.environ.get("RELAY_UNIT", "tos-relay-test")
 CA = Path(os.environ["E2E_RELAY_CA_FILE"])
 REMOTE_BASE = Path(os.environ.get("BUYER_REMOTE_BASE", "/opt/tos-relay-test")) / WORK.name
 REMOTE_ROOT = REMOTE_BASE / "nodes"
 REMOTE_LOG = REMOTE_BASE / "buyer-serve.log"
+# External relays (RELAY_EXTERNAL=1): relays already installed as systemd
+# units on their hosts, one per URL in RELAY_URLS, reached through RELAY_SSHS
+# and RELAY_SSH_KEYS (same order) and named by RELAY_UNITS. This run does not
+# install, configure or remove them; its outages stop and start those units,
+# and every unit is left running. RELAY_DOWN names one of them ("relay-<n>",
+# by position) that stays stopped for the whole sale. Otherwise one relay is
+# run as a transient unit this run starts and stops.
+EXTERNAL = os.environ.get("RELAY_EXTERNAL") == "1"
+if EXTERNAL:
+    _urls, _sshs, _keys = (os.environ[name].split() for name in ("RELAY_URLS", "RELAY_SSHS", "RELAY_SSH_KEYS"))
+    _units = os.environ.get("RELAY_UNITS", "").split() or ["tos-service-packet-relay"] * len(_urls)
+    if not 1 <= len(_urls) <= 4 or not len(_urls) == len(_sshs) == len(_keys) == len(_units):
+        raise SystemExit("RELAY_URLS, RELAY_SSHS, RELAY_SSH_KEYS and RELAY_UNITS must name 1 to 4 relays each")
+    RELAY_SPECS = [(f"relay-{index + 1}", *spec) for index, spec in enumerate(zip(_urls, _sshs, _keys, _units))]
+else:
+    RELAY_USER = os.environ["RELAY_RUN_USER"]
+    RELAY_SPECS = [("relay", fd.RELAY_URL, os.environ["RELAY_SSH"], os.environ["RELAY_SSH_KEY"],
+                    os.environ.get("RELAY_UNIT", "tos-relay-test"))]
+if sorted(spec[1] for spec in RELAY_SPECS) != fd.RELAY_URLS:
+    raise SystemExit("the relay URLs given to this run and to the nodes differ")
 RELAY_DIR = Path(os.environ.get("RELAY_REMOTE_DIR", "/opt/tos-relay-test"))
 RELAY_RUN = RELAY_DIR / "runs" / WORK.name
-RELAY_STATE = RELAY_RUN / "state"
-RELAY_BIN = RELAY_DIR / "bin" / "tos-service-packet-relay"
-_url = urllib.parse.urlsplit(RELAY_URL)
-RELAY_HOST, RELAY_PORT = _url.hostname, _url.port or 443
-CREDENTIALS = Path("/run/credentials") / f"{RELAY_UNIT}.service"
-RELAY_ARGV = [str(RELAY_BIN), "-listen", f"0.0.0.0:{RELAY_PORT}", "-tls-cert", str(CREDENTIALS / "tls-cert"),
-              "-tls-key", str(CREDENTIALS / "tls-key"), "-state-dir", str(RELAY_STATE),
-              "-global-max-entries", "10000", "-global-max-bytes", "268435456", "-sweep-interval", "10s"]
-# The transient unit: an unprivileged user, the certificate and key handed
-# in as credentials (read by systemd from root-only files), and a read-only
-# file system except the state directory.
-RELAY_PROPERTIES = ["Type=exec", f"User={RELAY_USER}", f"Group={RELAY_USER}",
-                    f"LoadCredential=tls-cert:{RELAY_DIR / 'tls' / 'relay-cert.pem'}",
-                    f"LoadCredential=tls-key:{RELAY_DIR / 'tls' / 'relay-key.pem'}",
-                    "NoNewPrivileges=yes", "ProtectSystem=strict", f"ReadWritePaths={RELAY_STATE}", "ProtectHome=yes",
-                    "PrivateTmp=yes", "PrivateDevices=yes", "UMask=0077", "MemoryMax=512M",
-                    "Environment=GOMEMLIMIT=384MiB", "TimeoutStopSec=20s"] + (
-    ["AmbientCapabilities=CAP_NET_BIND_SERVICE", "CapabilityBoundingSet=CAP_NET_BIND_SERVICE"] if RELAY_PORT < 1024
-    else ["CapabilityBoundingSet="])
 SNAPSHOTS = WORK / "relay-snapshots"
+
+
+class Relay:
+    """One relay of the nodes' cards: its URL, its host and its unit."""
+
+    def __init__(self, name: str, url: str, ssh: str, key: str, unit: str) -> None:
+        self.name, self.url, self.ssh, self.key, self.unit = name, url, ssh, key, unit
+        parts = urllib.parse.urlsplit(url)
+        self.host, self.port = parts.hostname, parts.port or 443
+        self.since = ""
+        if EXTERNAL:
+            self.state = Path(os.environ.get("RELAY_STATE_DIR", "/var/lib/private/tos-service-packet-relay"))
+            self.binary = Path(os.environ.get("RELAY_BIN", "/usr/local/bin/tos-service-packet-relay"))
+            self.cert_file = Path(os.environ.get("RELAY_CERT_FILE", "/etc/tos-service/packet-relay/tls-cert.pem"))
+            self.argv, self.properties = [], []
+            return
+        self.state = RELAY_RUN / "state"
+        self.binary = RELAY_DIR / "bin" / "tos-service-packet-relay"
+        self.cert_file = RELAY_DIR / "tls" / "relay-cert.pem"
+        credentials = Path("/run/credentials") / f"{unit}.service"
+        self.argv = [str(self.binary), "-listen", f"0.0.0.0:{self.port}", "-tls-cert", str(credentials / "tls-cert"),
+                     "-tls-key", str(credentials / "tls-key"), "-state-dir", str(self.state),
+                     "-global-max-entries", "10000", "-global-max-bytes", "268435456", "-sweep-interval", "10s"]
+        # The transient unit: an unprivileged user, the certificate and key
+        # handed in as credentials (read by systemd from root-only files),
+        # and a read-only file system except the state directory.
+        self.properties = ["Type=exec", f"User={RELAY_USER}", f"Group={RELAY_USER}",
+                           f"LoadCredential=tls-cert:{self.cert_file}",
+                           f"LoadCredential=tls-key:{RELAY_DIR / 'tls' / 'relay-key.pem'}",
+                           "NoNewPrivileges=yes", "ProtectSystem=strict", f"ReadWritePaths={self.state}",
+                           "ProtectHome=yes", "PrivateTmp=yes", "PrivateDevices=yes", "UMask=0077", "MemoryMax=512M",
+                           "Environment=GOMEMLIMIT=384MiB", "TimeoutStopSec=20s"] + (
+            ["AmbientCapabilities=CAP_NET_BIND_SERVICE", "CapabilityBoundingSet=CAP_NET_BIND_SERVICE"]
+            if self.port < 1024 else ["CapabilityBoundingSet="])
+
+    def tag(self, text: str) -> str:
+        """text, prefixed with the relay's name when the cards name several."""
+        return text if len(RELAYS) == 1 else f"{self.name}: {text}"
+
+
+RELAYS = [Relay(*spec) for spec in RELAY_SPECS]
+DOWN_NAME = os.environ.get("RELAY_DOWN", "")
+DOWN = next((relay for relay in RELAYS if relay.name == DOWN_NAME), None)
+if DOWN_NAME and (DOWN is None or not EXTERNAL or len(RELAYS) < 2):
+    raise SystemExit("RELAY_DOWN names one of at least two external relays")
+LIVE = [relay for relay in RELAYS if relay is not DOWN]
+REDUNDANT = len(RELAYS) > 1 and DOWN is None
 # SSH connection sharing; a Unix socket path must stay short.
 CONTROL = Path(tempfile.mkdtemp(prefix="ofmh-"))
 SYSTEM_PYTHON = "/usr/bin/python3"
@@ -123,11 +180,13 @@ def label(raw: str, name: str) -> None:
 
 
 label(BUYER_SSH, "<buyer-ssh>")
-label(RELAY_SSH, "<relay-ssh>")
 label(BUYER_KEY, "<ssh-key>")
-label(RELAY_KEY, "<ssh-key>")
 label(BUYER_SSH.rsplit("@", 1)[-1], "<buyer-host>")
-label(RELAY_HOST, "<relay-host>")
+for _relay in RELAYS:
+    label(_relay.ssh, f"<{_relay.name}-ssh>")
+    label(_relay.key, "<ssh-key>")
+    label(_relay.ssh.rsplit("@", 1)[-1], f"<{_relay.name}-host>")
+    label(_relay.host, f"<{_relay.name}-host>")
 _redact = fd.redact
 
 
@@ -148,7 +207,7 @@ def personal_data(text: str) -> list[str]:
     kinds = _personal(text)
     if EMAIL.search(text):
         kinds.append("e-mail address")
-    if ".ssh/" in text or any(Path(key).name in text for key in (BUYER_KEY, RELAY_KEY)):
+    if ".ssh/" in text or any(Path(key).name in text for key in (BUYER_KEY, *(relay.key for relay in RELAYS))):
         kinds.append("SSH key path")
     return kinds
 
@@ -214,8 +273,8 @@ def on_buyer(argv: list, *, data: bytes | None = None, check: bool = True, timeo
                   timeout=timeout, keep_stdout=keep_stdout)
 
 
-def on_relay(script: str, *, check: bool = True, timeout: float = 120, keep_stdout: bool = True):
-    return logged(ssh_argv(RELAY_SSH, RELAY_KEY) + [script], check=check, timeout=timeout, keep_stdout=keep_stdout)
+def on_relay(relay: Relay, script: str, *, check: bool = True, timeout: float = 120, keep_stdout: bool = True):
+    return logged(ssh_argv(relay.ssh, relay.key) + [script], check=check, timeout=timeout, keep_stdout=keep_stdout)
 
 
 def remote_path(value) -> str:
@@ -395,12 +454,14 @@ def host_facts(run) -> dict:
 def machines() -> None:
     local = host_facts(lambda s: subprocess.run(["sh", "-c", s], capture_output=True, text=True))
     buyer = host_facts(lambda s: logged(ssh_argv(BUYER_SSH, BUYER_KEY) + [s]))
-    relay = host_facts(lambda s: on_relay(s))
-    facts = {"provider_and_chain_host": local, "buyer_host": buyer, "relay_host": relay}
+    facts = {"provider_and_chain_host": local, "buyer_host": buyer}
+    for relay in RELAYS:
+        facts[relay.name.replace("-", "_") + "_host"] = host_facts(lambda s, relay=relay: on_relay(relay, s))
     fd.evidence["machines"] = facts
     ids = {item.get("machine_id_sha256_prefix") for item in facts.values()}
-    fd.require("three different machines: the provider and chain host, the buyer host and the relay host have "
-               "distinct machine ids", len(ids) == 3 and all(ids), facts)
+    hosts = "the relay host" if len(RELAYS) == 1 else f"each of the {len(RELAYS)} relay hosts"
+    fd.require(f"{len(facts)} different machines: the provider and chain host, the buyer host and {hosts} have "
+               "distinct machine ids", len(ids) == len(facts) == 2 + len(RELAYS) and all(ids), facts)
 
 
 def direct_path() -> None:
@@ -413,20 +474,29 @@ def direct_path() -> None:
     label(seen, "<provider-host-public-address>")
     local_addresses = subprocess.run(["ip", "-o", "addr", "show"], capture_output=True, text=True).stdout
     behind_nat = re.search(r"\binet6? " + re.escape(seen) + r"/", local_addresses) is None
-    ports = ["22", "80", "443", str(RELAY_PORT), *map(str, fd.RPC_PORTS), "47000"]
+    relay_ports = list(dict.fromkeys(str(relay.port) for relay in RELAYS))
+    ports = ["22", "80", "443", *[port for port in relay_ports if port not in ("22", "80", "443")],
+             *map(str, fd.RPC_PORTS), "47000"]
     probe = connect_results(on_buyer([SYSTEM_PYTHON, "-I", "-c", CONNECT, seen, *ports], timeout=120).stdout)
-    to_relay = connect_results(on_buyer([SYSTEM_PYTHON, "-I", "-c", CONNECT, RELAY_HOST, str(RELAY_PORT)]).stdout)
-    from_here = connect_results(subprocess.run([SYSTEM_PYTHON, "-I", "-c", CONNECT, RELAY_HOST, str(RELAY_PORT)],
-                                               capture_output=True, text=True).stdout)
+    to_relay, from_here = {}, {}
+    for relay in RELAYS:
+        to_relay[relay.name] = connect_results(on_buyer([SYSTEM_PYTHON, "-I", "-c", CONNECT, relay.host,
+                                                         str(relay.port)]).stdout)
+        from_here[relay.name] = connect_results(subprocess.run([SYSTEM_PYTHON, "-I", "-c", CONNECT, relay.host,
+                                                                str(relay.port)], capture_output=True, text=True).stdout)
+    single = len(RELAYS) == 1
     fd.evidence["direct_path_probe"] = {"buyer_to_provider_host_public_address": probe,
                                         "provider_host_public_address_is_on_a_local_interface": not behind_nat,
-                                        "buyer_to_relay": to_relay, "provider_host_to_relay": from_here}
+                                        "buyer_to_relay": to_relay[RELAYS[0].name] if single else to_relay,
+                                        "provider_host_to_relay": from_here[RELAYS[0].name] if single else from_here}
     fd.require("no direct path: the provider host is behind NAT (its public address is on no local interface) and "
                "from the buyer host no TCP connection to that address opens, on any probed port",
                behind_nat and len(probe) == len(ports) and all(v.startswith("refused") for v in probe.values()),
                fd.evidence["direct_path_probe"])
-    fd.require("both nodes' hosts reach the relay's TLS port over the internet",
-               to_relay.get(str(RELAY_PORT)) == "connected" and from_here.get(str(RELAY_PORT)) == "connected",
+    fd.require("both nodes' hosts reach the relay's TLS port over the internet" if single else
+               "both nodes' hosts reach every relay's TLS port over the internet",
+               all(to_relay[relay.name].get(str(relay.port)) == "connected" and
+                   from_here[relay.name].get(str(relay.port)) == "connected" for relay in RELAYS),
                {"buyer": to_relay, "provider": from_here})
 
 
@@ -465,17 +535,26 @@ def validity(pem_or_der: bytes, form: str) -> dict:
             "days": round((end - start).total_seconds() / 86400, 2)}
 
 
-def tls_mode() -> None:
-    with socket.create_connection((RELAY_HOST, RELAY_PORT), timeout=15) as raw, \
-            TLS_CONTEXT.wrap_socket(raw, server_hostname=RELAY_HOST) as tls:
+def relay_tls(relay: Relay) -> dict:
+    """What one relay presents: the live certificate key against the file on
+    its host, the TLS version, and the system trust store's verdict from both
+    nodes' hosts."""
+    with socket.create_connection((relay.host, relay.port), timeout=15) as raw, \
+            TLS_CONTEXT.wrap_socket(raw, server_hostname=relay.host) as tls:
         der, version = tls.getpeercert(binary_form=True), tls.version()
-    live = spki_of_der(der)
-    stored = on_relay(f"openssl x509 -in {RELAY_DIR / 'tls' / 'relay-cert.pem'} -pubkey -noout | "
-                      "openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1").stdout.strip()
-    here = subprocess.run([SYSTEM_PYTHON, "-I", "-c", SYSTEM_TRUST, RELAY_URL], capture_output=True, text=True,
+    stored = on_relay(relay, f"openssl x509 -in {shlex.quote(str(relay.cert_file))} -pubkey -noout | "
+                             "openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1").stdout.strip()
+    here = subprocess.run([SYSTEM_PYTHON, "-I", "-c", SYSTEM_TRUST, relay.url], capture_output=True, text=True,
                           env={"PATH": "/usr/bin:/bin"}).stdout.strip()
     there = on_buyer(["env", "-u", "SSL_CERT_FILE", "-u", "SSL_CERT_DIR", SYSTEM_PYTHON, "-I", "-c", SYSTEM_TRUST,
-                      RELAY_URL]).stdout.strip()
+                      relay.url]).stdout.strip()
+    return {"relay_spki_sha256": spki_of_der(der), "relay_certificate_file_spki_sha256": stored, "tls_version": version,
+            "relay_certificate_validity": validity(der, "DER"), "system_trust_store_from_provider_host": here,
+            "system_trust_store_from_buyer_host": there}
+
+
+def tls_mode() -> None:
+    presented = {relay.name: relay_tls(relay) for relay in RELAYS}
     buyer_env = on_buyer(["sh", "-c", "env | cut -d= -f1 | grep -E '^SSL_CERT_(FILE|DIR)$' || true"]).stdout.split()
     ca_sha = hashlib.sha256(CA.read_bytes()).hexdigest()
     configs = {node: fd.root_json(fd.rail(node)) for node in fd.NODES}
@@ -485,100 +564,155 @@ def tls_mode() -> None:
     preflight = fd.fox_again("provider", "preflight", "--rail-config", fd.rail("provider"))
     checks = {c["id"]: c for c in (fd.strict_json(preflight).get("checks") or [])}
     trust = checks.get("relay.trust", {})
+    trust_text = json.dumps(trust)
+    # Each relay the nodes name is verified against the pinned CA only.
+    pinned_only = {relay.name: any(f"{url}: the pinned CA file only" in trust_text
+                                   for url in (relay.url, redact(relay.url))) for relay in RELAYS}
     fd.evidence["tls"] = {
-        "mode": "direct TLS on the relay host's public address, certificate issued by a private P-256 CA generated for "
-                "this run (SAN: the relay's public IP address); both nodes pin that CA with init --relay-ca-file",
-        "relay_spki_sha256": live, "relay_certificate_file_spki_sha256": stored, "tls_version": version,
-        "pinned_ca_sha256": ca_sha, "node_pins": pins,
-        "ca_validity": validity(CA.read_bytes(), "PEM"), "relay_certificate_validity": validity(der, "DER"),
-        "system_trust_store_from_provider_host": here, "system_trust_store_from_buyer_host": there,
+        "mode": ("direct TLS on the relay host's public address, certificate issued by a private P-256 CA generated "
+                 "for this run (SAN: the relay's public IP address); both nodes pin that CA with init --relay-ca-file"
+                 if not EXTERNAL else
+                 "direct TLS on each relay host's public address, each certificate issued by one private P-256 test CA "
+                 "(SAN: that relay's public IP address); both nodes pin that CA with init --relay-ca-file"),
+        "pinned_ca_sha256": ca_sha, "node_pins": pins, "ca_validity": validity(CA.read_bytes(), "PEM"),
         "ssl_cert_env_in_provider_run": sorted(k for k in ("SSL_CERT_FILE", "SSL_CERT_DIR") if k in os.environ),
         "ssl_cert_env_on_buyer_host": buyer_env,
         "provider_preflight_relay_trust": {k: trust.get(k) for k in ("status", "detail", "message") if k in trust},
         "provider_preflight_relay_reachable": checks.get("relay.reachable", {}).get("status"),
-        "plain_http": False}
+        "preflight_pinned_ca_only_per_relay": pinned_only, "plain_http": False}
+    if len(RELAYS) == 1:
+        fd.evidence["tls"].update(presented[RELAYS[0].name])
+    else:
+        fd.evidence["tls"]["relays"] = presented
+    validities = {"ca_validity": fd.evidence["tls"]["ca_validity"],
+                  **{f"{name}_certificate_validity": item["relay_certificate_validity"]
+                     for name, item in presented.items()}}
     fd.require("the run's CA and the relay certificate are each valid for at least 90 days, so no pinned-certificate "
-               "expiry warning applies", all(fd.evidence["tls"][key]["days"] >= 90
-                                             for key in ("ca_validity", "relay_certificate_validity")),
-               {key: fd.evidence["tls"][key] for key in ("ca_validity", "relay_certificate_validity")})
+               "expiry warning applies" if len(RELAYS) == 1 else
+               "the pinned CA and every relay certificate are each valid for at least 90 days, so no pinned-certificate "
+               "expiry warning applies", all(item["days"] >= 90 for item in validities.values()), validities)
     fd.require("TLS pinned-CA mode: the live relay presents the certificate key of the file on the relay host; both "
                "nodes pin the run's CA in their own state; neither node's environment names SSL_CERT_FILE or "
                "SSL_CERT_DIR; the system trust store refuses the relay on both hosts; preflight verifies the relay "
-               "against the pinned CA file only and reaches it",
-               live == stored and all(p["relay_ca_sha256"] == ca_sha and p["relay_ca_file_in_state"]
-                                      for p in pins.values()) and
+               "against the pinned CA file only and reaches it" if len(RELAYS) == 1 else
+               "TLS pinned-CA mode: every live relay presents the certificate key of the file on its host; both nodes "
+               "pin the CA in their own state; neither node's environment names SSL_CERT_FILE or SSL_CERT_DIR; the "
+               "system trust store refuses every relay on both hosts; preflight verifies every relay against the "
+               "pinned CA file only and reaches all of them",
+               all(item["relay_spki_sha256"] == item["relay_certificate_file_spki_sha256"] and
+                   item["system_trust_store_from_provider_host"].startswith("refused: SSLCertVerificationError") and
+                   item["system_trust_store_from_buyer_host"].startswith("refused: SSLCertVerificationError")
+                   for item in presented.values()) and
+               all(p["relay_ca_sha256"] == ca_sha and p["relay_ca_file_in_state"] for p in pins.values()) and
                not fd.evidence["tls"]["ssl_cert_env_in_provider_run"] and not buyer_env and
-               here.startswith("refused: SSLCertVerificationError") and
-               there.startswith("refused: SSLCertVerificationError") and trust.get("status") == "pass" and
-               "the pinned CA file only" in json.dumps(trust) and
+               trust.get("status") == "pass" and all(pinned_only.values()) and
                checks.get("relay.reachable", {}).get("status") == "pass", fd.evidence["tls"])
 
 
 # --- Relay daemon on its host -------------------------------------------------
 
-def relay_request(path: str, timeout: float = 15):
-    with urllib.request.urlopen(RELAY_URL + path, context=TLS_CONTEXT, timeout=timeout) as response:
+def relay_request(relay: Relay, path: str, timeout: float = 15):
+    with urllib.request.urlopen(relay.url + path, context=TLS_CONTEXT, timeout=timeout) as response:
         return response.status, response.read()
 
 
-def relay_up() -> bool:
+def relay_up(relay: Relay) -> bool:
     try:
-        status, body = relay_request("/v1/relay", timeout=5)
+        status, body = relay_request(relay, "/v1/relay", timeout=5)
         return status == 200 and json.loads(body).get("schema") == "tos.service.agent-packet-relay.relay.v1"
     except (OSError, ValueError):
         return False
 
 
-def listing(agent: str) -> list[str]:
-    status, body = relay_request(f"/v1/mailboxes/{agent}/envelopes")
+def listing(agent: str, relay: Relay) -> list[str]:
+    status, body = relay_request(relay, f"/v1/mailboxes/{agent}/envelopes")
     if status != 200:
         raise RuntimeError(f"listing answered {status}")
     return [entry["envelope_id"] for entry in json.loads(body)["envelopes"]]
 
 
-def prepare_relay() -> None:
+def listings(agent: str, relays: list) -> dict[str, list[str]]:
+    return {relay.name: listing(agent, relay) for relay in relays}
+
+
+UNIT_PROPERTIES = "ActiveState,UnitFileState,User,DynamicUser,ExecMainStartTimestampMonotonic," \
+                  "InactiveEnterTimestampMonotonic,NRestarts"
+
+
+def unit_state(relay: Relay) -> dict:
+    out = on_relay(relay, f"systemctl show -p {UNIT_PROPERTIES} {shlex.quote(relay.unit)}", check=False).stdout
+    return dict(line.split("=", 1) for line in out.strip().splitlines() if "=" in line)
+
+
+def relay_uid(relay: Relay) -> str:
+    return on_relay(relay, f"ps -o uid= -p \"$(systemctl show -p MainPID --value {shlex.quote(relay.unit)})\"",
+                    check=False).stdout.strip()
+
+
+def prepare_relay(relay: Relay) -> None:
     q = shlex.quote
-    active = on_relay(f"systemctl is-active {q(RELAY_UNIT)}", check=False).stdout.strip()
-    exists = on_relay(f"test -e {q(str(RELAY_RUN))}", check=False).returncode == 0
-    fd.require("the relay host runs no relay unit of this name and has no directory of this run", active != "active"
-               and not exists, {"unit": active, "run_directory_exists": exists})
-    on_relay(f"install -d -o root -g root -m 0755 {q(str(RELAY_RUN))} && "
-             f"install -d -o {q(RELAY_USER)} -g {q(RELAY_USER)} -m 0700 {q(str(RELAY_STATE))}")
-    remote = on_relay(f"sha256sum {q(str(RELAY_BIN))}").stdout.split()[0]
+    if EXTERNAL:
+        # An installed unit: it must already serve, start at boot and run as
+        # an unprivileged user; this run only stops and starts it.
+        state = unit_state(relay)
+        uid, up = relay_uid(relay), relay_up(relay)
+        fd.evidence.setdefault("relay_units", {})[relay.name] = {"unit": relay.unit, "before_run": state, "uid": uid}
+        fd.require(relay.tag("the installed relay unit is active and enabled on its host, runs as an unprivileged "
+                             f"user (uid {uid}) and serves TLS at its public URL, verified against the pinned CA"),
+                   state.get("ActiveState") == "active" and state.get("UnitFileState") == "enabled" and up and
+                   uid.isdigit() and int(uid) != 0, {"unit": state, "uid": uid, "answers": up})
+    else:
+        active = on_relay(relay, f"systemctl is-active {q(relay.unit)}", check=False).stdout.strip()
+        exists = on_relay(relay, f"test -e {q(str(RELAY_RUN))}", check=False).returncode == 0
+        fd.require("the relay host runs no relay unit of this name and has no directory of this run",
+                   active != "active" and not exists, {"unit": active, "run_directory_exists": exists})
+        on_relay(relay, f"install -d -o root -g root -m 0755 {q(str(RELAY_RUN))} && "
+                        f"install -d -o {q(RELAY_USER)} -g {q(RELAY_USER)} -m 0700 {q(str(relay.state))}")
+    remote = on_relay(relay, f"sha256sum {q(str(relay.binary))}").stdout.split()[0]
     local = hashlib.sha256((BIN / "tos-service-packet-relay").read_bytes()).hexdigest()
-    fd.evidence["relay_since"] = on_relay("date +%s").stdout.strip()
-    fd.evidence.setdefault("binaries", {})["tos-service-packet-relay"] = {"sha256": local, "on_relay_host": remote}
-    fd.require("the relay binary on the relay host is byte-identical to the one built here from the named ai commit",
-               remote == local, {"relay_host": remote, "built": local})
+    relay.since = on_relay(relay, "date +%s").stdout.strip()
+    if len(RELAYS) == 1:
+        fd.evidence["relay_since"] = relay.since
+    else:
+        fd.evidence.setdefault("relay_since", {})[relay.name] = relay.since
+    binary = fd.evidence.setdefault("binaries", {}).setdefault("tos-service-packet-relay", {"sha256": local})
+    binary["on_relay_host" if len(RELAYS) == 1 else f"on_{relay.name}_host"] = remote
+    fd.require(relay.tag("the relay binary on the relay host is byte-identical to the one built here from the named "
+                         "ai commit"), remote == local, {"relay_host": remote, "built": local})
 
 
-def start_relay(label_: str) -> None:
-    properties = " ".join(f"-p {shlex.quote(item)}" for item in RELAY_PROPERTIES)
-    on_relay(f"systemctl reset-failed {RELAY_UNIT} 2> /dev/null; systemd-run --unit={RELAY_UNIT} {properties} -- "
-             + shlex.join(RELAY_ARGV))
-    up = fd.poll(relay_up, 60, 1)
-    uid = on_relay(f"ps -o uid= -p \"$(systemctl show -p MainPID --value {RELAY_UNIT})\"", check=False).stdout.strip()
-    fd.evidence.setdefault("relay_process_uids", []).append(uid)
-    fd.require(f"{label_}: the relay daemon runs on the relay host as an unprivileged user (uid {uid}) and serves TLS "
-               "at its public URL, verified against the pinned CA", bool(up) and uid.isdigit() and int(uid) != 0,
-               {"uid": uid, "answers": bool(up)})
+def start_relay(relay: Relay, label_: str) -> None:
+    if EXTERNAL:
+        on_relay(relay, f"systemctl start {shlex.quote(relay.unit)}")
+    else:
+        properties = " ".join(f"-p {shlex.quote(item)}" for item in relay.properties)
+        on_relay(relay, f"systemctl reset-failed {relay.unit} 2> /dev/null; systemd-run --unit={relay.unit} "
+                        f"{properties} -- " + shlex.join(relay.argv))
+    up = fd.poll(lambda: relay_up(relay), 60, 1)
+    uid = relay_uid(relay)
+    fd.evidence.setdefault("relay_process_uids", []).append(uid if len(RELAYS) == 1 else f"{relay.name}:{uid}")
+    fd.require(relay.tag(f"{label_}: the relay daemon runs on the relay host as an unprivileged user (uid {uid}) and "
+                         "serves TLS at its public URL, verified against the pinned CA"),
+               bool(up) and uid.isdigit() and int(uid) != 0, {"uid": uid, "answers": bool(up)})
 
 
-def stop_relay(label_: str) -> None:
-    on_relay(f"systemctl stop {RELAY_UNIT}", check=False)
-    state = on_relay(f"systemctl show -p ActiveState --value {RELAY_UNIT}", check=False).stdout.strip()
-    down = not relay_up()
-    fd.require(f"{label_}: the relay daemon stopped cleanly on SIGTERM and no longer answers",
+def stop_relay(relay: Relay, label_: str) -> None:
+    on_relay(relay, f"systemctl stop {shlex.quote(relay.unit)}", check=False)
+    state = on_relay(relay, f"systemctl show -p ActiveState --value {shlex.quote(relay.unit)}",
+                     check=False).stdout.strip()
+    down = not relay_up(relay)
+    fd.require(relay.tag(f"{label_}: the relay daemon stopped cleanly on SIGTERM and no longer answers"),
                state == "inactive" and down, {"active_state": state, "answers": not down})
 
 
-def snapshot(name: str) -> dict:
+def snapshot(name: str, relay: Relay, recipient: str = "") -> dict:
     """A copy of the relay's state directory on its host, for the plaintext
-    search."""
+    search. With recipient, also how many stored envelopes are in that
+    Agent's mailbox (state files are named by the Agent digest in hex)."""
     # Exit 1 means a file changed while it was read (the relay is live).
-    tar = on_relay(f"tar -C {shlex.quote(str(RELAY_STATE))} --exclude=./LOCK --exclude=./tmp -cf - .; "
-                   "status=$?; [ $status -le 1 ]", keep_stdout=False).raw
-    target = SNAPSHOTS / name
+    tar = on_relay(relay, f"tar -C {shlex.quote(str(relay.state))} --exclude=./LOCK --exclude=./tmp -cf - .; "
+                          "status=$?; [ $status -le 1 ]", keep_stdout=False).raw
+    target = SNAPSHOTS / (name if len(RELAYS) == 1 else f"{name}-{relay.name}")
     target.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(tar)) as archive:
         if hasattr(tarfile, "data_filter"):
@@ -587,14 +721,18 @@ def snapshot(name: str) -> dict:
             archive.extractall(target)
     files = [path for path in target.rglob("*") if path.is_file()]
     envelopes = [path for path in files if "envelopes" in path.parts]
-    return {"files": len(files), "envelope_files": len(envelopes),
-            "envelope_bytes": sum(path.stat().st_size for path in envelopes)}
+    summary = {"files": len(files), "envelope_files": len(envelopes),
+               "envelope_bytes": sum(path.stat().st_size for path in envelopes)}
+    if recipient:
+        prefix = recipient[len("agent_"):] + "-"
+        summary["recipient_envelope_files"] = sum(1 for path in envelopes if path.name.startswith(prefix))
+    return summary
 
 
-def relay_journal() -> str:
-    text = on_relay(f"journalctl _SYSTEMD_UNIT={RELAY_UNIT}.service --since @{fd.evidence['relay_since']} -o cat "
-                    "--no-pager", check=False, keep_stdout=False).raw.decode(errors="replace")
-    (WORK / "relay.log").write_text(text)
+def relay_journal(relay: Relay) -> str:
+    text = on_relay(relay, f"journalctl _SYSTEMD_UNIT={relay.unit}.service --since @{relay.since} -o cat --no-pager",
+                    check=False, keep_stdout=False).raw.decode(errors="replace")
+    (WORK / ("relay.log" if len(RELAYS) == 1 else f"{relay.name}.log")).write_text(text)
     return text
 
 
@@ -694,50 +832,95 @@ def to_buyer() -> list[dict]:
 # --- The sale with one relay outage --------------------------------------------
 
 def outage_sale() -> dict:
+    """The sale with one carrier outage: every relay still up (LIVE) stops
+    while the result is pending, so no relay of the card can take it, and
+    starts again on its own state."""
     provider, buyer = fd.RUN["provider_agent"], fd.RUN["buyer_agent"]
+    live_urls = {relay.url for relay in LIVE}
+    single = len(RELAYS) == 1
     paused = fd.fox_json("provider", "pause", "--rail-config", fd.rail("provider"), "--reason", "relay outage case")
     fd.stop_serve("provider")
     fd.require("the provider is paused and stopped before the purchase, so only the relay can hold the task",
                paused.get("paused") is True and "provider" not in fd.SERVING, paused)
     purchase = fd.buy("first purchase")
-    tasks = fd.poll(lambda: listing(provider) or None, 300, 2) or []
-    task_snapshot = snapshot("task-held")
-    fd.require("the buyer's task, sealed to the provider's key card, is held by the relay in the provider's mailbox",
-               bool(tasks) and task_snapshot["envelope_files"] > 0, {"listed": tasks, "snapshot": task_snapshot})
+    # The buyer deposits its task at every relay of the provider's card that
+    # answers; with several, every live relay must come to hold it.
+    listed = fd.poll(lambda: (lambda found: found if all(found.values()) else None)(listings(provider, LIVE)),
+                     300, 2) or {}
+    tasks = sorted({envelope for found in listed.values() for envelope in found})
+    task_snapshots = {relay.name: snapshot("task-held", relay, provider) for relay in LIVE}
+    fd.require("the buyer's task, sealed to the provider's key card, is held by the relay in the provider's mailbox"
+               if single else "the buyer's task, sealed to the provider's key card, is held in the provider's mailbox "
+               "by every live relay of the card: " + ", ".join(relay.name for relay in LIVE),
+               bool(tasks) and len(listed) == len(LIVE) and all(listed.values()) and
+               all(item["envelope_files"] > 0 and item["recipient_envelope_files"] > 0
+                   for item in task_snapshots.values()),
+               {"listed": listed, "snapshot": task_snapshots})
     fd.start_serve("provider")
-    held = fd.poll(lambda: "task(s) held" in fd.serve_log("provider") and not (set(tasks) & set(listing(provider))),
-                   300, 2)
+    held = fd.poll(lambda: "task(s) held" in fd.serve_log("provider") and
+                   not any(set(tasks) & set(found) for found in listings(provider, LIVE).values()), 300, 2)
     facts = fd.actor_facts(fd.RUN["actor"])
-    fd.require("the provider took the task from the relay and holds it while paused: nothing executed or responded",
+    fd.require("the provider took the task from the relay and holds it while paused: nothing executed or responded"
+               if single else "the provider took the task, acknowledged it at every live relay, and holds it while "
+               "paused: nothing executed or responded",
                bool(held) and not facts["responds"] and fd.executions() == [],
                {"responds": len(facts["responds"]), "executions": fd.executions()})
     early = {row["envelope_id"] for row in to_buyer() if row.get("accepted")}
 
-    stop_relay("outage begins with the result pending")
+    for relay in LIVE:
+        stop_relay(relay, "outage begins with the result pending")
     fd.stop_serve("buyer")
     fd.record("the buyer node is stopped during the outage, so the result waits at the relay once accepted", True)
     resumed = fd.fox_json("provider", "resume", "--rail-config", fd.rail("provider"))
     responded = fd.poll(lambda: len(fd.actor_facts(fd.RUN["actor"])["responds"]) == 1, 900, 5)
+    # Every relay of the buyer's card is down: no deposit can be accepted.
     pending = fd.poll(lambda: [row["envelope_id"] for row in to_buyer()
-                               if not row.get("accepted") and RELAY_URL in row.get("relays", [])], 600, 5) or []
+                               if not row.get("accepted") and {r.url for r in RELAYS} <= set(row.get("relays", []))],
+                      600, 5) or []
     fd.require("during the outage the provider executed and responded on chain while its result deposits fail and "
                "stay journaled", resumed.get("paused") is False and bool(responded) and bool(pending) and
                len(fd.executions()) == 1,
                {"responded": bool(responded), "pending_envelopes": pending, "executions": fd.executions()})
-    start_relay("outage ends: restart on the same state directory")
+    for relay in LIVE:
+        start_relay(relay, "outage ends: restart on the same state directory")
     accepted = fd.poll(lambda: [row["envelope_id"] for row in to_buyer()
-                                if RELAY_URL in row.get("accepted", []) and row["envelope_id"] not in early], 1500, 5) or []
-    in_mailbox = listing(buyer)
-    result_snapshot = snapshot("result-held")
+                                if live_urls & set(row.get("accepted", [])) and row["envelope_id"] not in early],
+                       1500, 5) or []
+    in_mailbox = listings(buyer, LIVE)
+    result_snapshots = {relay.name: snapshot("result-held", relay, buyer) for relay in LIVE}
+    # Which relay holds which accepted envelope, from the provider's journal.
+    accepted_at = {row["envelope_id"]: sorted(set(row.get("accepted", [])) & live_urls) for row in to_buyer()
+                   if row["envelope_id"] in accepted}
     fd.require("after the restart the provider's courier deposits the result and the relay holds it for the buyer",
-               bool(accepted) and set(accepted) <= set(in_mailbox) and result_snapshot["envelope_files"] > 0,
-               {"failed_while_down": pending, "accepted_after_restart": accepted, "listed_for_buyer": in_mailbox})
+               bool(accepted) and all(envelope in in_mailbox[relay.name] for envelope, urls in accepted_at.items()
+                                      for relay in LIVE if relay.url in urls) and
+               any(item["recipient_envelope_files"] > 0 for item in result_snapshots.values()),
+               {"failed_while_down": pending, "accepted_after_restart": accepted,
+                "accepted_at": {envelope: [redact(url) for url in urls] for envelope, urls in accepted_at.items()},
+                "listed_for_buyer": in_mailbox})
+    if REDUNDANT:
+        # Redundant deposits: the courier keeps depositing at the other
+        # relays of the card after the first accepted.
+        everywhere = fd.poll(lambda: (lambda rows: rows if rows and all({r.url for r in RELAYS} <=
+                                                                       set(row.get("accepted", [])) for row in rows)
+                                      else None)([row for row in to_buyer() if row["envelope_id"] in accepted]),
+                             600, 5) or []
+        mailboxes = listings(buyer, RELAYS)
+        fd.require("the second relay carries the result too: every result envelope deposited after the outage is "
+                   "accepted by every relay of the buyer's card and listed in the buyer's mailbox at each of them",
+                   bool(everywhere) and all(set(accepted) <= set(found) for found in mailboxes.values()),
+                   {"accepted_by": {row["envelope_id"]: [redact(url) for url in row.get("accepted", [])]
+                                    for row in everywhere}, "listed_for_buyer": mailboxes})
     fd.start_serve("buyer")
     fd.require("buyer serve is running again", bool(fd.poll(lambda: fd.SERVING["buyer"].poll() is None, 20, 2)),
                fd.serve_log("buyer"))
-    fd.evidence["relay_outage"] = {"task_envelopes": tasks, "failed_while_down": pending,
-                                   "accepted_after_restart": accepted,
-                                   "snapshots": {"task-held": task_snapshot, "result-held": result_snapshot}}
+    fd.evidence["relay_outage"] = {
+        "task_envelopes": tasks, "failed_while_down": pending, "accepted_after_restart": accepted,
+        "relays_stopped_for_the_outage": [relay.name for relay in LIVE],
+        "snapshots": ({"task-held": task_snapshots[RELAYS[0].name], "result-held": result_snapshots[RELAYS[0].name]}
+                      if single else {"task-held": task_snapshots, "result-held": result_snapshots})}
+    if not single:
+        fd.evidence["relay_outage"]["task_listed_at"] = listed
     return purchase
 
 
@@ -801,18 +984,27 @@ def no_plaintext(journal: str) -> None:
     control_found, _ = search([control], wanted)
     fd.require("the plaintext search finds every searched value in a control file holding one slice of each",
                set(control_found) == set(wanted), sorted(control_found))
-    targets = [SNAPSHOTS, WORK / "relay.log"]
+    journals = [WORK / ("relay.log" if len(RELAYS) == 1 else f"{relay.name}.log") for relay in RELAYS]
+    targets = [SNAPSHOTS, *journals]
     found, scanned = search(targets, wanted)
     snapshots = {path.name: sum(1 for p in path.rglob("*") if p.is_file()) for path in SNAPSHOTS.iterdir()}
     fd.evidence["plaintext_search"] = {
         "searched": "copies of the relay host's state directory (taken over SSH with tar while the relay held the "
-                    "task, while it held the result, and after the run) and its journal",
+                    "task, while it held the result, and after the run) and its journal" if len(RELAYS) == 1 else
+                    "copies of every relay host's state directory (taken over SSH with tar while the live relays held "
+                    "the task, while they held the result, and of every relay after the run) and every relay's "
+                    "journal since this run began",
         "copies": snapshots, "scanned": scanned, "values": {kind: len(items) for kind, items in wanted.items()},
         "found": found}
     held = fd.evidence["relay_outage"]["snapshots"]
+    copies = list(held.values()) if len(RELAYS) == 1 else [item for per in held.values() for item in per.values()]
     fd.require("nothing in clear at the relay: no state file it wrote, while it held the task, while it held the "
                "result or after the run, nor its journal, contains the source archive, the artifact, the buyer wallet "
-               "address or the Quote package", not found and all(item["envelope_files"] > 0 for item in held.values()),
+               "address or the Quote package" if len(RELAYS) == 1 else
+               "nothing in clear at any relay: no state file they wrote, while they held the task, while they held "
+               "the result or after the run, nor their journals, contains the source archive, the artifact, the buyer "
+               "wallet address or the Quote package",
+               not found and bool(copies) and all(item["envelope_files"] > 0 for item in copies),
                {"found": found, "scanned": scanned})
     addresses = [raw for raw, name in LABELS.items() if name in ("<buyer-host>", "<provider-host-public-address>")]
     named = [redact(value) for value in (fd.RUN["provider_agent"], fd.RUN["buyer_agent"], *addresses) if value in journal]
@@ -830,12 +1022,75 @@ def git(path, *args) -> str:
     return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True).stdout.strip()
 
 
+def node_outboxes() -> dict[str, list[dict]]:
+    """Every envelope each node journaled for a relay, as its status reports
+    it (ids and relays only, never a secret)."""
+    return {node: ((fd.fox_json(node, "status", "--rail-config", fd.rail(node)).get("relay") or {}).get("outbox")
+                   or []) for node in fd.NODES}
+
+
+def accepted_view(outboxes: dict) -> dict:
+    return {node: {row.get("envelope_id"): [redact(url) for url in row.get("accepted_by", [])] for row in rows}
+            for node, rows in outboxes.items()}
+
+
+def take_down() -> None:
+    """G3: one relay of every card is stopped before the first purchase and
+    stays stopped until the last sale step is done."""
+    stop_relay(DOWN, "stopped before the first purchase, for the whole sale")
+    state = unit_state(DOWN)
+    fd.evidence["relay_down"] = {"relay": DOWN.name, "stopped_utc": datetime.datetime.now(datetime.timezone.utc)
+                                 .isoformat(), "unit_after_stop": state}
+
+
+def bring_up() -> None:
+    """The stopped relay never ran during the sale, it took no envelope of
+    either node, and the other relays took every one; then it starts again."""
+    live_urls = {relay.url for relay in LIVE}
+    stopped = fd.evidence["relay_down"]["unit_after_stop"]
+    outboxes = fd.poll(lambda: (lambda found: found if all(
+        row.get("accepted_by") and live_urls & set(row["accepted_by"]) for rows in found.values() for row in rows)
+        else None)(node_outboxes()), 300, 5) or node_outboxes()
+    rows = [row for found in outboxes.values() for row in found]
+    state = unit_state(DOWN)
+    fd.evidence["relay_down"].update({"unit_before_restart": state, "accepted_by": accepted_view(outboxes),
+                                      "answers_before_restart": relay_up(DOWN)})
+    fd.require(f"{DOWN.name} stayed stopped for the whole sale (its unit did not start again between the stop before "
+               "the first purchase and the end of the last sale step) and accepted none of the envelopes either node "
+               "sent; " + " and ".join(relay.name for relay in LIVE) + " accepted every one, so it alone carried "
+               "every task, result and acknowledgement",
+               state.get("ActiveState") == "inactive" and not fd.evidence["relay_down"]["answers_before_restart"] and
+               all(state.get(key) == stopped.get(key) for key in ("ExecMainStartTimestampMonotonic",
+                                                                  "InactiveEnterTimestampMonotonic")) and
+               bool(outboxes.get("provider")) and bool(outboxes.get("buyer")) and
+               all(DOWN.url not in row.get("accepted_by", []) and live_urls & set(row.get("accepted_by", []))
+                   for row in rows), fd.evidence["relay_down"])
+    start_relay(DOWN, "restarted after the sale")
+
+
+def carried_everywhere() -> None:
+    """G2: with every relay up, the redundant deposits put every envelope
+    either node sent at every relay of the recipient's card."""
+    urls = {relay.url for relay in RELAYS}
+    outboxes = fd.poll(lambda: (lambda found: found if all(
+        urls <= set(row.get("accepted_by", [])) for rows in found.values() for row in rows) else None)(
+        node_outboxes()), 600, 5) or node_outboxes()
+    rows = [row for found in outboxes.values() for row in found]
+    fd.evidence["redundant_carriage"] = {"accepted_by": accepted_view(outboxes)}
+    fd.require("the second relay carried the sale as well: every envelope either node sent (tasks, results and "
+               "acknowledgements) was accepted by every relay of the recipient's card",
+               bool(outboxes.get("provider")) and bool(outboxes.get("buyer")) and
+               all(urls <= set(row.get("accepted_by", [])) for row in rows), fd.evidence["redundant_carriage"])
+
+
 def sale() -> None:
     stage()
     machines()
     start_tunnel()
-    prepare_relay()
-    start_relay("start")
+    for relay in RELAYS:
+        prepare_relay(relay)
+        if not EXTERNAL:
+            start_relay(relay, "start")
     direct_path()
     fd.setup_nodes()
     tls_mode()
@@ -844,9 +1099,13 @@ def sale() -> None:
     fd.install_node(Path(fd.RUN["offer_path"]), handed)
     fd.RUN["offer_path"] = str(handed)
     configs = {node: fd.root_json(fd.rail(node)) for node in fd.NODES}
-    fd.require("relay only: both nodes name the relay's public URL and no direct peer or Messenger socket",
-               all(c.get("relay_urls") == [RELAY_URL] and not c.get("direct_peers") and not c.get("messenger_socket")
+    fd.require("relay only: both nodes name the relay's public URL and no direct peer or Messenger socket"
+               if len(RELAYS) == 1 else
+               "relays only: both nodes name every relay's public URL and no direct peer or Messenger socket",
+               all(c.get("relay_urls") == fd.RELAY_URLS and not c.get("direct_peers") and not c.get("messenger_socket")
                    for c in configs.values()), {n: c.get("relay_urls") for n, c in configs.items()})
+    if DOWN is not None:
+        take_down()
     purchase = outage_sale()
     fd.verify_sale(purchase)
     fd.relay_delivery()
@@ -854,6 +1113,10 @@ def sale() -> None:
     fd.run_again()
     fd.tampered_offer()
     fd.paused_purchase()
+    if REDUNDANT:
+        carried_everywhere()
+    if DOWN is not None:
+        bring_up()
 
 
 def finish() -> None:
@@ -862,13 +1125,19 @@ def finish() -> None:
     for node in list(fd.SERVING):
         fd.stop_serve(node)
     try:
-        if fd.evidence.get("relay_since"):
-            if relay_up():
-                stop_relay("end of run")
-            snapshot("after-run")
-            journal = relay_journal()
-            if fd.RUN.get("first"):
-                no_plaintext(journal)
+        prepared = [relay for relay in RELAYS if relay.since]
+        for relay in prepared:
+            if EXTERNAL:
+                # An installed relay is left serving, whatever happened.
+                if not relay_up(relay):
+                    start_relay(relay, "end of run: the installed relay is started again")
+            elif relay_up(relay):
+                stop_relay(relay, "end of run")
+        for relay in prepared:
+            snapshot("after-run", relay)
+        journal = "\n".join(relay_journal(relay) for relay in prepared)
+        if prepared and fd.RUN.get("first"):
+            no_plaintext(journal)
     except fd.Stop:
         pass
     except Exception as error:  # noqa: BLE001 - the evidence records the failure
@@ -879,22 +1148,30 @@ def finish() -> None:
         tunnel.wait(timeout=30)
     try:
         left = on_buyer(["sh", "-c", f"pgrep -af {shlex.quote(str(REMOTE_BASE))} || true; ss -ltnH"], check=False).stdout
-        relay_left = on_relay(f"systemctl is-active {RELAY_UNIT}; pgrep -c -f {shlex.quote(str(RELAY_BIN))} || true",
-                              check=False).stdout.split()
+        relay_left = {relay.name: on_relay(relay, f"systemctl is-active {shlex.quote(relay.unit)}; "
+                                                  f"pgrep -c -f {shlex.quote(str(relay.binary))} || true",
+                                           check=False).stdout.split() for relay in RELAYS}
         files = on_buyer(["find", str(REMOTE_BASE), "-maxdepth", "1"], check=False).stdout.split()
         tunnelled = [port for port in fd.RPC_PORTS if f"127.0.0.1:{port} " in left]
         fd.evidence["teardown"] = {"buyer_processes_of_this_run": [line for line in left.splitlines()
                                                                     if str(REMOTE_BASE) in line and
                                                                     "pgrep" not in line],
                                    "tunnel_ports_still_bound_on_buyer_host": tunnelled,
-                                   "relay_unit": relay_left,
-                                   "left_for_inspection": {"buyer_host": files, "relay_host": [str(RELAY_RUN)]}}
-        fd.record("teardown: no node process of this run on the buyer host, the tunnel is closed and the relay unit is "
-                  "stopped", not fd.evidence["teardown"]["buyer_processes_of_this_run"] and not tunnelled and
-                  relay_left[:1] != ["active"], fd.evidence["teardown"])
+                                   "relay_unit": relay_left[RELAYS[0].name] if len(RELAYS) == 1 else relay_left,
+                                   "left_for_inspection": {"buyer_host": files,
+                                                           "relay_host": [] if EXTERNAL else [str(RELAY_RUN)]}}
+        clean = not fd.evidence["teardown"]["buyer_processes_of_this_run"] and not tunnelled
+        if EXTERNAL:
+            fd.record("teardown: no node process of this run on the buyer host, the tunnel is closed and every "
+                      "installed relay unit is active again", clean and
+                      all(found[:1] == ["active"] for found in relay_left.values()), fd.evidence["teardown"])
+        else:
+            fd.record("teardown: no node process of this run on the buyer host, the tunnel is closed and the relay "
+                      "unit is stopped", clean and relay_left[RELAYS[0].name][:1] != ["active"],
+                      fd.evidence["teardown"])
     except Exception as error:  # noqa: BLE001 - the evidence records the failure
         fd.record("teardown ran", False, redact(repr(error)))
-    for target, key in ((BUYER_SSH, BUYER_KEY), (RELAY_SSH, RELAY_KEY)):
+    for target, key in ((BUYER_SSH, BUYER_KEY), *((relay.ssh, relay.key) for relay in RELAYS)):
         subprocess.run(["ssh", "-o", f"ControlPath={CONTROL}/%C", "-O", "exit", "-i", key, target],
                        capture_output=True, timeout=30)
     try:
@@ -929,13 +1206,13 @@ async def main() -> int:
                   "relay's private CA pinned on both nodes",
         "executor_mode": "executor service socket",
         "carrier": "Agent Packet Relay daemon on a third host, public URL https://<relay-host>:%d, the only transport "
-                   "of both nodes" % RELAY_PORT,
+                   "of both nodes" % RELAYS[0].port,
         "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "openfox_commit": git(fd.REPO, "rev-parse", "HEAD"), "openfox_tree_status": tree, "openfox_tree_dirty": bool(tree),
         "tos_commit": git(fd.SOURCE, "rev-parse", "HEAD"),
         "relay_daemon": {"ai_commit": git(relay_source, "rev-parse", "HEAD"), "ai_tree_status": relay_tree,
                          "build": "GOWORK=off CGO_ENABLED=0 go build -trimpath ./protocol/cmd/tos-service-packet-relay",
-                         "argv": [redact(part) for part in RELAY_ARGV], "unit_properties": RELAY_PROPERTIES,
+                         "argv": [redact(part) for part in RELAYS[0].argv], "unit_properties": RELAYS[0].properties,
                          "launch": "systemd-run transient unit on the relay host (not an installed unit), as a "
                                    "dedicated unprivileged system user",
                          "chain_rpc_configured": False, "key_material": "its TLS key only, as a systemd credential"},
@@ -945,7 +1222,7 @@ async def main() -> int:
             "buyer_host": "a VPS on the public internet running the buyer node; it reaches the chain's JSON-RPC only "
                           "through an SSH reverse tunnel from the provider host to its 127.0.0.1",
             "relay_host": "a third VPS on the public internet running the relay daemon on TCP %d, the one port "
-                          "opened for this run" % RELAY_PORT},
+                          "opened for this run" % RELAYS[0].port},
         "actor_code_hash": fd.ACTOR_CODE_HASH, "network_label": fd.NETWORK_LABEL,
         "terms": {"price": fd.PRICE, "storage_fee": fd.STORAGE_FEE, "cleanup_bounty": fd.CLEANUP_BOUNTY},
         "adversarial_coverage": ADVERSARIAL_COVERAGE,
@@ -960,6 +1237,49 @@ async def main() -> int:
                         "the SSH reverse tunnel, the copies to the buyer host and the relay unit",
                         "the container runtime and the root-run executor service in front of it",
                         "this script's own JSON-RPC reads, relay listings and probes, used only to verify"]})
+    if EXTERNAL:
+        names = ", ".join(relay.name for relay in RELAYS)
+        case = (f"{DOWN.name} is stopped from before the first purchase until after the last sale step, so "
+                f"{', '.join(relay.name for relay in LIVE)} alone carries the sale" if DOWN is not None else
+                "every relay is up for the sale, apart from the carrier outage")
+        fd.evidence.update({
+            "reason": "the relays are operated by us; the chain is a local three-validator test network on the "
+                      "provider's host, reached by the buyer only through an SSH reverse tunnel; the provider runs on "
+                      "our host; no live adversarial case runs",
+            "proves": f"two OpenFox nodes on different physical machines complete a paid sale whose task and result "
+                      f"travel only through the installed Agent Packet Relay daemons {names}, each on its own machine, "
+                      f"over the public internet, with the relays' private CA pinned on both nodes; {case}",
+            "carrier": "Agent Packet Relay daemons " + ", ".join(f"{relay.name} at https://<{relay.name}-host>:"
+                                                                 f"{relay.port}" for relay in RELAYS) +
+                       ", named together in both nodes' cards and the only transport of both nodes",
+            "relay_case": {"relays": [relay.name for relay in RELAYS], "down_for_the_whole_sale": DOWN_NAME or None,
+                           "stopped_for_the_carrier_outage": [relay.name for relay in LIVE]},
+            "relay_daemon": {"ai_commit": git(relay_source, "rev-parse", "HEAD"), "ai_tree_status": relay_tree,
+                             "build": "GOWORK=off CGO_ENABLED=0 go build -trimpath ./protocol/cmd/tos-service-packet-relay",
+                             "launch": "installed systemd unit on each relay host (DynamicUser), not started or "
+                                       "configured by this run; the run stops and starts it for the outages",
+                             "units": {relay.name: relay.unit for relay in RELAYS},
+                             "chain_rpc_configured": False, "key_material": "its TLS key only, as a systemd credential"},
+            "topology": {
+                "provider_and_chain_host": "the three validators on 127.0.0.1 and the provider node; behind NAT, no "
+                                           "inbound port",
+                "buyer_host": "a VPS on the public internet running the buyer node; it reaches the chain's JSON-RPC "
+                              "only through an SSH reverse tunnel from the provider host to its 127.0.0.1",
+                **{f"{relay.name.replace('-', '_')}_host": f"a VPS on the public internet running the relay daemon "
+                                                           f"{relay.name} on TCP {relay.port}" for relay in RELAYS}},
+            "not_verified": ["a relay operated by a third party",
+                             "relays at more than one provider (both relay hosts are at one provider)",
+                             ("a public chain (the chain is a local test network reached through an SSH tunnel)"),
+                             "a provider on a host we do not operate",
+                             ("live adversarial envelopes, quota pressure and the public-id race (unit tests only)"),
+                             "key expiry and rotation (unit tests only)",
+                             "crash windows of the nodes"],
+            "not_openfox": ["booting the three-validator network (tostester)",
+                            "creating, funding and activating the two wallets with tosctl and the zerostate faucet",
+                            ("the SSH reverse tunnel, the copies to the buyer host, and stopping and starting the "
+                             "relay units"),
+                            "the container runtime and the root-run executor service in front of it",
+                            "this script's own JSON-RPC reads, relay listings and probes, used only to verify"]})
     fd.record("the OpenFox tree is clean at the commit the evidence names", not tree, tree or "clean")
     fd.record("the relay daemon is built from a clean ai tree at the commit the evidence names", not relay_tree,
               relay_tree or "clean")
@@ -1006,8 +1326,11 @@ async def main() -> int:
     fd.evidence["ran_as_root"] = {
         "provider_host": [], "buyer_host": "the buyer node and its file commands run as the SSH user of the buyer host "
                                           "(uid %s)" % fd.evidence.get("node_files", {}).get("buyer_uid"),
-        "relay_host": "systemd-run, systemctl, journalctl, tar of the state directory and sha256sum, over SSH; the "
-                      "relay daemon itself runs unprivileged"}
+        "relay_host" if len(RELAYS) == 1 else "relay_hosts":
+            ("systemctl, journalctl, ps, openssl on the certificate file, tar of the state directory and sha256sum, "
+             "over SSH; the relay daemons themselves run unprivileged" if EXTERNAL else
+             "systemd-run, systemctl, journalctl, tar of the state directory and sha256sum, over SSH; the "
+             "relay daemon itself runs unprivileged")}
     fd.evidence["steps"] = fd.steps
     fd.evidence["finished_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     text = json.dumps(fd.redact_value(fd.evidence), default=str)

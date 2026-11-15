@@ -474,10 +474,6 @@ def tls_mode() -> None:
     preflight = fd.fox_again("provider", "preflight", "--rail-config", fd.rail("provider"))
     checks = {c["id"]: c for c in (fd.strict_json(preflight).get("checks") or [])}
     trust = checks.get("relay.trust", {})
-    # The run's CA lives a few days, so preflight's only allowed warning is
-    # the notice that a pinned certificate expires within 30 days.
-    trust_ok = trust.get("status") == "pass" or (
-        trust.get("status") == "warn" and json.dumps(trust).count("; a pinned certificate expires within 30 days") == 1)
     fd.evidence["tls"] = {
         "mode": "direct TLS on the relay host's public address, certificate issued by a private P-256 CA generated for "
                 "this run (SAN: the relay's public IP address); both nodes pin that CA with init --relay-ca-file",
@@ -497,7 +493,7 @@ def tls_mode() -> None:
                                       for p in pins.values()) and
                not fd.evidence["tls"]["ssl_cert_env_in_provider_run"] and not buyer_env and
                here.startswith("refused: SSLCertVerificationError") and
-               there.startswith("refused: SSLCertVerificationError") and trust_ok and
+               there.startswith("refused: SSLCertVerificationError") and trust.get("status") == "pass" and
                "the pinned CA file only" in json.dumps(trust) and
                checks.get("relay.reachable", {}).get("status") == "pass", fd.evidence["tls"])
 

@@ -937,3 +937,28 @@ func TestTheRelayPollerBacksOffAndHonoursRetryAfter(t *testing.T) {
 		t.Fatalf("state = %+v", state)
 	}
 }
+
+func TestACardTakenByBuyIsUsedByTheRunningServeOfTheSameNode(t *testing.T) {
+	clock := newRelayClock()
+	agents := relayAgents()
+	relay := startFakeRelay(t, clock)
+	dir := t.TempDir()
+	serving := openRelayTestNode(t, dir, clock, testBuyer, agents, relay)
+	seller := newRelayTestNode(t, clock, testSeller, agents, relay)
+	// `buy --offer` runs as its own process over the same state directory.
+	buying, err := OpenPeerCards(filepath.Join(dir, relayStateDir, relayPeersDir), packetKeys, agents,
+		ownersMap{relayCapability: testSeller}, clock.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = buying.Learn(context.Background(), seller.card(), testSeller, relayCapability); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = serving.courier.Deliver(context.Background(), relayEnvelopeTo(testSeller), markedBody(10)); err != nil {
+		t.Fatalf("the running node did not see the card the other process took: %v", err)
+	}
+	seller.pollAll()
+	if len(seller.pending()) != 1 {
+		t.Fatal("the packet was not delivered")
+	}
+}

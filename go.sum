@@ -323,6 +323,8 @@ github.com/tosnetwork/ai v0.0.0-20261115114713-609556b03233 h1:ZJeGDer4UQhh1OBne
 github.com/tosnetwork/ai v0.0.0-20261115114713-609556b03233/go.mod h1:mxN4iMOCRgRzw/eerOY385TORAF+04eQ9vwO4DkwPmI=
 github.com/tosnetwork/ai v0.0.0-20261115115245-cb633128affb h1:nZe/9gvuaVallrwNIAuY0ECazh9STTkhnQIcqillx2k=
 github.com/tosnetwork/ai v0.0.0-20261115115245-cb633128affb/go.mod h1:mxN4iMOCRgRzw/eerOY385TORAF+04eQ9vwO4DkwPmI=
+github.com/tosnetwork/ai v0.0.0-20261115122745-fd353caa912e h1:h7vqItxRBcwsCkbGJKiFCeg0wFNOS6GLJM1d7nJcN5g=
+github.com/tosnetwork/ai v0.0.0-20261115122745-fd353caa912e/go.mod h1:mxN4iMOCRgRzw/eerOY385TORAF+04eQ9vwO4DkwPmI=
 github.com/tosnetwork/tos-messenger v0.0.0-20261115063619-57d964737848 h1:X3+cJ0i1esppVfxl4cAYtbMvZY7cxSu5aoitwuUH+1E=
 github.com/tosnetwork/tos-messenger v0.0.0-20261115063619-57d964737848/go.mod h1:QR+00RVLi0oxV3MLzm7lpmNhElxeLvIUF3diJy5F4ho=
 github.com/tosnetwork/tosutils-go v1.18.2-0.20260820143526-4d1a10d94bef h1:P+zHw4vfeKoRdLgjEmLFnkZOu4MleU9X22hHEX6l/F8=

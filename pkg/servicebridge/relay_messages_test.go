@@ -163,6 +163,7 @@ func TestRelayURLsMustBeCanonicalAndPlaintextOnlyOnLoopback(t *testing.T) {
 	for _, bad := range []string{
 		"http://relay.example", "https://relay.example/", "https://Relay.example", "https://relay.example?x",
 		"https://user@relay.example", "ftp://relay.example", "https://relay.example#f", "",
+		"https://relay.example/a%20b",
 	} {
 		if _, err := canonicalRelayURLs([]string{bad}); err == nil {
 			t.Errorf("%q was accepted", bad)

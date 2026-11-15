@@ -366,12 +366,55 @@ func (p *PeerCards) Has(agentID string) bool {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	now := p.nowUnix()
-	for _, card := range p.cards[agentID] {
-		if now < card.Card.NotAfterUnix {
-			return true
+	held := func() bool {
+		for _, card := range p.cards[agentID] {
+			if now < card.Card.NotAfterUnix {
+				return true
+			}
 		}
+		return false
 	}
-	return false
+	if held() {
+		return true
+	}
+	// A directory that cannot be read now leaves the route to what is held
+	// in memory; Current reports the failure when a send needs the card.
+	if err := p.reloadLocked(); err != nil {
+		return false
+	}
+	return held()
+}
+
+// reloadLocked adds cards another process of this node stored since the
+// directory was opened: `buy --offer` takes the provider's card while
+// `serve` runs. A card it adds is verified again before its first use; a card
+// already held keeps its verification.
+func (p *PeerCards) reloadLocked() error {
+	if p.directory == "" {
+		return nil
+	}
+	stored, err := readPeerCards(p.directory)
+	if err != nil {
+		return err
+	}
+	for _, card := range stored {
+		known := false
+		for _, held := range p.cards[card.AgentID] {
+			if held.Key.KeyID == card.Key.KeyID {
+				known = true
+				break
+			}
+		}
+		if known {
+			continue
+		}
+		if _, ok := p.cards[card.AgentID]; !ok && len(p.cards) >= maxCardPeers {
+			continue
+		}
+		p.cards[card.AgentID] = append(p.cards[card.AgentID], card)
+		p.sortLocked(card.AgentID)
+	}
+	return nil
 }
 
 // Current returns the card to seal a packet for agentID to: of the held
@@ -385,6 +428,9 @@ func (p *PeerCards) Current(ctx context.Context, agentID string) (*peerCard, err
 	}
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
+	if err := p.reloadLocked(); err != nil {
+		return nil, fmt.Errorf("servicebridge: read the peer card directory: %w", err)
+	}
 	now := p.now()
 	list := append([]*peerCard(nil), p.cards[agentID]...)
 	var unavailable error

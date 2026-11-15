@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -126,7 +127,9 @@ func canonicalRelayURLs(relays []string) ([]string, error) {
 	out := append([]string(nil), relays...)
 	sort.Strings(out)
 	for index, relay := range out {
-		if err := agentpacketseal.CheckRelayURL(relay); err != nil {
+		// No percent escape at all: the relay client refuses one even
+		// where the URL parser would accept it.
+		if err := agentpacketseal.CheckRelayURL(relay); err != nil || strings.Contains(relay, "%") {
 			return nil, fmt.Errorf("servicebridge: relay URL %q is not a canonical base URL: https, or http only to "+
 				"127.0.0.1, localhost or ::1; lowercase host; no user, query, fragment, escape or trailing slash",
 				relay)

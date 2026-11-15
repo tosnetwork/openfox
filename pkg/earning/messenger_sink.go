@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/tosnetwork/ai/messenger/pkg/localapi"
 	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-messenger/pkg/localapi"
 )
 
 type MessengerCaller interface {

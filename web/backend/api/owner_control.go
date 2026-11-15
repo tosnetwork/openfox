@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"path/filepath"
 
+	ownercontrol "github.com/tosnetwork/ai/messenger/pkg/ownercontrol"
 	trusted "github.com/tosnetwork/ai/protocol/pkg/trustedcapability"
-	ownercontrol "github.com/tosnetwork/tos-messenger/pkg/ownercontrol"
 
 	"github.com/tosnetwork/openfox/pkg/capabilitycontrol"
 	"github.com/tosnetwork/openfox/pkg/config"

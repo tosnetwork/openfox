@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tosnetwork/ai/messenger/pkg/envelope"
+	"github.com/tosnetwork/ai/messenger/pkg/fault"
+	"github.com/tosnetwork/ai/messenger/pkg/localapi"
 	protocolgift "github.com/tosnetwork/ai/protocol/pkg/agentgift"
-	"github.com/tosnetwork/tos-messenger/pkg/envelope"
-	"github.com/tosnetwork/tos-messenger/pkg/fault"
-	"github.com/tosnetwork/tos-messenger/pkg/localapi"
 
 	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"
 )

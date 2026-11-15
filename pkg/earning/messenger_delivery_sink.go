@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/tosnetwork/ai/messenger/pkg/payload"
 	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-messenger/pkg/payload"
 )
 
 type MessengerDeliverySink struct{ Messenger *MessengerSink }

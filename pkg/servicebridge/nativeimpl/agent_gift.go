@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tosnetwork/ai/messenger/pkg/envelope"
+	"github.com/tosnetwork/ai/messenger/pkg/localapi"
+	"github.com/tosnetwork/ai/messenger/pkg/payload"
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
 	protocolgift "github.com/tosnetwork/ai/protocol/pkg/agentgift"
-	"github.com/tosnetwork/tos-messenger/pkg/envelope"
-	"github.com/tosnetwork/tos-messenger/pkg/localapi"
-	"github.com/tosnetwork/tos-messenger/pkg/payload"
 	"google.golang.org/protobuf/proto"
 
 	openfoxgift "github.com/tosnetwork/openfox/pkg/agentgift"

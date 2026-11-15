@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tosnetwork/ai/execution/pkg/railgate"
+	"github.com/tosnetwork/ai/messenger/pkg/localapi"
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/ai/protocol/pkg/buyersdk"
 	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
@@ -22,7 +23,6 @@ import (
 	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 	"github.com/tosnetwork/ai/protocol/pkg/quoteprovider"
 	"github.com/tosnetwork/ai/protocol/pkg/toschain"
-	"github.com/tosnetwork/tos-messenger/pkg/localapi"
 )
 
 // NodeConfig is the owner-private configuration of one OpenFox rail node.

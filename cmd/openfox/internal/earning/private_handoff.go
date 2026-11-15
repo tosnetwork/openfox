@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/tosnetwork/ai/execution/pkg/privateingress"
+	"github.com/tosnetwork/ai/messenger/pkg/localapi"
 	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-messenger/pkg/localapi"
 
 	"github.com/tosnetwork/openfox/pkg/config"
 	openfoxearning "github.com/tosnetwork/openfox/pkg/earning"

@@ -5,11 +5,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/tosnetwork/ai/messenger/pkg/envelope"
+	"github.com/tosnetwork/ai/messenger/pkg/fault"
+	"github.com/tosnetwork/ai/messenger/pkg/localapi"
+	"github.com/tosnetwork/ai/messenger/pkg/payload"
 	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
-	"github.com/tosnetwork/tos-messenger/pkg/envelope"
-	"github.com/tosnetwork/tos-messenger/pkg/fault"
-	"github.com/tosnetwork/tos-messenger/pkg/localapi"
-	"github.com/tosnetwork/tos-messenger/pkg/payload"
 )
 
 // ClaimedCommerceProfileEvent is an authenticated, leased economic protocol

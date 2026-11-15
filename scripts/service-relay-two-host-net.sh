@@ -24,11 +24,11 @@
 # runs it first.
 #
 # Every root command is appended to <workdir>/net/root-commands.log before it
-# runs. E2E_RPC_PORTS names the forwarded chain RPC ports (comma separated).
+# runs. E2E_RPC_PORTS names the forwarded chain RPC ports (comma separated);
+# only firewall needs it.
 set -euo pipefail
 action=${1:?up, firewall or down}
 work=${2:?work directory}
-: "${E2E_RPC_PORTS:?}"
 net="$work/net"
 mkdir -p "$net"
 log="$net/root-commands.log"
@@ -39,7 +39,6 @@ relay_ip=$prefix.20
 relay_port=8443
 declare -A address=([buyer]=$prefix.10 [provider]=$prefix.11 [relay]=$relay_ip)
 names=(buyer provider relay)
-rpc_ports=${E2E_RPC_PORTS//,/, }
 
 root() {
   printf '%s\n' "$*" >> "$log"
@@ -87,6 +86,14 @@ up() {
 }
 
 firewall() {
+  # Only the firewall needs the forwarded RPC ports; up and down never do,
+  # so a leftover run can be torn down from a fresh shell.
+  local ports=${E2E_RPC_PORTS:-}
+  if ! [[ $ports =~ ^[0-9]{1,5}(,[0-9]{1,5})*$ ]]; then
+    echo "firewall: E2E_RPC_PORTS must name the forwarded chain RPC ports, comma separated" >&2
+    exit 2
+  fi
+  local rpc_ports=${ports//,/, }
   for name in buyer provider; do
     cat > "$net/$name.nft" <<EOF
 table inet tosrly {

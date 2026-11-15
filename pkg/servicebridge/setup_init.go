@@ -688,6 +688,11 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 	if err = writeNodeConfig(in.RailConfigPath, config); err != nil {
 		return result, err
 	}
+	// Only now that the configuration names the new pin (or none) is an
+	// earlier pinned file unused.
+	if err = removeStaleRelayCAs(in.StateDir, config.RelayCAFile); err != nil {
+		return result, err
+	}
 	run.notef("config.write", SetupDone, "wrote the rail configuration %s (0600); it reads back strictly",
 		in.RailConfigPath)
 	result.Confirmed = true

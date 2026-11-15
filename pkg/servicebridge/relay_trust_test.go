@@ -351,7 +351,8 @@ func TestInitPinsTheRelayCAKeepsItOnARerunAndDropsItOnRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(ca.pem)
-	if config.RelayCAFile != relayCAPath(f.init.StateDir) || config.RelayCASHA256 != hex.EncodeToString(digest[:]) {
+	if config.RelayCAFile != relayCAPath(f.init.StateDir, hex.EncodeToString(digest[:])) ||
+		config.RelayCASHA256 != hex.EncodeToString(digest[:]) {
 		t.Fatalf("configuration = %+v", config)
 	}
 	copied, err := readPrivateFile(config.RelayCAFile, maxRelayCABytes)
@@ -371,7 +372,7 @@ func TestInitPinsTheRelayCAKeepsItOnARerunAndDropsItOnRequest(t *testing.T) {
 	f.init.RelaySystemRoots = true
 	f.mustInit(t)
 	if dropped, err := LoadNodeConfig(f.init.RailConfigPath); err != nil || dropped.RelayCAFile != "" ||
-		dropped.RelayCASHA256 != "" {
+		dropped.RelayCASHA256 != "" || len(pinnedCAFiles(t, f.init.StateDir)) != 0 {
 		t.Fatalf("--relay-system-roots kept the pin: %+v %v", dropped, err)
 	}
 }
@@ -415,8 +416,8 @@ func TestInitRefusesARelayCAFileItCannotPinBeforeTouchingAnything(t *testing.T) 
 			if len(f.world().Calls) != 0 {
 				t.Fatal("tosctl was run")
 			}
-			if _, err := os.Lstat(relayCAPath(f.init.StateDir)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("a refused CA file was copied: %v", err)
+			if pinned := pinnedCAFiles(t, f.init.StateDir); len(pinned) != 0 {
+				t.Fatalf("a refused CA file was copied: %v", pinned)
 			}
 		})
 	}
@@ -464,5 +465,90 @@ func TestPreflightReportsEachRelaysTrustAnchorAndFailsOnAnUnusablePin(t *testing
 	}
 	if _, checks = f.run(t); checks["relay.trust"].Status != CheckFail {
 		t.Fatalf("unreadable: %+v", checks["relay.trust"])
+	}
+}
+
+func pinnedCAFiles(t *testing.T, stateDir string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(stateDir, relayStateDir, relayCAFilePrefix+"*.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return matches
+}
+
+// A new pin never touches the file the committed configuration names:
+// whether init stops after the new file is written (here: the
+// configuration write fails) or after the configuration is committed and
+// before the earlier file is removed, the configuration on disk still
+// loads its pin, and the next init removes what is no longer named.
+func TestEveryCrashWindowOfARepinLeavesAConfigurationWhosePinMatches(t *testing.T) {
+	f := newSetupFixture(t)
+	configDir := filepath.Join(f.root, "config")
+	if err := os.Mkdir(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first, second := newTestRelayCA(t, "first relay CA"), newTestRelayCA(t, "second relay CA")
+	firstFile, secondFile := filepath.Join(f.root, "first.pem"), filepath.Join(f.root, "second.pem")
+	writeFixtureFile(t, firstFile, first.pem, 0o644)
+	writeFixtureFile(t, secondFile, second.pem, 0o644)
+	f.init.RailConfigPath = filepath.Join(configDir, "rail.json")
+	f.init.MessengerSocket, f.init.RelayURLs, f.init.RelayCAFile = "", []string{"https://relay.example"}, firstFile
+	f.mustInit(t)
+	pinned, err := LoadNodeConfig(f.init.RailConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Window 1: the second file is written, the configuration is not.
+	if err = os.Chmod(configDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	f.init.RelayCAFile = secondFile
+	_, err = RunInit(context.Background(), f.init, f.env())
+	if chmodErr := os.Chmod(configDir, 0o700); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	if err == nil {
+		t.Fatal("the configuration write did not fail")
+	}
+	if len(pinnedCAFiles(t, f.init.StateDir)) != 2 {
+		t.Fatalf("pinned files after the failed write: %v", pinnedCAFiles(t, f.init.StateDir))
+	}
+	stillPinned, err := LoadNodeConfig(f.init.RailConfigPath)
+	if err != nil || stillPinned.RelayCASHA256 != pinned.RelayCASHA256 {
+		t.Fatalf("the configuration changed: %v", err)
+	}
+	if _, err = relayDialerFor(stillPinned); err != nil {
+		t.Fatalf("the committed pin no longer matches its file: %v", err)
+	}
+
+	// Window 2: the configuration names the second file, the first is not
+	// removed yet.
+	secondPath, err := installRelayCA(f.init.StateDir, second.pem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(second.pem)
+	committed := stillPinned
+	committed.RelayCAFile, committed.RelayCASHA256 = secondPath, hex.EncodeToString(digest[:])
+	if err = writeNodeConfig(f.init.RailConfigPath, committed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = relayDialerFor(committed); err != nil {
+		t.Fatalf("the committed pin does not match its file: %v", err)
+	}
+	if _, err = relayDialerFor(pinned); err != nil {
+		t.Fatalf("the earlier file was disturbed before the configuration moved on: %v", err)
+	}
+	// The next init keeps the committed pin and removes the earlier file.
+	f.init.RelayCAFile = ""
+	f.mustInit(t)
+	kept, err := LoadNodeConfig(f.init.RailConfigPath)
+	if err != nil || kept.RelayCASHA256 != committed.RelayCASHA256 {
+		t.Fatalf("the committed pin was not kept: %v", err)
+	}
+	if files := pinnedCAFiles(t, f.init.StateDir); len(files) != 1 || files[0] != secondPath {
+		t.Fatalf("pinned files = %v", files)
 	}
 }

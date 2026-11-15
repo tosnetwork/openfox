@@ -540,9 +540,12 @@ system trust store. `init --relay-ca-file <PEM file>` pins instead: the file
 holds one or more certificates (certificate authorities, or a relay's own
 self-signed certificate) and nothing else (a private key or any other PEM
 block is refused), each valid when `init` runs. `init` copies it into
-`state_dir/relay/relay-ca.pem` (`0600`) and records its SHA-256 as
+`state_dir/relay/relay-ca-<sha256>.pem` (`0600`) and records its SHA-256 as
 `relay_ca_file` and `relay_ca_sha256`, so the pin is what the owner gave at
-`init` whatever later happens to the original file. With a pin:
+`init` whatever later happens to the original file. A new pin is written
+under its own name before the configuration naming it is committed, and the
+earlier file is removed only after that, so an `init` interrupted at any
+point leaves a configuration whose pinned file still matches. With a pin:
 
 - every https relay in this node's `relay_urls` is verified against the
   pinned certificates **only**; the system trust store (and `SSL_CERT_FILE`)
@@ -550,7 +553,11 @@ block is refused), each valid when `init` runs. `init` copies it into
   relays use different authorities lists each in the file;
 - a relay that only a peer's key card names (one not in this node's
   `relay_urls`) is verified against the system trust store, as without a
-  pin. A peer card naming one of this node's own relays uses the pin;
+  pin. A peer card naming one of this node's own relays uses the pin. Such a
+  relay is trusted through the public certificate authority system, so a
+  mis-issued certificate for its name can intercept that connection; the
+  packets stay end-to-end sealed, so only availability and the metadata a
+  relay sees are exposed;
 - a pinned file that is missing, not owner-only or no longer has the
   recorded digest stops `serve` from opening the relay carrier; it never
   falls back to the system trust store. `serve` reads the file at start, so

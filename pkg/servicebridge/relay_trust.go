@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -22,9 +23,9 @@ import (
 
 // Relay trust anchor bounds.
 const (
-	// relayCAFileName is the owner-only copy of the pinned relay
-	// certificate authorities in state_dir/relay.
-	relayCAFileName = "relay-ca.pem"
+	// relayCAFilePrefix names the owner-only copy of the pinned relay
+	// certificate authorities in state_dir/relay, followed by its SHA-256.
+	relayCAFilePrefix = "relay-ca-"
 	// maxRelayCABytes bounds the CA file `init --relay-ca-file` reads.
 	maxRelayCABytes = 1 << 20
 	// maxRelayCACertificates bounds the certificates one CA file holds.
@@ -42,6 +43,8 @@ const (
 	// RelayTrustLoopback is plaintext http to a loopback host: no TLS.
 	RelayTrustLoopback = "loopback_plaintext"
 )
+
+var relayCAFilePattern = regexp.MustCompile(`^relay-ca-[0-9a-f]{64}\.pem$`)
 
 // errRelayCAExpired reports a pinned certificate outside its validity.
 var errRelayCAExpired = errors.New("servicebridge: a certificate of the relay CA file is expired or not yet valid")
@@ -168,7 +171,8 @@ func chooseRelayCA(in InitInput, existing *NodeConfig, relays []string, now time
 		}
 		chosen = initRelayCA{data: data, sha256: parsed.sha256, certificates: len(parsed.certificates)}
 	case existing != nil && existing.RelayCAFile != "":
-		if existing.StateDir != in.StateDir || existing.RelayCAFile != relayCAPath(in.StateDir) {
+		if existing.StateDir != in.StateDir ||
+			existing.RelayCAFile != relayCAPath(in.StateDir, existing.RelayCASHA256) {
 			return chosen, errors.New("servicebridge: the existing rail configuration pins a relay CA file of " +
 				"another state directory; pass --relay-ca-file again, or --relay-system-roots")
 		}
@@ -187,22 +191,57 @@ func chooseRelayCA(in InitInput, existing *NodeConfig, relays []string, now time
 	return chosen, nil
 }
 
-// relayCAPath is where `init` keeps the pinned CA file.
-func relayCAPath(stateDir string) string {
-	return filepath.Join(stateDir, relayStateDir, relayCAFileName)
+// relayCAPath is where `init` keeps the pinned CA file of a digest. The
+// name is content-addressed, so a new pin never overwrites the file the
+// current configuration names: the file is written first, the
+// configuration naming it is committed next, and only then is the earlier
+// file removed. A crash or a failed configuration write at any point leaves
+// a configuration whose recorded file still matches its digest.
+func relayCAPath(stateDir, digest string) string {
+	return filepath.Join(stateDir, relayStateDir, relayCAFilePrefix+digest+".pem")
 }
 
 // installRelayCA copies the CA file into the owner-only relay state
-// directory, atomically.
+// directory, atomically, under its digest's name.
 func installRelayCA(stateDir string, data []byte) (string, error) {
 	if err := ensurePrivateDirectory(filepath.Join(stateDir, relayStateDir)); err != nil {
 		return "", err
 	}
-	path := relayCAPath(stateDir)
+	digest := sha256.Sum256(data)
+	path := relayCAPath(stateDir, hex.EncodeToString(digest[:]))
 	if err := replaceSynced(path, data); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// removeStaleRelayCAs removes every pinned CA file in the relay state
+// directory except keep (none when keep is empty), once the configuration
+// that no longer names them is committed.
+func removeStaleRelayCAs(stateDir, keep string) error {
+	directory := filepath.Join(stateDir, relayStateDir)
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return errors.New("servicebridge: read the relay state directory")
+	}
+	removed := false
+	for _, entry := range entries {
+		path := filepath.Join(directory, entry.Name())
+		if !relayCAFilePattern.MatchString(entry.Name()) || path == keep {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return errors.New("servicebridge: remove an earlier pinned relay CA file")
+		}
+		removed = true
+	}
+	if !removed {
+		return nil
+	}
+	return syncDirectory(directory)
 }
 
 // loadRelayCA reads the pinned CA file of a configuration: nil without

@@ -1,8 +1,7 @@
 //go:build whatsapp_native
 
 // OpenFox - Ultra-lightweight personal AI agent
-// License: GPL-3.0; includes code from PicoClaw under the MIT License
-// (see LICENSES/MIT-PicoClaw.txt)
+// License: GPL-3.0; parts are under the MIT License (see LICENSES/)
 //
 // Copyright (c) 2026 OpenFox contributors
 

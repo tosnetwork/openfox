@@ -94,7 +94,9 @@ type ProviderRecord struct {
 // executor service could not run it at that moment. Nothing was claimed,
 // verified or spent for it. Only the readiness question in front of
 // admission returns it.
-var ErrExecutorNotReady = errors.New("servicebridge: the executor service cannot run work now; the task is not admitted")
+var ErrExecutorNotReady = errors.New(
+	"servicebridge: the executor service cannot run work now; the task is not admitted",
+)
 
 // ExecutionLimits are a manifest's limits as a provider record keeps them.
 type ExecutionLimits struct {

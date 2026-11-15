@@ -81,7 +81,18 @@ teardown() {
   bash "$here/service-relay-two-host-net.sh" down "$work" || echo "teardown failed; run it again" >&2
 }
 trap teardown EXIT
-trap 'exit 130' INT TERM
+pg=
+interrupted() {
+  # The run's process group holds the validators and every node, relay,
+  # forwarder and probe launcher; stop it before the namespaces go.
+  if [ -n "$pg" ]; then
+    kill -TERM -- "-$pg" 2> /dev/null || true
+    for _ in $(seq 30); do kill -0 -- "-$pg" 2> /dev/null || break; sleep 1; done
+    kill -KILL -- "-$pg" 2> /dev/null || true
+  fi
+  exit 130
+}
+trap interrupted INT TERM
 bash "$here/service-relay-two-host-net.sh" up "$work"
 
 export E2E_REPO="$repo" E2E_RELAY_URL=https://10.231.77.20:8443 E2E_ROOT_BASE="$work/nodes"

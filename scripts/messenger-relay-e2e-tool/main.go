@@ -54,7 +54,11 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fail(errors.New("usage: messenger-relay-e2e-tool identity|signer|call|inspect|craft [flags]"))
+		fail(
+			errors.New(
+				"usage: messenger-relay-e2e-tool identity|signer|call|inspect|craft [flags]",
+			),
+		)
 	}
 	var err error
 	switch os.Args[1] {
@@ -120,18 +124,54 @@ func identityCommand(args []string) error {
 	networkID := flags.String("network-id", "", "network label, as the registry domain names it")
 	genesisRoot := flags.String("genesis-root", "", "64 hex genesis root hash")
 	genesisFile := flags.String("genesis-file", "", "64 hex genesis file hash")
-	rule := flags.String("rule", string(admission.RuleAllowList), "inbox rule the delegation commits")
-	unknown := flags.String("unknown", string(admission.InviteOrAskOwner), "unknown-sender rule the delegation commits")
-	descriptorLifetime := flags.Uint64("descriptor-lifetime", 3600, "descriptor policy max_lifetime_seconds")
-	delegationLifetime := flags.Uint64("delegation-lifetime", 7*24*3600, "delegation validity window in seconds")
-	sessionLifetime := flags.Uint64("session-lifetime", 24*3600, "maximum session lifetime in seconds")
-	classes := flags.String("classes", "agent.packet,text", "comma-separated outbound event classes, sorted")
-	privateDir := flags.String("private-dir", "", "owner-only directory for the Endpoint and owner keys")
-	publicDir := flags.String("public-dir", "", "directory for the delegation and descriptor policy")
+	rule := flags.String(
+		"rule",
+		string(admission.RuleAllowList),
+		"inbox rule the delegation commits",
+	)
+	unknown := flags.String(
+		"unknown",
+		string(admission.InviteOrAskOwner),
+		"unknown-sender rule the delegation commits",
+	)
+	descriptorLifetime := flags.Uint64(
+		"descriptor-lifetime",
+		3600,
+		"descriptor policy max_lifetime_seconds",
+	)
+	delegationLifetime := flags.Uint64(
+		"delegation-lifetime",
+		7*24*3600,
+		"delegation validity window in seconds",
+	)
+	sessionLifetime := flags.Uint64(
+		"session-lifetime",
+		24*3600,
+		"maximum session lifetime in seconds",
+	)
+	classes := flags.String(
+		"classes",
+		"agent.packet,text",
+		"comma-separated outbound event classes, sorted",
+	)
+	privateDir := flags.String(
+		"private-dir",
+		"",
+		"owner-only directory for the Endpoint and owner keys",
+	)
+	publicDir := flags.String(
+		"public-dir",
+		"",
+		"directory for the delegation and descriptor policy",
+	)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	network := &nativev1.NetworkDomain{NetworkId: *networkID, GenesisRootHash: *genesisRoot, GenesisFileHash: *genesisFile}
+	network := &nativev1.NetworkDomain{
+		NetworkId:       *networkID,
+		GenesisRootHash: *genesisRoot,
+		GenesisFileHash: *genesisFile,
+	}
 	if *privateDir == "" || *publicDir == "" {
 		return errors.New("identity needs --private-dir and --public-dir")
 	}
@@ -155,8 +195,10 @@ func identityCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	descriptorPolicy := directory.DescriptorPolicy{MaxEnvelopeBytes: 256 << 10, MaxLifetimeSeconds: *descriptorLifetime,
-		RequireADNL: true}
+	descriptorPolicy := directory.DescriptorPolicy{
+		MaxEnvelopeBytes: 256 << 10, MaxLifetimeSeconds: *descriptorLifetime,
+		RequireADNL: true,
+	}
 	descriptorDigest, err := descriptorPolicy.Digest()
 	if err != nil {
 		return err
@@ -165,8 +207,10 @@ func identityCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	inbox, err := admission.NewContactPolicy(admission.InboxPolicyDocument{Rule: admission.InboxRule(*rule),
-		Unknown: admission.UnknownSenderRule(*unknown)}, admission.Roster{})
+	inbox, err := admission.NewContactPolicy(admission.InboxPolicyDocument{
+		Rule:    admission.InboxRule(*rule),
+		Unknown: admission.UnknownSenderRule(*unknown),
+	}, admission.Roster{})
 	if err != nil {
 		return err
 	}
@@ -205,7 +249,9 @@ func identityCommand(args []string) error {
 	clear(ownerKey)
 	return printJSON(map[string]any{
 		"agent_id": *agentID, "endpoint_id": endpointID, "device_id": "dev_" + deviceHex, "adnl_id": "adnl:" + adnlHex,
-		"endpoint_public_key": hex.EncodeToString(public), "owner_public_key": hex.EncodeToString(ownerPublic),
+		"endpoint_public_key": hex.EncodeToString(
+			public,
+		), "owner_public_key": hex.EncodeToString(ownerPublic),
 		"delegation_digest": digest, "delegation_digest_hex": strings.TrimPrefix(digest, "sha256:"),
 		"descriptor_policy_digest": descriptorDigest, "inbox_policy_digest": inbox.Digest(),
 		"not_before_unix": delegation.NotBeforeUnix, "expires_at_unix": delegation.ExpiresAtUnix,
@@ -268,7 +314,11 @@ func signerCommand(args []string) error {
 	flags := flag.NewFlagSet("signer", flag.ContinueOnError)
 	keyPath := flags.String("key", "", "owner-only file holding the Endpoint seed")
 	socketPath := flags.String("socket", "", "Unix socket to serve")
-	logPath := flags.String("count-file", "", "optional file the number of signatures is written to")
+	logPath := flags.String(
+		"count-file",
+		"",
+		"optional file the number of signatures is written to",
+	)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -276,7 +326,7 @@ func signerCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(*socketPath), 0o700); err != nil {
+	if err = os.MkdirAll(filepath.Dir(*socketPath), 0o700); err != nil {
 		return err
 	}
 	_ = os.Remove(*socketPath)
@@ -296,10 +346,13 @@ func signerCommand(args []string) error {
 	fmt.Println("ready")
 	count := 0
 	for {
-		connection, err := listener.Accept()
-		if err != nil {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
 			_ = os.Remove(*socketPath)
-			return nil
+			if errors.Is(acceptErr, net.ErrClosed) {
+				return nil
+			}
+			return acceptErr
 		}
 		count++
 		if *logPath != "" {
@@ -320,7 +373,8 @@ func serveSign(connection net.Conn, key ed25519.PrivateKey) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	answer := signResponse{Schema: signerapi.ResponseSchema}
-	if err := decoder.Decode(&request); err != nil || request.Schema != signerapi.RequestSchema || len(request.Message) == 0 {
+	if err = decoder.Decode(&request); err != nil || request.Schema != signerapi.RequestSchema ||
+		len(request.Message) == 0 {
 		answer.Detail = "malformed request"
 	} else {
 		answer.OK = true
@@ -347,7 +401,7 @@ func callCommand(args []string) error {
 		return err
 	}
 	var request localapi.Request
-	if err := json.Unmarshal(raw, &request); err != nil {
+	if err = json.Unmarshal(raw, &request); err != nil {
 		return err
 	}
 	if request.Schema == "" {
@@ -421,8 +475,10 @@ func inspectFrame(raw []byte) (*frameView, error) {
 	if err != nil {
 		return nil, err
 	}
-	view := &frameView{Kind: frame.Kind, PartIndex: frame.PartIndex, PartCount: frame.PartCount, FrameBytes: len(raw),
-		CardBytes: len(frame.Card), EvidenceBytes: len(frame.Evidence), PartBytes: len(frame.Part)}
+	view := &frameView{
+		Kind: frame.Kind, PartIndex: frame.PartIndex, PartCount: frame.PartCount, FrameBytes: len(raw),
+		CardBytes: len(frame.Card), EvidenceBytes: len(frame.Evidence), PartBytes: len(frame.Part),
+	}
 	for _, bucket := range relayframe.Buckets() {
 		view.IsBucket = view.IsBucket || bucket == len(raw)
 	}
@@ -478,7 +534,11 @@ func inspectFrame(raw []byte) (*frameView, error) {
 func inspectCommand(args []string) error {
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	packetFile := flags.String("packet", "", "a signed packet JSON file")
-	packetBase64 := flags.String("packet-base64-file", "", "a file holding a signed packet JSON in base64")
+	packetBase64 := flags.String(
+		"packet-base64-file",
+		"",
+		"a file holding a signed packet JSON in base64",
+	)
 	envelopeFile := flags.String("envelope", "", "a sealed envelope file")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -492,9 +552,13 @@ func inspectCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSON(map[string]any{"envelope_id": hex.EncodeToString(header.EnvelopeID[:]),
-			"recipient_agent_id": header.RecipientAgentID, "recipient_key_id": agentpacketseal.KeyIDText(header.RecipientKeyID),
-			"expires_at_unix": header.ExpiresAtUnix, "bytes": len(raw)})
+		return printJSON(map[string]any{
+			"envelope_id":        hex.EncodeToString(header.EnvelopeID[:]),
+			"recipient_agent_id": header.RecipientAgentID,
+			"recipient_key_id":   agentpacketseal.KeyIDText(header.RecipientKeyID),
+			"expires_at_unix":    header.ExpiresAtUnix,
+			"bytes":              len(raw),
+		})
 	}
 	var raw []byte
 	var err error
@@ -517,10 +581,12 @@ func inspectCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	view := packetView{SenderAgentID: packet.SenderAgentID, RecipientAgentID: packet.RecipientAgentID,
+	view := packetView{
+		SenderAgentID: packet.SenderAgentID, RecipientAgentID: packet.RecipientAgentID,
 		CapabilityID: packet.CapabilityID, QuoteCommitment: packet.QuoteCommitment, CreatedAtUnix: packet.CreatedAtUnix,
 		Sequence: packet.Sequence, PacketJSONBytes: len(raw), PayloadBytes: len(packet.Payload),
-		FixedFieldBytes: len(raw) - base64.StdEncoding.EncodedLen(len(packet.Payload))}
+		FixedFieldBytes: len(raw) - base64.StdEncoding.EncodedLen(len(packet.Payload)),
+	}
 	switch {
 	case bytes.HasPrefix(packet.Payload, []byte("OFR1")):
 		view.PayloadDomain = "OFR1"
@@ -546,14 +612,26 @@ func craftCommand(args []string) error {
 	flags := flag.NewFlagSet("craft", flag.ContinueOnError)
 	tosctl := flags.String("tosctl", "", "tosctl binary holding the sender's controller")
 	tosctlSHA := flags.String("tosctl-sha256", "", "its SHA-256")
-	tosctlConfig := flags.String("tosctl-config", "", "the sender's tosctl configuration (VAULT_URL from the environment)")
+	tosctlConfig := flags.String(
+		"tosctl-config",
+		"",
+		"the sender's tosctl configuration (VAULT_URL from the environment)",
+	)
 	controller := flags.String("controller", "", "the sender's packet controller name")
 	keyIDText := flags.String("key-id", "", "the sender's packet controller key id")
 	sender := flags.String("sender", "", "the sender Agent")
 	recipient := flags.String("recipient", "", "the recipient Agent")
 	payloadFile := flags.String("payload", "", "file holding the exact payload bytes")
-	ofr1 := flags.Bool("ofr1-payload", false, "use a rail OFR1 frame of random bytes as the payload")
-	cardFile := flags.String("card", "", "the recipient's key card packet JSON the envelope is sealed to")
+	ofr1 := flags.Bool(
+		"ofr1-payload",
+		false,
+		"use a rail OFR1 frame of random bytes as the payload",
+	)
+	cardFile := flags.String(
+		"card",
+		"",
+		"the recipient's key card packet JSON the envelope is sealed to",
+	)
 	out := flags.String("out", "", "where the envelope is written")
 	packetOut := flags.String("packet-out", "", "optional: where the signed packet JSON is written")
 	if err := flags.Parse(args); err != nil {
@@ -588,8 +666,10 @@ func craftCommand(args []string) error {
 	if cardPacket.SenderAgentID != *recipient {
 		return errors.New("the card is not the recipient's")
 	}
-	signer, err := mldsa44.NewTosctl(mldsa44.TosctlConfig{Binary: *tosctl, SHA256: *tosctlSHA, ConfigPath: *tosctlConfig,
-		VaultURL: os.Getenv("VAULT_URL")})
+	signer, err := mldsa44.NewTosctl(mldsa44.TosctlConfig{
+		Binary: *tosctl, SHA256: *tosctlSHA, ConfigPath: *tosctlConfig,
+		VaultURL: os.Getenv("VAULT_URL"),
+	})
 	if err != nil {
 		return err
 	}
@@ -598,16 +678,18 @@ func craftCommand(args []string) error {
 		return err
 	}
 	var nonce [32]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
+	if _, err = rand.Read(nonce[:]); err != nil {
 		return err
 	}
 	now := uint64(time.Now().Unix())
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	started := time.Now()
-	packet, err := agentpacket.Sign(ctx, signer, *controller, agentpacket.Packet{SenderAgentID: *sender,
+	packet, err := agentpacket.Sign(ctx, signer, *controller, agentpacket.Packet{
+		SenderAgentID:    *sender,
 		RecipientAgentID: *recipient, CapabilityID: "cap_" + strings.Repeat("0", 64), Sequence: now << 16, Nonce: nonce,
-		Payload: payload, CreatedAtUnix: now, SenderKeyID: keyID})
+		Payload: payload, CreatedAtUnix: now, SenderKeyID: keyID,
+	})
 	if err != nil {
 		return err
 	}
@@ -617,11 +699,13 @@ func craftCommand(args []string) error {
 		return err
 	}
 	var secret [agentpacketseal.AckSecretSize]byte
-	if _, err := rand.Read(secret[:]); err != nil {
+	if _, err = rand.Read(secret[:]); err != nil {
 		return err
 	}
-	envelope, err := agentpacketseal.Seal(agentpacketseal.RecipientKey{AgentID: *recipient, KeyID: card.KeyID,
-		PublicKey: card.PublicKey}, secret, packetJSON, now+3600)
+	envelope, err := agentpacketseal.Seal(agentpacketseal.RecipientKey{
+		AgentID: *recipient, KeyID: card.KeyID,
+		PublicKey: card.PublicKey,
+	}, secret, packetJSON, now+3600)
 	clear(secret[:])
 	if err != nil {
 		return err
@@ -638,7 +722,11 @@ func craftCommand(args []string) error {
 			return err
 		}
 	}
-	return printJSON(map[string]any{"envelope_id": hex.EncodeToString(header.EnvelopeID[:]),
-		"recipient_key_id": agentpacketseal.KeyIDText(header.RecipientKeyID), "bytes": len(envelope),
-		"sign_seconds": signSeconds, "relays": card.Relays})
+	return printJSON(map[string]any{
+		"envelope_id": hex.EncodeToString(header.EnvelopeID[:]),
+		"recipient_key_id": agentpacketseal.KeyIDText(
+			header.RecipientKeyID,
+		), "bytes": len(envelope),
+		"sign_seconds": signSeconds, "relays": card.Relays,
+	})
 }

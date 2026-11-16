@@ -819,6 +819,13 @@ def finish() -> None:
     for name, process in list(PROCESSES.items()):
         if process.poll() is None:
             process.terminate()
+    # The host forwarder runs outside every namespace, so the namespace
+    # teardown does not reach it; a process that ignores SIGTERM is killed.
+    for name, process in list(PROCESSES.items()):
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
     try:
         netsh("down")
     except RuntimeError as error:

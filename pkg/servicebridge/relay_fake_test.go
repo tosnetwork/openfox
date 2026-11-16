@@ -72,6 +72,10 @@ type fakeRelay struct {
 	conflictIDs map[[32]byte]bool
 	// listFails answers 503 to listings.
 	listFails bool
+	// listStatus, when set, answers listings with that bare status.
+	listStatus int
+	// listDelay holds every listing that long before answering.
+	listDelay time.Duration
 	// replay keeps acknowledged envelopes listed and downloadable, as a
 	// malicious relay may.
 	replay bool
@@ -299,7 +303,18 @@ func (f *fakeRelay) put(agent string, id [32]byte, raw []byte) {
 
 func (f *fakeRelay) list(w http.ResponseWriter, agent string) {
 	f.mutex.Lock()
+	delay, status := f.listDelay, f.listStatus
+	f.mutex.Unlock()
+	if delay > 0 {
+		// Held outside the mutex, so the relay keeps serving other requests.
+		time.Sleep(delay)
+	}
+	f.mutex.Lock()
 	defer f.mutex.Unlock()
+	if status != 0 {
+		w.WriteHeader(status)
+		return
+	}
 	if f.listFails {
 		w.Header().Set("Retry-After", "7")
 		f.errorBody(w, http.StatusServiceUnavailable, "unavailable")

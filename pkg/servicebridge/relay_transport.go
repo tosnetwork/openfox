@@ -301,6 +301,9 @@ type RelayTransport struct {
 	// afterDeposit runs once a relay accepted a send's envelope, before the
 	// acceptance is journaled; tests kill the process there.
 	afterDeposit func()
+	// beforeSeal runs before every seal; tests make it fail as the card
+	// lookup would when finalized state cannot answer.
+	beforeSeal func() error
 	// unreadable remembers the journal files that failed to load, so each
 	// is reported once; onUnreadable receives that one report.
 	unreadable   sync.Map
@@ -595,6 +598,11 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 // seal draws a fresh acknowledgement secret and seals the exact packet
 // JSON to the recipient's current verified card.
 func (t *RelayTransport) seal(ctx context.Context, packet OutboundPacket, seals int) (relayOutboxRecord, error) {
+	if t.beforeSeal != nil {
+		if err := t.beforeSeal(); err != nil {
+			return relayOutboxRecord{}, err
+		}
+	}
 	card, err := t.cards.Current(ctx, packet.RecipientAgentID)
 	if err != nil {
 		return relayOutboxRecord{}, err
@@ -933,7 +941,10 @@ func (t *RelayTransport) refreshBeforeRelayTTL(ctx context.Context, path string,
 	if !ok || nowUnix >= packet.ExpiresAtUnix {
 		return nil
 	}
-	fresh, sealed := t.sealIfCardHeld(ctx, packet, record.Seals)
+	fresh, sealed, err := t.sealIfCardHeld(ctx, packet, record.Seals)
+	if err != nil {
+		return err
+	}
 	if !sealed {
 		// No current card now; a later pass tries again.
 		return nil
@@ -959,14 +970,25 @@ func (t *RelayTransport) refreshBeforeRelayTTL(ctx context.Context, path string,
 	return nil
 }
 
-// sealIfCardHeld seals the packet to the recipient's current card, or
-// reports false when no card can take it now (none held, or finalized state
-// cannot answer); the background pass then tries again later.
+// sealIfCardHeld seals the packet to the recipient's current card. It
+// reports false with no error when the recipient has no card that can take
+// it now (none held, or the held ones refused), which a later pass retries
+// once a card is learned. Every other failure, a finalized-state read that
+// cannot answer included, is returned so that the background pass reports
+// it.
 func (t *RelayTransport) sealIfCardHeld(ctx context.Context, packet OutboundPacket,
 	seals int,
-) (relayOutboxRecord, bool) {
+) (relayOutboxRecord, bool, error) {
 	fresh, err := t.seal(ctx, packet, seals)
-	return fresh, err == nil
+	switch {
+	case err == nil:
+		return fresh, true, nil
+	case errors.Is(err, ErrNoPacketRoute), errors.Is(err, ErrCardRefused):
+		return relayOutboxRecord{}, false, nil
+	default:
+		return relayOutboxRecord{}, false,
+			fmt.Errorf("servicebridge: seal the replacement of a relay envelope: %w", err)
+	}
 }
 
 // listedAtAcceptingRelays reports whether any relay that accepted the current

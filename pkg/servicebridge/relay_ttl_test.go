@@ -319,58 +319,84 @@ func TestTheCarrierReportsTheSmallestRelayTTLOfTheCard(t *testing.T) {
 }
 
 // The cap of 24 per peer holds on a card that mixes a 1 h and a 24 h relay
-// while every withdrawal fails: transiently at the 1 h relay (retried) and
-// permanently at the 24 h relay (given up, unconfirmed). Each generation
-// withdraws the previous one, but the 24 h relay keeps all of them; the
-// carrier keeps counting every unconfirmed generation until it expires, so
-// the relay never holds more than 24 envelopes for the peer.
+// while the 24 h relay refuses every withdrawal (403, given up, unconfirmed).
+// Each generation withdraws the previous one, but the 24 h relay keeps all of
+// them; the carrier keeps counting every unconfirmed generation until it
+// expires, so the relay never holds more than 24 envelopes for the peer. The
+// 1 h relay either fails its withdrawals transiently (retried) or confirms
+// them, in which case only the unconfirmed relay keeps the count.
 func TestThePeerCapHoldsOnAMixedCardWhenWithdrawalsFail(t *testing.T) {
-	clock := newRelayClock()
-	short, long := twoRelays(t, clock)
-	short.setTTL(3600)
-	short.ackFails = 1 << 30
-	long.ackForbidden = true
-	a, b := chatPair(t, clock, short.URL, long.URL)
-	event := chatEventID("offline peer")
-	refusedAt := uint32(0)
-	for generation := uint32(1); generation <= ChatPeerEnvelopeCap+2; generation++ {
-		response := a.daemon.carry(b.agent, event, generation)
-		if response.Result == carrierapi.ResultRefused {
-			requireResult(t, response, carrierapi.ResultRefused, carrierapi.CodePeerCap)
-			refusedAt = generation
-			break
-		}
-		requireResult(t, response, carrierapi.ResultCarried, "")
-		if response.RelayTTLSeconds != 3600 {
-			t.Fatalf("generation %d reported TTL %d", generation, response.RelayTTLSeconds)
-		}
-		// Background passes: redundant deposits and the failing withdrawals.
-		for range 3 {
-			a.redeposit()
-			clock.Advance(relayRedepositMax + time.Second)
-		}
-		if held := long.count(b.agent); held > ChatPeerEnvelopeCap {
-			t.Fatalf("the 24 h relay holds %d envelopes for the peer after generation %d", held, generation)
-		}
-		// The daemon's next generation is due at 80 % of the 1 h TTL.
-		clock.Advance(48*time.Minute - 3*(relayRedepositMax+time.Second))
+	for _, test := range []struct {
+		name      string
+		transient bool
+	}{
+		{"the 1 h relay fails transiently", true},
+		{"the 1 h relay confirms", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock := newRelayClock()
+			short, long := twoRelays(t, clock)
+			short.setTTL(3600)
+			if test.transient {
+				short.ackFails = 1 << 30
+			}
+			long.ackForbidden = true
+			a, b := chatPair(t, clock, short.URL, long.URL)
+			event := chatEventID("offline peer")
+			refusedAt := uint32(0)
+			for generation := uint32(1); generation <= ChatPeerEnvelopeCap+2; generation++ {
+				response := a.daemon.carry(b.agent, event, generation)
+				if response.Result == carrierapi.ResultRefused {
+					requireResult(t, response, carrierapi.ResultRefused, carrierapi.CodePeerCap)
+					refusedAt = generation
+					break
+				}
+				requireResult(t, response, carrierapi.ResultCarried, "")
+				if response.RelayTTLSeconds != 3600 {
+					t.Fatalf("generation %d reported TTL %d", generation, response.RelayTTLSeconds)
+				}
+				// Background passes: redundant deposits and the withdrawals.
+				for range 3 {
+					a.redeposit()
+					clock.Advance(relayRedepositMax + time.Second)
+				}
+				if held := long.count(b.agent); held > ChatPeerEnvelopeCap {
+					t.Fatalf("the 24 h relay holds %d envelopes for the peer after generation %d", held, generation)
+				}
+				// The daemon's next generation is due at 80 % of the 1 h TTL.
+				clock.Advance(48*time.Minute - 3*(relayRedepositMax+time.Second))
+			}
+			if refusedAt != ChatPeerEnvelopeCap+1 {
+				t.Fatalf("the cap refused generation %d, want %d", refusedAt, ChatPeerEnvelopeCap+1)
+			}
+			if held := long.count(b.agent); held != ChatPeerEnvelopeCap {
+				t.Fatalf("the 24 h relay holds %d envelopes, want exactly the cap", held)
+			}
+			if !test.transient && short.count(b.agent) > 1 {
+				t.Fatalf("the confirming 1 h relay holds %d envelopes", short.count(b.agent))
+			}
+			// The 24 h relay deleted nothing, and each superseded generation is
+			// asked there at most once: a given-up withdrawal is never asked
+			// again. (With the 1 h relay failing, its backoff may still delay
+			// the first request of the latest generations.)
+			requests, deletions := long.ackCounts()
+			if deletions != 0 || requests == 0 || requests > ChatPeerEnvelopeCap-1 ||
+				!test.transient && requests != ChatPeerEnvelopeCap-1 {
+				t.Fatalf("the 24 h relay was asked %d times and deleted %d", requests, deletions)
+			}
+			for range 3 {
+				clock.Advance(relayRedepositMax + time.Second)
+				a.redeposit()
+			}
+			if again, _ := long.ackCounts(); again > ChatPeerEnvelopeCap-1 || !test.transient && again != requests {
+				t.Fatalf("a given-up withdrawal was asked again: %d requests", again)
+			}
+			// Once the oldest generation expired at the 24 h relay, a slot
+			// frees.
+			clock.Advance(24 * time.Hour)
+			requireResult(t, a.daemon.carry(b.agent, event, refusedAt), carrierapi.ResultCarried, "")
+		})
 	}
-	if refusedAt != ChatPeerEnvelopeCap+1 {
-		t.Fatalf("the cap refused generation %d, want %d", refusedAt, ChatPeerEnvelopeCap+1)
-	}
-	if held := long.count(b.agent); held != ChatPeerEnvelopeCap {
-		t.Fatalf("the 24 h relay holds %d envelopes, want exactly the cap", held)
-	}
-	requests, deletions := long.ackCounts()
-	if deletions != 0 || requests == 0 {
-		t.Fatalf("the 24 h relay was asked %d times and deleted %d", requests, deletions)
-	}
-	if again, _ := long.ackCounts(); again != requests {
-		t.Fatal("a given-up withdrawal was asked again")
-	}
-	// Once the oldest generation expired at the 24 h relay, a slot frees.
-	clock.Advance(24 * time.Hour)
-	requireResult(t, a.daemon.carry(b.agent, event, refusedAt), carrierapi.ResultCarried, "")
 }
 
 // Evidence frames live one relay TTL of the card, delivery acks an hour.
@@ -465,5 +491,127 @@ func TestATooLargeJournalRecordIsRefusedAsPacketTooLarge(t *testing.T) {
 		if got := chatSendFailure(test.err); got.Result != test.want.Result || got.Code != test.want.Code {
 			t.Errorf("%v: %s %s, want %s %s", test.err, got.Result, got.Code, test.want.Result, test.want.Code)
 		}
+	}
+}
+
+// railDueForRefresh delivers one rail packet with a 6 h deadline through a
+// 1 h relay and stops the clock one second before its replacement is due.
+func railDueForRefresh(t *testing.T) (*relayClock, *fakeRelay, *relayTestNode, *relayTestNode, [32]byte) {
+	t.Helper()
+	clock := newRelayClock()
+	relay := startFakeRelay(t, clock)
+	relay.setTTL(3600)
+	seller, buyer := railPair(t, clock, relay)
+	envelope := relayEnvelopeTo(testBuyer)
+	envelope.NotAfterUnix = uint64(clock.Now().Add(6 * time.Hour).Unix())
+	if _, err := seller.courier.Deliver(context.Background(), envelope, markedBody(40)); err != nil {
+		t.Fatal(err)
+	}
+	seller.redeposit()
+	_, id := currentEnvelope(t, seller)
+	if !relay.holds(testBuyer, id) {
+		t.Fatal("the relay does not hold the first envelope")
+	}
+	clock.Advance(48*time.Minute - time.Second)
+	return clock, relay, seller, buyer, id
+}
+
+// A listing that fails is taken as still listing the envelope: the record is
+// not settled, and the replacement is deposited. Here the buyer did take the
+// envelope, so only the failed listing keeps the replacement going.
+func TestAFailedListingCountsAsStillListed(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		failListing func(*fakeRelay, *relayTestNode)
+	}{
+		{"500", func(relay *fakeRelay, _ *relayTestNode) {
+			relay.mutex.Lock()
+			relay.listStatus = 500
+			relay.mutex.Unlock()
+		}},
+		{"timeout", func(relay *fakeRelay, seller *relayTestNode) {
+			seller.carrier.Transport.timeout = 200 * time.Millisecond
+			relay.mutex.Lock()
+			relay.listDelay = time.Second
+			relay.mutex.Unlock()
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock, relay, seller, buyer, firstID := railDueForRefresh(t)
+			buyer.pollAll()
+			if relay.holds(testBuyer, firstID) {
+				t.Fatal("the buyer did not acknowledge the envelope")
+			}
+			test.failListing(relay, seller)
+			clock.Advance(time.Second)
+			seller.redeposit()
+			record, id := currentEnvelope(t, seller)
+			if record.Settled || id == firstID || !relay.holds(testBuyer, id) {
+				t.Fatalf("a failed listing settled the envelope: settled=%v replaced=%v", record.Settled, id != firstID)
+			}
+		})
+	}
+}
+
+// The replaced envelope stays, and its withdrawal is not even asked, while no
+// relay holds the replacement: the packet is never absent from every relay.
+func TestTheReplacedEnvelopeStaysUntilTheReplacementIsHeld(t *testing.T) {
+	clock, relay, seller, _, firstID := railDueForRefresh(t)
+	relay.mutex.Lock()
+	relay.failDeposits = 1 << 30
+	relay.mutex.Unlock()
+	clock.Advance(time.Second)
+	for range 3 {
+		seller.redeposit()
+		clock.Advance(relayRedepositMax / 2)
+	}
+	record, id := currentEnvelope(t, seller)
+	if id == firstID || len(record.Accepted) != 0 {
+		t.Fatalf("no replacement is journaled, or it is held: accepted=%v", record.Accepted)
+	}
+	if len(record.Withdrawals) != 1 || !record.Withdrawals[0].AfterAccepted {
+		t.Fatalf("the replaced envelope's withdrawal is not held back: %+v", record.Withdrawals)
+	}
+	if requests, _ := relay.ackCounts(); requests != 0 || !relay.holds(testBuyer, firstID) {
+		t.Fatalf("the replaced envelope was withdrawn before the replacement was held: %d requests", requests)
+	}
+	// Once the relay takes the replacement, the old envelope is withdrawn.
+	relay.mutex.Lock()
+	relay.failDeposits = 0
+	relay.mutex.Unlock()
+	clock.Advance(relayRedepositMax + time.Second)
+	seller.redeposit()
+	seller.redeposit()
+	if relay.holds(testBuyer, firstID) || !relay.holds(testBuyer, id) {
+		t.Fatal("the replaced envelope was not withdrawn after the replacement was held")
+	}
+}
+
+// A seal failure during a refresh other than "no card now" is returned to
+// the background pass, which reports it; "no card now" waits silently for a
+// later pass. Either way nothing in the journal changes.
+func TestASealFailureDuringARefreshIsReported(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		err      error
+		reported bool
+	}{
+		{"finalized state cannot answer", fmt.Errorf("%w: resolver down", errCardUnavailable), true},
+		{"no card held", ErrNoPacketRoute, false},
+		{"card refused", fmt.Errorf("%w: revoked", ErrCardRefused), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock, relay, seller, _, firstID := railDueForRefresh(t)
+			deposits := len(relay.depositLog())
+			seller.carrier.Transport.beforeSeal = func() error { return test.err }
+			clock.Advance(time.Second)
+			err := seller.carrier.Transport.Redeposit(context.Background())
+			if test.reported && !errors.Is(err, test.err) || !test.reported && err != nil {
+				t.Fatalf("Redeposit returned %v", err)
+			}
+			if _, id := currentEnvelope(t, seller); id != firstID || len(relay.depositLog()) != deposits {
+				t.Fatal("a failed seal changed the journal or deposited")
+			}
+		})
 	}
 }

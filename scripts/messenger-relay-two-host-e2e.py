@@ -1167,12 +1167,84 @@ def copy_frames(node: str, event_id: str, kind: int = 1) -> list[dict]:
             if row["frame"].get("kind") == kind and row["frame"].get("event_id") == event_id]
 
 
+TEXT_PAYLOAD_PREFIX = b"tos.messaging.payload.v1\x00tos.messaging.payload.text.v1\x00"
+
+
+def decode_text_payload(content: bytes) -> dict | None:
+    """The canonical text payload (media type, body, reply-to Event ID, each a
+    big-endian u32 length and its bytes), or None unless the whole content is
+    exactly one such payload."""
+    if not content.startswith(TEXT_PAYLOAD_PREFIX):
+        return None
+    fields, at = [], len(TEXT_PAYLOAD_PREFIX)
+    for _ in range(3):
+        if at + 4 > len(content):
+            return None
+        size = int.from_bytes(content[at:at + 4], "big")
+        at += 4
+        if at + size > len(content):
+            return None
+        try:
+            fields.append(content[at:at + size].decode("utf-8"))
+        except UnicodeDecodeError:
+            return None
+        at += size
+    if at != len(content):
+        return None
+    return {"media_type": fields[0], "body": fields[1], "reply_to": fields[2]}
+
+
+def received_text(node: str, event_id: str) -> dict | None:
+    """The text and sender of one Event as the runtime of node lists it."""
+    for item in pending(node):
+        if item.get("event_id") != event_id:
+            continue
+        event = json.loads(item["event"]) if isinstance(item["event"], str) else item["event"]
+        try:
+            content = base64.b64decode(event.get("content_base64", ""), validate=True)
+        except (ValueError, TypeError):
+            return None
+        decoded = decode_text_payload(content)
+        if decoded is None or event.get("event_kind") != "text":
+            return None
+        # The reply link is the Event's reply_to_event_id; the payload's own
+        # optional reply-to field, when set, must name the same Event.
+        link = event.get("reply_to_event_id", "")
+        if decoded["reply_to"] not in ("", link):
+            return None
+        decoded["reply_to"] = link
+        decoded["sender_agent_id"] = event.get("sender_agent_id", "")
+        return decoded
+    return None
+
+
+def expected_text(label: str) -> dict:
+    row = SENT[label]
+    return {"media_type": TEXT, "body": row["text"], "reply_to": row.get("reply_to", ""),
+            "sender_agent_id": RUN[row["from"]]["agent"]}
+
+
+def content_summary(value: dict | None) -> dict | None:
+    if value is None:
+        return None
+    body = value["body"].encode()
+    return {"media_type": value["media_type"], "body_bytes": len(body), "body_sha256": hashlib.sha256(body).hexdigest(),
+            "reply_to": value["reply_to"], "sender_agent_id": value["sender_agent_id"]}
+
+
 def apply_once(node: str, label: str) -> dict:
-    """The runtime lists the event and applies it exactly once."""
+    """The runtime lists the event, its content is exactly what the sender
+    sent (media type, body byte for byte, reply-to and sender Agent), and only
+    then is it applied, exactly once. A changed, truncated or missing body
+    is never applied and fails the gate."""
     event_id = SENT[label]["event_id"]
     listed = poll(lambda: event_id in inbound_texts(node), 420, 2)
-    taken = take(node, event_id) if listed else {}
-    return {"listed": bool(listed), "applied": bool(taken.get("completed")),
+    received = received_text(node, event_id) if listed else None
+    expected = expected_text(label)
+    matches = received is not None and received == expected
+    taken = take(node, event_id) if listed and matches else {}
+    return {"listed": bool(listed), "content_matches": matches, "applied": matches and bool(taken.get("completed")),
+            "received": content_summary(received), "expected": content_summary(expected),
             "listed_again_after": event_id in inbound_texts(node)}
 
 
@@ -1484,15 +1556,17 @@ def offline_recipient() -> None:
     stop_node("b")
     RUN["b_offline_at"] = now()
     # The stranger C writes to B: it holds B's public contact file, but B's
-    # inbox admits only A and refuses unknown senders. C's envelope ids are
-    # kept, so the refusal is proven by B relay-acknowledging those exact ids
-    # (only B holds its mailbox's ack secret), not by time passing.
+    # inbox admits only A and refuses unknown senders. C's envelope id is
+    # kept, so the refusal is proven by that exact id being relay-acknowledged
+    # at B's relays, not by time passing: the ack secret is known only to B
+    # (from the sealed packet it opens) and to the sender C, and C never
+    # withdraws or acknowledges its own copy in this run.
     c1 = (send("c", "b", "stranger"), require_sent("stranger"))[1]
     c_envelopes = poll(lambda: [r["record"]["envelope_id"] for r in copy_frames("c", c1)
                                 if r["record"].get("accepted")], 120, 1) or []
     c_listed = poll(lambda: all(any(e in listed_ids(relay, RUN["b"]["agent"]) for relay in RELAYS)
                                 for e in c_envelopes) if c_envelopes else None, 120, 2)
-    require("the stranger C deposited its copy to B, and both its envelope ids are listed in B's mailbox at a relay "
+    require("the stranger C deposited its copy to B, and its envelope id is listed in B's mailbox at both relays "
             "while B is offline", bool(c_envelopes) and bool(c_listed), {"c_envelopes": c_envelopes})
     m = (send("a", "b", "offline"), require_sent("offline"))[1]
     first = poll(lambda: [r["record"] for r in copy_frames("a", m)
@@ -1531,7 +1605,7 @@ def offline_recipient() -> None:
               "b_messenger_files_naming_c_before": boundary_before,
               "c_kind2_from_b": [row["frame"].get("ack_outcome") for row in frames_of("b")
                                  if row["packet"]["recipient_agent_id"] == RUN["c"]["agent"]]}
-    gate("7", "a refused stranger: B downloaded C's copy (both ids relay-acknowledged by B) and refused it; C's "
+    gate("7", "a refused stranger: B downloaded C's copy (its envelope id relay-acknowledged at both relays) and refused it; C's "
          "in-band card and evidence are not stored (so it was refused, not held), no Messenger file of B names C "
          "(its rollback boundary is unchanged), B sent C no ack, and C's delivery stays carried",
          bool(acked) and not stored["b_chat_cards_naming_c"] and not stored["b_messenger_files_naming_c"] and
@@ -1694,10 +1768,12 @@ def revocation() -> None:
     new_generation = [f for f in frames_of("a") if f["frame"].get("event_id") == queued and
                       f["record"]["idempotency_key"] not in queued_before and f["frame"].get("kind") == 1]
     gate("5", "the copy carried before the revocation is not re-deposited after it: past its re-deposit time A "
-         "seals no new generation (CheckPeer fails), and the copy stays at generation 1, undelivered",
+         "seals no new generation, the copy stays at generation 1, undelivered, and its last code is a revocation "
+         "code (so the re-deposit was attempted and refused, not merely not scheduled)",
          row.get("relay_generation") == 1 and len(row.get("relay_generations") or []) == 1 and
-         not new_generation and row.get("state") in ("carried", "pending"),
-         {"state": row.get("state"), "generation": row.get("relay_generation"),
+         not new_generation and row.get("state") in ("carried", "pending") and
+         row.get("last_code") in REVOCATION_CODES,
+         {"state": row.get("state"), "generation": row.get("relay_generation"), "last_code": row.get("last_code"),
           "new_generations_after_revocation": len(new_generation)})
     reconnect("b")
 

@@ -1628,7 +1628,14 @@ def relay_envelope_sizes(snapshot_dir: Path) -> list[int]:
             if path.is_file() and "envelopes" in path.parts]
 
 
+RELAY_FILE = re.compile(r"^([0-9a-f]{64})-[0-9a-f]{64}")
+
+
 def search(roots: list[Path], needles: dict[str, list[bytes]]) -> dict[str, list[str]]:
+    """Which needles each file holds. A relay envelope or tombstone file is
+    named <recipient agent hex>-<envelope id> and holds its recipient's Agent
+    id by design (the mailbox key, and the envelope header); that one Agent's
+    id forms are not searched in it, every other Agent's are."""
     found: dict[str, list[str]] = {}
     for root in roots:
         for path in ([root] if root.is_file() else sorted(p for p in root.rglob("*") if p.is_file())):
@@ -1636,8 +1643,10 @@ def search(roots: list[Path], needles: dict[str, list[bytes]]) -> dict[str, list
                 data = path.read_bytes()
             except OSError:
                 continue
+            owner = RELAY_FILE.match(path.name)
+            public = set(hexforms({"agent_" + owner.group(1)})) if owner else set()
             for kind, items in needles.items():
-                if any(item in data for item in items):
+                if any(item in data for item in items if item not in public):
                     found.setdefault(kind, []).append(str(path))
     return found
 
@@ -1694,11 +1703,16 @@ def relay_search_and_sizes() -> None:
         for row in frames_of(node):
             frame = row["frame"]
             frame_sizes.setdefault(node, []).append(frame.get("frame_bytes"))
+            # A withdrawn generation keeps its packet but no envelope bytes.
+            if not row["record"].get("envelope_base64"):
+                continue
             if frame.get("is_bucket") and frame.get("frame_bytes") == frame.get("smallest_bucket") and \
                row["packet"].get("expected_envelope_bytes"):
                 stored = len(base64.b64decode(row["record"]["envelope_base64"]))
                 fixed = row["packet"]["fixed_field_bytes"]
                 envelope_ok.append(stored == row["packet"]["expected_envelope_bytes"] and 5394 <= fixed <= 5432)
+            else:
+                envelope_ok.append(False)
     buckets = relayframe_buckets()
     all_buckets = all(size in buckets for sizes in frame_sizes.values() for size in sizes)
     stored_sizes = {name: {relay: relay_envelope_sizes(SNAPSHOTS / name / relay) for relay in RELAYS}

@@ -1121,6 +1121,21 @@ def reconnect(node: str) -> None:
 ROOT_SIGNALS: list[str] = []
 
 
+def carrier_calls(node: str) -> int:
+    """Connected streams on node's daemon carrier socket, read from the
+    daemon's own network namespace view (/proc/<pid>/net/unix; state 03 is
+    connected, 01 a listener)."""
+    path = str(sock(node, "carrier.sock"))
+    count = 0
+    for pid in pids(daemon_pattern(node)):
+        try:
+            lines = Path(f"/proc/{pid}/net/unix").read_text().splitlines()[1:]
+        except OSError:
+            continue
+        count += sum(1 for line in lines if line.split()[-1] == path and line.split()[5] == "03")
+    return count
+
+
 def continue_wrapper(key: str) -> None:
     """A process paused with SIGSTOP stops its root `sudo` launcher too, and
     a SIGCONT to the process does not resume the launcher, which then never
@@ -1140,7 +1155,7 @@ def require_sent(label: str) -> str:
     return row["event_id"]
 
 
-def wait_delivered(node: str, event_id: str, timeout: float = 180) -> dict:
+def wait_delivered(node: str, event_id: str, timeout: float = 420) -> dict:
     return poll(lambda: delivered(node, event_id), timeout, 2) or delivery_of(node, event_id)
 
 
@@ -1152,7 +1167,7 @@ def copy_frames(node: str, event_id: str, kind: int = 1) -> list[dict]:
 def apply_once(node: str, label: str) -> dict:
     """The runtime lists the event and applies it exactly once."""
     event_id = SENT[label]["event_id"]
-    listed = poll(lambda: event_id in inbound_texts(node), 120, 2)
+    listed = poll(lambda: event_id in inbound_texts(node), 420, 2)
     taken = take(node, event_id) if listed else {}
     return {"listed": bool(listed), "applied": bool(taken.get("completed")),
             "listed_again_after": event_id in inbound_texts(node)}
@@ -1367,7 +1382,12 @@ def crash_windows() -> None:
     m = (send("a", "b", "crash-b"), require_sent("crash-b"))[1]
     sent = poll(lambda: [row for row in copy_frames("a", m) if row["record"].get("accepted")], 90, 1)
     envelope_id = sent[0]["record"]["envelope_id"] if sent else ""
-    time.sleep(35)  # B's poller (15 s) has downloaded it and waits on its paused daemon
+    # B's poller may be in its failure backoff (up to 5 min) after the earlier
+    # cut-offs; wait until it has handed the frame to the paused daemon: a
+    # connected stream on the daemon's carrier socket.
+    waiting = poll(lambda: carrier_calls("b") > 0, 420, 2)
+    require("B's serve downloaded the copy and waits on its paused daemon (a connected carrier.deliver call)",
+            bool(waiting), {"connected_calls": carrier_calls("b")})
     stop_serve("b", "KILL")
     signal_pattern(daemon_pattern("b"), "CONT")
     continue_wrapper("messengerd-b")

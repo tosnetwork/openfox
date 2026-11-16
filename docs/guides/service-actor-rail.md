@@ -18,7 +18,8 @@ the environment variable that carries the vault URL.
 |---|---|---|
 | owner wallet (provider) | tosctl wallet | the messages that carry the Agent and Capability registrations, the actor deployment, policy updates, `respond`, `withdraw_revenue` |
 | attestor controller (`service-attestor`) | tosctl vault | the request-bound SRP2 response domain, inside `respond` |
-| packet controller | tosctl vault, a controller of the node's Native Registry Agent | the Agent registration, the Capability registration, every Agent Packet |
+| packet controller | tosctl vault, a controller of the node's Native Registry Agent | the Agent registration, the Capability registration, every Agent Packet, the rail key cards |
+| card-signing controller (`<packet controller>-card`) | tosctl vault, a controller of the Agent's policy without authority of its own | the Agent registration (every controller of a new policy signs it), the chat key cards and nothing else |
 | buyer wallet | tosctl wallet | the message that carries the Agent registration, `call`, `expire`, `claim_refund` |
 
 `openfox earning service` is the one entry point: `init`, `offer`, `preflight`,
@@ -98,10 +99,23 @@ checked:
   a wallet whose type tosctl could not read, before signing or sending.
 - **Packet controller.** `--packet-controller` (default `openfox-packet`) is
   created in the vault if it is absent. tosctl never replaces an existing one.
-- **Agent.** `init` builds a one-controller policy, has tosctl sign the
-  registration, checks that it targets the address the Agent id derives under
-  the configured network and registry code, sends it from the owner wallet with
-  2 TOS attached and waits for the Agent in finalized state.
+- **Card-signing controller.** `--card-controller` (default: the packet
+  controller name with `-card`) is created the same way and must hold another
+  key than the packet controller. It signs the chat key cards and nothing else,
+  so a chat card can be revoked without stopping the node's packets (see the
+  chat carriage section).
+- **Agent.** `init` builds a two-controller policy with threshold 2 for every
+  purpose and for recovery: the packet controller with weight 2 and every
+  purpose, which meets each threshold alone, and the card-signing controller
+  with weight 1, the delegation purpose bit only and no recovery, which
+  authorizes nothing on chain alone (the registry requires every controller
+  to carry a purpose). Both controllers sign the registration, as tosctl
+  requires of a new policy. `init` checks that the registration targets the
+  address the Agent id derives under the configured network and registry code,
+  sends it from the owner wallet with 2 TOS attached and waits for the Agent,
+  with both controllers, in finalized state. An Agent registered before the
+  card-signing controller existed has none; `chat init` refuses it, and it is
+  re-established with a new state directory and `init`.
 - **Paths.** The receiver socket defaults to `<state-dir>/rail-receiver.sock`.
 
 The configuration is written owner-only (`0600`) and must read back through the
@@ -893,9 +907,34 @@ daemon. OpenFox never sees chat plaintext, Messenger keys or session state.
 - **Timeout.** `chat.timeout_seconds` (`init --chat-timeout-seconds`) bounds
   one carrier operation in both directions: 0 means 30 s, otherwise 1 to
   300. Set it to the daemon's `relay_carriage.timeout_seconds`.
-- **Card signer (known M-R1 deviation).** The chat card is signed by the
-  packet controller. The relay carriage spec recommends a dedicated
-  card-signing controller (a SHOULD); M-R1 does not use one.
+- **Card signer.** The chat card is signed by the card-signing controller
+  (`card_controller`, `card_key_id`), never by the packet controller, which
+  keeps signing the chat frames. Before a card is issued or republished
+  (`chat init`, `chat republish`), the controller must be in the Agent's
+  finalized policy below its threshold and without recovery; a card it signs
+  is otherwise refused by every peer. `serve` signs successors with the same
+  controller. A held chat card that another controller signed is kept until
+  its key's retention ends, so envelopes already sealed to it still open, but
+  it is never handed out again: the next republication issues a new card.
+- **Revoking or rotating the card controller.** Removing the card-signing
+  controller from the Agent's finalized policy (`tosctl agent native-registry
+  action --kind update-policy`, signed by the packet controller and every
+  controller of the next policy, sent from the owner wallet) makes every chat
+  card it signed unusable within minutes of the next verification and leaves
+  the node's packets alone. To keep chatting, put a new dedicated controller
+  in the same policy update (weight below the threshold, no recovery), then
+  run `openfox earning chat card-controller --rail-config <file> --name
+  <controller>`: it refuses a controller the finalized policy does not hold,
+  one with authority of its own, or the packet controller; otherwise it
+  records the controller in the configuration and republishes the chat card
+  under it. Send the peers a new contact file; frames carry the new card in
+  band as well.
+- **Peer cards.** A peer's chat card is verified as the relay specification
+  requires: `VerifyKeyCard` against finalized state (a live controller of the
+  peer Agent's policy), again before use once the last check is 10 minutes
+  old. The policy names no controller roles, so a verifier cannot tell a
+  peer's card-signing controller from its packet controller, and a peer card
+  signed by any controller of its finalized policy is accepted.
 
 Setup, with the Messenger daemon configured to the same paths:
 
@@ -905,7 +944,7 @@ Setup, with the Messenger daemon configured to the same paths:
    --messenger-evidence-dir <daemon evidence_export_dir>
    --messenger-contact-dir <daemon contact_dir>`;
 2. `openfox earning chat init --rail-config <file>` issues the chat key and a
-   30-day card signed by the packet controller and writes it to the card
+   30-day card signed by the card-signing controller and writes it to the card
    path (start the daemon only after this: it refuses a missing card);
    `serve` republishes it while less than 15 days remain, and `chat
    republish` does so on demand;
@@ -920,7 +959,9 @@ Setup, with the Messenger daemon configured to the same paths:
    owner's admission decision;
 5. `openfox earning chat status --rail-config <file>` shows the current chat
    card, whether the card path holds it, the held chat cards and the chat
-   journal; `preflight` checks the section and the published card;
+   journal; `preflight` checks the section, the card-signing controller (in
+   the vault as `card_key_id`, in the finalized policy without authority) and
+   the published card;
 6. `openfox earning chat contact remove --rail-config <file> <agent>`
    deletes that Agent's stored chat cards and the contact file its import
    wrote (for example after the daemon refused its evidence), so it stops

@@ -243,8 +243,10 @@ func writeAgentPolicy(stateDir string, packet, card ControllerKey) (string, erro
 		RecoveryTimelock: agentRecoveryTimelock,
 		Controllers: []agentPolicyController{
 			{PublicKey: hex.EncodeToString(packet.PublicKey), Weight: packetControllerWeight, Purposes: 15},
-			{PublicKey: hex.EncodeToString(card.PublicKey), Weight: cardControllerWeight,
-				Purposes: cardControllerPurposes},
+			{
+				PublicKey: hex.EncodeToString(card.PublicKey), Weight: cardControllerWeight,
+				Purposes: cardControllerPurposes,
+			},
 		},
 	})
 	if err != nil {

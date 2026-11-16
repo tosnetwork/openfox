@@ -284,11 +284,11 @@ func TestCheckCardControllerRequiresAPolicyControllerWithoutAuthority(t *testing
 			mutate: func(*nativev1.AgentStateV1) {}, key: packet, want: ErrCardControllerIsPacketController,
 		},
 		"not in the policy": {
-			mutate: func(a *nativev1.AgentStateV1) { a.Policy.Controllers = a.Policy.Controllers[:1] }, key: card,
-			want: ErrCardControllerNotInPolicy,
+			mutate: func(a *nativev1.AgentStateV1) { a.Policy.Controllers = a.GetPolicy().GetControllers()[:1] },
+			key:    card, want: ErrCardControllerNotInPolicy,
 		},
 		"meets the threshold alone": {
-			mutate: func(a *nativev1.AgentStateV1) { a.Policy.Controllers[1].Weight = a.Policy.Threshold },
+			mutate: func(a *nativev1.AgentStateV1) { a.Policy.Controllers[1].Weight = a.GetPolicy().GetThreshold() },
 			key:    card, want: ErrCardControllerHasAuthority,
 		},
 		"holds recovery": {
@@ -506,18 +506,22 @@ func TestPreflightChecksTheCardSigningController(t *testing.T) {
 		"the card controller left the finalized policy": {
 			mutate: func(f *pfFixture) {
 				agent := agentState(testSeller)
-				agent.Policy.Controllers = agent.Policy.Controllers[:1]
-				f.chain.agent = &nativev1.NativeStateV1{Network: testNetwork,
-					State: &nativev1.NativeStateV1_Agent{Agent: agent}}
+				agent.Policy.Controllers = agent.GetPolicy().GetControllers()[:1]
+				f.chain.agent = &nativev1.NativeStateV1{
+					Network: testNetwork,
+					State:   &nativev1.NativeStateV1_Agent{Agent: agent},
+				}
 			},
 			want: map[string]string{"chat.card_controller": CheckFail, "chat.card": CheckUnknown},
 		},
 		"the card controller holds authority": {
 			mutate: func(f *pfFixture) {
 				agent := agentState(testSeller)
-				agent.Policy.Controllers[1].Weight = agent.Policy.Threshold
-				f.chain.agent = &nativev1.NativeStateV1{Network: testNetwork,
-					State: &nativev1.NativeStateV1_Agent{Agent: agent}}
+				agent.Policy.Controllers[1].Weight = agent.GetPolicy().GetThreshold()
+				f.chain.agent = &nativev1.NativeStateV1{
+					Network: testNetwork,
+					State:   &nativev1.NativeStateV1_Agent{Agent: agent},
+				}
 			},
 			want: map[string]string{"chat.card_controller": CheckFail, "chat.card": CheckUnknown},
 		},

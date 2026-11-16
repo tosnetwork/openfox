@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 )
 
 func mustFail(t *testing.T, err error, target error, fragments ...string) {
@@ -425,6 +426,11 @@ func TestInitRegistersTheCardControllerWithoutAuthorityBesideThePacketController
 	policy, err := fakeFinalizedPolicy(world.Agents[result.AgentID])
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The registry's own rules accept the policy: valid controllers, every
+	// purpose and recovery reachable, consent met by the signers.
+	if err = nativecore.VerifyRegistrationConsent(policy); err != nil {
+		t.Fatalf("the registry refuses the registered policy: %v", err)
 	}
 	agent := &nativev1.AgentStateV1{AgentId: result.AgentID, Policy: policy}
 	if err = checkCardController(agent, result.CardKeyID, result.PacketKeyID); err != nil {

@@ -73,7 +73,7 @@ func (s *switchableAgents) setCardController(id, name string) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	state := agentState(id)
-	state.Policy.Controllers = state.Policy.Controllers[:1]
+	state.Policy.Controllers = state.GetPolicy().GetControllers()[:1]
 	if name != "" {
 		state.Policy.Controllers = append(state.Policy.Controllers, &nativev1.ControllerV1{
 			KeyId: packetKeys.KeyID(name), Mldsa44PublicKey: packetKeys.PublicKey(name),

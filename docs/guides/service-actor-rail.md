@@ -741,29 +741,57 @@ controller, so the only early revocation is replacing the packet controller in
 the Agent's finalized policy. Do this when a node's state directory (and so its
 HPKE keys) may have been exposed. The procedure:
 
-1. create a new controller in the vault (`tosctl agent native-registry
+1. drain or finish responded requests and claim open buyer refunds before
+   rotating (see the costs below);
+2. create a new controller in the vault (`tosctl agent native-registry
    new-controller --name <new>`);
-2. send `tosctl agent native-registry action --kind update-policy` with a next
-   policy that holds the new controller in place of the old one, signed by the
-   current packet controller (the only Agent-control signer) and with
-   possession signed by every controller of the next policy (`--counter-signer
-   <new>`), from the owner wallet, and wait until it is finalized;
-3. re-establish the node with `init` against a **new** state directory and
+3. build the policy update with `tosctl agent native-registry action --kind
+   update-policy --agent <agent address> --nonce <32-byte hex> --policy <next
+   policy JSON: the new controller with weight 1, purposes 15, thresholds 1>
+   --signer <current packet controller> --counter-signer <new>` (it builds
+   and signs; it sends nothing). The policy file has the shape `init` writes
+   (`threshold`, `recovery_threshold`, `recovery_timelock`, `controllers`
+   with `public_key`, `weight`, `purposes`). Send the signed message from the
+   owner wallet with `tosctl wallet send --from <wallet> --to <agent address>
+   --amount-nanotos 2000000000 --body-boc <body> --yes`, as `init` does, and
+   wait until the new policy is finalized;
+4. re-establish the node with `init` against a **new** state directory and
    `--packet-controller <new>`, keeping the rail configuration that names the
-   Agent: `init` adopts that Agent ID instead of registering one. `init` on the
-   existing state directory refuses another packet controller once the
-   registration was sent (`ErrSetupInputChanged`, see above): rotating the
-   packet controller in place is not supported yet (see the known limits
-   below).
+   Agent: `init` adopts that Agent ID, sends nothing, and rewrites the
+   configuration with the new controller, key id and state directory. Pass
+   the chat flags again (`--messenger-carrier-socket` with `--chat-card-path`
+   and `--chat-carrier-socket`), or remove the `chat` section first, so the
+   chat paths move to the new state directory; a kept section still points
+   into the old one. `init` on the existing state directory refuses another
+   packet controller once the registration was sent (`ErrSetupInputChanged`,
+   see above): rotating the packet controller in place is not supported yet
+   (see the known limits below).
 
 What it costs:
 
 - every rail, offer, chat and contact card the old key signed stops working
-  within minutes of the next verification: republish the offer file (a
-  provider runs `offer` again from the new state directory), and peers need
-  new chat contact files;
-- packets already journaled and signed by the old key never verify again, so
-  open rail deliveries fail (their requests end through the timeout refund);
+  at its next verification. A provider runs `offer` again from the new state
+  directory: it keeps the same Service Actor (its address does not depend on
+  the packet controller: the owner wallet owns the actor and the attestor
+  controller attests), registers a **new** Capability and points the actor's
+  metadata at it; publish the new offer file. Buyers holding the old offer
+  file are refused before paying, since its card no longer verifies. The old
+  Capability stays registered: revoke it (`tosctl agent native-registry
+  action --kind revoke-capability`, signed by the new packet controller, sent
+  from the owner wallet). Peers need new chat contact files;
+- packets already journaled and signed by the old key never verify again. As
+  a provider: a request not yet responded to ends through the timeout refund
+  (the buyer's node sends `expire` and `claim-refund` once the response
+  deadline passes, within the refund claim window); a request already
+  responded to on chain is not refunded, and its result, held only in the old
+  state directory, cannot be redelivered, so finish or drain responded
+  requests before rotating where possible. As a buyer: open purchases are
+  recorded only in the old state directory, so the new node never expires or
+  claims them; for each one, take the actor and request id from the old
+  directory's purchase records and send `tosctl agent service send
+  --operation expire` and then `--operation claim-refund --destination <owner
+  wallet>` (`--address <actor> --request-id <id> --from <owner wallet>`)
+  before its refund claim window closes, or the refund lapses;
 - the new state directory starts without the old one's courier, envelope and
   purchase journals, inbox and relay keys; the old directory is kept for
   reference, not run;

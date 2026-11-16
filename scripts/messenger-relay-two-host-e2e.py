@@ -1167,12 +1167,78 @@ def copy_frames(node: str, event_id: str, kind: int = 1) -> list[dict]:
             if row["frame"].get("kind") == kind and row["frame"].get("event_id") == event_id]
 
 
+TEXT_PAYLOAD_PREFIX = b"tos.messaging.payload.v1\x00tos.messaging.payload.text.v1\x00"
+
+
+def decode_text_payload(content: bytes) -> dict | None:
+    """The canonical text payload (media type, body, reply-to Event ID, each a
+    big-endian u32 length and its bytes), or None unless the whole content is
+    exactly one such payload."""
+    if not content.startswith(TEXT_PAYLOAD_PREFIX):
+        return None
+    fields, at = [], len(TEXT_PAYLOAD_PREFIX)
+    for _ in range(3):
+        if at + 4 > len(content):
+            return None
+        size = int.from_bytes(content[at:at + 4], "big")
+        at += 4
+        if at + size > len(content):
+            return None
+        try:
+            fields.append(content[at:at + size].decode("utf-8"))
+        except UnicodeDecodeError:
+            return None
+        at += size
+    if at != len(content):
+        return None
+    return {"media_type": fields[0], "body": fields[1], "reply_to": fields[2]}
+
+
+def received_text(node: str, event_id: str) -> dict | None:
+    """The text and sender of one Event as the runtime of node lists it."""
+    for item in pending(node):
+        if item.get("event_id") != event_id:
+            continue
+        event = json.loads(item["event"]) if isinstance(item["event"], str) else item["event"]
+        try:
+            content = base64.b64decode(event.get("content_base64", ""), validate=True)
+        except (ValueError, TypeError):
+            return None
+        decoded = decode_text_payload(content)
+        if decoded is None or event.get("event_kind") != "text":
+            return None
+        decoded["sender_agent_id"] = event.get("sender_agent_id", "")
+        return decoded
+    return None
+
+
+def expected_text(label: str) -> dict:
+    row = SENT[label]
+    return {"media_type": TEXT, "body": row["text"], "reply_to": row.get("reply_to", ""),
+            "sender_agent_id": RUN[row["from"]]["agent"]}
+
+
+def content_summary(value: dict | None) -> dict | None:
+    if value is None:
+        return None
+    body = value["body"].encode()
+    return {"media_type": value["media_type"], "body_bytes": len(body), "body_sha256": hashlib.sha256(body).hexdigest(),
+            "reply_to": value["reply_to"], "sender_agent_id": value["sender_agent_id"]}
+
+
 def apply_once(node: str, label: str) -> dict:
-    """The runtime lists the event and applies it exactly once."""
+    """The runtime lists the event, its content is exactly what the sender
+    sent (media type, body byte for byte, reply-to and sender Agent), and only
+    then is it applied, exactly once. A changed, truncated or missing body
+    is never applied and fails the gate."""
     event_id = SENT[label]["event_id"]
     listed = poll(lambda: event_id in inbound_texts(node), 420, 2)
-    taken = take(node, event_id) if listed else {}
-    return {"listed": bool(listed), "applied": bool(taken.get("completed")),
+    received = received_text(node, event_id) if listed else None
+    expected = expected_text(label)
+    matches = received is not None and received == expected
+    taken = take(node, event_id) if listed and matches else {}
+    return {"listed": bool(listed), "content_matches": matches, "applied": matches and bool(taken.get("completed")),
+            "received": content_summary(received), "expected": content_summary(expected),
             "listed_again_after": event_id in inbound_texts(node)}
 
 

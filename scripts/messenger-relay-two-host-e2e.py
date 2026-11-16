@@ -1639,11 +1639,18 @@ REVOCATION_CODES = {"agent-tombstoned", "delegation-uncommitted"}
 
 
 def revocation_refusal(answer: dict, delivery: dict) -> bool:
-    """The send was a real runtime exchange (the socket answered, so no
-    transport error) and it was refused with a revocation code, either in the
-    synchronous answer or as the copy's last code once it fails to seal."""
-    if "call_error" in answer:
-        return False
+    """The send was a real runtime exchange refused with a revocation code.
+
+    The helper reports a daemon refusal as a failed call whose error reads
+    "local API refused <code>: ...": the socket answered and the daemon
+    refused. A dead or missing socket instead fails to connect ("connect local
+    API"), which never counts. The code may also arrive as the copy's last
+    code once a queued copy fails to seal."""
+    error = answer.get("call_error", "")
+    if error:
+        if not re.search(r"local API refused [a-z-]+", error):
+            return False  # a transport failure: the daemon never answered
+        return any(code in error for code in REVOCATION_CODES)
     return answer.get("code") in REVOCATION_CODES or delivery.get("last_code") in REVOCATION_CODES
 
 

@@ -269,6 +269,10 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 	if err != nil {
 		return nil, err
 	}
+	transport.onUnreadable = func(name string, err error) {
+		report("chat.journal", fmt.Errorf("servicebridge: chat journal record %s is unreadable; it counts as one "+
+			"stored envelope for every peer: %w", name, err))
+	}
 	if err := transport.setPacketBound(agentpacketseal.MaxPacketJSONBytes); err != nil {
 		return nil, err
 	}

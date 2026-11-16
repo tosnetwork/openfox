@@ -893,9 +893,18 @@ daemon. OpenFox never sees chat plaintext, Messenger keys or session state.
 - **Timeout.** `chat.timeout_seconds` (`init --chat-timeout-seconds`) bounds
   one carrier operation in both directions: 0 means 30 s, otherwise 1 to
   300. Set it to the daemon's `relay_carriage.timeout_seconds`.
-- **Card signer (known M-R1 deviation).** The chat card is signed by the
-  packet controller. The relay carriage spec recommends a dedicated
-  card-signing controller (a SHOULD); M-R1 does not use one.
+- **Card signer.** The chat card is signed by the packet controller, like
+  the rail and offer cards. This is a deliberate choice. The relay spec
+  recommends a dedicated card-signing controller (a SHOULD), but the
+  off-chain verifiers (`VerifyKeyCard`, `agentpacket.VerifyContact`,
+  `agentpacket.VerifySender`) accept a signature by any controller of the
+  Agent's finalized policy and check no purpose or weight. A second controller
+  could therefore sign any Agent Packet and any card as the Agent, and kept in
+  the same vault it would add an impersonation key while isolating little.
+  A dedicated card controller becomes worthwhile only after a protocol change
+  makes verifiers check a card-signing purpose. Until then, revoking a chat
+  card early means removing the packet controller, which also stops the
+  node's packets (see "Revoking a card" above).
 
 Setup, with the Messenger daemon configured to the same paths:
 

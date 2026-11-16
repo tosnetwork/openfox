@@ -734,14 +734,84 @@ offer file may still hand out an older card of the same owner: it is accepted
 as long as it is valid, and of the valid cards the newest is used.
 
 **Revoking a card.** Publishing a new card does not revoke the old one: until
-its expiry a stale offer file can keep handing it out. Cards are signed by the
-packet controller, so the only early revocation is removing the packet
-controller from the Agent's finalized policy, which makes every card it signed
-unusable within minutes of the next verification **and also stops every packet
-the node sends** until a new packet controller is registered and `init` is run
-for it. Do this when a node's state directory (and so its HPKE keys) may have
-been exposed. A compromised offer-card key stays sealable for up to 30 days,
-the offer card's lifetime, unless the controller that signed it is removed.
+its expiry a stale offer file can keep handing it out. A compromised offer-card
+key stays sealable for up to 30 days, the offer card's lifetime, unless the
+controller that signed it is removed. Cards are signed by the packet
+controller, so the only early revocation is replacing the packet controller in
+the Agent's finalized policy. Do this when a node's state directory (and so its
+HPKE keys) may have been exposed. The procedure:
+
+1. drain or finish responded requests and claim open buyer refunds before
+   rotating (see the costs below);
+2. create a new controller in the vault (`tosctl agent native-registry
+   new-controller --name <new>`);
+3. build the policy update with `tosctl agent native-registry action --kind
+   update-policy --agent <agent address> --nonce <32-byte hex> --policy <next
+   policy JSON: the new controller with weight 1, purposes 15, thresholds 1>
+   --signer <current packet controller> --counter-signer <new>` (it builds
+   and signs; it sends nothing). The policy file has the shape `init` writes
+   (`threshold`, `recovery_threshold`, `recovery_timelock`, `controllers`
+   with `public_key`, `weight`, `purposes`). Send the signed message from the
+   owner wallet with `tosctl wallet send --from <wallet> --to <agent address>
+   --amount-nanotos 2000000000 --body-boc <body> --yes` and wait until the new
+   policy is finalized. `--amount-nanotos 2000000000` is the value `init` and
+   `offer` attach to registry messages. The registry requires no minimum: the
+   value pays this message's processing (at most about 0.014 TOS at the
+   genesis basechain gas price), and the rest stays in the Agent's registry
+   object; it is not refunded;
+4. re-establish the node with `init` against a **new** state directory and
+   `--packet-controller <new>`, keeping the rail configuration that names the
+   Agent: `init` adopts that Agent ID, sends nothing, and rewrites the
+   configuration with the new controller, key id and state directory. Pass
+   `--messenger-carrier-socket` again, with every other chat flag the node was
+   set up with (`--chat-relay-url`, `--messenger-evidence-dir`,
+   `--messenger-contact-dir`, `--chat-timeout-seconds`): with that flag `init`
+   rebuilds the whole `chat` section, so a flag not passed again is dropped,
+   and `--chat-card-path` and `--chat-carrier-socket` default to the new state
+   directory. Without it the kept section still points into the old
+   directory. Then set the Messenger daemon's `relay_carriage.card_path` and
+   `carry_socket_path` to the new paths. `init` on the existing state directory refuses another
+   packet controller once the registration was sent (`ErrSetupInputChanged`,
+   see above): rotating the packet controller in place is not supported yet
+   (see the known limits below).
+
+What it costs:
+
+- every rail, offer, chat and contact card the old key signed stops working
+  at its next verification. A provider runs `offer` again from the new state
+  directory: it keeps the same Service Actor (its address does not depend on
+  the packet controller: the owner wallet owns the actor and the attestor
+  controller attests), registers a **new** Capability and points the actor's
+  metadata at it; publish the new offer file. Buyers holding the old offer
+  file are refused before paying, since its card no longer verifies. The old
+  Capability stays registered: revoke it (`tosctl agent native-registry
+  action --kind revoke-capability`, signed by the new packet controller, sent
+  from the owner wallet). Peers need new chat contact files;
+- packets already journaled and signed by the old key never verify again. As
+  a provider: a request not yet responded to ends through the timeout refund
+  (the buyer's node sends `expire` and `claim-refund` once the response
+  deadline passes, within the refund claim window); a request already
+  responded to on chain is not refunded, and its result, held only in the old
+  state directory, cannot be redelivered, so finish or drain responded
+  requests before rotating where possible. As a buyer: open purchases are
+  recorded only in the old state directory, so the new node never expires or
+  claims them; for each one, take the actor and request id from the old
+  directory's purchase records and send `tosctl agent service send
+  --operation expire` and then `--operation claim-refund --destination <owner
+  wallet>` (`--address <actor> --request-id <id> --from <owner wallet>`)
+  before its refund claim window closes, or the refund lapses;
+- the new state directory starts without the old one's courier, envelope and
+  purchase journals, inbox and relay keys; the old directory is kept for
+  reference, not run;
+- if the ML-DSA-44 key itself is compromised, the attacker holds the only
+  Agent-control and recovery weight and can race the policy update or start a
+  recovery: that is total identity compromise, as the relay specification
+  (section 11) states, not a card revocation;
+- the attestor controller is separate and is not affected.
+
+**Known limits.** Rotating the packet controller of an established node in
+place (keeping its state directory, journals and keys) is not supported; it is
+a follow-up.
 **Withdrawing envelopes sealed to a revoked card.** The envelope journal
 keeps each envelope's acknowledgement secret and the signed packet (as the
 courier outbox already does), owner-only; neither is ever logged or placed in
@@ -893,9 +963,18 @@ daemon. OpenFox never sees chat plaintext, Messenger keys or session state.
 - **Timeout.** `chat.timeout_seconds` (`init --chat-timeout-seconds`) bounds
   one carrier operation in both directions: 0 means 30 s, otherwise 1 to
   300. Set it to the daemon's `relay_carriage.timeout_seconds`.
-- **Card signer (known M-R1 deviation).** The chat card is signed by the
-  packet controller. The relay carriage spec recommends a dedicated
-  card-signing controller (a SHOULD); M-R1 does not use one.
+- **Card signer.** The chat card is signed by the packet controller, like
+  the rail and offer cards. This is a deliberate choice. The relay spec
+  recommends a dedicated card-signing controller (a SHOULD), but the
+  off-chain verifiers (`VerifyKeyCard`, `agentpacket.VerifyContact`,
+  `agentpacket.VerifySender`) accept a signature by any controller of the
+  Agent's finalized policy and check no purpose or weight. A second controller
+  could therefore sign any Agent Packet and any card as the Agent, and kept in
+  the same vault it would add an impersonation key while isolating little.
+  A dedicated card controller becomes worthwhile only after a protocol change
+  makes verifiers check a card-signing purpose. Until then, revoking a chat
+  card early means replacing the packet controller, with the procedure and
+  costs under "Revoking a card" above.
 
 Setup, with the Messenger daemon configured to the same paths:
 

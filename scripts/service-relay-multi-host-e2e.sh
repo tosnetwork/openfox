@@ -34,6 +34,24 @@
 #   RELAY_UNIT         transient unit name (default tos-relay-test)
 #   E2E_BASE_PORT, E2E_RPC_PORTS as for the front-door run.
 #
+# External relays: with RELAY_EXTERNAL=1 the relays are installed systemd
+# units the operator runs (one host each); the run names all of them on both
+# nodes, stops and starts the named units for its outages and leaves every
+# unit running. RELAY_SSH, RELAY_SSH_KEY, RELAY_URL, RELAY_RUN_USER,
+# RELAY_REMOTE_DIR and RELAY_UNIT are not used; instead (one word per relay,
+# in the same order):
+#   RELAY_URLS        https://<relay public address>:<port> of each relay
+#   RELAY_SSHS        root@host of each relay host (systemctl, journalctl)
+#   RELAY_SSH_KEYS    SSH identity file for each of RELAY_SSHS
+# Optional:
+#   RELAY_UNITS       each relay's unit (default tos-service-packet-relay)
+#   RELAY_DOWN        relay-<n>: that relay (by position) is stopped before
+#                     the first purchase and started after the last sale step
+#   RELAY_STATE_DIR, RELAY_BIN, RELAY_CERT_FILE  paths on the relay hosts
+#                     (defaults: the shipped unit's state directory,
+#                     /usr/local/bin/tos-service-packet-relay and
+#                     /etc/tos-service/packet-relay/tls-cert.pem)
+#
 # The relay host's firewall rule for the relay port, its user and its
 # directories are prepared by the operator beforehand; this script only
 # starts and stops the relay unit. Remote run directories are left in place
@@ -43,17 +61,52 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo=$(dirname "$here")
 : "${TOS_SOURCE:?}" "${TOS_BUILD:?}" "${TOSCTL:?}" "${E2E_WORKDIR:?}" "${REGISTRY_CODE_BOC:?}" "${ACTOR_CODE_HASH:?}"
 : "${THERMAL_GUARD:?}" "${E2E_EXECUTOR_SOCKET:?}" "${E2E_RELAY_SOURCE:?}"
-: "${BUYER_SSH:?}" "${BUYER_SSH_KEY:?}" "${RELAY_SSH:?}" "${RELAY_SSH_KEY:?}" "${RELAY_URL:?}" "${RELAY_CA_FILE:?}"
-: "${RELAY_RUN_USER:?}"
+: "${BUYER_SSH:?}" "${BUYER_SSH_KEY:?}" "${RELAY_CA_FILE:?}"
 export BUYER_REMOTE_BASE=${BUYER_REMOTE_BASE:-/opt/tos-relay-test}
-export RELAY_REMOTE_DIR=${RELAY_REMOTE_DIR:-/opt/tos-relay-test}
-export RELAY_UNIT=${RELAY_UNIT:-tos-relay-test}
 export E2E_BASE_PORT=${E2E_BASE_PORT:-49800}
 export E2E_RPC_PORTS=${E2E_RPC_PORTS:-49880,49881,49882}
-case "$RELAY_URL" in
-  https://*) ;;
-  *) echo "RELAY_URL must be https" >&2; exit 2 ;;
-esac
+if [ "${RELAY_EXTERNAL:-}" = 1 ]; then
+  : "${RELAY_URLS:?}" "${RELAY_SSHS:?}" "${RELAY_SSH_KEYS:?}"
+  read -r -a relay_urls <<< "$RELAY_URLS"
+  read -r -a relay_sshs <<< "$RELAY_SSHS"
+  read -r -a relay_keys <<< "$RELAY_SSH_KEYS"
+  if [ -n "${RELAY_UNITS:-}" ]; then
+    read -r -a relay_units <<< "$RELAY_UNITS"
+  else
+    relay_units=()
+    for _ in "${relay_urls[@]}"; do relay_units+=(tos-service-packet-relay); done
+  fi
+  count=${#relay_urls[@]}
+  if [ "$count" -lt 1 ] || [ "$count" -gt 4 ] || [ "${#relay_sshs[@]}" != "$count" ] ||
+     [ "${#relay_keys[@]}" != "$count" ] || [ "${#relay_units[@]}" != "$count" ]; then
+    echo "RELAY_URLS, RELAY_SSHS, RELAY_SSH_KEYS and RELAY_UNITS must name 1 to 4 relays each" >&2
+    exit 2
+  fi
+  if [ -n "${RELAY_DOWN:-}" ]; then
+    case "$RELAY_DOWN" in
+      relay-[1-4]) [ "${RELAY_DOWN#relay-}" -le "$count" ] && [ "$count" -ge 2 ] ||
+                     { echo "RELAY_DOWN names one of at least two relays" >&2; exit 2; } ;;
+      *) echo "RELAY_DOWN must be relay-<n>" >&2; exit 2 ;;
+    esac
+  fi
+  export E2E_RELAY_URLS="$RELAY_URLS"
+  unset RELAY_URL
+else
+  : "${RELAY_SSH:?}" "${RELAY_SSH_KEY:?}" "${RELAY_URL:?}" "${RELAY_RUN_USER:?}"
+  export RELAY_REMOTE_DIR=${RELAY_REMOTE_DIR:-/opt/tos-relay-test}
+  export RELAY_UNIT=${RELAY_UNIT:-tos-relay-test}
+  relay_urls=("$RELAY_URL")
+  relay_sshs=("$RELAY_SSH")
+  relay_keys=("$RELAY_SSH_KEY")
+  relay_units=("$RELAY_UNIT")
+  export E2E_RELAY_URL="$RELAY_URL"
+fi
+for url in "${relay_urls[@]}"; do
+  case "$url" in
+    https://*) ;;
+    *) echo "every relay URL must be https" >&2; exit 2 ;;
+  esac
+done
 for port in $(seq "$E2E_BASE_PORT" $((E2E_BASE_PORT + 79))) ${E2E_RPC_PORTS//,/ }; do
   if ss -ltn "( sport = :$port )" | grep -q LISTEN; then
     echo "port $port is in use; choose another E2E_BASE_PORT/E2E_RPC_PORTS" >&2
@@ -95,14 +148,25 @@ teardown() {
   ssh "${ssh_opts[@]}" -i "$BUYER_SSH_KEY" "$BUYER_SSH" -- \
     "for f in $BUYER_REMOTE_BASE/$run_name/serve-*.pid; do [ -e \"\$f\" ] && kill -TERM \"\$(cat \"\$f\")\" 2> /dev/null; done; true" \
     > /dev/null 2>&1 || echo "could not reach the buyer host to stop its node" >&2
-  ssh "${ssh_opts[@]}" -i "$RELAY_SSH_KEY" "$RELAY_SSH" -- "systemctl stop $RELAY_UNIT 2> /dev/null; true" \
-    > /dev/null 2>&1 || echo "could not reach the relay host to stop the relay" >&2
-  echo "left for inspection: buyer host $BUYER_REMOTE_BASE/$run_name, relay host $RELAY_REMOTE_DIR/runs/$run_name"
+  # A transient relay is stopped; an installed relay is started again, so an
+  # interrupted outage never leaves it down.
+  local verb=stop
+  [ "${RELAY_EXTERNAL:-}" = 1 ] && verb=start
+  for index in "${!relay_urls[@]}"; do
+    ssh "${ssh_opts[@]}" -i "${relay_keys[$index]}" "${relay_sshs[$index]}" -- \
+      "systemctl $verb ${relay_units[$index]} 2> /dev/null; true" \
+      > /dev/null 2>&1 || echo "could not reach relay host $((index + 1)) to $verb its relay" >&2
+  done
+  if [ "${RELAY_EXTERNAL:-}" = 1 ]; then
+    echo "left for inspection: buyer host $BUYER_REMOTE_BASE/$run_name"
+  else
+    echo "left for inspection: buyer host $BUYER_REMOTE_BASE/$run_name, relay host $RELAY_REMOTE_DIR/runs/$run_name"
+  fi
 }
 trap teardown EXIT
 trap 'exit 130' INT TERM
 
-export E2E_REPO="$repo" E2E_RELAY_URL="$RELAY_URL" E2E_RELAY_CA_FILE="$RELAY_CA_FILE" E2E_ROOT_BASE="$work/nodes"
+export E2E_REPO="$repo" E2E_RELAY_CA_FILE="$RELAY_CA_FILE" E2E_ROOT_BASE="$work/nodes"
 cd "$TOS_SOURCE"
 export PYTHONPATH="$TOS_SOURCE/test/tostester/src"
 export PYTHONDONTWRITEBYTECODE=1

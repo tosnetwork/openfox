@@ -491,10 +491,15 @@ def start_tunnel() -> None:
 
 # --- B's firewall: an nft table of the run's own, removed on every exit path -------
 
+COUNTER = re.compile(r"counter packets \d+ bytes \d+")
+
+
 def b_firewall_state() -> dict:
-    """B's firewall as text: `ufw status verbose` and `nft list ruleset`."""
+    """B's firewall rules as text: `ufw status verbose`, and `nft list
+    ruleset` with each rule's packet and byte counters blanked (traffic
+    changes them; the rules are what must be identical)."""
     return {"ufw": on_b("ufw status verbose", check=False).stdout,
-            "nft": on_b("nft list ruleset", check=False).stdout}
+            "nft": COUNTER.sub("counter", on_b("nft list ruleset", check=False).stdout)}
 
 
 def b_block(relay: str) -> None:
@@ -1182,7 +1187,18 @@ def reverse_remote_changes() -> None:
                   "running, and no file under /root, /tmp or /var/tmp changed during the run",
                   removed.endswith("absent") and not outside, {k: reversal.get(k) for k in (
                       "b_scratch_absent", "b_processes_left_and_killed", "b_files_written_outside_scratch")})
-    # Relays: both units active again, none left marked as stopped.
+    # Relays: a unit this run stopped and did not start again (a failure
+    # during the outage) is started here; then both must be active.
+    marked = STOPPED_MARKER.read_text().split() if STOPPED_MARKER.exists() else []
+    for index in sorted(set(marked)):
+        if index.isdigit() and int(index) < len(RELAYS):
+            relay = RELAYS[int(index)]
+            on_relay(relay, f"systemctl start {shlex.quote(relay.unit)}", check=False)
+            if fd.poll(lambda relay=relay: relay_up(relay), 60, 1):
+                unmark_stopped(int(index))
+                change(f"{relay.name} host: systemctl start {relay.unit} (reversed the outage at the end of a run "
+                       "that stopped early)")
+                reversal.setdefault("relays_started_at_end", []).append(relay.name)
     units = {}
     for relay in RELAYS:
         state = unit_state(relay)

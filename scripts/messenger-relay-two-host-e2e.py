@@ -1207,6 +1207,12 @@ def received_text(node: str, event_id: str) -> dict | None:
         decoded = decode_text_payload(content)
         if decoded is None or event.get("event_kind") != "text":
             return None
+        # The reply link is the Event's reply_to_event_id; the payload's own
+        # optional reply-to field, when set, must name the same Event.
+        link = event.get("reply_to_event_id", "")
+        if decoded["reply_to"] not in ("", link):
+            return None
+        decoded["reply_to"] = link
         decoded["sender_agent_id"] = event.get("sender_agent_id", "")
         return decoded
     return None

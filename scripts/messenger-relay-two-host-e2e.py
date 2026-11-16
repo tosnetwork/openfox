@@ -1707,6 +1707,29 @@ def signing_cost() -> None:
         {"item": "quota isolation between chat and task traffic (D2)",
          "reason": "M-R1 shares the relays between chat and rail; separate chat relays are a production requirement "
                    "(spec section 7), not shown here.", "unit_tests": []},
+        {"item": "3 (first contact with an admission invite)",
+         "reason": "product gap: an invite can be created (invites.create) and is checked on receipt, but no runtime "
+                   "operation attaches the bearer to an outbound copy (dispatch never sets Message.AdmissionToken), "
+                   "so no route can present one. First contact here is admitted by B's allow-list roster instead; "
+                   "B still learns A's card and evidence in band.",
+         "unit_tests": []},
+        {"item": "7 (a relay frame sealed to the rail key)",
+         "reason": "needs B's rail key card, which OpenFox keeps only inside its private key files; the run reads no "
+                   "key file. The rail packet sealed to the chat key is proven live.",
+         "unit_tests": ["openfox pkg/servicebridge TestPurposeIsEnforcedAtTheKeyBeforeAnySideEffect"]},
+        {"item": "7 (an agent.packet Event arriving over the relay)",
+         "reason": "the sender's daemon refuses to compose it on this route (proven live), so a receive-side case "
+                   "needs a hand-built E2EE copy.",
+         "unit_tests": ["ai messenger/pkg/daemon TestRelayRefusesAgentPacketEventsAndSenderSubstitution"]},
+        {"item": "5 (device removed through a newer descriptor)",
+         "reason": "V1 has one device per Agent and the publication roster must include it; the Agent revocation "
+                   "case is proven live.",
+         "unit_tests": ["ai messenger/pkg/daemon TestRelayRevocationHoldsTheCopyUnsealed",
+                        "ai messenger/pkg/directory TestCheckPeerFailsOnceTheDeviceIsRevoked"]},
+        {"item": "5 (evidence pull with the responder offline > 24 h)",
+         "reason": "the request re-deposit is proven only within the run's duration; the 24 h relay TTL is not "
+                   "waited out.",
+         "unit_tests": ["ai messenger/pkg/daemon TestRelayEvidencePullRepairsStaleEvidenceInOneRoundTrip"]},
         {"item": "multi-device over the relay (D3), and M0 freeze evidence",
          "reason": "V1 is one Messenger device per Agent; M0 freeze (independent review and a second E2EE "
                    "implementation) is out of scope.", "unit_tests": []},

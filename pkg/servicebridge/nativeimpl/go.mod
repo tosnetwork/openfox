@@ -3,7 +3,7 @@ module github.com/tosnetwork/openfox/pkg/servicebridge/nativeimpl
 go 1.26.11
 
 require (
-	github.com/tosnetwork/ai v0.0.0-20261115193729-4a5f1506bf57
+	github.com/tosnetwork/ai v0.0.0-20261116184845-33da984b64a3
 	github.com/tosnetwork/openfox v0.0.0
 	github.com/tosnetwork/tosutils-go v1.18.2-0.20260820143526-4d1a10d94bef
 	google.golang.org/protobuf v1.36.11

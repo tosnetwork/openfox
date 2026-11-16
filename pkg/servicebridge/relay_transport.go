@@ -34,6 +34,13 @@ const (
 	// relayWithdrawPerPass bounds the withdrawal requests of one
 	// background pass over the whole journal.
 	relayWithdrawPerPass = 16
+	// maxRelayOutboxRecordBytes bounds one journal record read back. A
+	// record holds the current envelope and the signed packet, each at most
+	// agentpacketseal.MaxEnvelopeBytes and stored in base64, plus a few
+	// withdrawn envelope ids and secrets and short fields; the slack covers
+	// those. A chat record may carry the full sealed packet bound, so a
+	// smaller bound would refuse a record this node itself wrote.
+	maxRelayOutboxRecordBytes = 2*((agentpacketseal.MaxEnvelopeBytes+2)/3*4) + 64<<10
 )
 
 // Relay transport failures. They are fixed strings: a transport error is
@@ -513,7 +520,7 @@ func (t *RelayTransport) deposit(ctx context.Context, relay string, envelope []b
 
 func (t *RelayTransport) load(path string) (relayOutboxRecord, bool, error) {
 	var record relayOutboxRecord
-	err := readJSON(path, 512<<10, &record)
+	err := readJSON(path, maxRelayOutboxRecordBytes, &record)
 	if errors.Is(err, os.ErrNotExist) {
 		return relayOutboxRecord{}, false, nil
 	}

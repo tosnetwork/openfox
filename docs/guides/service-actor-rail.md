@@ -753,16 +753,24 @@ HPKE keys) may have been exposed. The procedure:
    (`threshold`, `recovery_threshold`, `recovery_timelock`, `controllers`
    with `public_key`, `weight`, `purposes`). Send the signed message from the
    owner wallet with `tosctl wallet send --from <wallet> --to <agent address>
-   --amount-nanotos 2000000000 --body-boc <body> --yes`, as `init` does, and
-   wait until the new policy is finalized;
+   --amount-nanotos 2000000000 --body-boc <body> --yes` and wait until the new
+   policy is finalized. `--amount-nanotos 2000000000` is the value `init` and
+   `offer` attach to registry messages. The registry requires no minimum: the
+   value pays this message's processing (at most about 0.014 TOS at the
+   genesis basechain gas price), and the rest stays in the Agent's registry
+   object; it is not refunded;
 4. re-establish the node with `init` against a **new** state directory and
    `--packet-controller <new>`, keeping the rail configuration that names the
    Agent: `init` adopts that Agent ID, sends nothing, and rewrites the
    configuration with the new controller, key id and state directory. Pass
-   the chat flags again (`--messenger-carrier-socket` with `--chat-card-path`
-   and `--chat-carrier-socket`), or remove the `chat` section first, so the
-   chat paths move to the new state directory; a kept section still points
-   into the old one. `init` on the existing state directory refuses another
+   `--messenger-carrier-socket` again, with every other chat flag the node was
+   set up with (`--chat-relay-url`, `--messenger-evidence-dir`,
+   `--messenger-contact-dir`, `--chat-timeout-seconds`): with that flag `init`
+   rebuilds the whole `chat` section, so a flag not passed again is dropped,
+   and `--chat-card-path` and `--chat-carrier-socket` default to the new state
+   directory. Without it the kept section still points into the old
+   directory. Then set the Messenger daemon's `relay_carriage.card_path` and
+   `carry_socket_path` to the new paths. `init` on the existing state directory refuses another
    packet controller once the registration was sent (`ErrSetupInputChanged`,
    see above): rotating the packet controller in place is not supported yet
    (see the known limits below).

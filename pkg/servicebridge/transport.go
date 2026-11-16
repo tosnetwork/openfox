@@ -22,9 +22,23 @@ import (
 	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
 )
 
-// PacketLifetime is how long a sent packet stays deliverable; it stays
-// inside the Messenger bridge's 24 hour staleness bound.
+// PacketLifetime is the longest a sent packet stays deliverable; it stays
+// inside the Messenger bridge's 24 hour staleness bound. A packet expires
+// earlier when its business deadline is earlier: a task at the Accepted
+// Quote's response deadline, a result and a result request at the result's
+// retention end, an acknowledgement after AckPacketLifetime.
 const PacketLifetime = 24*time.Hour - 5*time.Minute
+
+// AckPacketLifetime is the fixed lifetime of an acknowledgement packet (a
+// rail result ack, a chat delivery ack). A lost or expired ack costs one
+// redelivery of what it acknowledges, which is answered with a fresh ack, so
+// it never needs to wait longer than an online peer's next poll; an hour
+// also outlasts the 1-hour test relays.
+const AckPacketLifetime = time.Hour
+
+// ErrDeliveryDeadlinePassed refuses a message whose business deadline has
+// already passed: nothing is signed or sent for it.
+var ErrDeliveryDeadlinePassed = errors.New("servicebridge: the message's deadline has passed; it is not sent")
 
 // OutboundPacket is one signed packet with the exact identity a retry of an
 // ambiguous send must reuse.
@@ -183,6 +197,25 @@ func (e Envelope) MessageKey() string {
 	return hex.EncodeToString(digest[:])
 }
 
+// packetExpiry is when every packet of one message stops being deliverable:
+// its business deadline (NotAfterUnix), never later than PacketLifetime from
+// now, and for an acknowledgement never later than AckPacketLifetime. A
+// deadline at or before now is ErrDeliveryDeadlinePassed.
+func packetExpiry(envelope Envelope, now uint64) (uint64, error) {
+	lifetime := PacketLifetime
+	if envelope.Kind == FrameResultAck {
+		lifetime = AckPacketLifetime
+	}
+	expires := saturatingAdd(now, uint64(lifetime/time.Second))
+	if envelope.NotAfterUnix != 0 && envelope.NotAfterUnix < expires {
+		expires = envelope.NotAfterUnix
+	}
+	if expires <= now {
+		return 0, ErrDeliveryDeadlinePassed
+	}
+	return expires, nil
+}
+
 // Deliver starts a new send generation of body and sends every packet. It
 // returns nil when the transport accepted all of them; on error the
 // generation stays journaled and Resume retries the unsent packets.
@@ -195,13 +228,13 @@ func (c *Courier) Deliver(ctx context.Context, envelope Envelope, body []byte) (
 	if err != nil {
 		return 0, err
 	}
-	now := uint64(c.now().Unix())
-	expires := now + uint64(PacketLifetime/time.Second)
-	if envelope.NotAfterUnix != 0 && envelope.NotAfterUnix < expires {
-		expires = envelope.NotAfterUnix
+	now := c.now().Unix()
+	if now <= 0 {
+		return 0, errors.New("servicebridge: the clock is not set")
 	}
-	if expires <= now {
-		return 0, errors.New("servicebridge: the message can no longer be delivered")
+	expires, err := packetExpiry(envelope, uint64(now))
+	if err != nil {
+		return 0, err
 	}
 	c.mutex.Lock()
 	directory := filepath.Join(c.root, envelope.MessageKey())

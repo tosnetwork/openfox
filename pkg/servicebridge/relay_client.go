@@ -43,13 +43,18 @@ type relayPool struct {
 	dial    relayDialer
 	mutex   sync.Mutex
 	clients map[string]relayAPI
+	// now is the clock of the relay descriptions' refresh; nil is time.Now.
+	now func() time.Time
+	// ttlMutex guards ttls, each relay's advertised retention.
+	ttlMutex sync.Mutex
+	ttls     map[string]relayTTLEntry
 }
 
 func newRelayPool(dial relayDialer) *relayPool {
 	if dial == nil {
 		dial = dialRelay
 	}
-	return &relayPool{dial: dial, clients: map[string]relayAPI{}}
+	return &relayPool{dial: dial, clients: map[string]relayAPI{}, ttls: map[string]relayTTLEntry{}}
 }
 
 func (p *relayPool) client(base string) (relayAPI, error) {

@@ -273,6 +273,10 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 		report("chat.journal", fmt.Errorf("servicebridge: chat journal record %s is unreadable; it counts as one "+
 			"stored envelope for every peer: %w", name, err))
 	}
+	transport.onQuarantined = func(name string) {
+		report("chat.journal", fmt.Errorf("servicebridge: unreadable chat journal record %s is older than every "+
+			"envelope it can describe; moved to %s and no longer counted", name, relayQuarantineDir))
+	}
 	if err := transport.setPacketBound(agentpacketseal.MaxPacketJSONBytes); err != nil {
 		return nil, err
 	}
@@ -341,6 +345,16 @@ func (c *ChatCarrier) Carry(ctx context.Context, request carrierapi.Request, raw
 	if request.ExpiresAtUnix < expires {
 		expires = request.ExpiresAtUnix
 	}
+	if frame.Kind == relayframe.KindEvidence {
+		// An evidence request or response lives one relay TTL of the peer's
+		// card: the relays would not keep it longer, and the daemon deposits
+		// an outstanding request again at 80 % of that TTL.
+		if card, cardErr := c.Cards.Current(ctx, peer); cardErr == nil {
+			if limit := saturatingAdd(now, c.pool.smallestTTL(ctx, card.Card.Relays)); limit < expires {
+				expires = limit
+			}
+		}
+	}
 	unlock := c.lockPeer(peer)
 	defer unlock()
 	if request.WithdrawIdempotencyKey != "" {
@@ -369,19 +383,11 @@ func (c *ChatCarrier) Carry(ctx context.Context, request carrierapi.Request, raw
 	// recorded the answer, and nothing is deposited again.
 	if !accepted {
 		if err := c.Transport.Send(ctx, packet); err != nil {
-			switch {
-			case errors.Is(err, ErrNoPacketRoute):
-				return carrierapi.Refusal(carrierapi.CodeNoPeerCard)
-			case errors.Is(err, ErrRelayPacketTooLarge):
-				return carrierapi.Refusal(carrierapi.CodePacketTooLarge)
-			case errors.Is(err, ErrRelayWithdrawn):
-				return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
-			default:
-				// Everything else may pass later, an expired packet included:
-				// the next attempt under the key signs a fresh one.
+			response := chatSendFailure(err)
+			if response.Result == carrierapi.ResultRetry {
 				c.report("chat.carry", err)
-				return carrierapi.Retry()
 			}
+			return response
 		}
 	}
 	if request.WithdrawIdempotencyKey != "" {
@@ -394,7 +400,37 @@ func (c *ChatCarrier) Carry(ctx context.Context, request carrierapi.Request, raw
 			return carrierapi.Retry()
 		}
 	}
-	return carrierapi.Response{Result: carrierapi.ResultCarried}
+	return carrierapi.Carried(c.cardTTL(ctx, request.IdempotencyKey))
+}
+
+// chatSendFailure maps a failed Send of a chat packet to the daemon's answer.
+func chatSendFailure(err error) carrierapi.Response {
+	switch {
+	case errors.Is(err, ErrNoPacketRoute):
+		return carrierapi.Refusal(carrierapi.CodeNoPeerCard)
+	case errors.Is(err, ErrRelayPacketTooLarge), errors.Is(err, ErrRelayRecordTooLarge):
+		// A record the journal could not read back is never written, and the
+		// same frame would build the same record again: permanent.
+		return carrierapi.Refusal(carrierapi.CodePacketTooLarge)
+	case errors.Is(err, ErrRelayWithdrawn):
+		return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
+	default:
+		// Everything else may pass later, an expired packet included: the
+		// next attempt under the key signs a fresh one.
+		return carrierapi.Retry()
+	}
+}
+
+// cardTTL is the smallest retention the relays of the card the key's
+// envelope is sealed to advertise, which the daemon schedules the next
+// generation from. A relay whose description cannot be read counts as the
+// protocol ceiling, and so does a key whose record names no relay.
+func (c *ChatCarrier) cardTTL(ctx context.Context, key string) uint64 {
+	entry, err := c.Transport.journalState(key)
+	if err != nil || len(entry.Relays) == 0 {
+		return relayTTLCeilingSeconds
+	}
+	return c.pool.smallestTTL(ctx, entry.Relays)
 }
 
 // prepare returns the packet to send under key and whether a relay already
@@ -749,7 +785,7 @@ func (c *ChatCarrier) sendAck(ctx context.Context, peer string, nonce [32]byte, 
 	unlock := c.lockPeer(peer)
 	defer unlock()
 	packet, accepted, err := c.prepare(ctx, peer, key, ack,
-		saturatingAdd(now, uint64(PacketLifetime/time.Second)))
+		saturatingAdd(now, uint64(AckPacketLifetime/time.Second)))
 	switch {
 	case err == nil:
 	case errors.Is(err, errChatNoCard), errors.Is(err, errChatPeerCap), errors.Is(err, errChatWrongPeer),
@@ -763,7 +799,7 @@ func (c *ChatCarrier) sendAck(ctx context.Context, peer string, nonce [32]byte, 
 	}
 	if err := c.Transport.Send(ctx, packet); err != nil {
 		if errors.Is(err, ErrNoPacketRoute) || errors.Is(err, ErrRelayPacketTooLarge) ||
-			errors.Is(err, ErrRelayWithdrawn) {
+			errors.Is(err, ErrRelayRecordTooLarge) || errors.Is(err, ErrRelayWithdrawn) {
 			return fmt.Errorf("%w: %w", errChatPermanent, err)
 		}
 		return err

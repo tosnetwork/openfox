@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -79,9 +80,17 @@ func OpenRelayCarrier(config RelayCarrierConfig) (*RelayCarrier, error) {
 		return nil, err
 	}
 	pool := newRelayPool(config.Dial)
+	pool.now = config.Now
 	transport, err := OpenRelayTransport(filepath.Join(root, relayOutboxDir), config.Cards, pool, config.Now)
 	if err != nil {
 		return nil, err
+	}
+	// Rail packets live until their business deadline, which may outlast the
+	// relays' retention; chat generations are the Messenger daemon's.
+	transport.refreshBeforeTTL = true
+	transport.onQuarantined = func(name string) {
+		config.Report("relay.journal", fmt.Errorf("servicebridge: unreadable relay journal record %s is older "+
+			"than every envelope it can describe; moved to %s", name, relayQuarantineDir))
 	}
 	inbound, err := NewRelayInbound(config.AgentID, keys, config.Receiver, pool, config.Now, config.Report)
 	if err != nil {

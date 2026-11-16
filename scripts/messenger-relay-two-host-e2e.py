@@ -94,6 +94,7 @@ PUBLISH_INTERVAL = min(300, DESCRIPTOR_LIFETIME // 2)
 CHAT_TIMEOUT = 60
 ZERO_CAPABILITY = "cap_" + "0" * 64
 HOLD_AT = os.environ.get("MR1_HOLD_AT", "")
+DEV_SCRIPTS_RUN: list[dict] = []
 
 # The front-door module provisions one wallet per name in its NODES.
 fd.NODES = NODES
@@ -139,10 +140,14 @@ def hold(point: str) -> None:
             import contextlib
             import io
             import traceback
+            source = script.read_bytes()
+            # Any dev script that runs voids the acceptance: it is recorded by
+            # name and digest, and the result is forced to non-qualifying.
+            DEV_SCRIPTS_RUN.append({"name": script.name, "sha256": hashlib.sha256(source).hexdigest()})
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 try:
-                    exec(script.read_text(), globals())
+                    exec(source.decode(), globals())
                 except BaseException:  # noqa: BLE001 - a development aid reports everything
                     traceback.print_exc(file=buffer)
             output.write_text(fd.redact(buffer.getvalue()))
@@ -965,15 +970,21 @@ async def main() -> int:
                 % (UID, UID)}
     fd.evidence["gate_items"] = GATE
     fd.evidence["not_verified"] = NOT_VERIFIED
-    fd.evidence["steps"] = fd.steps
+    # A development hold, and any dev script it ran, voids the acceptance: a
+    # run that stepped through dev code is not an unattended acceptance.
+    fd.evidence["hold_at"] = HOLD_AT or None
+    fd.evidence["dev_scripts_executed"] = DEV_SCRIPTS_RUN
     fd.evidence["finished_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     text = json.dumps(fd.redact_value(fd.evidence), default=str)
     leaked = fd.personal_data(text)
     fd.record("no home directory path or login name in evidence.json", not leaked, leaked)
-    passed = bool(fd.steps) and all(step["pass"] for step in fd.steps)
+    passed = bool(fd.steps) and all(step["pass"] for step in fd.steps) and not DEV_SCRIPTS_RUN
     fd.evidence["steps"] = fd.steps
     fd.evidence["pass_count"] = sum(1 for step in fd.steps if step["pass"])
-    fd.evidence["result"] = "ALL PASS" if passed else "FAIL"
+    if DEV_SCRIPTS_RUN:
+        fd.evidence["result"] = "NOT A VALID ACCEPTANCE: dev scripts were executed during the run"
+    else:
+        fd.evidence["result"] = "ALL PASS" if passed else "FAIL"
     (WORK / "evidence.json").write_text(json.dumps(fd.redact_value(fd.evidence), indent=2, default=str) + "\n")
     print(f"evidence: {WORK / 'evidence.json'}")
     print("ALL PASS" if passed else "FAIL")
@@ -1473,8 +1484,16 @@ def offline_recipient() -> None:
     stop_node("b")
     RUN["b_offline_at"] = now()
     # The stranger C writes to B: it holds B's public contact file, but B's
-    # inbox admits only A and refuses unknown senders.
+    # inbox admits only A and refuses unknown senders. C's envelope ids are
+    # kept, so the refusal is proven by B relay-acknowledging those exact ids
+    # (only B holds its mailbox's ack secret), not by time passing.
     c1 = (send("c", "b", "stranger"), require_sent("stranger"))[1]
+    c_envelopes = poll(lambda: [r["record"]["envelope_id"] for r in copy_frames("c", c1)
+                                if r["record"].get("accepted")], 120, 1) or []
+    c_listed = poll(lambda: all(any(e in listed_ids(relay, RUN["b"]["agent"]) for relay in RELAYS)
+                                for e in c_envelopes) if c_envelopes else None, 120, 2)
+    require("the stranger C deposited its copy to B, and both its envelope ids are listed in B's mailbox at a relay "
+            "while B is offline", bool(c_envelopes) and bool(c_listed), {"c_envelopes": c_envelopes})
     m = (send("a", "b", "offline"), require_sent("offline"))[1]
     first = poll(lambda: [r["record"] for r in copy_frames("a", m)
                           if sorted(r["record"].get("accepted") or []) == RELAY_URLS], 120, 1)
@@ -1500,18 +1519,24 @@ def offline_recipient() -> None:
     gate("5", "B, restarted, receives the retained message once (generation 2 only) and A's copy is delivered",
          done.get("state") == "delivered" and applied["applied"] and not applied["listed_again_after"],
          {"applied": applied, "generation": done.get("relay_generation")})
-    # The stranger's copy was refused: nothing of C is stored at B.
-    time.sleep(30)
-    stored = {"b_chat_cards_naming_c": [a for a in peer_cards("b") if a == RUN["c"]["agent"]],
+    # The stranger's copy is refused: B downloads it (both ids leave B's
+    # mailbox at every relay, relay-acknowledged by B), but nothing of C is
+    # stored and B sends C no ack. Bounded on the relay-ack, not a fixed wait.
+    acked = poll(lambda: all(all(e not in listed_ids(relay, RUN["b"]["agent"]) for relay in RELAYS)
+                             for e in c_envelopes), 180, 3)
+    stored = {"c_envelopes_relay_acknowledged_by_b": bool(acked),
+              "b_chat_cards_naming_c": [a for a in peer_cards("b") if a == RUN["c"]["agent"]],
               "b_messenger_files_naming_c": sorted(files_naming(mdir("b") / "state", stranger_values())),
               "b_openfox_files_naming_c": files_naming(nd("b") / "state" / "relay" / "chat-peers", stranger_values()),
-              "b_messenger_files_naming_c_before": boundary_before}
-    gate("7", "a refused stranger: C's copy to B is refused (B's inbox does not admit C); C's in-band card and "
-         "evidence are not stored, no Messenger file of B names C (its rollback boundary is unchanged), and no "
-         "ack goes to C", not stored["b_chat_cards_naming_c"] and not stored["b_messenger_files_naming_c"] and
+              "b_messenger_files_naming_c_before": boundary_before,
+              "c_kind2_from_b": [row["frame"].get("ack_outcome") for row in frames_of("b")
+                                 if row["packet"]["recipient_agent_id"] == RUN["c"]["agent"]]}
+    gate("7", "a refused stranger: B downloaded C's copy (both ids relay-acknowledged by B) and refused it; C's "
+         "in-band card and evidence are not stored (so it was refused, not held), no Messenger file of B names C "
+         "(its rollback boundary is unchanged), B sent C no ack, and C's delivery stays carried",
+         bool(acked) and not stored["b_chat_cards_naming_c"] and not stored["b_messenger_files_naming_c"] and
          not stored["b_openfox_files_naming_c"] and c1 not in inbound_texts("b") and
-         delivery_of("c", c1).get("state") == "carried" and
-         not [row for row in frames_of("b") if row["packet"]["recipient_agent_id"] == RUN["c"]["agent"]], stored)
+         delivery_of("c", c1).get("state") == "carried" and not stored["c_kind2_from_b"], stored)
 
 
 # --- Item 5: descriptor expiry, mutual staleness and the evidence pull -------------------------
@@ -1608,21 +1633,66 @@ def kind4_rules() -> None:
 
 # --- Item 5: Agent revocation ----------------------------------------------------------------------
 
+# The codes a send to a revoked peer reaches: the Agent is tombstoned, so
+# its delegation is no longer committed by the live Agent.
+REVOCATION_CODES = {"agent-tombstoned", "delegation-uncommitted"}
+
+
+def revocation_refusal(answer: dict, delivery: dict) -> bool:
+    """The send was a real runtime exchange (the socket answered, so no
+    transport error) and it was refused with a revocation code, either in the
+    synchronous answer or as the copy's last code once it fails to seal."""
+    if "call_error" in answer:
+        return False
+    return answer.get("code") in REVOCATION_CODES or delivery.get("last_code") in REVOCATION_CODES
+
+
 def revocation() -> None:
+    # The queued-copy case: a copy A carried while B was reachable, whose
+    # re-deposit falls due after B's Agent is revoked.
+    cut_off("b")
+    queued = (send("a", "b", "before-revocation"), require_sent("before-revocation"))[1]
+    carried = poll(lambda: delivery_of("a", queued).get("state") == "carried" and delivery_of("a", queued), 180, 2)
+    gate("5", "a copy A carried to B (generation 1 at the relays) before B's Agent is revoked",
+         bool(carried) and len((carried or {}).get("relay_generations") or []) == 1, carried)
+
     action = registry_action("b", "revoke-agent")
     ok = bool(action["landed"]) and all(row["compute_success"] and not row["aborted"] for row in action["landed"])
     require("not OpenFox: B's Agent is revoked on chain (tosctl agent native-registry action --kind revoke-agent), "
             "which withdraws its Endpoint delegation", ok, action)
+
+    # A new send after the revocation: the runtime answers, and the copy is
+    # refused with a revocation code (not a transport failure).
     frames_before = {f["record"]["idempotency_key"] for f in frames_of("a")}
-    m = send("a", "b", "after-revocation")
-    time.sleep(90)
-    row = delivery_of("a", m["event_id"]) if m["event_id"] else {}
-    gate("5", "after B's Endpoint delegation is withdrawn on chain A seals and carries no copy to B: the send is "
-         "refused or the copy stays pending unsealed, and A's chat outbox gains no copy",
-         (not m["answer"].get("ok") or (row.get("state") == "pending" and not row.get("ciphertext_base64"))) and
-         not [f for f in frames_of("a") if f["record"]["idempotency_key"] not in frames_before and
-              f["frame"].get("kind") == 1],
-         {"answer": m["answer"], "state": row.get("state"), "last_code": row.get("last_code")})
+    new = send("a", "b", "after-revocation")
+    refused = poll(lambda: revocation_refusal(new["answer"], delivery_of("a", new["event_id"]))
+                   if new["event_id"] else revocation_refusal(new["answer"], {}), 180, 3)
+    new_row = delivery_of("a", new["event_id"]) if new["event_id"] else {}
+    added_copy = [f for f in frames_of("a") if f["record"]["idempotency_key"] not in frames_before and
+                  f["frame"].get("kind") == 1]
+    gate("5", "after B's Endpoint delegation is withdrawn on chain, A's runtime answers a new send and refuses it "
+         "with a revocation code (CheckPeer reads finalized state); no copy is sealed or carried",
+         bool(refused) and (not new_row or (new_row.get("state") == "pending" and not new_row.get("ciphertext_base64")))
+         and not added_copy,
+         {"answer": new["answer"], "state": new_row.get("state"), "last_code": new_row.get("last_code"),
+          "added_kind1_frames": len(added_copy)})
+
+    # The queued copy's re-deposit is now due; CheckPeer fails, so A deposits
+    # no new generation and the copy stays at generation 1.
+    queued_before = {f["record"]["idempotency_key"] for f in frames_of("a") if f["frame"].get("event_id") == queued}
+    due = carried["last_deposit_at_unix"] + REDEPOSIT + 90
+    while now() < due:
+        time.sleep(min(60, max(1, due - now())))
+    row = delivery_of("a", queued)
+    new_generation = [f for f in frames_of("a") if f["frame"].get("event_id") == queued and
+                      f["record"]["idempotency_key"] not in queued_before and f["frame"].get("kind") == 1]
+    gate("5", "the copy carried before the revocation is not re-deposited after it: past its re-deposit time A "
+         "seals no new generation (CheckPeer fails), and the copy stays at generation 1, undelivered",
+         row.get("relay_generation") == 1 and len(row.get("relay_generations") or []) == 1 and
+         not new_generation and row.get("state") in ("carried", "pending"),
+         {"state": row.get("state"), "generation": row.get("relay_generation"),
+          "new_generations_after_revocation": len(new_generation)})
+    reconnect("b")
 
 
 # --- Item 9: nothing readable at the relays, and the size formula; item 10: cost -----------

@@ -15,6 +15,11 @@
 # scratch directory, and restarts only the relay units this run stopped (a
 # marker file).
 #
+# Node B runs as root on B's host: the SSH login there is root, and B's
+# processes (signer, tos-messengerd, `openfox earning service serve`) run as
+# that user, confined to one 0700 scratch directory (HOME and TMPDIR point
+# inside it). A and C run unprivileged here, as the invoking user.
+#
 # Required environment (the local ones as for messenger-relay-two-host-e2e.sh):
 #   TOS_SOURCE, TOS_BUILD, TOSCTL, E2E_WORKDIR (must not exist, outside the
 #   home directory), REGISTRY_CODE_BOC, ACTOR_CODE_HASH, THERMAL_GUARD,
@@ -51,8 +56,17 @@ repo=$(dirname "$here")
 export E2E_BASE_PORT=${E2E_BASE_PORT:-49800}
 export E2E_RPC_PORTS=${E2E_RPC_PORTS:-49880,49881,49882}
 export B_REMOTE_BASE=${B_REMOTE_BASE:-/opt/tos-relay-test}
+# Every name that reaches a remote command line is checked first: only
+# letters, digits and / . _ -, and no "..". Remote strings still quote them.
+plain_path() {
+  [[ $1 =~ ^[A-Za-z0-9/._-]+$ ]] && [[ $1 != *..* ]]
+}
+if ! plain_path "$B_REMOTE_BASE"; then
+  echo "B_REMOTE_BASE may hold only letters, digits and / . _ - (no ..)" >&2
+  exit 2
+fi
 case "$B_REMOTE_BASE" in
-  /opt/tos-relay-test|/opt/tos-relay-test/*) ;;
+  /opt/tos-relay-test|/opt/tos-relay-test/?*) ;;
   *) echo "B_REMOTE_BASE must be /opt/tos-relay-test or below it" >&2; exit 2 ;;
 esac
 read -r -a relay_urls <<< "$RELAY_URLS"
@@ -67,6 +81,16 @@ if [ -n "${RELAY_UNITS:-}" ]; then
 else
   relay_units=(tos-service-packet-relay tos-service-packet-relay)
 fi
+if [ "${#relay_units[@]}" != 2 ]; then
+  echo "RELAY_UNITS must name exactly two units" >&2
+  exit 2
+fi
+for unit in "${relay_units[@]}"; do
+  if ! plain_path "$unit" || [[ $unit == */* ]]; then
+    echo "a relay unit name may hold only letters, digits and . _ - (no ..)" >&2
+    exit 2
+  fi
+done
 relay_addresses=()
 for url in "${relay_urls[@]}"; do
   if ! [[ $url =~ ^https://([0-9]{1,3}(\.[0-9]{1,3}){3}):([0-9]{1,5})$ ]]; then
@@ -101,7 +125,10 @@ fi
 mkdir -p "$E2E_WORKDIR" && chmod 700 "$E2E_WORKDIR"
 work=$(CDPATH= cd -- "$E2E_WORKDIR" && pwd)
 run_name=$(basename "$work")
-[[ $run_name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "the work directory name must be a plain word" >&2; exit 2; }
+if ! [[ $run_name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || [[ $run_name == *..* ]]; then
+  echo "the work directory name must be a plain word (letters, digits, . _ -, no ..)" >&2
+  exit 2
+fi
 export E2E_WORKDIR=$work
 export E2E_BIN="$work/bin"
 mkdir -p "$E2E_BIN" "$work/private" "$work/tls" "$work/net"
@@ -157,12 +184,34 @@ teardown() {
   fi
   # B: stop what is left of the run, remove its firewall table and scratch
   # directory (only below the scratch base, never anything else).
+  # The script is fixed text on standard input; the run's names reach it
+  # only as quoted arguments. A recorded PID is killed only while its
+  # command line still names the run's directory, so a PID the system has
+  # since reused for another process is left alone.
   ssh "${ssh_opts[@]}" -i "$B_SSH_KEY" "$B_SSH" -- \
-    "for f in $b_run/*.pid; do [ -e \"\$f\" ] && kill -KILL \"\$(cat \"\$f\")\" 2> /dev/null; done; \
-     if nft list table inet $b_table > /dev/null 2>&1; then nft delete table inet $b_table && echo table-removed; fi; \
-     case $b_run in $B_REMOTE_BASE/?*) if [ -d $b_run ]; then find $b_run -depth -delete && echo scratch-removed; fi ;; esac; \
-     test ! -e $b_run" > "$work/net/b-teardown.txt" 2>&1 ||
+    bash -s -- "$(printf '%q' "$b_run")" "$(printf '%q' "$b_table")" "$(printf '%q' "$B_REMOTE_BASE")" \
+    > "$work/net/b-teardown.txt" 2>&1 <<'EOF' ||
+run=$1 table=$2 base=$3
+for f in "$run"/*.pid; do
+  [ -e "$f" ] || continue
+  pid=$(cat "$f")
+  case $pid in '' | *[!0-9]*) echo "pid-file-not-a-pid $(basename "$f")"; continue ;; esac
+  if [ -r "/proc/$pid/cmdline" ] && tr '\0' ' ' < "/proc/$pid/cmdline" | grep -qF -- "$run/"; then
+    kill -KILL "$pid" 2> /dev/null && echo "killed $pid $(basename "$f" .pid)"
+  else
+    echo "left $pid $(basename "$f" .pid): not running, or no longer the run's process"
+  fi
+done
+if nft list table inet "$table" > /dev/null 2>&1; then nft delete table inet "$table" && echo table-removed; fi
+case $run in
+  "$base"/?*) if [ -d "$run" ]; then find "$run" -depth -delete && echo scratch-removed; fi ;;
+esac
+test ! -e "$run"
+EOF
     echo "could not clean B's scratch directory or firewall table; check by hand" >&2
+  while read -r _ pid key; do
+    change "B host: killed leftover process $pid ($key) of the run (exit trap)"
+  done < <(grep '^killed ' "$work/net/b-teardown.txt" || true)
   grep -q table-removed "$work/net/b-teardown.txt" && change "B host: removed nft table inet $b_table (exit trap)"
   grep -q scratch-removed "$work/net/b-teardown.txt" && change "B host: removed $b_run (exit trap)"
   # Restart only the relay units this run stopped, named in the marker file.
@@ -170,7 +219,7 @@ teardown() {
     while read -r index; do
       [[ $index =~ ^[01]$ ]] || continue
       if ssh "${ssh_opts[@]}" -i "${relay_keys[$index]}" "${relay_sshs[$index]}" -- \
-        "systemctl start ${relay_units[$index]}" > /dev/null 2>&1; then
+        systemctl start -- "$(printf '%q' "${relay_units[$index]}")" > /dev/null 2>&1; then
         change "relay $((index + 1)) host: started ${relay_units[$index]} (exit trap; this run had stopped it)"
       else
         echo "could not restart relay $((index + 1))'s unit; restart ${relay_units[$index]} by hand" >&2

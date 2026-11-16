@@ -914,6 +914,21 @@ def install_overrides() -> None:
         mr1.HIDE[node] = [mr1.PRIVATE, *(ROOT / other for other in mr1.NODES if other != node)]
     _continue = mr1.continue_wrapper
     mr1.continue_wrapper = lambda key: None if key.endswith("-b") else _continue(key)
+    # A read of B's log, and any check after a relay listing (which may show
+    # what B just did), first brings the copy of B's files up to date, so a
+    # check never reads B's state older than what it observed at a relay.
+    _log_text, _listed_ids = mr1.log_text, mr1.listed_ids
+
+    def log_text(key):
+        if key.endswith("-b"):
+            sync_b()
+        return _log_text(key)
+
+    def listed_ids(relay, agent):
+        ids = _listed_ids(relay, agent)
+        sync_b()
+        return ids
+    mr1.log_text, mr1.listed_ids = log_text, listed_ids
 
 
 HELD: list[dict] = []

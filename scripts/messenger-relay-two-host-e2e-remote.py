@@ -281,32 +281,54 @@ def machines() -> None:
                "machine ids", len(ids) == len(facts) == 4 and all(ids), facts)
 
 
+def _parse_connect(text):
+    return {line.split(" ", 1)[0]: line.split(" ", 1)[1] for line in text.strip().splitlines() if " " in line}
+
+
+CONNECT = ("import socket,sys\nhost=sys.argv[1]\nfor port in sys.argv[2:]:\n    try:\n"
+           "        socket.create_connection((host, int(port)), timeout=5).close(); print(port, 'connected')\n"
+           "    except OSError as e:\n        print(port, 'refused or unreachable: ' + type(e).__name__)\n")
+
+
 def direct_path() -> None:
-    """From B's host nothing opens to this host's public address, on any port;
-    both B and this host reach both relays' TLS port."""
-    seen = logged(ssh_argv(B_SSH, B_KEY) + ['printf "%s\\n" "${SSH_CLIENT%% *}"'], keep_stdout=False).raw.decode().strip()
+    """No direct path between the nodes: A and C sit in private namespaces on
+    this host (no inbound, nothing forwarded to them), and B is a separate
+    host. The probe is between the nodes, not between the hosts -- this host's
+    own sshd is not part of it. From B, a connection to A's namespace address
+    and to this host's public address on the ports a node would use (the relay
+    TLS port, the chain RPC ports and the probe port) must all fail; and A, in
+    its namespace, cannot reach B's public address on those ports either.
+    Both this host and B still reach both relays' TLS port."""
+    seen = logged(ssh_argv(B_SSH, B_KEY) + ['printf "%s\\n" "${SSH_CLIENT%% *}"'],
+                  keep_stdout=False).raw.decode().strip()
     ipaddress.ip_address(seen)
     label(seen, "<a-c-host-public-address>")
-    local_addresses = subprocess.run(["ip", "-o", "addr", "show"], capture_output=True, text=True).stdout
-    behind_nat = re.search(r"\binet6? " + re.escape(seen) + r"/", local_addresses) is None
-    connect = ("import socket,sys\nhost=sys.argv[1]\nfor port in sys.argv[2:]:\n    try:\n"
-               "        socket.create_connection((host, int(port)), timeout=5).close(); print(port, 'connected')\n"
-               "    except OSError as e:\n        print(port, 'refused or unreachable: ' + type(e).__name__)\n")
-    ports = ["22", "80", "443", "8443", *map(str, fd.RPC_PORTS), "47000"]
-    def parse(text):
-        return {line.split(" ", 1)[0]: line.split(" ", 1)[1] for line in text.strip().splitlines() if " " in line}
-    probe = parse(on_b(f"{SYSTEM_PYTHON} -I -c {shlex.quote(connect)} {seen} {' '.join(ports)}", timeout=120).stdout)
+    b_host = B_SSH.rsplit("@", 1)[-1]
+    node_ports = ["8443", *map(str, fd.RPC_PORTS), "47000"]
+    # From B to A's namespace address (unreachable) and to this host's public
+    # address on the node ports (A and C expose nothing there).
+    b_to_a = _parse_connect(on_b(f"{SYSTEM_PYTHON} -I -c {shlex.quote(CONNECT)} {mr1.ADDRESS['a']} "
+                                 f"{' '.join(node_ports)}").stdout)
+    b_to_host = _parse_connect(on_b(f"{SYSTEM_PYTHON} -I -c {shlex.quote(CONNECT)} {seen} "
+                                    f"{' '.join(node_ports)}").stdout)
+    # From A's namespace to B's public address on the node ports.
+    a_to_b = _parse_connect(mr1.in_ns("a", [SYSTEM_PYTHON, "-I", "-c", CONNECT, b_host, *node_ports],
+                                      "connection probe", timeout=60).stdout)
+    # Both hosts still reach both relays.
     to_relay, from_here = {}, {}
     for relay in RELAYS:
-        to_relay[relay.name] = parse(on_b(f"{SYSTEM_PYTHON} -I -c {shlex.quote(connect)} {relay.host} "
-                                          f"{relay.port}").stdout)
-        from_here[relay.name] = parse(subprocess.run([SYSTEM_PYTHON, "-I", "-c", connect, relay.host, str(relay.port)],
-                                                     capture_output=True, text=True).stdout)
-    fd.evidence["direct_path_probe"] = {"b_to_a_c_host_public_address": probe, "a_c_host_behind_nat": behind_nat,
-                                        "b_to_relay": to_relay, "a_c_host_to_relay": from_here}
-    fd.require("no direct path: the A/C host is behind NAT (its public address is on no local interface) and from "
-               "B's host no TCP connection to that address opens on any probed port",
-               behind_nat and len(probe) == len(ports) and all(v.startswith("refused") for v in probe.values()),
+        to_relay[relay.name] = _parse_connect(on_b(f"{SYSTEM_PYTHON} -I -c {shlex.quote(CONNECT)} {relay.host} "
+                                                   f"{relay.port}").stdout)
+        from_here[relay.name] = _parse_connect(subprocess.run([SYSTEM_PYTHON, "-I", "-c", CONNECT, relay.host,
+                                                               str(relay.port)], capture_output=True, text=True).stdout)
+    fd.evidence["direct_path_probe"] = {"b_to_a_namespace": b_to_a, "b_to_a_c_host_node_ports": b_to_host,
+                                        "a_to_b_host_node_ports": a_to_b, "b_to_relay": to_relay,
+                                        "a_c_host_to_relay": from_here}
+    refused = all(v.startswith("refused") for v in (*b_to_a.values(), *b_to_host.values(), *a_to_b.values()))
+    fd.require("no direct path between the nodes: from B no connection opens to A's namespace address or to this "
+               "host's public address on any node port, and from A's namespace no connection opens to B's public "
+               "address on any node port",
+               refused and len(b_to_a) == len(b_to_host) == len(a_to_b) == len(node_ports),
                fd.evidence["direct_path_probe"])
     fd.require("both nodes' hosts reach both relays' TLS port over the internet",
                all(to_relay[relay.name].get(str(relay.port)) == "connected" and
@@ -342,6 +364,246 @@ def start_tunnel() -> None:
     fd.require("the chain's JSON-RPC reaches B's host only through the SSH reverse tunnel, bound to its 127.0.0.1",
                bool(ok) and mr1.PROCESSES["tunnel"].poll() is None and bool(bound) and
                all(address.startswith("127.0.0.1:") for address in bound), fd.evidence["chain_tunnel"])
+
+
+# --- Node B over SSH: path translation, exec, a background state mirror -----------
+
+ROOT = mr1.ROOT
+B_ROOT = B_BASE / "nodes"
+import threading  # noqa: E402
+
+
+def to_b(text: str) -> str:
+    """A local path under the run's node root, rewritten to B's host."""
+    return text.replace(str(ROOT), str(B_ROOT))
+
+
+def b_exec(argv: list, *, data: str | None = None, vault: str | None = None, check: bool = True,
+           timeout: float = 240):
+    """Run one B command on its host, with every node path rewritten. A vault
+    URL, when needed, is read from standard input and never put on a command
+    line; a command that also needs standard input (the tool's `call`) never
+    needs a vault."""
+    remote = [to_b(str(part)) for part in argv]
+    if vault:
+        script = "IFS= read -r VAULT_URL && export VAULT_URL && exec " + shlex.join(remote) + " < /dev/null"
+        return on_b(script, data=(vault + "\n").encode(), check=check, timeout=timeout)
+    joined = shlex.join(remote)
+    if data is not None:
+        return on_b(f"exec {joined}", data=data.encode(), check=check, timeout=timeout)
+    return on_b(joined, check=check, timeout=timeout)
+
+
+def b_vault() -> str:
+    return f"file://{B_ROOT}/b/vault.json?master_key={fd.MASTER_KEYS['b']}"
+
+
+class RemoteProcess:
+    """A supervised long-running process on B, with the Popen methods the
+    phase-1 harness uses."""
+
+    def __init__(self, key: str, argv: list, vault: str | None) -> None:
+        self.key, self.returncode = key, None
+        self.pid_file = f"{B_BASE}/{key}.pid"
+        self.exit_file = f"{B_BASE}/{key}.exit"
+        remote = [to_b(str(part)) for part in argv]
+        supervisor = f"{B_BASE}/supervisor.py"
+        line = (f"IFS= read -r VAULT_URL && export VAULT_URL && exec " if vault else "exec ") + \
+            shlex.join([SYSTEM_PYTHON, "-I", supervisor, (WORK / f"{key}.log").name, self.pid_file, self.exit_file,
+                        *remote])
+        # The supervisor detaches; VAULT_URL (when present) is passed on stdin.
+        on_b(f"cd {shlex.quote(str(B_BASE))} && {line} < /dev/null" if not vault else
+             f"cd {shlex.quote(str(B_BASE))} && {line}",
+             data=(vault + "\n").encode() if vault else None, timeout=60)
+        self.pid = fd.poll(lambda: on_b(f"cat {self.pid_file} 2>/dev/null", check=False).stdout.strip() or None, 30, 0.5)
+
+    def poll(self):
+        if self.returncode is not None:
+            return self.returncode
+        answer = on_b(f'if [ -e {self.exit_file} ]; then cat {self.exit_file}; elif kill -0 "$(cat {self.pid_file} '
+                      f'2>/dev/null)" 2>/dev/null; then echo running; else echo gone; fi', check=False).stdout.strip()
+        if re.fullmatch(r"-?\d+", answer):
+            self.returncode = int(answer)
+            return self.returncode
+        return None if answer == "running" else -1000
+
+    def wait(self, timeout: float):
+        if fd.poll(lambda: self.poll() is not None, timeout, 1) is None:
+            raise subprocess.TimeoutExpired(self.key, timeout)
+        return self.returncode
+
+    def terminate(self):
+        if self.pid:
+            on_b(f"kill -TERM {self.pid} 2>/dev/null; true", check=False)
+
+    def signal(self, name: str):
+        if self.pid:
+            on_b(f"kill -{name} {self.pid} 2>/dev/null; true", check=False)
+
+
+SUPERVISOR = '''import os, subprocess, sys
+log, pid_file, exit_file, *argv = sys.argv[1:]
+vault = os.environ.get("VAULT_URL", "")
+if os.fork():
+    sys.exit(0)
+os.setsid()
+null = os.open(os.devnull, os.O_RDWR)
+for n in (0, 1, 2):
+    os.dup2(null, n)
+with open(log, "ab") as out:
+    child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=out, cwd="/",
+                             env=dict(os.environ, VAULT_URL=vault))
+open(pid_file + ".part", "w").write(str(child.pid)); os.rename(pid_file + ".part", pid_file)
+code = child.wait()
+open(exit_file + ".part", "w").write(str(code)); os.rename(exit_file + ".part", exit_file)
+'''
+
+MIRROR = {"stop": False}
+
+
+def mirror_b():
+    """Keep ROOT/b a near-current copy of B's node directory, so the harness's
+    local reads of B's files work; sockets and the tmp dir are skipped."""
+    while not MIRROR["stop"]:
+        subprocess.run(["rsync", "-a", "--delete", "--exclude=*.sock", "--exclude=s/", "-e",
+                        " ".join(ssh_argv(B_SSH, B_KEY)[:-1]), f"{B_SSH}:{B_ROOT}/b/", str(ROOT / "b") + "/"],
+                       capture_output=True)
+        time.sleep(2)
+
+
+def b_socket(name: str) -> str:
+    return to_b(str(mr1.sock("b", name)))
+
+
+# --- The phase-1 overrides for node B and the external relays ---------------------
+
+def install_overrides() -> None:
+    _in_ns, _spawn, _fox = mr1.in_ns, mr1.spawn, mr1.fox
+    _start_signer, _start_daemon, _stop_daemon = mr1.start_signer, mr1.start_daemon, mr1.stop_daemon
+    _start_serve, _stop_serve, _mcall = mr1.start_serve, mr1.stop_serve, mr1.mcall
+
+    def in_ns(name, argv, label, *, check=True, timeout=240, env=None, data=None):
+        if name != "b":
+            return _in_ns(name, argv, label, check=check, timeout=timeout, env=env, data=data)
+        vault = (env or {}).get("VAULT_URL") if env else None
+        result = b_exec(argv, data=data, vault=vault, check=check, timeout=timeout)
+        return subprocess.CompletedProcess(argv, result.returncode, result.stdout, result.stderr)
+
+    def fox(node, *args, check=True, timeout=900):
+        if node != "b":
+            return _fox(node, *args, check=check, timeout=timeout)
+        argv = mr1.fox_argv(*args)
+        for attempt in range(8):
+            result = b_exec(argv, vault=b_vault(), check=False, timeout=timeout)
+            if result.returncode == 0 or not mr1.TRANSIENT.search(result.stderr):
+                break
+            time.sleep(15)
+        if check and result.returncode != 0:
+            raise RuntimeError(f"openfox earning {' '.join(args[:2])} on b failed ({result.returncode}): "
+                               f"{fd.redact(result.stderr)[-2500:]}")
+        return subprocess.CompletedProcess(argv, result.returncode, result.stdout, result.stderr)
+
+    def start_signer(node):
+        if node != "b":
+            return _start_signer(node)
+        mr1.PROCESSES["signer-b"] = RemoteProcess("signer-b", mr1.signer_argv("b"), None)
+        fd.require("b: the test Endpoint signer serves its socket on B's host",
+                   fd.poll(lambda: on_b(f"test -S {shlex.quote(b_socket('signer.sock'))} && echo yes",
+                                        check=False).stdout.strip() == "yes", 30, 1) is not None, None)
+
+    def start_daemon(node, label="start"):
+        if node != "b":
+            return _start_daemon(node, label)
+        mr1.PROCESSES["messengerd-b"] = RemoteProcess("messengerd-b", mr1.daemon_argv("b"), None)
+        up = fd.poll(lambda: on_b(f"test -S {shlex.quote(b_socket('carrier.sock'))} && test -S "
+                                  f"{shlex.quote(b_socket('runtime.sock'))} && test -f "
+                                  f"{shlex.quote(to_b(str(mr1.mdir('b') / 'export' / 'relay-contact.json')))} && echo y",
+                                  check=False).stdout.strip() == "y", 120, 1)
+        fd.require(f"b ({label}): tos-messengerd on B's host verified its delegation, serves its sockets and exported "
+                   "its relay evidence", bool(up) and mr1.PROCESSES["messengerd-b"].poll() is None, None)
+
+    def stop_daemon(node, sig="TERM"):
+        if node != "b":
+            return _stop_daemon(node, sig)
+        process = mr1.PROCESSES.pop("messengerd-b", None)
+        if process is not None:
+            process.signal("KILL" if sig == "KILL" else "TERM")
+            return process.wait(60)
+        return None
+
+    def start_serve(node, label="start"):
+        if node != "b":
+            return _start_serve(node, label)
+        mr1.PROCESSES["serve-b"] = RemoteProcess("serve-b", mr1.fox_argv("service", "serve", "--rail-config",
+                                                                        mr1.rail("b")), b_vault())
+        up = fd.poll(lambda: on_b(f"test -S {shlex.quote(b_socket('chat-carrier.sock'))} && echo y",
+                                  check=False).stdout.strip() == "y" and mr1.PROCESSES["serve-b"].poll() is None, 120, 1)
+        fd.require(f"b ({label}): `openfox earning service serve` runs on B's host and serves carrier.carry", bool(up),
+                   None)
+
+    def stop_serve(node, sig="TERM"):
+        if node != "b":
+            return _stop_serve(node, sig)
+        process = mr1.PROCESSES.pop("serve-b", None)
+        if process is None:
+            return None
+        process.signal("KILL" if sig == "KILL" else "TERM")
+        try:
+            return process.wait(60)
+        except subprocess.TimeoutExpired:
+            process.signal("KILL")
+            return process.wait(30)
+
+    def mcall(node, request, socket="runtime.sock"):
+        if node != "b":
+            return _mcall(node, request, socket)
+        argv = [ROOT / "bin" / "messenger-relay-e2e-tool", "call", "--socket", mr1.sock("b", socket)]
+        result = b_exec(argv, data=json.dumps(request), check=False, timeout=90)
+        if result.returncode != 0:
+            return {"ok": False, "call_error": fd.redact(result.stderr)[-600:]}
+        return json.loads(result.stdout)
+
+    _fox_json = mr1.fox_json
+    def fox_json(node, *a, **k):
+        if node != "b":
+            return _fox_json(node, *a, **k)
+        result = fox(node, *a, **k)
+        if result.returncode != 0:
+            raise RuntimeError(f"openfox earning {' '.join(a[:2])} on b failed: {fd.redact(result.stderr)[-1500:]}")
+        return json.loads(result.stdout)
+    mr1.in_ns, mr1.fox, mr1.mcall, mr1.fox_json = in_ns, fox, mcall, fox_json
+    mr1.start_signer, mr1.start_daemon, mr1.stop_daemon = start_signer, start_daemon, stop_daemon
+    mr1.start_serve, mr1.stop_serve = start_serve, stop_serve
+    # The relays: external URLs and units in place of local namespaces.
+    for name in ("relay1", "relay2"):
+        mr1.RELAY_URL[name] = RELAY_BY_NAME[name].url
+    mr1.RELAY_URLS[:] = sorted(mr1.RELAY_URL.values())
+    mr1.start_relay, mr1.stop_relay = start_relay_unit, stop_relay_unit
+    mr1.snapshot = relay_snapshot
+    # pgrep/signal_pattern for B's processes are replaced by the RemoteProcess
+    # handles; continue_wrapper is a no-op on B (no sudo launcher).
+    _continue = mr1.continue_wrapper
+    mr1.continue_wrapper = lambda key: None if key.endswith("-b") else _continue(key)
+
+
+def relay_snapshot(name: str) -> dict:
+    """Copies of both relays' state directories, taken on their hosts by a
+    read-only tar, for the plaintext search."""
+    result = {}
+    for relay in RELAYS:
+        tar = on_relay(relay, f"tar -C {shlex.quote(str(relay.state))} --exclude=./LOCK --exclude=./tmp -cf - .; "
+                              "status=$?; [ $status -le 1 ]", keep_stdout=False).raw
+        target = mr1.SNAPSHOTS / name / relay.name
+        target.mkdir(parents=True, exist_ok=True)
+        import io
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(tar)) as archive:
+            archive.extractall(target, filter="data")
+        files = [p for p in target.rglob("*") if p.is_file()]
+        envelopes = [p for p in files if "envelopes" in p.parts]
+        result[relay.name] = {"files": len(files), "envelope_files": len(envelopes),
+                              "envelope_bytes": sorted(p.stat().st_size for p in envelopes)}
+    return result
 
 
 # --- Dry run: the reusable remote primitives, read-only ---------------------------

@@ -834,7 +834,12 @@ daemon. OpenFox never sees chat plaintext, Messenger keys or session state.
   node already keeps 24 chat envelopes for that peer (copies, every
   generation not yet withdrawn, evidence frames and its own delivery acks;
   envelopes the peer's mailbox listing no longer shows are not counted), and
-  `retry` for anything that may pass later. When generation N+1 is accepted,
+  `retry` for anything that may pass later. A key whose journaled packet
+  expired before any relay accepted it is signed again under the same key
+  (an expired packet can never be accepted by the recipient), so a retry
+  after a long outage carries rather than fails. An envelope with a deposit
+  still due at one of its relays always counts towards the cap, and so does
+  every envelope at a relay whose listing fails. When generation N+1 is accepted,
   generation N is withdrawn at every relay that may hold it, journaled and
   retried like the withdrawal after a card revocation; a withdrawn key is
   never deposited again. Chat packets may use the full sealed packet bound;
@@ -848,6 +853,12 @@ daemon. OpenFox never sees chat plaintext, Messenger keys or session state.
   outcome, refusals included, is relay-acknowledged.
 - **No Messenger packet transport.** A node with a `chat` section refuses to
   start with `messenger_socket` set: rail packets never travel inside chat.
+- **Timeout.** `chat.timeout_seconds` (`init --chat-timeout-seconds`) bounds
+  one carrier operation in both directions: 0 means 30 s, otherwise 1 to
+  300. Set it to the daemon's `relay_carriage.timeout_seconds`.
+- **Card signer (known M-R1 deviation).** The chat card is signed by the
+  packet controller. The relay carriage spec recommends a dedicated
+  card-signing controller (a SHOULD); M-R1 does not use one.
 
 Setup, with the Messenger daemon configured to the same paths:
 
@@ -872,7 +883,12 @@ Setup, with the Messenger daemon configured to the same paths:
    owner's admission decision;
 5. `openfox earning chat status --rail-config <file>` shows the current chat
    card, whether the card path holds it, the held chat cards and the chat
-   journal; `preflight` checks the section and the published card.
+   journal; `preflight` checks the section and the published card;
+6. `openfox earning chat contact remove --rail-config <file> <agent>`
+   deletes that Agent's stored chat cards and the contact file its import
+   wrote (for example after the daemon refused its evidence), so it stops
+   occupying a card slot; a running `serve` stops sealing to it at once. An
+   Agent with neither is refused.
 
 ## Configuration
 

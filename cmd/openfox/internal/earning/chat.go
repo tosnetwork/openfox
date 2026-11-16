@@ -17,8 +17,10 @@ func chatCommand() *cobra.Command {
 		Short: "Carry private Messenger chat between Agents over the packet relays",
 		Args:  cobra.NoArgs,
 	}
-	contact := &cobra.Command{Use: "contact", Short: "Export or import a chat contact file", Args: cobra.NoArgs}
-	contact.AddCommand(chatContactExportCommand(), chatContactImportCommand())
+	contact := &cobra.Command{
+		Use: "contact", Short: "Export, import or remove a chat contact", Args: cobra.NoArgs,
+	}
+	contact.AddCommand(chatContactExportCommand(), chatContactImportCommand(), chatContactRemoveCommand())
 	command.AddCommand(chatCardCommand("init", "Issue the chat key and card and publish the card to the Messenger "+
 		"daemon's card path"), chatCardCommand("republish", "Rotate the chat keys and republish the current chat "+
 		"card"), chatStatusCommand(), contact)
@@ -76,6 +78,24 @@ func chatContactExportCommand() *cobra.Command {
 	railConfigFlag(command, &path)
 	command.Flags().StringVar(&out, "out", "", "where to write the contact file")
 	_ = command.MarkFlagRequired("out")
+	return command
+}
+
+func chatContactRemoveCommand() *cobra.Command {
+	var path string
+	command := &cobra.Command{
+		Use:   "remove <agent>",
+		Short: "Remove a contact's stored chat card and the contact file its import wrote",
+		Args:  cobra.ExactArgs(1), SilenceUsage: true,
+		RunE: func(command *cobra.Command, args []string) error {
+			removed, err := servicebridge.ChatContactRemove(path, args[0])
+			if err != nil {
+				return err
+			}
+			return printJSON(command.OutOrStdout(), removed)
+		},
+	}
+	railConfigFlag(command, &path)
 	return command
 }
 

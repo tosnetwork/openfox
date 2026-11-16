@@ -469,15 +469,21 @@ func (n *Node) openRelay(signer *PacketSigner, agents FinalizedAgents, options N
 		if relaysErr != nil {
 			return relaysErr
 		}
+		timeout, timeoutErr := n.Config.Chat.timeout()
+		if timeoutErr != nil {
+			return timeoutErr
+		}
 		daemon := options.ChatDaemon
 		if daemon == nil {
-			client, clientErr := carrierapi.NewClient(n.Config.Chat.MessengerCarrierSocket, 0)
+			client, clientErr := carrierapi.NewClient(n.Config.Chat.MessengerCarrierSocket, timeout)
 			if clientErr != nil {
 				return fmt.Errorf("servicebridge: the Messenger carrier socket: %w", clientErr)
 			}
 			daemon = client
 		}
-		chat = &chatLaneConfig{Relays: relays, CardPath: n.Config.Chat.CardPath, Signer: signer, Daemon: daemon}
+		chat = &chatLaneConfig{
+			Relays: relays, CardPath: n.Config.Chat.CardPath, Signer: signer, Daemon: daemon, Timeout: timeout,
+		}
 	}
 	carrier, err := OpenRelayCarrier(RelayCarrierConfig{
 		StateDir: n.Config.StateDir, AgentID: n.Config.AgentID, Relays: n.Config.RelayURLs, Signer: signer,

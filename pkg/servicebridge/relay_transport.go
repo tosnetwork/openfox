@@ -222,6 +222,9 @@ type RelayTransport struct {
 	// a replacement, before any request it leads to; tests kill the
 	// process there.
 	afterJournal func()
+	// afterDeposit runs once a relay accepted a send's envelope, before the
+	// acceptance is journaled; tests kill the process there.
+	afterDeposit func()
 }
 
 type relayRetry struct {
@@ -377,6 +380,9 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 		outcome := t.deposit(ctx, relay, envelope)
 		switch outcome {
 		case depositAccepted:
+			if t.afterDeposit != nil {
+				t.afterDeposit()
+			}
 			record.Accepted = append(record.Accepted, relay)
 			if err := t.store(path, record); err != nil {
 				return err
@@ -874,20 +880,40 @@ func (t *RelayTransport) Withdraw(idempotencyKey string) (bool, error) {
 // exists. A record without a usable packet is reported with only its
 // recipient, which the caller checks.
 func (t *RelayTransport) journaled(idempotencyKey string) (OutboundPacket, bool, error) {
+	state, err := t.journalState(idempotencyKey)
+	return state.Packet, state.Found, err
+}
+
+// journalEntry is what the journal holds under one idempotency key.
+type journalEntry struct {
+	Found bool
+	// Packet is the journaled packet; only its recipient is set when the
+	// record keeps no usable packet.
+	Packet OutboundPacket
+	// Accepted reports that a relay durably accepted the current envelope.
+	Accepted bool
+	// Withdrawn reports a superseded packet that is never deposited again.
+	Withdrawn bool
+}
+
+// journalState reads the record under idempotencyKey.
+func (t *RelayTransport) journalState(idempotencyKey string) (journalEntry, error) {
 	if t == nil || !idempotencyKeyPattern.MatchString(idempotencyKey) {
-		return OutboundPacket{}, false, errors.New("servicebridge: invalid relay journal lookup")
+		return journalEntry{}, errors.New("servicebridge: invalid relay journal lookup")
 	}
 	unlock := t.lock(idempotencyKey)
 	defer unlock()
 	record, found, err := t.load(t.recordPath(idempotencyKey))
 	if err != nil || !found {
-		return OutboundPacket{}, false, err
+		return journalEntry{}, err
 	}
+	entry := journalEntry{Found: true, Accepted: len(record.Accepted) > 0, Withdrawn: record.Withdrawn}
 	packet, ok := record.journaledPacket()
 	if !ok {
-		return OutboundPacket{RecipientAgentID: record.Recipient, IdempotencyKey: idempotencyKey}, true, nil
+		packet = OutboundPacket{RecipientAgentID: record.Recipient, IdempotencyKey: idempotencyKey}
 	}
-	return packet, true, nil
+	entry.Packet = packet
+	return entry, nil
 }
 
 // storedEnvelope is one envelope of the journal a relay may still hold.
@@ -895,6 +921,9 @@ type storedEnvelope struct {
 	IdempotencyKey string
 	EnvelopeID     [32]byte
 	Relays         []string
+	// Pending reports a current envelope some relay of its card has not
+	// answered yet: a later deposit may still store it there.
+	Pending bool
 }
 
 // storedFor lists, for one recipient, every envelope of the journal a relay
@@ -929,7 +958,7 @@ func (t *RelayTransport) storedFor(recipient string) ([]storedEnvelope, error) {
 			if decodeHex32(record.EnvelopeID, &id) == nil {
 				out = append(out, storedEnvelope{
 					IdempotencyKey: record.IdempotencyKey, EnvelopeID: id,
-					Relays: append([]string(nil), record.Relays...),
+					Relays: append([]string(nil), record.Relays...), Pending: len(record.pending()) > 0,
 				})
 			}
 		}

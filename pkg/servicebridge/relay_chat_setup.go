@@ -125,28 +125,47 @@ func ChatRepublish(ctx context.Context, configPath string, env SetupEnv) (*ChatC
 }
 
 // heldChatCard returns the chat card a node hands out now, read from its
-// key directory without changing it.
-func heldChatCard(config NodeConfig, now time.Time) (OwnRelayKey, error) {
+// key directory without changing it, and whether the card path publishes it.
+// The card is the one republication published: the held key, valid now for
+// the configured relays, whose card is exactly the file at the card path.
+// Several keys may be valid at once (a fresh init holds a seven-day and a
+// thirty-day key with one issue time), so the key is chosen by the published
+// file, never by key order. Without a matching file it is the valid key that
+// runs longest, the one republication would hand out.
+func heldChatCard(config NodeConfig, now time.Time) (OwnRelayKey, bool, error) {
 	relays, err := chatRelays(config)
 	if err != nil {
-		return OwnRelayKey{}, err
+		return OwnRelayKey{}, false, err
 	}
 	keyDir := filepath.Join(config.StateDir, relayStateDir, relayChatKeysDir)
-	if err := checkPrivateDirectory(keyDir); err != nil {
-		return OwnRelayKey{}, errors.New("servicebridge: no chat key directory; run `openfox earning chat init`")
+	if err = checkPrivateDirectory(keyDir); err != nil {
+		return OwnRelayKey{}, false, errors.New("servicebridge: no chat key directory; run `openfox earning chat " +
+			"init`")
 	}
 	keys := &RelayKeys{directory: keyDir, agentID: config.AgentID, relays: relays, schema: relayChatKeySchema}
-	if err := keys.load(); err != nil {
-		return OwnRelayKey{}, err
+	if err = keys.load(); err != nil {
+		return OwnRelayKey{}, false, err
 	}
+	published, readErr := readPrivateFile(config.Chat.CardPath, relayframe.MaxCardBytes)
 	unix := uint64(now.Unix())
-	for _, key := range keys.keys {
-		if key.NotBeforeUnix <= unix && unix < key.NotAfterUnix && slices.Equal(key.Relays, relays) {
-			return key, nil
+	var longest *OwnRelayKey
+	for index := range keys.keys {
+		key := &keys.keys[index]
+		if key.NotBeforeUnix > unix || unix >= key.NotAfterUnix || !slices.Equal(key.Relays, relays) {
+			continue
+		}
+		if readErr == nil && bytes.Equal(key.CardJSON, published) {
+			return *key, true, nil
+		}
+		if longest == nil || key.NotAfterUnix > longest.NotAfterUnix {
+			longest = key
 		}
 	}
-	return OwnRelayKey{}, errors.New("servicebridge: no held chat card is valid now; run `openfox earning chat " +
-		"republish`")
+	if longest == nil {
+		return OwnRelayKey{}, false, errors.New("servicebridge: no held chat card is valid now; run `openfox " +
+			"earning chat republish`")
+	}
+	return *longest, false, nil
 }
 
 // ChatContactExport writes this node's contact file: the daemon's exported
@@ -163,12 +182,11 @@ func ChatContactExport(configPath, out string, now time.Time) ([]byte, error) {
 	if config.Chat.EvidenceExportDir == "" {
 		return nil, errors.New("servicebridge: chat.evidence_export_dir is not configured")
 	}
-	key, err := heldChatCard(config, now)
+	key, published, err := heldChatCard(config, now)
 	if err != nil {
 		return nil, err
 	}
-	published, err := readPrivateFile(config.Chat.CardPath, relayframe.MaxCardBytes)
-	if err != nil || !bytes.Equal(published, key.CardJSON) {
+	if !published {
 		return nil, errors.New("servicebridge: the card path does not hold the current chat card; run `openfox " +
 			"earning chat republish`")
 	}
@@ -274,6 +292,87 @@ func importChatContact(ctx context.Context, cards *PeerCards, contactDir, ownAge
 	return ChatContactImported{
 		AgentID: contact.AgentID, KeyID: agentpacketseal.KeyIDText(card.KeyID), ContactFile: path,
 	}, nil
+}
+
+// ChatContactRemoved reports a removed contact.
+type ChatContactRemoved struct {
+	AgentID      string   `json:"agent_id"`
+	RemovedCards []string `json:"removed_card_key_ids"`
+	ContactFile  string   `json:"removed_contact_file,omitempty"`
+}
+
+// removeChatContact deletes every stored chat card of agent and the contact
+// file import wrote for it in the daemon's contact directory, so a contact
+// whose evidence the daemon refused stops occupying a card slot. A running
+// `serve` forgets the cards at its next use of the store. An Agent with
+// neither a card nor a contact file is unknown and refused.
+func removeChatContact(cardsDir, contactDir, ownAgent, agent string) (ChatContactRemoved, error) {
+	if !cleanAbsolute(cardsDir) || (contactDir != "" && !cleanAbsolute(contactDir)) ||
+		!agentIDPattern.MatchString(ownAgent) {
+		return ChatContactRemoved{}, errChatInvalidLane
+	}
+	if !agentIDPattern.MatchString(agent) {
+		return ChatContactRemoved{}, errors.New("servicebridge: the contact to remove must be an Agent id " +
+			"(agent_<64 hex>)")
+	}
+	if agent == ownAgent {
+		return ChatContactRemoved{}, errors.New("servicebridge: this node's own Agent is not a contact")
+	}
+	held, err := readPeerCards(cardsDir)
+	if err != nil {
+		return ChatContactRemoved{}, err
+	}
+	removed := ChatContactRemoved{AgentID: agent, RemovedCards: []string{}}
+	for _, card := range held {
+		if card.AgentID != agent {
+			continue
+		}
+		path := filepath.Join(cardsDir, peerCardFile(card))
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return removed, errors.New("servicebridge: remove a chat card")
+		}
+		removed.RemovedCards = append(removed.RemovedCards, agentpacketseal.KeyIDText(card.Key.KeyID))
+	}
+	if len(removed.RemovedCards) > 0 {
+		if err := syncDirectory(cardsDir); err != nil {
+			return removed, err
+		}
+	}
+	if contactDir != "" {
+		path := filepath.Join(contactDir, strings.TrimPrefix(agent, "agent_")+".json")
+		switch info, statErr := os.Lstat(path); {
+		case errors.Is(statErr, os.ErrNotExist):
+		case statErr != nil || !info.Mode().IsRegular():
+			return removed, errors.New("servicebridge: the contact file path is not a regular file")
+		default:
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return removed, errors.New("servicebridge: remove the contact file")
+			}
+			if err := syncDirectory(contactDir); err != nil {
+				return removed, err
+			}
+			removed.ContactFile = path
+		}
+	}
+	if len(removed.RemovedCards) == 0 && removed.ContactFile == "" {
+		return removed, errors.New("servicebridge: no chat card or contact file of that Agent is held")
+	}
+	return removed, nil
+}
+
+// ChatContactRemove removes a contact from the chat card store and the
+// daemon's contact directory.
+func ChatContactRemove(configPath, agent string) (*ChatContactRemoved, error) {
+	config, err := loadChatConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+	removed, err := removeChatContact(filepath.Join(config.StateDir, relayStateDir, relayChatPeersDir),
+		config.Chat.ContactDir, config.AgentID, agent)
+	if err != nil {
+		return nil, err
+	}
+	return &removed, nil
 }
 
 // ChatContactImport imports a peer's contact file into this node's chat card
@@ -392,13 +491,12 @@ func ReadChatStatus(configPath string, now time.Time) (*ChatStatusReport, error)
 		MessengerCarrierSocket: config.Chat.MessengerCarrierSocket, CardPath: config.Chat.CardPath,
 		PeerCards: []PeerCardView{}, Outbox: []RelayOutboxView{},
 	}
-	if key, keyErr := heldChatCard(config, now); keyErr != nil {
+	if key, published, keyErr := heldChatCard(config, now); keyErr != nil {
 		report.CurrentKeyProblem = strings.TrimPrefix(keyErr.Error(), "servicebridge: ")
 	} else {
 		views := relayKeyViews([]OwnRelayKey{key})
 		report.CurrentKey = &views[0]
-		published, readErr := readPrivateFile(config.Chat.CardPath, relayframe.MaxCardBytes)
-		report.CardPublished = readErr == nil && bytes.Equal(published, key.CardJSON)
+		report.CardPublished = published
 	}
 	root := filepath.Join(config.StateDir, relayStateDir)
 	held, err := readPeerCards(filepath.Join(root, relayChatPeersDir))

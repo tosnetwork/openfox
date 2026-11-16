@@ -1,7 +1,6 @@
 package servicebridge
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -124,13 +123,12 @@ func (p *preflight) checkChat() {
 	p.addf("chat.config", CheckPass, "chat relays %s; carrier socket %s; Messenger carrier socket %s; the "+
 		"Messenger packet transport is not configured", strings.Join(relays, ", "), p.config.Chat.CarrierSocket,
 		p.config.Chat.MessengerCarrierSocket)
-	key, err := heldChatCard(p.config, p.env.Now())
+	key, published, err := heldChatCard(p.config, p.env.Now())
 	if err != nil {
 		p.addf("chat.card", CheckFail, "%v", err)
 		return
 	}
-	published, readErr := readPrivateFile(p.config.Chat.CardPath, int64(len(key.CardJSON)))
-	if readErr != nil || !bytes.Equal(published, key.CardJSON) {
+	if !published {
 		p.addf("chat.card", CheckFail, "the card path %s does not hold the current chat card %s; run `openfox "+
 			"earning chat republish`", p.config.Chat.CardPath, agentpacketseal.KeyIDText(key.KeyID))
 		return

@@ -115,7 +115,7 @@ func serviceInitCommand() *cobra.Command {
 			if chat.MessengerCarrierSocket != "" {
 				in.Chat = &chat
 			} else if len(chat.RelayURLs) > 0 || chat.CarrierSocket != "" || chat.CardPath != "" ||
-				chat.EvidenceExportDir != "" || chat.ContactDir != "" {
+				chat.EvidenceExportDir != "" || chat.ContactDir != "" || chat.TimeoutSeconds != 0 {
 				return errors.New("the chat section needs --messenger-carrier-socket")
 			}
 			result, err := servicebridge.RunInit(command.Context(), in, setupEnv(command))
@@ -181,6 +181,8 @@ func serviceInitCommand() *cobra.Command {
 		"relay_carriage.evidence_export_dir, read by chat contact export")
 	flags.StringVar(&chat.ContactDir, "messenger-contact-dir", "", "chat: the daemon's discovery.contact_dir, "+
 		"written by chat contact import")
+	flags.Uint64Var(&chat.TimeoutSeconds, "chat-timeout-seconds", 0, "chat: bound of one carrier operation, "+
+		"1 to 300; set it to the daemon's relay_carriage.timeout_seconds (default 30)")
 	flags.BoolVar(&in.Yes, "yes", false, "create the controller, sign and send as previewed")
 	for _, name := range []string{
 		"rail-config", "state-dir", "rpc", "global-config", "network-label", "tosctl", "tosctl-config", "wallet",

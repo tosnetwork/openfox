@@ -83,6 +83,27 @@ type ChatConfig struct {
 	// ContactDir is the daemon's discovery.contact_dir, written by `chat
 	// contact import`.
 	ContactDir string `json:"contact_dir,omitempty"`
+	// TimeoutSeconds bounds one carrier operation in both directions, as the
+	// daemon's relay_carriage.timeout_seconds does on its side: 0 means 30 s,
+	// otherwise 1 to 300. Set both to the same value.
+	TimeoutSeconds uint64 `json:"timeout_seconds,omitempty"`
+}
+
+// Bounds of the carrier operation timeout.
+const (
+	defaultChatTimeout = carrierapi.DefaultTimeout
+	maxChatTimeout     = 5 * time.Minute
+)
+
+// timeout is the carrier operation bound the section names.
+func (c ChatConfig) timeout() (time.Duration, error) {
+	if c.TimeoutSeconds == 0 {
+		return defaultChatTimeout, nil
+	}
+	if c.TimeoutSeconds > uint64(maxChatTimeout/time.Second) {
+		return 0, errors.New("chat.timeout_seconds must be 1 to 300 (0 means 30)")
+	}
+	return time.Duration(c.TimeoutSeconds) * time.Second, nil
 }
 
 // chatRelays returns the chat relay list: its own, or the rail's.
@@ -145,6 +166,9 @@ func validateChatConfig(config NodeConfig) error {
 			problems = append(problems, err)
 		}
 	}
+	if _, err := chat.timeout(); err != nil {
+		problems = append(problems, err)
+	}
 	if len(problems) > 0 {
 		return fmt.Errorf("servicebridge: chat configuration: %w", errors.Join(problems...))
 	}
@@ -164,6 +188,8 @@ type chatLaneConfig struct {
 	CardPath string
 	Signer   *PacketSigner
 	Daemon   chatDaemon
+	// Timeout bounds one carrier.carry the server handles; zero is 30 s.
+	Timeout time.Duration
 }
 
 // ChatCarrier carries Messenger relay frames: it serves carrier.carry,
@@ -182,6 +208,7 @@ type ChatCarrier struct {
 	agents    agentpacket.AgentResolver
 	pool      *relayPool
 	cardPath  string
+	timeout   time.Duration
 	now       func() time.Time
 	report    func(string, error)
 	// peers serializes the cap check and the deposit per peer, so two
@@ -209,6 +236,12 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 		verifier == nil || agents == nil || pool == nil || !cleanAbsolute(lane.CardPath) {
 		return nil, errChatInvalidLane
 	}
+	if lane.Timeout == 0 {
+		lane.Timeout = defaultChatTimeout
+	}
+	if lane.Timeout < time.Second || lane.Timeout > maxChatTimeout {
+		return nil, errors.New("servicebridge: the chat carrier timeout is outside 1 s to 300 s")
+	}
 	if lane.Signer.AgentID != agentID {
 		return nil, errors.New("servicebridge: the chat signer signs for another Agent")
 	}
@@ -231,6 +264,7 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 		return nil, err
 	}
 	cards.AllowLoopbackRelays(ownRelaysOnLoopback(relays))
+	cards.dropRemoved = true
 	transport, err := OpenRelayTransport(filepath.Join(root, relayChatOutboxDir), cards, pool, now)
 	if err != nil {
 		return nil, err
@@ -240,8 +274,9 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 	}
 	return &ChatCarrier{
 		agentID: agentID, Keys: keys, Cards: cards, Transport: transport, signer: lane.Signer, daemon: lane.Daemon,
-		verifier: verifier, agents: agents, pool: pool, cardPath: lane.CardPath, now: now, report: report,
-		gone: map[[32]byte]uint64{},
+		verifier: verifier, agents: agents, pool: pool, cardPath: lane.CardPath, timeout: lane.Timeout, now: now,
+		report: report,
+		gone:   map[[32]byte]uint64{},
 	}, nil
 }
 
@@ -313,30 +348,36 @@ func (c *ChatCarrier) Carry(ctx context.Context, request carrierapi.Request, raw
 			return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
 		}
 	}
-	packet, err := c.prepare(ctx, peer, request.IdempotencyKey, raw, expires)
+	packet, accepted, err := c.prepare(ctx, peer, request.IdempotencyKey, raw, expires)
 	switch {
 	case err == nil:
 	case errors.Is(err, errChatNoCard):
 		return carrierapi.Refusal(carrierapi.CodeNoPeerCard)
 	case errors.Is(err, errChatPeerCap):
 		return carrierapi.Refusal(carrierapi.CodePeerCap)
-	case errors.Is(err, errChatWrongPeer):
+	case errors.Is(err, errChatWrongPeer), errors.Is(err, ErrRelayWithdrawn):
 		return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
 	default:
 		c.report("chat.carry", err)
 		return carrierapi.Retry()
 	}
-	if err := c.Transport.Send(ctx, packet); err != nil {
-		switch {
-		case errors.Is(err, ErrNoPacketRoute):
-			return carrierapi.Refusal(carrierapi.CodeNoPeerCard)
-		case errors.Is(err, ErrRelayPacketTooLarge):
-			return carrierapi.Refusal(carrierapi.CodePacketTooLarge)
-		case errors.Is(err, ErrRelayWithdrawn), errors.Is(err, ErrGenerationExpired):
-			return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
-		default:
-			c.report("chat.carry", err)
-			return carrierapi.Retry()
+	// A key a relay already accepted is carried: the daemon died before it
+	// recorded the answer, and nothing is deposited again.
+	if !accepted {
+		if err := c.Transport.Send(ctx, packet); err != nil {
+			switch {
+			case errors.Is(err, ErrNoPacketRoute):
+				return carrierapi.Refusal(carrierapi.CodeNoPeerCard)
+			case errors.Is(err, ErrRelayPacketTooLarge):
+				return carrierapi.Refusal(carrierapi.CodePacketTooLarge)
+			case errors.Is(err, ErrRelayWithdrawn):
+				return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
+			default:
+				// Everything else may pass later, an expired packet included:
+				// the next attempt under the key signs a fresh one.
+				c.report("chat.carry", err)
+				return carrierapi.Retry()
+			}
 		}
 	}
 	if request.WithdrawIdempotencyKey != "" {
@@ -352,44 +393,63 @@ func (c *ChatCarrier) Carry(ctx context.Context, request carrierapi.Request, raw
 	return carrierapi.Response{Result: carrierapi.ResultCarried}
 }
 
-// prepare returns the packet to send under key: the journaled one when the
-// key is journaled (a retry), otherwise a freshly signed one, admitted only
-// when a chat card of the peer is held and the peer's stored envelopes leave
-// room under the cap. The caller holds the peer lock.
+// prepare returns the packet to send under key and whether a relay already
+// accepted it.
+//
+//   - A key a relay accepted is answered from the journal, with no deposit.
+//   - A withdrawn key is never sent again (ErrRelayWithdrawn).
+//   - A journaled packet still deliverable is reused unchanged, so a retry
+//     resends the journaled envelope.
+//   - A journaled packet no relay accepted that has expired is replaced by a
+//     freshly signed one under the same key; Send then seals it and replaces
+//     the record in one atomic write. This is safe: an expired packet can
+//     never be accepted by the recipient, so an ambiguous earlier deposit
+//     that did land is refused there, and only the fresh one can deliver.
+//   - A new key is admitted only when a chat card of the peer is held and
+//     the peer's stored envelopes leave room under the cap.
+//
+// The caller holds the peer lock.
 func (c *ChatCarrier) prepare(ctx context.Context, peer, key string, frame []byte,
 	expires uint64,
-) (OutboundPacket, error) {
-	journaled, found, err := c.Transport.journaled(key)
+) (OutboundPacket, bool, error) {
+	entry, err := c.Transport.journalState(key)
 	if err != nil {
-		return OutboundPacket{}, err
+		return OutboundPacket{}, false, err
 	}
-	if found && journaled.RecipientAgentID != peer {
-		return OutboundPacket{}, errChatWrongPeer
-	}
-	if found && len(journaled.JSON) > 0 {
-		return journaled, nil
+	if entry.Found {
+		switch {
+		case entry.Packet.RecipientAgentID != peer:
+			return OutboundPacket{}, false, errChatWrongPeer
+		case entry.Withdrawn:
+			return OutboundPacket{}, false, ErrRelayWithdrawn
+		case entry.Accepted:
+			return entry.Packet, true, nil
+		case len(entry.Packet.JSON) > 0 && c.nowUnix() < entry.Packet.ExpiresAtUnix:
+			return entry.Packet, false, nil
+		}
 	}
 	if !c.Cards.Has(peer) {
-		return OutboundPacket{}, errChatNoCard
+		return OutboundPacket{}, false, errChatNoCard
 	}
-	if !found {
+	if !entry.Found {
 		count, countErr := c.storedCount(ctx, peer)
 		if countErr != nil {
-			return OutboundPacket{}, countErr
+			return OutboundPacket{}, false, countErr
 		}
 		if count >= ChatPeerEnvelopeCap {
-			return OutboundPacket{}, errChatPeerCap
+			return OutboundPacket{}, false, errChatPeerCap
 		}
 	}
 	signed, err := c.signer.sign(ctx, peer, chatCapability, "", frame)
 	if err != nil {
-		return OutboundPacket{}, fmt.Errorf("servicebridge: sign the chat packet: %w", err)
+		return OutboundPacket{}, false, fmt.Errorf("servicebridge: sign the chat packet: %w", err)
 	}
 	encoded, err := agentpacket.EncodeJSON(signed)
 	if err != nil {
-		return OutboundPacket{}, errors.New("servicebridge: encode the chat packet")
+		return OutboundPacket{}, false, errors.New("servicebridge: encode the chat packet")
 	}
-	return OutboundPacket{RecipientAgentID: peer, JSON: encoded, IdempotencyKey: key, ExpiresAtUnix: expires}, nil
+	return OutboundPacket{RecipientAgentID: peer, JSON: encoded, IdempotencyKey: key, ExpiresAtUnix: expires},
+		false, nil
 }
 
 // Deliver implements carrierapi.Handler; the daemon serves it, not this side.
@@ -477,7 +537,9 @@ func (c *ChatCarrier) refreshGone(ctx context.Context, peer string, stored []sto
 		}
 	}
 	for _, envelope := range stored {
-		held := len(envelope.Relays) == 0
+		// An envelope with a deposit still due at some relay of its card may
+		// be stored there later: it is never taken for gone.
+		held := len(envelope.Relays) == 0 || envelope.Pending
 		for _, relay := range envelope.Relays {
 			ids := listed[relay]
 			if ids == nil || ids[envelope.EnvelopeID] {
@@ -682,17 +744,22 @@ func (c *ChatCarrier) sendAck(ctx context.Context, peer string, nonce [32]byte, 
 	key := chatAckKey(nonce)
 	unlock := c.lockPeer(peer)
 	defer unlock()
-	packet, err := c.prepare(ctx, peer, key, ack, saturatingAdd(now, uint64(PacketLifetime/time.Second)))
+	packet, accepted, err := c.prepare(ctx, peer, key, ack,
+		saturatingAdd(now, uint64(PacketLifetime/time.Second)))
 	switch {
 	case err == nil:
-	case errors.Is(err, errChatNoCard), errors.Is(err, errChatPeerCap), errors.Is(err, errChatWrongPeer):
+	case errors.Is(err, errChatNoCard), errors.Is(err, errChatPeerCap), errors.Is(err, errChatWrongPeer),
+		errors.Is(err, ErrRelayWithdrawn):
 		return fmt.Errorf("%w: %w", errChatPermanent, err)
 	default:
 		return err
 	}
+	if accepted {
+		return nil
+	}
 	if err := c.Transport.Send(ctx, packet); err != nil {
 		if errors.Is(err, ErrNoPacketRoute) || errors.Is(err, ErrRelayPacketTooLarge) ||
-			errors.Is(err, ErrRelayWithdrawn) || errors.Is(err, ErrGenerationExpired) {
+			errors.Is(err, ErrRelayWithdrawn) {
 			return fmt.Errorf("%w: %w", errChatPermanent, err)
 		}
 		return err
@@ -777,7 +844,7 @@ func (c *ChatCarrier) ListenCarrier(socket string) (func(context.Context) error,
 }
 
 func (c *ChatCarrier) serveListener(ctx context.Context, listener net.Listener, socket string) error {
-	server, err := carrierapi.NewServer(c, 0)
+	server, err := carrierapi.NewServer(c, c.timeout)
 	if err != nil {
 		_ = listener.Close()
 		return err

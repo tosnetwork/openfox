@@ -31,9 +31,9 @@ import (
 // through a chain RPC client, which these tests have no chain for. The
 // stand-in below speaks the daemon's half of the carrier boundary over real
 // carrierapi sockets with the real relayframe codecs and Ed25519 delivery
-// acks, and makes the daemon's admission decision from an allow-list. What
-// the daemon itself decides (CheckPeer, sessions, ratchets) is the ai
-// repository's own test suite.
+// acks, and makes the daemon's admission decision from an allow-list. The
+// daemon's own checks (admission, evidence, sessions, ratchets) are outside
+// this suite.
 
 // chatMessengerText marks every copy's ciphertext, so its absence from the
 // relays' bytes shows they never held a frame in clear.
@@ -340,6 +340,16 @@ func openChatTestNode(t *testing.T, dir string, clock *relayClock, agent string,
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(sockets) })
+	return openChatTestNodeIn(t, dir, sockets, clock, agent, agents, relays...)
+}
+
+// openChatTestNodeIn opens a node whose sockets live in a given private
+// directory, which the caller cleans up.
+func openChatTestNodeIn(t *testing.T, dir, sockets string, clock *relayClock, agent string,
+	agents *switchableAgents, relays ...string,
+) *chatTestNode {
+	t.Helper()
+	var err error
 	node := &chatTestNode{
 		t: t, agent: agent, dir: dir, clock: clock, agents: &countingAgents{next: agents},
 		relays: relays, sockets: sockets,

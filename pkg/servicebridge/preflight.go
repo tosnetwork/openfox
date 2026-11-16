@@ -318,6 +318,7 @@ func RunPreflight(ctx context.Context, configPath string, env PreflightEnv) *Pre
 	p.checkChain()
 	p.checkSigners()
 	p.checkRelay()
+	p.checkChat()
 	return p.report
 }
 

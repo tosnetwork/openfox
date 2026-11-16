@@ -280,11 +280,25 @@ func relayTrustOf(config NodeConfig, base string) string {
 	switch {
 	case strings.HasPrefix(base, "http://"):
 		return RelayTrustLoopback
-	case config.RelayCAFile != "" && slices.Contains(config.RelayURLs, base):
+	case config.RelayCAFile != "" && slices.Contains(ownRelayURLs(config), base):
 		return RelayTrustPinned
 	default:
 		return RelayTrustSystem
 	}
+}
+
+// ownRelayURLs is every relay this node's own cards name: the rail relays
+// and the chat relays. The pinned CA file applies to all of them.
+func ownRelayURLs(config NodeConfig) []string {
+	own := append([]string(nil), config.RelayURLs...)
+	if config.Chat != nil {
+		for _, relay := range config.Chat.RelayURLs {
+			if !slices.Contains(own, relay) {
+				own = append(own, relay)
+			}
+		}
+	}
+	return own
 }
 
 // relayDialerFor opens the relay clients of a configuration. With a
@@ -300,7 +314,7 @@ func relayDialerFor(config NodeConfig) (relayDialer, error) {
 		return dialRelay, nil
 	}
 	transport := pinnedRelayTransport(pinned.pool)
-	own := append([]string(nil), config.RelayURLs...)
+	own := ownRelayURLs(config)
 	return func(base string) (relayAPI, error) {
 		if !slices.Contains(own, base) || !strings.HasPrefix(base, "https://") {
 			return dialRelay(base)

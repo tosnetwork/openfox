@@ -801,6 +801,79 @@ hash), and its message bound is that of the acknowledgement. Both are inside the
 and, over the relay, inside the encryption. Both headers are decoded
 strictly, so a decoder that predates a member refuses a message carrying it.
 
+### Private chat over the relays (Messenger relay carriage)
+
+A node with a `chat` section carries the local Messenger daemon's one-to-one
+chat across hosts through the same relays (`MESSENGER_RELAY_CARRIAGE_V1.md`
+milestone M-R1). The daemon runs with `"transport": "agent-packet-relay"` and
+`contact-files` discovery (see the Messenger `docs/RUNNING.md`); OpenFox signs,
+seals and deposits each relay frame and hands every received frame back to the
+daemon. OpenFox never sees chat plaintext, Messenger keys or session state.
+
+- **Own chat key and card.** The chat lane has its own X-Wing keys
+  (`state_dir/relay/chat-keys`, key files of schema
+  `tos.openfox.relay-chat-key.v1`), its own peer-card store
+  (`relay/chat-peers`) and its own envelope journal (`relay/chat-outbox`). No
+  key serves both lanes: a rail key file is refused in the chat directory and
+  the reverse, and a node holding one key id in both refuses to start.
+- **Purpose at the key.** An envelope that opens under a chat key must be a
+  chat packet (to this Agent, from another Agent, the zero Capability, no
+  Quote, a relay frame as payload); one that opens under a rail key must carry
+  an `OFR1` rail frame. Anything else is refused and relay-acknowledged before
+  any finalized-state read, daemon call or write.
+- **Cards only for admitted peers.** A peer's chat card is stored only when
+  the daemon admitted the frame that carried it (`accepted`, `duplicate` or
+  `held`, or `admitted` for an evidence frame), when it rides an ack that
+  settled one of this node's copies, or from an imported contact file. A
+  refused stranger's card is never stored.
+- **Carriage.** `serve` answers `carrier.carry` on `chat.carrier_socket`:
+  `carried` only once one relay of the peer's chat card accepted the envelope
+  journaled under the daemon's idempotency key (a retry of that key resends
+  the journaled envelope, or answers at once when a relay already took it),
+  `no-peer-card` without a valid chat card of the peer, `peer-cap` when this
+  node already keeps 24 chat envelopes for that peer (copies, every
+  generation not yet withdrawn, evidence frames and its own delivery acks;
+  envelopes the peer's mailbox listing no longer shows are not counted), and
+  `retry` for anything that may pass later. When generation N+1 is accepted,
+  generation N is withdrawn at every relay that may hold it, journaled and
+  retried like the withdrawal after a card revocation; a withdrawn key is
+  never deposited again. Chat packets may use the full sealed packet bound;
+  rail packets keep 128 KiB.
+- **Receiving.** The one poll loop lists every rail and chat relay and
+  dispatches by key id. A chat frame goes to the daemon's
+  `carrier.deliver` or `carrier.delivery-ack` on
+  `chat.messenger_carrier_socket`; the kind-2 frame the daemon returns for a
+  copy is sent back to the sender. `retry`, an unreachable daemon socket and
+  unavailable finalized state leave the envelope at the relay; every other
+  outcome, refusals included, is relay-acknowledged.
+- **No Messenger packet transport.** A node with a `chat` section refuses to
+  start with `messenger_socket` set: rail packets never travel inside chat.
+
+Setup, with the Messenger daemon configured to the same paths:
+
+1. `init ... --relay-url <relay> --messenger-carrier-socket <daemon
+   listen_socket_path> [--chat-relay-url <relay>] [--chat-carrier-socket
+   <daemon carry_socket_path>] [--chat-card-path <daemon card_path>]
+   --messenger-evidence-dir <daemon evidence_export_dir>
+   --messenger-contact-dir <daemon contact_dir>`;
+2. `openfox earning chat init --rail-config <file>` issues the chat key and a
+   30-day card signed by the packet controller and writes it to the card
+   path (start the daemon only after this: it refuses a missing card);
+   `serve` republishes it while less than 15 days remain, and `chat
+   republish` does so on demand;
+3. once the daemon has published, `openfox earning chat contact export
+   --rail-config <file> --out <contact>` writes the contact file
+   (`tos.openfox.chat-contact.v1`, the daemon's `relay-contact.json` wrapped,
+   carrying the current card);
+4. the peer runs `openfox earning chat contact import --rail-config <file>
+   --file <contact>`: the card is verified against finalized state and
+   stored, and the relay contact goes to the daemon's contact directory,
+   where the daemon verifies and commits the evidence. Importing is the
+   owner's admission decision;
+5. `openfox earning chat status --rail-config <file>` shows the current chat
+   card, whether the card path holds it, the held chat cards and the chat
+   journal; `preflight` checks the section and the published card.
+
 ## Configuration
 
 `--rail-config` names an owner-only (`0600`) JSON file. `init` and `offer`

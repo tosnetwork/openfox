@@ -46,6 +46,7 @@ func NewCommand() *cobra.Command {
 		relayCommand(),
 		guarantorCommand(),
 		serviceCommand(),
+		chatCommand(),
 		modeCommand("pause", openfoxearning.OperationalPaused),
 		modeCommand(
 			"drain",

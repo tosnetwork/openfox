@@ -32,9 +32,12 @@ type RelayCarrier struct {
 	Cards     *PeerCards
 	Transport *RelayTransport
 	Inbound   *RelayInbound
-	stateDir  string
-	now       func() time.Time
-	report    func(string, error)
+	// Chat is the Messenger chat lane, nil without a chat section. It has
+	// its own keys, cards and journal and shares the pool and poll loop.
+	Chat     *ChatCarrier
+	stateDir string
+	now      func() time.Time
+	report   func(string, error)
 	// onRotate is given the current own card at every maintenance pass, so
 	// the provider's offer file always carries it.
 	onRotate func(context.Context, OwnRelayKey) error
@@ -51,6 +54,8 @@ type RelayCarrierConfig struct {
 	Dial     relayDialer
 	Now      func() time.Time
 	Report   func(string, error)
+	// Chat, when set, opens the chat lane.
+	Chat *chatLaneConfig
 }
 
 // OpenRelayCarrier opens the carrier's owner-private state.
@@ -82,10 +87,34 @@ func OpenRelayCarrier(config RelayCarrierConfig) (*RelayCarrier, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RelayCarrier{
+	carrier := &RelayCarrier{
 		Keys: keys, Cards: config.Cards, Transport: transport, Inbound: inbound, stateDir: config.StateDir,
 		now: config.Now, report: config.Report,
-	}, nil
+	}
+	if config.Chat != nil {
+		chat, err := openChatCarrier(root, config.AgentID, *config.Chat, config.Receiver.Verifier,
+			config.Receiver.Resolver, pool, config.Now, config.Report)
+		if err != nil {
+			return nil, err
+		}
+		if err := separateKeySets(keys, chat.Keys); err != nil {
+			return nil, err
+		}
+		carrier.Chat = chat
+		inbound.chat = chat
+	}
+	return carrier, nil
+}
+
+// separateKeySets refuses a rail and a chat key set that hold one key id:
+// no key serves two purposes.
+func separateKeySets(rail, chat *RelayKeys) error {
+	for _, key := range chat.Held() {
+		if _, held := rail.private(key.KeyID); held {
+			return errors.New("servicebridge: a chat key is also held as a rail key; no key serves both purposes")
+		}
+	}
+	return nil
 }
 
 // SetRotationHook registers what every maintenance pass hands the current
@@ -96,6 +125,11 @@ func (c *RelayCarrier) SetRotationHook(hook func(context.Context, OwnRelayKey) e
 
 // Maintain rotates and destroys keys and runs the rotation hook.
 func (c *RelayCarrier) Maintain(ctx context.Context) error {
+	if c.Chat != nil {
+		if err := c.Chat.Maintain(ctx); err != nil {
+			c.report("relay.chat.keys", err)
+		}
+	}
 	if _, err := c.Keys.Maintain(ctx); err != nil {
 		return err
 	}
@@ -135,6 +169,13 @@ func (c *RelayCarrier) Run(ctx context.Context) error {
 		if err := c.Transport.Redeposit(ctx); err != nil {
 			c.report("relay.redeposit", err)
 		}
+		var chatWake chan struct{}
+		if c.Chat != nil {
+			chatWake = c.Chat.Transport.wake
+			if err := c.Chat.Transport.Redeposit(ctx); err != nil {
+				c.report("relay.chat.redeposit", err)
+			}
+		}
 		if err := c.WriteStatus(); err != nil {
 			c.report("relay.status", err)
 		}
@@ -151,6 +192,9 @@ func (c *RelayCarrier) Run(ctx context.Context) error {
 			timer.Stop()
 			return ctx.Err()
 		case <-c.Transport.wake:
+			timer.Stop()
+		case <-chatWake:
+			// A nil channel (no chat lane) never fires.
 			timer.Stop()
 		case <-timer.C:
 		}
@@ -174,13 +218,15 @@ type RelayStatus struct {
 	Relays      []RelayPollState `json:"relays"`
 	Keys        []RelayKeyView   `json:"keys"`
 	PeerCards   []PeerCardView   `json:"peer_cards"`
+	// Chat is the chat lane's keys and peer cards, absent without one.
+	Chat *ChatStatus `json:"chat,omitempty"`
 }
 
 // WriteStatus records the poll state, the held keys and the peer cards.
 func (c *RelayCarrier) WriteStatus() error {
 	status := RelayStatus{
 		Schema: relayStatusSchema, UpdatedUnix: c.now().Unix(), Relays: c.Inbound.States(),
-		Keys: relayKeyViews(c.Keys.Held()), PeerCards: c.Cards.List(),
+		Keys: relayKeyViews(c.Keys.Held()), PeerCards: c.Cards.List(), Chat: c.Chat.status(),
 	}
 	encoded, err := json.Marshal(status)
 	if err != nil {
@@ -205,6 +251,8 @@ type RelayDeliveryReport struct {
 	Configured []string          `json:"configured_relays"`
 	Status     *RelayStatus      `json:"poller,omitempty"`
 	Outbox     []RelayOutboxView `json:"outbox"`
+	// ChatOutbox is the chat lane's envelope journal.
+	ChatOutbox []RelayOutboxView `json:"chat_outbox,omitempty"`
 }
 
 // ReadRelayDelivery reads the relay state of a node without taking it
@@ -236,5 +284,10 @@ func ReadRelayDelivery(stateDir string, configured []string) (*RelayDeliveryRepo
 	if outbox != nil {
 		report.Outbox = outbox
 	}
+	chatOutbox, err := ReadRelayOutbox(filepath.Join(root, relayChatOutboxDir))
+	if err != nil {
+		return nil, err
+	}
+	report.ChatOutbox = chatOutbox
 	return report, nil
 }

@@ -40,7 +40,13 @@ const (
 	maxRelayKeys = 16
 )
 
-const relayKeySchema = "tos.openfox.relay-key.v1"
+// Key file schemas. A key file names its purpose, so a chat key file
+// copied into the rail key directory (or the reverse) is refused at load:
+// no key ever serves both purposes.
+const (
+	relayKeySchema     = "tos.openfox.relay-key.v1"
+	relayChatKeySchema = "tos.openfox.relay-chat-key.v1"
+)
 
 // relayKeyRecord is one owner-only private key file. It is the only place
 // the seed exists outside process memory, and it is never logged.
@@ -87,14 +93,38 @@ type RelayKeys struct {
 	relays    []string
 	signer    cardSigner
 	now       func() time.Time
-	mutex     sync.Mutex
-	keys      []OwnRelayKey
+	// schema is the purpose of every key file here; empty is the rail's.
+	schema string
+	mutex  sync.Mutex
+	keys   []OwnRelayKey
+}
+
+// keySchema is the key file schema of this set's purpose.
+func (k *RelayKeys) keySchema() string {
+	if k.schema == "" {
+		return relayKeySchema
+	}
+	return k.schema
 }
 
 // OpenRelayKeys loads the held keys, refusing any file that is not exactly
 // a key of this Agent, and destroys keys past their retention.
 func OpenRelayKeys(directory, agentID string, relays []string, signer cardSigner,
 	now func() time.Time,
+) (*RelayKeys, error) {
+	return openRelayKeys(directory, agentID, relays, signer, now, relayKeySchema)
+}
+
+// OpenChatRelayKeys opens the chat key set: its own directory and its own
+// key file schema, never derived from or shared with the rail keys.
+func OpenChatRelayKeys(directory, agentID string, relays []string, signer cardSigner,
+	now func() time.Time,
+) (*RelayKeys, error) {
+	return openRelayKeys(directory, agentID, relays, signer, now, relayChatKeySchema)
+}
+
+func openRelayKeys(directory, agentID string, relays []string, signer cardSigner,
+	now func() time.Time, schema string,
 ) (*RelayKeys, error) {
 	if !cleanAbsolute(directory) || !agentIDPattern.MatchString(agentID) || signer == nil {
 		return nil, errors.New("servicebridge: invalid relay key configuration")
@@ -109,7 +139,9 @@ func OpenRelayKeys(directory, agentID string, relays []string, signer cardSigner
 	if err := ensurePrivateDirectory(directory); err != nil {
 		return nil, err
 	}
-	keys := &RelayKeys{directory: directory, agentID: agentID, relays: canonical, signer: signer, now: now}
+	keys := &RelayKeys{
+		directory: directory, agentID: agentID, relays: canonical, signer: signer, now: now, schema: schema,
+	}
 	if err := keys.load(); err != nil {
 		return nil, err
 	}
@@ -205,7 +237,7 @@ func (k *RelayKeys) readKey(path string) (OwnRelayKey, error) {
 	if err := readJSON(path, 64<<10, &record); err != nil {
 		return OwnRelayKey{}, err
 	}
-	if record.Schema != relayKeySchema || record.AgentID != k.agentID {
+	if record.Schema != k.keySchema() || record.AgentID != k.agentID {
 		return OwnRelayKey{}, errors.New("not a relay key of this Agent")
 	}
 	seed, err := base64.StdEncoding.Strict().DecodeString(record.SeedBase64)
@@ -422,7 +454,7 @@ func (k *RelayKeys) issueLocked(ctx context.Context, now, notAfter uint64) (OwnR
 		return OwnRelayKey{}, fmt.Errorf("servicebridge: sign the relay key card: %w", err)
 	}
 	record := relayKeyRecord{
-		Schema: relayKeySchema, AgentID: k.agentID, KeyID: agentpacketseal.KeyIDText(private.KeyID),
+		Schema: k.keySchema(), AgentID: k.agentID, KeyID: agentpacketseal.KeyIDText(private.KeyID),
 		SeedBase64: base64.StdEncoding.EncodeToString(seed), NotBeforeUnix: now, NotAfterUnix: notAfter,
 		Relays: card.Relays, CardPacketBase64: base64.StdEncoding.EncodeToString(cardJSON),
 	}

@@ -117,6 +117,12 @@ func (r *Receiver) acceptPacket(ctx context.Context, raw []byte) (InboxStatus, *
 	if packet.RecipientAgentID != r.LocalAgentID {
 		return 0, nil, false, errors.New("servicebridge: the packet names another recipient")
 	}
+	// Purpose is enforced before any verification or write: what reaches the
+	// rail (the rail key, the rail receiver socket) must be a rail frame. A
+	// chat relay frame here is refused for good.
+	if !isRailPayload(packet.Payload) {
+		return 0, nil, false, errors.New("servicebridge: the packet does not carry a rail frame")
+	}
 	now := time.Now
 	if r.Now != nil {
 		now = r.Now

@@ -59,6 +59,7 @@ func serviceInitCommand() *cobra.Command {
 	var windowSeconds int64
 	var maxOpen int
 	var gatewayURL, gatewayToken, gatewayCA, callerID string
+	var chat servicebridge.ChatConfig
 	command := &cobra.Command{
 		Use:   "init",
 		Short: "Establish this node's Agent identity and write its rail configuration",
@@ -111,6 +112,12 @@ func serviceInitCommand() *cobra.Command {
 				return errors.New("a buyer section needs at least one --allow-provider: the spending policy is an " +
 					"allow-list")
 			}
+			if chat.MessengerCarrierSocket != "" {
+				in.Chat = &chat
+			} else if len(chat.RelayURLs) > 0 || chat.CarrierSocket != "" || chat.CardPath != "" ||
+				chat.EvidenceExportDir != "" || chat.ContactDir != "" {
+				return errors.New("the chat section needs --messenger-carrier-socket")
+			}
 			result, err := servicebridge.RunInit(command.Context(), in, setupEnv(command))
 			if result == nil {
 				return err
@@ -162,6 +169,18 @@ func serviceInitCommand() *cobra.Command {
 	flags.StringVar(&gatewayToken, "gateway-token-file", "", "buyer: gateway bearer token file")
 	flags.StringVar(&gatewayCA, "gateway-ca-file", "", "buyer: gateway CA file")
 	flags.StringVar(&callerID, "caller-id", "", "buyer: caller id sent to the gateway")
+	flags.StringVar(&chat.MessengerCarrierSocket, "messenger-carrier-socket", "", "chat: the Messenger daemon's "+
+		"carrier socket (its relay_carriage.listen_socket_path); adds the chat carriage section")
+	flags.StringArrayVar(&chat.RelayURLs, "chat-relay-url", nil, "chat: relay base URL the chat card names and "+
+		"the node polls for chat (repeatable, at most 4; default: the --relay-url list)")
+	flags.StringVar(&chat.CarrierSocket, "chat-carrier-socket", "", "chat: socket this node serves carrier.carry "+
+		"on, the daemon's relay_carriage.carry_socket_path (default: <state-dir>/chat-carrier.sock)")
+	flags.StringVar(&chat.CardPath, "chat-card-path", "", "chat: where the current chat card is republished, "+
+		"the daemon's relay_carriage.card_path (default: <state-dir>/relay/chat-card.json)")
+	flags.StringVar(&chat.EvidenceExportDir, "messenger-evidence-dir", "", "chat: the daemon's "+
+		"relay_carriage.evidence_export_dir, read by chat contact export")
+	flags.StringVar(&chat.ContactDir, "messenger-contact-dir", "", "chat: the daemon's discovery.contact_dir, "+
+		"written by chat contact import")
 	flags.BoolVar(&in.Yes, "yes", false, "create the controller, sign and send as previewed")
 	for _, name := range []string{
 		"rail-config", "state-dir", "rpc", "global-config", "network-label", "tosctl", "tosctl-config", "wallet",

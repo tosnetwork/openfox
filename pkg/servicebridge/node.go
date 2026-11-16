@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tosnetwork/ai/execution/pkg/railgate"
+	"github.com/tosnetwork/ai/messenger/pkg/carrierapi"
 	"github.com/tosnetwork/ai/messenger/pkg/localapi"
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/ai/protocol/pkg/buyersdk"
@@ -68,6 +69,9 @@ type NodeConfig struct {
 	Provider       *ProviderNode   `json:"provider,omitempty"`
 	Buyer          *BuyerNode      `json:"buyer,omitempty"`
 	MaxAssemblies  *AssemblyBounds `json:"max_assemblies,omitempty"`
+	// Chat carries the local Messenger daemon's private chat over the
+	// relays, with its own key, card and journal.
+	Chat *ChatConfig `json:"chat,omitempty"`
 }
 
 // NetworkConfig is the network domain.
@@ -187,8 +191,11 @@ type NodeOptions struct {
 	ExecutorService ExecutorService
 	// RelayDial replaces the relay HTTP client, for tests.
 	RelayDial relayDialer
-	Report    func(stage string, err error)
-	Now       func() time.Time
+	// ChatDaemon replaces the client of the Messenger carrier socket, for
+	// tests.
+	ChatDaemon chatDaemon
+	Report     func(stage string, err error)
+	Now        func() time.Time
 }
 
 // Node is one assembled rail node.
@@ -331,8 +338,11 @@ func newMessengerClient(socket string) (*localapi.Client, error) {
 
 // OpenNode validates the configuration and assembles the node.
 func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Node, error) {
-	if config.Provider == nil && config.Buyer == nil {
-		return nil, errors.New("servicebridge: the rail node needs a provider or a buyer section")
+	if config.Provider == nil && config.Buyer == nil && config.Chat == nil {
+		return nil, errors.New("servicebridge: the node needs a provider, a buyer or a chat section")
+	}
+	if err := validateChatConfig(config); err != nil {
+		return nil, err
 	}
 	if !filepath.IsAbs(config.StateDir) || filepath.Clean(config.StateDir) != config.StateDir {
 		return nil, errors.New("servicebridge: state_dir must be absolute and clean")
@@ -413,11 +423,15 @@ func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Nod
 			return fail(err)
 		}
 	}
-	node.Service, err = NewService(node.Inbox, node.Provider, node.Buyer, options.Report)
-	if err != nil {
-		return fail(err)
+	node.Receiver.Inbox = node.Inbox
+	if config.Provider != nil || config.Buyer != nil {
+		// A chat-only node has no rail role and runs no service loop.
+		node.Service, err = NewService(node.Inbox, node.Provider, node.Buyer, options.Report)
+		if err != nil {
+			return fail(err)
+		}
+		node.Receiver.Notify = node.Service.Notify
 	}
-	node.Receiver.Inbox, node.Receiver.Notify = node.Inbox, node.Service.Notify
 	if node.Relay != nil && config.Provider != nil && config.Provider.OfferFile != "" {
 		node.Relay.SetRotationHook(node.republishOffer)
 	}
@@ -449,9 +463,25 @@ func (n *Node) openRelay(signer *PacketSigner, agents FinalizedAgents, options N
 			return err
 		}
 	}
+	var chat *chatLaneConfig
+	if n.Config.Chat != nil {
+		relays, relaysErr := chatRelays(n.Config)
+		if relaysErr != nil {
+			return relaysErr
+		}
+		daemon := options.ChatDaemon
+		if daemon == nil {
+			client, clientErr := carrierapi.NewClient(n.Config.Chat.MessengerCarrierSocket, 0)
+			if clientErr != nil {
+				return fmt.Errorf("servicebridge: the Messenger carrier socket: %w", clientErr)
+			}
+			daemon = client
+		}
+		chat = &chatLaneConfig{Relays: relays, CardPath: n.Config.Chat.CardPath, Signer: signer, Daemon: daemon}
+	}
 	carrier, err := OpenRelayCarrier(RelayCarrierConfig{
 		StateDir: n.Config.StateDir, AgentID: n.Config.AgentID, Relays: n.Config.RelayURLs, Signer: signer,
-		Cards: cards, Receiver: n.Receiver, Dial: dial, Now: options.Now, Report: report,
+		Cards: cards, Receiver: n.Receiver, Dial: dial, Now: options.Now, Report: report, Chat: chat,
 	})
 	if err != nil {
 		return err

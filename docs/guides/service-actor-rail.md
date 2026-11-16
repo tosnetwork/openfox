@@ -734,14 +734,48 @@ offer file may still hand out an older card of the same owner: it is accepted
 as long as it is valid, and of the valid cards the newest is used.
 
 **Revoking a card.** Publishing a new card does not revoke the old one: until
-its expiry a stale offer file can keep handing it out. Cards are signed by the
-packet controller, so the only early revocation is removing the packet
-controller from the Agent's finalized policy, which makes every card it signed
-unusable within minutes of the next verification **and also stops every packet
-the node sends** until a new packet controller is registered and `init` is run
-for it. Do this when a node's state directory (and so its HPKE keys) may have
-been exposed. A compromised offer-card key stays sealable for up to 30 days,
-the offer card's lifetime, unless the controller that signed it is removed.
+its expiry a stale offer file can keep handing it out. A compromised offer-card
+key stays sealable for up to 30 days, the offer card's lifetime, unless the
+controller that signed it is removed. Cards are signed by the packet
+controller, so the only early revocation is replacing the packet controller in
+the Agent's finalized policy. Do this when a node's state directory (and so its
+HPKE keys) may have been exposed. The procedure:
+
+1. create a new controller in the vault (`tosctl agent native-registry
+   new-controller --name <new>`);
+2. send `tosctl agent native-registry action --kind update-policy` with a next
+   policy that holds the new controller in place of the old one, signed by the
+   current packet controller (the only Agent-control signer) and with
+   possession signed by every controller of the next policy (`--counter-signer
+   <new>`), from the owner wallet, and wait until it is finalized;
+3. re-establish the node with `init` against a **new** state directory and
+   `--packet-controller <new>`, keeping the rail configuration that names the
+   Agent: `init` adopts that Agent ID instead of registering one. `init` on the
+   existing state directory refuses another packet controller once the
+   registration was sent (`ErrSetupInputChanged`, see above): rotating the
+   packet controller in place is not supported yet (see the known limits
+   below).
+
+What it costs:
+
+- every rail, offer, chat and contact card the old key signed stops working
+  within minutes of the next verification: republish the offer file (a
+  provider runs `offer` again from the new state directory), and peers need
+  new chat contact files;
+- packets already journaled and signed by the old key never verify again, so
+  open rail deliveries fail (their requests end through the timeout refund);
+- the new state directory starts without the old one's courier, envelope and
+  purchase journals, inbox and relay keys; the old directory is kept for
+  reference, not run;
+- if the ML-DSA-44 key itself is compromised, the attacker holds the only
+  Agent-control and recovery weight and can race the policy update or start a
+  recovery: that is total identity compromise, as the relay specification
+  (section 11) states, not a card revocation;
+- the attestor controller is separate and is not affected.
+
+**Known limits.** Rotating the packet controller of an established node in
+place (keeping its state directory, journals and keys) is not supported; it is
+a follow-up.
 **Withdrawing envelopes sealed to a revoked card.** The envelope journal
 keeps each envelope's acknowledgement secret and the signed packet (as the
 courier outbox already does), owner-only; neither is ever logged or placed in
@@ -903,8 +937,8 @@ daemon. OpenFox never sees chat plaintext, Messenger keys or session state.
   the same vault it would add an impersonation key while isolating little.
   A dedicated card controller becomes worthwhile only after a protocol change
   makes verifiers check a card-signing purpose. Until then, revoking a chat
-  card early means removing the packet controller, which also stops the
-  node's packets (see "Revoking a card" above).
+  card early means replacing the packet controller, with the procedure and
+  costs under "Revoking a card" above.
 
 Setup, with the Messenger daemon configured to the same paths:
 

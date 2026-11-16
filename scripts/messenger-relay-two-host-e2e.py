@@ -193,8 +193,12 @@ def in_ns(name: str, argv: list, label: str, *, check: bool = True, timeout: flo
 
 def spawn(name: str, key: str, argv: list, label: str, env: dict | None = None) -> subprocess.Popen:
     log = (WORK / f"{key}.log").open("ab")
+    # Its own session: the thermal guard pauses and resumes the run's process
+    # group, and its SIGCONT must not resume a node process this run paused
+    # on purpose (the crash windows). Every namespace process is still ended
+    # by the namespace teardown, also after an interrupt.
     process = subprocess.Popen(ns_argv(name, argv, label), stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                               env=env or dict(os.environ))
+                               env=env or dict(os.environ), start_new_session=True)
     PROCESSES[key] = process
     return process
 
@@ -888,7 +892,10 @@ async def main() -> int:
                         "incoming connection; relay namespaces: incoming only to port %d, no outgoing connection; "
                         "host bridge table: every node-to-node frame dropped" % (RELAY_PORT, RELAY_PORT),
             "files": "each namespace process runs with empty read-only tmpfs mounts over the other parties' "
-                     "directories and the run's private files"},
+                     "directories and the run's private files",
+            "thermal_guard": "pauses and resumes the run and the validators (their process group); the node, relay "
+                             "and forwarder processes run in their own sessions, so a guard resume never continues a "
+                             "process the run paused for a crash window"},
         "network_label": fd.NETWORK_LABEL,
         "not_openfox": [
             "booting the three-validator network (tostester)",

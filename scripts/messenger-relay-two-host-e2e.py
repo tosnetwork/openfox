@@ -812,10 +812,15 @@ def setup() -> None:
 
 def finish() -> None:
     for node in NODES:
-        if f"serve-{node}" in PROCESSES:
-            stop_serve(node)
-        if f"messengerd-{node}" in PROCESSES:
-            stop_daemon(node)
+        for key, stop in ((f"serve-{node}", stop_serve), (f"messengerd-{node}", stop_daemon)):
+            if key in PROCESSES:
+                continue_wrapper(key)
+                try:
+                    stop(node)
+                except (subprocess.TimeoutExpired, OSError) as error:
+                    record(f"teardown: {key} stopped", False, fd.redact(str(error))[-300:])
+    for key in list(PROCESSES):
+        continue_wrapper(key)
     for name, process in list(PROCESSES.items()):
         if process.poll() is None:
             process.terminate()

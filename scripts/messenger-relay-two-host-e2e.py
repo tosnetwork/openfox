@@ -1527,13 +1527,25 @@ def evidence_pull() -> None:
          {"wait_seconds": deadline - now()})
     while now() < deadline:
         time.sleep(min(60, max(1, deadline - now())))
+    # A returns first, while B is still offline: its copy is due for a
+    # re-deposit, B's stored evidence fails CheckPeer, so the copy is held
+    # pending and one kind-4 request carrying A's fresh evidence and card is
+    # deposited for B.
+    start_node("a", "with B's evidence expired")
+    requested = poll(lambda: [f for f in frames_of("a") if f["frame"].get("kind") == 4 and
+                              f["frame"].get("evidence_object") == "request" and
+                              f["packet"]["created_at_unix"] >= RUN["stale_window"]["start"]], REDEPOSIT + 300, 5)
+    held = delivery_of("a", m)
+    gate("5", "with B's evidence expired, A seals and deposits no new generation of its copy: it holds it pending "
+         "and deposits one kind-4 evidence request for B instead",
+         bool(requested) and len(held.get("relay_generations") or []) == 1,
+         {"state": held.get("state"), "generations": len(held.get("relay_generations") or [])})
     start_node("b", "with A's evidence expired")
     expired = poll(lambda: [row for row in copy_frames("b", m, kind=2)
-                            if row["frame"].get("ack_code") == "descriptor-expired"], 180, 2)
-    gate("5", "descriptor expiry: B receives the retained copy whose evidence expired and answers a signed "
-         "`rejected` ack with descriptor-expired (A is admitted), while B's own view of A is stale",
+                            if row["frame"].get("ack_code") == "descriptor-expired"], 420, 2)
+    gate("5", "descriptor expiry: B receives the retained copy whose frame evidence expired and answers a signed "
+         "`rejected` ack with descriptor-expired (A is admitted); the copy does not reach B's runtime",
          bool(expired) and m not in inbound_texts("b"), [row["frame"].get("ack_outcome") for row in expired or []])
-    start_node("a", "with B's evidence expired")
     done = wait_delivered("a", m, timeout=600)
     row = delivery_of("a", m)
     window = (RUN["stale_window"]["start"], now())

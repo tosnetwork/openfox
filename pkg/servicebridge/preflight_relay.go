@@ -104,6 +104,59 @@ func (p *preflight) checkRelay() {
 	p.checkPeerCards(verifier, agents)
 }
 
+// checkChat checks the chat carriage section: its configuration, a current
+// chat card that verifies against finalized state, and that the daemon's
+// card path holds exactly that card. It writes and signs nothing.
+func (p *preflight) checkChat() {
+	if p.config.Chat == nil {
+		return
+	}
+	if err := validateChatConfig(p.config); err != nil {
+		p.addf("chat.config", CheckFail, "%v", err)
+		return
+	}
+	relays, err := chatRelays(p.config)
+	if err != nil {
+		p.addf("chat.config", CheckFail, "%v", err)
+		return
+	}
+	p.addf("chat.config", CheckPass, "chat relays %s; carrier socket %s; Messenger carrier socket %s; the "+
+		"Messenger packet transport is not configured", strings.Join(relays, ", "), p.config.Chat.CarrierSocket,
+		p.config.Chat.MessengerCarrierSocket)
+	key, published, err := heldChatCard(p.config, p.env.Now())
+	if err != nil {
+		p.addf("chat.card", CheckFail, "%v", err)
+		return
+	}
+	if !published {
+		p.addf("chat.card", CheckFail, "the card path %s does not hold the current chat card %s; run `openfox "+
+			"earning chat republish`", p.config.Chat.CardPath, agentpacketseal.KeyIDText(key.KeyID))
+		return
+	}
+	if !p.requires("chat.card", "chain.finalized", "tosctl.pin") {
+		return
+	}
+	verifier, err := p.env.PacketVerifier(p.config)
+	if err != nil {
+		p.addf("chat.card", CheckFail, "open the tosctl verifier: %v", err)
+		return
+	}
+	packet, err := agentpacket.DecodeJSON(key.CardJSON)
+	if err == nil {
+		_, _, err = agentpacketseal.VerifyKeyCard(p.ctx, verifier, sessionAgents{ctx: p.ctx, session: p.session},
+			packet, p.env.Now())
+	}
+	if err != nil {
+		p.addf("chat.card", CheckFail, "the chat card %s does not verify against finalized checkpoint %d: %v",
+			agentpacketseal.KeyIDText(key.KeyID), p.session.Checkpoint(), err)
+		return
+	}
+	p.addf("chat.card", CheckPass, "the chat card %s, valid until %s, is published at %s and verifies against "+
+		"finalized checkpoint %d", agentpacketseal.KeyIDText(key.KeyID),
+		time.Unix(int64(key.NotAfterUnix), 0).UTC().Format(time.RFC3339), p.config.Chat.CardPath,
+		p.session.Checkpoint())
+}
+
 // relayCAExpiryWarning is how close to its expiry a pinned certificate
 // makes the trust check warn.
 const relayCAExpiryWarning = 30 * 24 * time.Hour

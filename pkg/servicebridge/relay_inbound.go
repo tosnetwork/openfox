@@ -71,8 +71,11 @@ type RelayPollState struct {
 // (or the packet inside it was refused for good), at every relay that
 // listed it.
 type RelayInbound struct {
-	agentID  string
-	keys     *RelayKeys
+	agentID string
+	keys    *RelayKeys
+	// chat, when set, is the chat lane: an envelope sealed to one of its
+	// keys is handed to it, never to the receiver.
+	chat     *ChatCarrier
 	receiver *Receiver
 	pool     *relayPool
 	now      func() time.Time
@@ -110,7 +113,7 @@ func NewRelayInbound(agentID string, keys *RelayKeys, receiver *Receiver, pool *
 // Due polls every relay whose pause has passed and returns when the next
 // one is due.
 func (r *RelayInbound) Due(ctx context.Context) time.Time {
-	relays := r.keys.PollRelays()
+	relays := r.pollRelays()
 	now := r.now()
 	r.mutex.Lock()
 	for relay := range r.state {
@@ -140,6 +143,34 @@ func (r *RelayInbound) Due(ctx context.Context) time.Time {
 		r.mutex.Unlock()
 	}
 	return next
+}
+
+// pollRelays is every relay of the rail and the chat keys, each once: one
+// listing of a relay serves both lanes.
+func (r *RelayInbound) pollRelays() []string {
+	relays := r.keys.PollRelays()
+	if r.chat == nil {
+		return relays
+	}
+	for _, relay := range r.chat.Keys.PollRelays() {
+		if !containsString(relays, relay) {
+			relays = append(relays, relay)
+		}
+	}
+	sort.Strings(relays)
+	return relays
+}
+
+// heldKey reports whether a key id is held by the rail lane or the chat lane.
+func (r *RelayInbound) heldKey(keyID [agentpacketseal.KeyIDSize]byte) bool {
+	if _, held := r.keys.private(keyID); held {
+		return true
+	}
+	if r.chat == nil {
+		return false
+	}
+	_, held := r.chat.Keys.private(keyID)
+	return held
 }
 
 // Poll lists one relay once and processes what it lists.
@@ -289,7 +320,7 @@ func (r *RelayInbound) process(ctx context.Context, client relayAPI, relay strin
 	if r.remembered(key) {
 		return ""
 	}
-	if _, held := r.keys.private(entry.RecipientKeyID); !held {
+	if !r.heldKey(entry.RecipientKeyID) {
 		// The listing names a key this node does not hold (never issued or
 		// destroyed): it cannot be opened or deleted and is left to expire.
 		r.remember(key, entry.ExpiresAtUnix)
@@ -312,12 +343,23 @@ func (r *RelayInbound) process(ctx context.Context, client relayAPI, relay strin
 		r.remember(key, entry.ExpiresAtUnix)
 		return ""
 	}
-	opened, ok := r.open(raw, entry.EnvelopeID)
+	opened, chat, ok := r.open(raw, entry.EnvelopeID)
 	if !ok {
 		r.remember(key, entry.ExpiresAtUnix)
 		r.remember(bytesMemoryKey(raw), entry.ExpiresAtUnix)
 		return ""
 	}
+	if chat {
+		// Opened under a chat key: it must carry a relay frame and goes to
+		// the chat lane only. The lane leaves it listed only for a retry or
+		// an unavailable finalized state or daemon.
+		if !r.chat.receive(ctx, opened.PacketJSON) {
+			return ""
+		}
+		return r.ackAt(ctx, client, relay, entry.EnvelopeID, r.settle(opened))
+	}
+	// Opened under a rail key: acceptPacket refuses anything but a rail
+	// frame before it verifies or stores anything.
 	status, message, transient, err := r.receiver.acceptPacket(ctx, opened.PacketJSON)
 	if err != nil && transient {
 		// Finalized state or the inbox was unavailable: not acknowledged,
@@ -340,20 +382,29 @@ func (r *RelayInbound) process(ctx context.Context, client relayAPI, relay strin
 
 // open runs the first three recipient steps. A failure at any of them is
 // the envelope's: it is remembered and never acknowledged.
-func (r *RelayInbound) open(raw []byte, listed [32]byte) (agentpacketseal.Opened, bool) {
+//
+// It also reports which lane's key opened it: chat is true for a chat key.
+// The key id in the header picks the key, so the lane is decided by the key
+// the envelope was sealed to and by nothing inside it.
+func (r *RelayInbound) open(raw []byte, listed [32]byte) (agentpacketseal.Opened, bool, bool) {
 	header, err := agentpacketseal.ParseEnvelope(raw)
 	if err != nil || header.RecipientAgentID != r.agentID || header.EnvelopeID != listed {
-		return agentpacketseal.Opened{}, false
+		return agentpacketseal.Opened{}, false, false
 	}
+	chat := false
 	private, held := r.keys.private(header.RecipientKeyID)
+	if !held && r.chat != nil {
+		private, held = r.chat.Keys.private(header.RecipientKeyID)
+		chat = held
+	}
 	if !held {
-		return agentpacketseal.Opened{}, false
+		return agentpacketseal.Opened{}, false, false
 	}
 	opened, err := agentpacketseal.Open(private, raw)
 	if err != nil || opened.Header.EnvelopeID != listed {
-		return agentpacketseal.Opened{}, false
+		return agentpacketseal.Opened{}, false, false
 	}
-	return opened, true
+	return opened, chat, true
 }
 
 func (r *RelayInbound) settledFor(id [32]byte) *settledEnvelope {

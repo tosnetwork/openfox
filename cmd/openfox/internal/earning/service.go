@@ -148,8 +148,23 @@ func serviceServeCommand() *cobra.Command {
 			served := make(chan error, 1)
 			go func() { served <- server.Serve() }()
 			relayed := make(chan error, 1)
+			carried := make(chan error, 1)
 			relayCtx, stopRelay := context.WithCancel(ctx)
 			defer stopRelay()
+			if node.Relay != nil && node.Relay.Chat != nil {
+				// The chat carrier socket the Messenger daemon deposits
+				// through; it is opened before anything runs, so a socket
+				// that cannot be served stops the node.
+				serveCarrier, listenErr := node.Relay.Chat.ListenCarrier(node.Config.Chat.CarrierSocket)
+				if listenErr != nil {
+					shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					return errors.Join(listenErr, server.Shutdown(shutdown))
+				}
+				go func() { carried <- serveCarrier(relayCtx) }()
+			} else {
+				carried <- nil
+			}
 			if node.Relay != nil {
 				// The relay carrier polls the node's relays, keeps redundant
 				// deposits going and rotates the node's encryption keys.
@@ -157,10 +172,20 @@ func serviceServeCommand() *cobra.Command {
 			} else {
 				relayed <- nil
 			}
-			runErr := node.Service.Run(ctx, 5*time.Second)
+			var runErr error
+			if node.Service != nil {
+				runErr = node.Service.Run(ctx, 5*time.Second)
+			} else {
+				// A chat-only node has no rail duties: it relays until stopped.
+				<-ctx.Done()
+				runErr = ctx.Err()
+			}
 			stopRelay()
 			if relayErr := <-relayed; relayErr != nil && !errors.Is(relayErr, context.Canceled) {
 				runErr = errors.Join(runErr, relayErr)
+			}
+			if carryErr := <-carried; carryErr != nil && !errors.Is(carryErr, context.Canceled) {
+				runErr = errors.Join(runErr, carryErr)
 			}
 			shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()

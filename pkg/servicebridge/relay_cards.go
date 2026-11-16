@@ -115,8 +115,12 @@ type PeerCards struct {
 	// allows it; otherwise a verified peer could make this node send
 	// requests to services on its own host.
 	loopback bool
-	mutex    sync.Mutex
-	cards    map[string][]*peerCard
+	// dropRemoved makes a reload forget held cards whose files are gone:
+	// the chat store, whose contacts the owner may remove while `serve`
+	// runs.
+	dropRemoved bool
+	mutex       sync.Mutex
+	cards       map[string][]*peerCard
 }
 
 // AllowLoopbackRelays sets whether peer cards may name loopback relays.
@@ -458,6 +462,13 @@ func (p *PeerCards) Has(agentID string) bool {
 		}
 		return false
 	}
+	if p.dropRemoved {
+		// A removed contact must not count as held from memory.
+		if err := p.reloadLocked(); err != nil {
+			return false
+		}
+		return held()
+	}
 	if held() {
 		return true
 	}
@@ -480,6 +491,27 @@ func (p *PeerCards) reloadLocked() error {
 	stored, err := readPeerCards(p.directory)
 	if err != nil {
 		return err
+	}
+	if p.dropRemoved {
+		// A card whose file another process removed (`chat contact remove`)
+		// is no longer sealed to here either.
+		files := make(map[string]bool, len(stored))
+		for _, card := range stored {
+			files[peerCardFile(card)] = true
+		}
+		for agent, list := range p.cards {
+			kept := list[:0]
+			for _, held := range list {
+				if files[peerCardFile(held)] {
+					kept = append(kept, held)
+				}
+			}
+			if len(kept) == 0 {
+				delete(p.cards, agent)
+			} else {
+				p.cards[agent] = kept
+			}
+		}
 	}
 	for _, card := range stored {
 		known := false

@@ -49,6 +49,9 @@ var (
 		"was sealed again under a new envelope id for the next attempt")
 	// ErrRelayPacketTooLarge reports a packet beyond the receiver's bound.
 	ErrRelayPacketTooLarge = errors.New("servicebridge: the packet exceeds the relay receiver's bound")
+	// ErrRelayWithdrawn reports a send under an idempotency key whose
+	// envelope was withdrawn: that packet is never deposited again.
+	ErrRelayWithdrawn = errors.New("servicebridge: the envelope of this idempotency key was withdrawn")
 )
 
 const relayOutboxSchema = "tos.openfox.relay-outbox.v1"
@@ -97,6 +100,10 @@ type relayOutboxRecord struct {
 	// Withdrawals are earlier envelopes of this packet, sealed to a card
 	// revoked after relays took them, still to be withdrawn.
 	Withdrawals []relayWithdrawal `json:"withdrawals,omitempty"`
+	// Withdrawn marks a packet its sender superseded (a later generation
+	// was accepted): its envelopes are withdrawn and it is never sealed or
+	// deposited again.
+	Withdrawn bool `json:"withdrawn,omitempty"`
 }
 
 // relayWithdrawal is one envelope to withdraw with its acknowledgement
@@ -197,6 +204,9 @@ var relayOutboxFilePattern = regexp.MustCompile(`^[0-9a-f]{64}\.json$`)
 // the size and the timing, never the packet.
 type RelayTransport struct {
 	directory string
+	// maxPacket bounds the packet JSON this instance seals: the rail keeps
+	// the receiver's bound, chat carriage the sealed packet bound.
+	maxPacket int
 	cards     *PeerCards
 	pool      *relayPool
 	now       func() time.Time
@@ -212,6 +222,9 @@ type RelayTransport struct {
 	// a replacement, before any request it leads to; tests kill the
 	// process there.
 	afterJournal func()
+	// afterDeposit runs once a relay accepted a send's envelope, before the
+	// acceptance is journaled; tests kill the process there.
+	afterDeposit func()
 }
 
 type relayRetry struct {
@@ -233,9 +246,19 @@ func OpenRelayTransport(directory string, cards *PeerCards, pool *relayPool,
 		return nil, err
 	}
 	return &RelayTransport{
-		directory: directory, cards: cards, pool: pool, now: now, timeout: RelayRequestTimeout,
-		retry: map[string]relayRetry{}, wake: make(chan struct{}, 1),
+		directory: directory, maxPacket: maxPacketJSON, cards: cards, pool: pool, now: now,
+		timeout: RelayRequestTimeout, retry: map[string]relayRetry{}, wake: make(chan struct{}, 1),
 	}, nil
+}
+
+// setPacketBound sets the largest packet JSON this instance seals. It never
+// exceeds the sealed packet bound.
+func (t *RelayTransport) setPacketBound(bound int) error {
+	if t == nil || bound <= 0 || bound > agentpacketseal.MaxPacketJSONBytes {
+		return errors.New("servicebridge: invalid relay packet bound")
+	}
+	t.maxPacket = bound
+	return nil
 }
 
 // Reaches reports whether a card of the recipient is held.
@@ -264,7 +287,11 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 		packet.ExpiresAtUnix == 0 || !idempotencyKeyPattern.MatchString(packet.IdempotencyKey) {
 		return errors.New("servicebridge: invalid relay packet send")
 	}
-	if len(packet.JSON) > maxPacketJSON || len(packet.JSON) > agentpacketseal.MaxPacketJSONBytes {
+	bound := t.maxPacket
+	if bound <= 0 {
+		bound = maxPacketJSON
+	}
+	if len(packet.JSON) > bound || len(packet.JSON) > agentpacketseal.MaxPacketJSONBytes {
 		return ErrRelayPacketTooLarge
 	}
 	unlock := t.lock(packet.IdempotencyKey)
@@ -277,6 +304,9 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 	now := uint64(t.now().Unix())
 	if found && record.Recipient != packet.RecipientAgentID {
 		return errors.New("servicebridge: the journaled envelope is for another recipient")
+	}
+	if found && record.Withdrawn {
+		return ErrRelayWithdrawn
 	}
 	fresh := !found || !record.sealed() || now >= record.ExpiresAtUnix
 	if fresh {
@@ -350,6 +380,9 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 		outcome := t.deposit(ctx, relay, envelope)
 		switch outcome {
 		case depositAccepted:
+			if t.afterDeposit != nil {
+				t.afterDeposit()
+			}
 			record.Accepted = append(record.Accepted, relay)
 			if err := t.store(path, record); err != nil {
 				return err
@@ -590,7 +623,7 @@ func (t *RelayTransport) redepositOne(ctx context.Context, path string, budget *
 			// card this pass.
 		}
 	}
-	if !record.sealed() && record.Background {
+	if !record.sealed() && record.Background && !record.Withdrawn {
 		if packet, ok := record.journaledPacket(); ok && nowUnix < packet.ExpiresAtUnix {
 			// Without a valid card the record waits; a later pass seals it
 			// once one is learned, until the packet expires.
@@ -620,7 +653,7 @@ func (t *RelayTransport) redepositOne(ctx context.Context, path string, budget *
 	} else if len(pending) == 0 {
 		t.forget(record.IdempotencyKey)
 	}
-	if record.everyRelayConflicts() && record.Background && nowUnix < record.ExpiresAtUnix {
+	if record.everyRelayConflicts() && record.Background && !record.Withdrawn && nowUnix < record.ExpiresAtUnix {
 		// A replacement the courier no longer retries: every relay of its
 		// card holds other bytes under its public id (an observer, or one
 		// relay copying the id to the others, got there first). As the
@@ -807,6 +840,142 @@ func (t *RelayTransport) forget(key string) {
 	t.mutex.Unlock()
 }
 
+// Withdraw supersedes the packet journaled under idempotencyKey: its current
+// envelope joins the withdrawals, at every relay of its card that may hold
+// it, and the record is marked so that the packet is never sealed or
+// deposited again. The withdrawal itself runs in the background passes with
+// the bounds and backoff of the revocation path, retried until each relay
+// answered or the envelope expired. It reports whether a record was found;
+// an unknown key is nothing to withdraw. Withdrawing again is a no-op.
+func (t *RelayTransport) Withdraw(idempotencyKey string) (bool, error) {
+	if t == nil || !idempotencyKeyPattern.MatchString(idempotencyKey) {
+		return false, errors.New("servicebridge: invalid relay withdrawal")
+	}
+	unlock := t.lock(idempotencyKey)
+	defer unlock()
+	path := t.recordPath(idempotencyKey)
+	record, found, err := t.load(path)
+	if err != nil || !found {
+		return false, err
+	}
+	if record.Withdrawn && !record.sealed() {
+		return true, nil
+	}
+	record.withdrawCurrent()
+	record.Withdrawn, record.Background = true, false
+	if err := t.store(path, record); err != nil {
+		return true, err
+	}
+	// No redundant deposit of the superseded envelope is due any more.
+	t.forget(idempotencyKey)
+	if t.afterJournal != nil {
+		t.afterJournal()
+	}
+	t.signal()
+	return true, nil
+}
+
+// journaled returns the signed packet a record keeps under idempotencyKey,
+// so that a retry reuses it instead of signing again, and whether a record
+// exists. A record without a usable packet is reported with only its
+// recipient, which the caller checks.
+func (t *RelayTransport) journaled(idempotencyKey string) (OutboundPacket, bool, error) {
+	state, err := t.journalState(idempotencyKey)
+	return state.Packet, state.Found, err
+}
+
+// journalEntry is what the journal holds under one idempotency key.
+type journalEntry struct {
+	Found bool
+	// Packet is the journaled packet; only its recipient is set when the
+	// record keeps no usable packet.
+	Packet OutboundPacket
+	// Accepted reports that a relay durably accepted the current envelope.
+	Accepted bool
+	// Withdrawn reports a superseded packet that is never deposited again.
+	Withdrawn bool
+}
+
+// journalState reads the record under idempotencyKey.
+func (t *RelayTransport) journalState(idempotencyKey string) (journalEntry, error) {
+	if t == nil || !idempotencyKeyPattern.MatchString(idempotencyKey) {
+		return journalEntry{}, errors.New("servicebridge: invalid relay journal lookup")
+	}
+	unlock := t.lock(idempotencyKey)
+	defer unlock()
+	record, found, err := t.load(t.recordPath(idempotencyKey))
+	if err != nil || !found {
+		return journalEntry{}, err
+	}
+	entry := journalEntry{Found: true, Accepted: len(record.Accepted) > 0, Withdrawn: record.Withdrawn}
+	packet, ok := record.journaledPacket()
+	if !ok {
+		packet = OutboundPacket{RecipientAgentID: record.Recipient, IdempotencyKey: idempotencyKey}
+	}
+	entry.Packet = packet
+	return entry, nil
+}
+
+// storedEnvelope is one envelope of the journal a relay may still hold.
+type storedEnvelope struct {
+	IdempotencyKey string
+	EnvelopeID     [32]byte
+	Relays         []string
+	// Pending reports a current envelope some relay of its card has not
+	// answered yet: a later deposit may still store it there.
+	Pending bool
+}
+
+// storedFor lists, for one recipient, every envelope of the journal a relay
+// may still hold: each unexpired current envelope (accepted or not, since an
+// ambiguous deposit may have left it stored) and each unexpired envelope
+// still to be withdrawn.
+func (t *RelayTransport) storedFor(recipient string) ([]storedEnvelope, error) {
+	if t == nil || !agentIDPattern.MatchString(recipient) {
+		return nil, errors.New("servicebridge: invalid relay journal count")
+	}
+	entries, err := os.ReadDir(t.directory)
+	if err != nil {
+		return nil, errors.New("servicebridge: read the relay envelope journal")
+	}
+	now := uint64(t.now().Unix())
+	var out []storedEnvelope
+	for _, entry := range entries {
+		if !relayOutboxFilePattern.MatchString(entry.Name()) {
+			continue
+		}
+		unlock := t.lock("idem_" + strings.TrimSuffix(entry.Name(), ".json"))
+		record, found, err := t.load(filepath.Join(t.directory, entry.Name()))
+		unlock()
+		if err != nil {
+			return nil, err
+		}
+		if !found || record.Recipient != recipient {
+			continue
+		}
+		if record.sealed() && now < record.ExpiresAtUnix {
+			var id [32]byte
+			if decodeHex32(record.EnvelopeID, &id) == nil {
+				out = append(out, storedEnvelope{
+					IdempotencyKey: record.IdempotencyKey, EnvelopeID: id,
+					Relays: append([]string(nil), record.Relays...), Pending: len(record.pending()) > 0,
+				})
+			}
+		}
+		for _, withdrawal := range record.Withdrawals {
+			var id [32]byte
+			if now >= withdrawal.ExpiresAtUnix || decodeHex32(withdrawal.EnvelopeID, &id) != nil {
+				continue
+			}
+			out = append(out, storedEnvelope{
+				IdempotencyKey: record.IdempotencyKey, EnvelopeID: id,
+				Relays: append([]string(nil), withdrawal.Relays...),
+			})
+		}
+	}
+	return out, nil
+}
+
 // RelayOutboxView summarizes one journaled envelope for status.
 type RelayOutboxView struct {
 	Recipient     string   `json:"recipient"`
@@ -820,6 +989,9 @@ type RelayOutboxView struct {
 	// AwaitingCard reports a packet whose envelope was withdrawn and that
 	// waits for a valid card of the recipient to be sealed again.
 	AwaitingCard bool `json:"awaiting_card,omitempty"`
+	// Withdrawn reports a packet its sender superseded: it is never
+	// deposited again.
+	Withdrawn bool `json:"withdrawn,omitempty"`
 	// Withdrawing lists the envelopes still to be withdrawn, by id and
 	// relay; never their secrets.
 	Withdrawing []RelayWithdrawalView `json:"withdrawing,omitempty"`
@@ -858,7 +1030,7 @@ func ReadRelayOutbox(directory string) ([]RelayOutboxView, error) {
 			Recipient: record.Recipient, EnvelopeID: record.EnvelopeID, KeyID: record.KeyID,
 			ExpiresAtUnix: record.ExpiresAtUnix, Accepted: append([]string{}, record.Accepted...),
 			Conflicts: record.Conflicts, Pending: append([]string{}, record.pending()...), Seals: record.Seals,
-			AwaitingCard: !record.sealed(),
+			AwaitingCard: !record.sealed() && !record.Withdrawn, Withdrawn: record.Withdrawn,
 		}
 		for _, withdrawal := range record.Withdrawals {
 			view.Withdrawing = append(view.Withdrawing, RelayWithdrawalView{

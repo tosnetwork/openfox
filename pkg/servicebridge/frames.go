@@ -78,6 +78,14 @@ func EncodeFrame(frame Frame) ([]byte, error) {
 	return append(out, frame.Data...), nil
 }
 
+// isRailPayload reports whether a packet payload starts as a rail frame
+// (magic and version). It is the purpose check a rail key applies before any
+// verification or write.
+func isRailPayload(raw []byte) bool {
+	return len(raw) >= frameHeader && binary.BigEndian.Uint32(raw[0:4]) == frameMagic &&
+		binary.BigEndian.Uint16(raw[4:6]) == frameVersion
+}
+
 // DecodeFrame parses one canonical frame and refuses any other shape.
 func DecodeFrame(raw []byte) (Frame, error) {
 	if len(raw) < frameHeader || len(raw) > frameHeader+MaxChunkData {

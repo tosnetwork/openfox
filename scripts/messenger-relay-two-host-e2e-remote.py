@@ -28,6 +28,12 @@ phase-1 check runs unchanged; only where it reads or acts runs differently:
   were already stored before the run (other runs' mailboxes) are searched for
   plaintext like everything else but are not counted as this run's.
 
+Node B runs as root on B's host (the SSH login there), confined to one 0700
+scratch directory with HOME and TMPDIR inside it; A and C run unprivileged on
+this host. A signal to one of B's processes is sent only while the recorded
+PID's command line still names the run's directory, so a reused PID is never
+hit.
+
 Addresses, SSH targets and key paths are replaced by labels in the transcript
 and in the evidence; no key file is read for its contents.
 """
@@ -616,8 +622,14 @@ class RemoteProcess:
         self.signal("TERM")
 
     def signal(self, name: str):
-        if self.pid and re.fullmatch(r"[A-Z]+", name):
-            on_b(f"kill -{name} {self.pid} 2>/dev/null; true", check=False)
+        """Signal the process only while its PID still runs a command of the
+        run (its command line names the run's directory); a PID the system
+        has reused for another process is left alone."""
+        if self.pid and str(self.pid).isdigit() and re.fullmatch(r"[A-Z]+", name):
+            pid = int(self.pid)
+            on_b(f"if [ -r /proc/{pid}/cmdline ] && tr '\\0' ' ' < /proc/{pid}/cmdline | "
+                 f"grep -qF -- {shlex.quote(str(B_BASE) + '/')}; then kill -{name} {pid} 2>/dev/null; fi; true",
+                 check=False)
 
 
 SUPERVISOR = '''import os, subprocess, sys

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -232,6 +233,39 @@ type RelayTransport struct {
 	// afterDeposit runs once a relay accepted a send's envelope, before the
 	// acceptance is journaled; tests kill the process there.
 	afterDeposit func()
+	// unreadable remembers the journal files that failed to load, so each
+	// is reported once; onUnreadable receives that one report.
+	unreadable   sync.Map
+	onUnreadable func(name string, err error)
+}
+
+// ErrRelayRecordTooLarge refuses a journal record above the bound the
+// journal reads back, so the node never writes a record it cannot read.
+var ErrRelayRecordTooLarge = errors.New(
+	"servicebridge: the relay journal record exceeds the bound it is read back with")
+
+// writeRecord journals a record after checking it against the read bound;
+// create makes a new file, otherwise an existing one is replaced.
+func writeRecord(path string, record relayOutboxRecord, create bool) error {
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		return errors.New("servicebridge: encode record")
+	}
+	if len(encoded) > maxRelayOutboxRecordBytes {
+		return ErrRelayRecordTooLarge
+	}
+	if create {
+		return writeSynced(path, encoded)
+	}
+	return replaceSynced(path, encoded)
+}
+
+// noteUnreadable reports a journal file that failed to load, once per file.
+func (t *RelayTransport) noteUnreadable(name string, err error) {
+	if _, seen := t.unreadable.LoadOrStore(name, struct{}{}); seen || t.onUnreadable == nil {
+		return
+	}
+	t.onUnreadable(name, err)
 }
 
 type relayRetry struct {
@@ -330,7 +364,7 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 			if t.beforeJournal != nil {
 				t.beforeJournal()
 			}
-			err = writeJSON(path, record, true)
+			err = writeRecord(path, record, true)
 			if errors.Is(err, os.ErrExist) {
 				// Another sender journaled this packet first: its envelope
 				// may already be at a relay, so it is the one used.
@@ -541,7 +575,7 @@ func (t *RelayTransport) load(path string) (relayOutboxRecord, bool, error) {
 
 // store replaces a journal record that exists.
 func (t *RelayTransport) store(path string, record relayOutboxRecord) error {
-	return writeJSON(path, record, false)
+	return writeRecord(path, record, false)
 }
 
 func (t *RelayTransport) signal() {
@@ -587,8 +621,13 @@ func (t *RelayTransport) redepositOne(ctx context.Context, path string, budget *
 	unlock := t.lock("idem_" + name)
 	defer unlock()
 	record, found, err := t.load(path)
-	if err != nil || !found {
-		return err
+	if err != nil {
+		// Reported once; the other records keep being deposited.
+		t.noteUnreadable(filepath.Base(path), err)
+		return nil
+	}
+	if !found {
+		return nil
 	}
 	now := t.now()
 	nowUnix := uint64(now.Unix())
@@ -955,7 +994,15 @@ func (t *RelayTransport) storedFor(recipient string) ([]storedEnvelope, error) {
 		record, found, err := t.load(filepath.Join(t.directory, entry.Name()))
 		unlock()
 		if err != nil {
-			return nil, err
+			// One bad record must not stop carriage to every peer. It names
+			// no recipient that can be trusted, so it counts as one stored
+			// envelope for every peer (conservative under the in-flight cap)
+			// and is never taken for gone.
+			t.noteUnreadable(entry.Name(), err)
+			out = append(out, storedEnvelope{
+				IdempotencyKey: "idem_" + strings.TrimSuffix(entry.Name(), ".json"), Pending: true,
+			})
+			continue
 		}
 		if !found || record.Recipient != recipient {
 			continue
@@ -985,6 +1032,9 @@ func (t *RelayTransport) storedFor(recipient string) ([]storedEnvelope, error) {
 
 // RelayOutboxView summarizes one journaled envelope for status.
 type RelayOutboxView struct {
+	// Unreadable names a journal file that failed to load; the other
+	// fields are then empty.
+	Unreadable    string   `json:"unreadable,omitempty"`
 	Recipient     string   `json:"recipient"`
 	EnvelopeID    string   `json:"envelope_id"`
 	KeyID         string   `json:"recipient_key_id"`
@@ -1028,7 +1078,8 @@ func ReadRelayOutbox(directory string) ([]RelayOutboxView, error) {
 		}
 		record, found, err := reader.load(filepath.Join(directory, entry.Name()))
 		if err != nil {
-			return nil, err
+			out = append(out, RelayOutboxView{Unreadable: entry.Name()})
+			continue
 		}
 		if !found {
 			continue

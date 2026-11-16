@@ -123,6 +123,10 @@ func (p *preflight) checkChat() {
 	p.addf("chat.config", CheckPass, "chat relays %s; carrier socket %s; Messenger carrier socket %s; the "+
 		"Messenger packet transport is not configured", strings.Join(relays, ", "), p.config.Chat.CarrierSocket,
 		p.config.Chat.MessengerCarrierSocket)
+	if !p.checkCardController() {
+		p.addf("chat.card", CheckUnknown, "not run: chat.card_controller did not pass")
+		return
+	}
 	key, published, err := heldChatCard(p.config, p.env.Now())
 	if err != nil {
 		p.addf("chat.card", CheckFail, "%v", err)
@@ -155,6 +159,54 @@ func (p *preflight) checkChat() {
 		"finalized checkpoint %d", agentpacketseal.KeyIDText(key.KeyID),
 		time.Unix(int64(key.NotAfterUnix), 0).UTC().Format(time.RFC3339), p.config.Chat.CardPath,
 		p.session.Checkpoint())
+}
+
+// checkCardController checks the card-signing controller the chat cards are
+// signed with: configured, distinct from the packet controller, resolving
+// in the vault to card_key_id, and a controller of the Agent's finalized
+// policy without authority of its own. It signs nothing.
+func (p *preflight) checkCardController() bool {
+	if err := validateCardConfig(p.config); err != nil {
+		p.addf("chat.card_controller", CheckFail, "%v; a node registered by `openfox earning service init` has one "+
+			"(card_controller and card_key_id); an Agent registered without one needs a policy update that adds "+
+			"it, then `openfox earning chat card-controller`", err)
+		return false
+	}
+	if !p.requires("chat.card_controller", "tosctl.pin", "tosctl.config") {
+		return false
+	}
+	keyID, err := p.env.ProbeController(p.ctx, p.config, p.config.CardController)
+	switch {
+	case err != nil:
+		p.addf("chat.card_controller", CheckFail, "%v; create or restore the card-signing controller in the tosctl "+
+			"vault", err)
+		return false
+	case mldsa44.KeyIDText(keyID) != p.config.CardKeyID:
+		p.addf("chat.card_controller", CheckFail, "controller %q resolves to %s, not card_key_id %s",
+			p.config.CardController, mldsa44.KeyIDText(keyID), p.config.CardKeyID)
+		return false
+	}
+	if !p.passed["chain.finalized"] || p.session == nil {
+		p.addf("chat.card_controller", CheckUnknown, "controller %q resolves in the vault to card_key_id; the "+
+			"finalized policy was not read (chain.finalized did not pass)", p.config.CardController)
+		return false
+	}
+	agent, found, err := sessionAgents{ctx: p.ctx, session: p.session}.ResolveAgent(p.config.AgentID)
+	if err == nil && !found {
+		err = fmt.Errorf("servicebridge: Agent %s is not in finalized state", p.config.AgentID)
+	}
+	if err == nil {
+		err = checkCardController(agent, p.config.CardKeyID, p.config.PacketKeyID)
+	}
+	if err != nil {
+		p.addf("chat.card_controller", CheckFail, "%v (finalized checkpoint %d)", err, p.session.Checkpoint())
+		return false
+	}
+	p.addf("chat.card_controller", CheckPass, "controller %q resolves in the vault to card_key_id %s, a controller "+
+		"of the Agent's finalized policy (checkpoint %d) below its threshold and without recovery; it signs the "+
+		"chat cards and nothing else (nothing was signed)", p.config.CardController, p.config.CardKeyID,
+		p.session.Checkpoint())
+	return true
 }
 
 // relayCAExpiryWarning is how close to its expiry a pinned certificate

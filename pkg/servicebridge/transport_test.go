@@ -51,6 +51,21 @@ func testSigner(t *testing.T, agent string) *PacketSigner {
 	return signer
 }
 
+// testCardController names the card-signing controller of a test Agent.
+func testCardController(agent string) string {
+	return "card-" + strings.TrimPrefix(agent, "agent_")[:32]
+}
+
+func testCardSigner(t *testing.T, agent string) *CardSigner {
+	t.Helper()
+	signer, err := NewCardSigner(packetKeys, testCardController(agent), packetKeys.KeyID(testCardController(agent)),
+		agent, packetKeys.KeyID(agent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer
+}
+
 func testEnvelope() Envelope {
 	return Envelope{
 		RecipientAgentID: testBuyer, CapabilityID: "cap_" + strings.Repeat("33", 32),
@@ -157,12 +172,19 @@ func (m agentMap) ResolveAgent(id string) (*nativev1.AgentStateV1, bool, error) 
 	return state, ok, nil
 }
 
+// agentState is a test Agent registered the way `init` registers one: the
+// packet controller meets every threshold alone, the card-signing
+// controller stays below it.
 func agentState(id string) *nativev1.AgentStateV1 {
+	card := testCardController(id)
 	return &nativev1.AgentStateV1{AgentId: id, Policy: &nativev1.ControllerPolicyV1{
-		Threshold: 1, RecoveryThreshold: 1,
+		Threshold: agentPolicyThreshold, RecoveryThreshold: agentPolicyThreshold,
 		Controllers: []*nativev1.ControllerV1{{
 			KeyId: packetKeys.KeyID(id), Mldsa44PublicKey: packetKeys.PublicKey(id),
-			Weight: 1, PurposeMask: 15, Recovery: true,
+			Weight: packetControllerWeight, PurposeMask: 15, Recovery: true,
+		}, {
+			KeyId: packetKeys.KeyID(card), Mldsa44PublicKey: packetKeys.PublicKey(card),
+			Weight: cardControllerWeight, PurposeMask: cardControllerPurposes,
 		}},
 	}}
 }

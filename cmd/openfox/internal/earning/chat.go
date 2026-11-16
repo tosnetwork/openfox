@@ -23,7 +23,30 @@ func chatCommand() *cobra.Command {
 	contact.AddCommand(chatContactExportCommand(), chatContactImportCommand(), chatContactRemoveCommand())
 	command.AddCommand(chatCardCommand("init", "Issue the chat key and card and publish the card to the Messenger "+
 		"daemon's card path"), chatCardCommand("republish", "Rotate the chat keys and republish the current chat "+
-		"card"), chatStatusCommand(), contact)
+		"card"), chatCardControllerCommand(), chatStatusCommand(), contact)
+	return command
+}
+
+// chatCardControllerCommand adopts a new card-signing controller once the
+// Agent's finalized policy holds it, and republishes the chat card under it.
+func chatCardControllerCommand() *cobra.Command {
+	var path, name string
+	command := &cobra.Command{
+		Use: "card-controller",
+		Short: "Sign the chat cards with another card-signing controller of the Agent's finalized policy " +
+			"(after a policy update rotated or removed the previous one) and republish the chat card",
+		Args: cobra.NoArgs, SilenceUsage: true,
+		RunE: func(command *cobra.Command, _ []string) error {
+			result, err := servicebridge.ChatAdoptCardController(command.Context(), path, name, setupEnv(command))
+			if err != nil {
+				return err
+			}
+			return printJSON(command.OutOrStdout(), result)
+		},
+	}
+	railConfigFlag(command, &path)
+	command.Flags().StringVar(&name, "name", "", "vault controller that is now the card-signing controller")
+	_ = command.MarkFlagRequired("name")
 	return command
 }
 

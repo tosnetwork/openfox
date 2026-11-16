@@ -20,6 +20,7 @@ import (
 
 	"github.com/tosnetwork/ai/protocol/pkg/agentpacket"
 	"github.com/tosnetwork/ai/protocol/pkg/agentpacketseal"
+	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
 )
 
 // Encryption key lifetimes of the relay transport.
@@ -69,6 +70,8 @@ type OwnRelayKey struct {
 	NotBeforeUnix uint64
 	NotAfterUnix  uint64
 	Relays        []string
+	// SignerKeyID is the controller key that signed the card.
+	SignerKeyID [mldsa44.KeyIDSize]byte
 	// CardJSON is the exact signed key card packet.
 	CardJSON []byte
 	private  agentpacketseal.PrivateKey
@@ -79,9 +82,14 @@ func (k OwnRelayKey) DestroyAtUnix() uint64 {
 	return saturatingAdd(k.NotAfterUnix, uint64(RelayKeyRetention/time.Second))
 }
 
-// cardSigner signs a key card packet as the local Agent.
+// cardSigner signs a key card packet as the local Agent. A key set hands
+// out only cards its signer's key signed: a card another controller signed
+// (before a rotation of the signer) is kept until its key's retention ends,
+// so envelopes already sealed to it still open, but it is never handed out
+// again; a successor is issued in its place.
 type cardSigner interface {
 	signKeyCard(ctx context.Context, card agentpacketseal.KeyCard) ([]byte, error)
+	cardKeyID() [mldsa44.KeyIDSize]byte
 }
 
 // RelayKeys holds a node's HPKE private keys in an owner-private directory
@@ -257,7 +265,7 @@ func (k *RelayKeys) readKey(path string) (OwnRelayKey, error) {
 	if err != nil {
 		return OwnRelayKey{}, errors.New("the card does not decode")
 	}
-	card, err := decodeOwnCard(k.agentID, cardJSON)
+	card, signerKey, err := decodeOwnCardSigned(k.agentID, cardJSON)
 	if err != nil {
 		return OwnRelayKey{}, err
 	}
@@ -267,23 +275,43 @@ func (k *RelayKeys) readKey(path string) (OwnRelayKey, error) {
 	}
 	return OwnRelayKey{
 		KeyID: private.KeyID, NotBeforeUnix: card.NotBeforeUnix, NotAfterUnix: card.NotAfterUnix,
-		Relays: card.Relays, CardJSON: cardJSON, private: private,
+		Relays: card.Relays, SignerKeyID: signerKey, CardJSON: cardJSON, private: private,
 	}, nil
 }
 
 // decodeOwnCard decodes a card packet of agentID without the finalized
 // signature check, which needs chain state and is the preflight's.
 func decodeOwnCard(agentID string, cardJSON []byte) (agentpacketseal.KeyCard, error) {
+	card, _, err := decodeOwnCardSigned(agentID, cardJSON)
+	return card, err
+}
+
+// decodeOwnCardSigned decodes a card packet of agentID, with the key id of the
+// controller that signed it, without the finalized signature check, which
+// needs chain state and is the preflight's.
+func decodeOwnCardSigned(agentID string, cardJSON []byte) (agentpacketseal.KeyCard, [mldsa44.KeyIDSize]byte,
+	error,
+) {
 	packet, err := agentpacket.DecodeJSON(cardJSON)
 	if err != nil || packet.SenderAgentID != agentID || packet.RecipientAgentID != agentpacketseal.KeyCardAudience ||
 		packet.CapabilityID != agentpacketseal.KeyCardCapability || packet.QuoteCommitment != "" {
-		return agentpacketseal.KeyCard{}, errors.New("the card is not a key card of this Agent")
+		return agentpacketseal.KeyCard{}, [mldsa44.KeyIDSize]byte{}, errors.New("the card is not a key card of " +
+			"this Agent")
 	}
 	card, err := agentpacketseal.DecodeKeyCard(packet.Payload)
 	if err != nil {
-		return agentpacketseal.KeyCard{}, errors.New("the card body is not a valid key card")
+		return agentpacketseal.KeyCard{}, [mldsa44.KeyIDSize]byte{}, errors.New("the card body is not a valid key " +
+			"card")
 	}
-	return card, nil
+	return card, packet.SenderKeyID, nil
+}
+
+// handsOut reports whether a held key's card may be handed out now under
+// the given signer key: valid now, naming exactly the configured relays,
+// and signed by that key.
+func handsOut(key OwnRelayKey, now uint64, relays []string, signerKey [mldsa44.KeyIDSize]byte) bool {
+	return key.NotBeforeUnix <= now && now < key.NotAfterUnix && slices.Equal(key.Relays, relays) &&
+		key.SignerKeyID == signerKey
 }
 
 // sortKeys orders keys by sealing preference: greatest not_before first,
@@ -399,9 +427,10 @@ func (k *RelayKeys) currentLocked(ctx context.Context, now, coverUntil uint64) (
 	}
 	long := target > saturatingAdd(now, uint64(RelayKeyLifetime/time.Second))
 	var latest *OwnRelayKey
+	signerKey := k.signer.cardKeyID()
 	for index := range k.keys {
 		key := &k.keys[index]
-		if key.NotBeforeUnix > now || now >= key.NotAfterUnix || !slices.Equal(key.Relays, k.relays) {
+		if !handsOut(*key, now, k.relays, signerKey) {
 			continue
 		}
 		if key.NotAfterUnix >= target {
@@ -425,8 +454,9 @@ func (k *RelayKeys) currentLocked(ctx context.Context, now, coverUntil uint64) (
 	return key, err == nil, err
 }
 
-// issueLocked draws a new key, signs its card with the packet controller
-// and writes both in one owner-only file before the key is used.
+// issueLocked draws a new key, signs its card with the set's signer (the
+// packet controller for rail cards, the card-signing controller for chat
+// cards) and writes both in one owner-only file before the key is used.
 func (k *RelayKeys) issueLocked(ctx context.Context, now, notAfter uint64) (OwnRelayKey, error) {
 	if len(k.keys) >= maxRelayKeys {
 		return OwnRelayKey{}, fmt.Errorf("servicebridge: %d relay keys are held; no further key is issued until "+
@@ -453,6 +483,10 @@ func (k *RelayKeys) issueLocked(ctx context.Context, now, notAfter uint64) (OwnR
 	if err != nil {
 		return OwnRelayKey{}, fmt.Errorf("servicebridge: sign the relay key card: %w", err)
 	}
+	_, signerKey, err := decodeOwnCardSigned(k.agentID, cardJSON)
+	if err != nil || signerKey != k.signer.cardKeyID() {
+		return OwnRelayKey{}, errors.New("servicebridge: the signed key card is not signed by the card signer's key")
+	}
 	record := relayKeyRecord{
 		Schema: k.keySchema(), AgentID: k.agentID, KeyID: agentpacketseal.KeyIDText(private.KeyID),
 		SeedBase64: base64.StdEncoding.EncodeToString(seed), NotBeforeUnix: now, NotAfterUnix: notAfter,
@@ -463,8 +497,8 @@ func (k *RelayKeys) issueLocked(ctx context.Context, now, notAfter uint64) (OwnR
 		return OwnRelayKey{}, err
 	}
 	key := OwnRelayKey{
-		KeyID: private.KeyID, NotBeforeUnix: now, NotAfterUnix: notAfter, Relays: card.Relays, CardJSON: cardJSON,
-		private: private,
+		KeyID: private.KeyID, NotBeforeUnix: now, NotAfterUnix: notAfter, Relays: card.Relays,
+		SignerKeyID: signerKey, CardJSON: cardJSON, private: private,
 	}
 	k.keys = append(k.keys, key)
 	k.sortKeys()
@@ -534,8 +568,11 @@ func (k *RelayKeys) Held() []OwnRelayKey {
 	return out
 }
 
+// cardKeyID is the key that signs this signer's key cards.
+func (s *PacketSigner) cardKeyID() [mldsa44.KeyIDSize]byte { return s.KeyID }
+
 // signKeyCard signs a key card packet: an ordinary Agent Packet to the
-// all-zero audience, signed by the packet controller like every packet.
+// all-zero audience, signed by this signer's controller.
 func (s *PacketSigner) signKeyCard(ctx context.Context, card agentpacketseal.KeyCard) ([]byte, error) {
 	var nonce [32]byte
 	if _, err := rand.Read(nonce[:]); err != nil {

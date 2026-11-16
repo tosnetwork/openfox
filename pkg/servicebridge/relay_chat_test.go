@@ -393,6 +393,8 @@ func openChatTestNodeIn(t *testing.T, dir, sockets string, clock *relayClock, ag
 	}
 	signer := testSigner(t, agent)
 	signer.now = clock.Now
+	cardSigner := testCardSigner(t, agent)
+	cardSigner.packet.now = clock.Now
 	node.carrier, err = OpenRelayCarrier(RelayCarrierConfig{
 		StateDir: dir, AgentID: agent, Relays: relays, Signer: signer, Cards: railCards, Receiver: receiver,
 		Now: clock.Now, Report: func(stage string, err error) {
@@ -400,7 +402,9 @@ func openChatTestNodeIn(t *testing.T, dir, sockets string, clock *relayClock, ag
 			node.reports = append(node.reports, stage+": "+err.Error())
 			node.mutex.Unlock()
 		},
-		Chat: &chatLaneConfig{Relays: relays, CardPath: node.daemon.cardPath, Signer: signer, Daemon: client},
+		Chat: &chatLaneConfig{
+			Relays: relays, CardPath: node.daemon.cardPath, Signer: signer, CardSigner: cardSigner, Daemon: client,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1095,8 +1099,9 @@ func TestChatContactImportVerifiesBeforeWritingAnything(t *testing.T) {
 	if _, err := importChatContact(ctx, a.chat.Cards, contacts, a.agent, wrapped); err == nil {
 		t.Fatal("a contact whose card is another Agent's was imported")
 	}
-	// A revoked signer: the card no longer verifies against finalized state.
-	agents.revoke(b.agent)
+	// A revoked card-signing controller: the card no longer verifies against
+	// finalized state.
+	agents.setCardController(b.agent, "")
 	if _, err := importChatContact(ctx, a.chat.Cards, contacts, a.agent, b.contactOf()); err == nil {
 		t.Fatal("a card that does not verify was imported")
 	}
@@ -1269,6 +1274,7 @@ func TestChatContactExportCarriesTheCurrentCardAndStatusShowsIt(t *testing.T) {
 	config := NodeConfig{
 		AgentID: node.agent, StateDir: node.dir, RelayURLs: []string{relay.URL},
 		ReceiverSocket: filepath.Join(node.dir, "rail.sock"),
+		CardController: testCardController(node.agent), CardKeyID: packetKeys.KeyID(testCardController(node.agent)),
 		Chat: &ChatConfig{
 			CarrierSocket:          filepath.Join(node.sockets, "c.sock"),
 			MessengerCarrierSocket: filepath.Join(node.sockets, "d.sock"), CardPath: node.daemon.cardPath,

@@ -33,19 +33,25 @@ type NodeConfig struct {
 	Network NetworkConfig `json:"network"`
 	// GlobalConfigFile is the chain global configuration tosctl derives the
 	// Native Registry identity domain from; `init` records it for `offer`.
-	GlobalConfigFile string       `json:"chain_global_config_file,omitempty"`
-	RPCEndpoints     []string     `json:"rpc_endpoints"`
-	Quorum           int          `json:"quorum"`
-	RegistryCodeBOC  string       `json:"registry_code_boc_file"`
-	RegistryCodeHash string       `json:"registry_code_hash"`
-	ActorCodeHash    string       `json:"actor_code_hash"`
-	StateDir         string       `json:"state_dir"`
-	AgentID          string       `json:"agent_id"`
-	PacketController string       `json:"packet_controller"`
-	PacketKeyID      string       `json:"packet_key_id"`
-	TOSCTL           TOSCTLConfig `json:"tosctl"`
-	WalletName       string       `json:"wallet_name"`
-	WalletAddress    string       `json:"wallet_address"`
+	GlobalConfigFile string   `json:"chain_global_config_file,omitempty"`
+	RPCEndpoints     []string `json:"rpc_endpoints"`
+	Quorum           int      `json:"quorum"`
+	RegistryCodeBOC  string   `json:"registry_code_boc_file"`
+	RegistryCodeHash string   `json:"registry_code_hash"`
+	ActorCodeHash    string   `json:"actor_code_hash"`
+	StateDir         string   `json:"state_dir"`
+	AgentID          string   `json:"agent_id"`
+	PacketController string   `json:"packet_controller"`
+	PacketKeyID      string   `json:"packet_key_id"`
+	// CardController is the card-signing controller: a second controller
+	// of the Agent's finalized policy, without authority of its own, that
+	// signs the chat key cards and nothing else. CardKeyID is its key id.
+	// Chat carriage needs both.
+	CardController string       `json:"card_controller,omitempty"`
+	CardKeyID      string       `json:"card_key_id,omitempty"`
+	TOSCTL         TOSCTLConfig `json:"tosctl"`
+	WalletName     string       `json:"wallet_name"`
+	WalletAddress  string       `json:"wallet_address"`
 	// MessengerSocket is the local Messenger daemon. It may be empty only
 	// when DirectPeers is not: then every packet needs a direct route.
 	MessengerSocket string `json:"messenger_socket,omitempty"`
@@ -481,8 +487,14 @@ func (n *Node) openRelay(signer *PacketSigner, agents FinalizedAgents, options N
 			}
 			daemon = client
 		}
+		cardSigner, cardErr := newConfigCardSigner(n.Helper, n.Config)
+		if cardErr != nil {
+			return cardErr
+		}
+		cardSigner.packet.now = signer.now
 		chat = &chatLaneConfig{
-			Relays: relays, CardPath: n.Config.Chat.CardPath, Signer: signer, Daemon: daemon, Timeout: timeout,
+			Relays: relays, CardPath: n.Config.Chat.CardPath, Signer: signer, CardSigner: cardSigner, Daemon: daemon,
+			Timeout: timeout,
 		}
 	}
 	carrier, err := OpenRelayCarrier(RelayCarrierConfig{

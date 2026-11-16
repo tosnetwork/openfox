@@ -18,7 +18,7 @@ func TestOfferPublishesAnOfferThePreflightChecksAccept(t *testing.T) {
 	world := f.world()
 	if world.count("agent service deploy") != 1 || world.count("wallet send") != 2 ||
 		world.count("agent service send update-policy") != 1 ||
-		world.count("agent native-registry new-controller") != 2 {
+		world.count("agent native-registry new-controller") != 3 {
 		t.Fatalf("calls = %+v", world.Calls)
 	}
 	preview := result.Preview
@@ -85,7 +85,7 @@ func TestOfferPublishesAnOfferThePreflightChecksAccept(t *testing.T) {
 	// A second run sends nothing.
 	sends := world.sends()
 	f.mustOffer(t)
-	if after := f.world(); after.sends() != sends || after.count("agent native-registry new-controller") != 2 {
+	if after := f.world(); after.sends() != sends || after.count("agent native-registry new-controller") != 3 {
 		t.Fatalf("a re-run was not idempotent: %+v", after.Calls[len(world.Calls):])
 	}
 }

@@ -171,6 +171,62 @@ func fakeArgument(args []string, name string) string {
 	return ""
 }
 
+// fakeArguments returns every value of a repeated flag.
+func fakeArguments(args []string, name string) []string {
+	var values []string
+	for index, value := range args {
+		if value == name && index+1 < len(args) {
+			values = append(values, args[index+1])
+		}
+	}
+	return values
+}
+
+// fakeStoredPolicy checks a registration's policy file the way tosctl does
+// (every controller signs) and returns it in the world's stored form.
+func fakeStoredPolicy(raw []byte, signers []string) (string, error) {
+	var file agentPolicyFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return "", errFakeUnknown
+	}
+	if len(file.Controllers) != len(signers) {
+		return "", &TOSCTLError{Label: "agent native-registry register-agent", Status: "exit status 1"}
+	}
+	for index, controller := range file.Controllers {
+		if controller.PublicKey != hex.EncodeToString(fakeKey(signers[index]).PublicKey) {
+			return "", &TOSCTLError{Label: "agent native-registry register-agent", Status: "exit status 1"}
+		}
+	}
+	return string(raw), nil
+}
+
+// fakeFinalizedPolicy decodes a stored policy into its finalized form.
+func fakeFinalizedPolicy(stored string) (*nativev1.ControllerPolicyV1, error) {
+	var file agentPolicyFile
+	if err := json.Unmarshal([]byte(stored), &file); err != nil {
+		return nil, err
+	}
+	policy := &nativev1.ControllerPolicyV1{
+		Threshold: file.Threshold, RecoveryThreshold: file.RecoveryThreshold,
+		RecoveryTimelockSeconds: file.RecoveryTimelock,
+	}
+	for _, controller := range file.Controllers {
+		public, err := hex.DecodeString(controller.PublicKey)
+		if err != nil {
+			return nil, err
+		}
+		keyID, err := mldsa44.KeyID(public)
+		if err != nil {
+			return nil, err
+		}
+		policy.Controllers = append(policy.Controllers, &nativev1.ControllerV1{
+			KeyId: mldsa44.KeyIDText(keyID), Mldsa44PublicKey: public, Weight: controller.Weight,
+			PurposeMask: uint32(controller.Purposes), Recovery: controller.Purposes&nativecore.PurposeRecovery != 0,
+		})
+	}
+	return policy, nil
+}
+
 func fakePublicKey(name string) []byte {
 	seed := sha256.Sum256([]byte("fake controller " + name))
 	return bytes.Repeat(seed[:1], mldsa44.PublicKeySize)
@@ -343,10 +399,14 @@ func (f fakeRunner) Run(_ context.Context, call TOSCTLCall) ([]byte, error) {
 		if behavior == fakeKillBefore {
 			die()
 		}
-		nonce, signer := fakeArgument(call.Args, "--nonce"), fakeArgument(call.Args, "--signer")
+		nonce := fakeArgument(call.Args, "--nonce")
 		policy, err := os.ReadFile(fakeArgument(call.Args, "--policy"))
 		if err != nil {
 			return nil, errFakeUnknown
+		}
+		stored, err := fakeStoredPolicy(policy, fakeArguments(call.Args, "--signer"))
+		if err != nil {
+			return nil, err
 		}
 		id := sha256.Sum256(append([]byte(nonce), policy...))
 		agentID := "agent_" + hex.EncodeToString(id[:])
@@ -361,7 +421,7 @@ func (f fakeRunner) Run(_ context.Context, call TOSCTLCall) ([]byte, error) {
 		if behavior == fakeWrongTarget {
 			destination = "0:" + strings.Repeat("ee", 32)
 		}
-		body, _ := json.Marshal(map[string]string{"kind": "agent", "id": agentID, "key_id": fakeKey(signer).Text()})
+		body, _ := json.Marshal(map[string]string{"kind": "agent", "id": agentID, "policy": stored})
 		return answer(map[string]any{
 			"kind": "register-agent", "object_id": hex.EncodeToString(id[:]), "destination": destination,
 			"final_target": destination, "action_hash": strings.Repeat("ab", 32), "generation": 1, "sequence": 1,
@@ -421,7 +481,7 @@ func (f fakeRunner) Run(_ context.Context, call TOSCTLCall) ([]byte, error) {
 		return nil, send(func(w *fakeWorld) {
 			switch body["kind"] {
 			case "agent":
-				w.Agents[body["id"]] = body["key_id"]
+				w.Agents[body["id"]] = body["policy"]
 			case "capability":
 				w.Capabilities[body["id"]] = fakeCapability{
 					Owner: body["owner"], Version: body["version"], Digest: body["digest"],
@@ -524,16 +584,14 @@ func (s fakeSession) ResolveRegistry(_ context.Context, id string) (*nativev1.Na
 	reference := &nativev1.ChainReference{
 		FinalizedCheckpoint: s.world.Checkpoint, ContractCodeHash: "tvm-cell-sha256:" + s.world.CodeHash,
 	}
-	if keyID, ok := s.world.Agents[id]; ok {
+	if stored, ok := s.world.Agents[id]; ok {
+		policy, err := fakeFinalizedPolicy(stored)
+		if err != nil {
+			return nil, false, err
+		}
 		return &nativev1.NativeStateV1{
 			Network: s.world.network(), Reference: reference,
-			State: &nativev1.NativeStateV1_Agent{Agent: &nativev1.AgentStateV1{
-				AgentId: id, Policy: &nativev1.ControllerPolicyV1{
-					Threshold:         1,
-					RecoveryThreshold: 1,
-					Controllers:       []*nativev1.ControllerV1{{KeyId: keyID, Weight: 1}},
-				},
-			}},
+			State: &nativev1.NativeStateV1_Agent{Agent: &nativev1.AgentStateV1{AgentId: id, Policy: policy}},
 		}, true, nil
 	}
 	if capability, ok := s.world.Capabilities[id]; ok {

@@ -30,16 +30,20 @@ type InitInput struct {
 	TOSCTLBinary     string `json:"tosctl_binary"`
 	// TOSCTLSHA256 pins tosctl; empty pins the binary found (trust on first
 	// use).
-	TOSCTLSHA256     string            `json:"tosctl_sha256"`
-	TOSCTLConfigPath string            `json:"tosctl_config_path"`
-	VaultURLEnv      string            `json:"vault_url_env"`
-	WalletName       string            `json:"wallet_name"`
-	PacketController string            `json:"packet_controller"`
-	RegistryCodeBOC  string            `json:"registry_code_boc"`
-	ActorCodeHash    string            `json:"actor_code_hash"`
-	MessengerSocket  string            `json:"messenger_socket"`
-	ReceiverSocket   string            `json:"receiver_socket"`
-	DirectPeers      map[string]string `json:"direct_peers"`
+	TOSCTLSHA256     string `json:"tosctl_sha256"`
+	TOSCTLConfigPath string `json:"tosctl_config_path"`
+	VaultURLEnv      string `json:"vault_url_env"`
+	WalletName       string `json:"wallet_name"`
+	PacketController string `json:"packet_controller"`
+	// CardController is the card-signing controller registered in the
+	// Agent's policy beside the packet controller; empty names it after the
+	// packet controller with the suffix -card.
+	CardController  string            `json:"card_controller"`
+	RegistryCodeBOC string            `json:"registry_code_boc"`
+	ActorCodeHash   string            `json:"actor_code_hash"`
+	MessengerSocket string            `json:"messenger_socket"`
+	ReceiverSocket  string            `json:"receiver_socket"`
+	DirectPeers     map[string]string `json:"direct_peers"`
 	// RelayURLs are the Agent Packet Relay base URLs the node publishes in
 	// its encryption key card and polls (1 to 4).
 	RelayURLs []string `json:"relay_urls"`
@@ -67,6 +71,8 @@ type InitIdentity struct {
 	RegistryCodeHash string `json:"registry_code_hash"`
 	PacketController string `json:"packet_controller"`
 	PacketKeyID      string `json:"packet_key_id"`
+	CardController   string `json:"card_controller"`
+	CardKeyID        string `json:"card_key_id"`
 }
 
 // InitJournal is the durable state of `init`.
@@ -103,6 +109,8 @@ type InitResult struct {
 	WalletAddress    string        `json:"wallet_address,omitempty"`
 	PacketController string        `json:"packet_controller"`
 	PacketKeyID      string        `json:"packet_key_id,omitempty"`
+	CardController   string        `json:"card_controller"`
+	CardKeyID        string        `json:"card_key_id,omitempty"`
 	AgentID          string        `json:"agent_id,omitempty"`
 	AgentAddress     string        `json:"agent_address,omitempty"`
 	AttachedNanoTOS  string        `json:"registration_attached_nanotos"`
@@ -166,6 +174,11 @@ func (in InitInput) validate() error {
 	if !walletNamePattern.MatchString(in.PacketController) {
 		problems = append(problems, "the packet controller name is not a valid controller name")
 	}
+	if !walletNamePattern.MatchString(in.CardController) {
+		problems = append(problems, "the card controller name is not a valid controller name")
+	} else if in.CardController == in.PacketController {
+		problems = append(problems, "the card controller must be another controller than the packet controller")
+	}
 	if in.TOSCTLSHA256 != "" && !hex64Pattern.MatchString(in.TOSCTLSHA256) {
 		problems = append(problems, "--tosctl-sha256 must be 64 lowercase hex digits")
 	}
@@ -201,8 +214,11 @@ func (in InitInput) validate() error {
 	return nil
 }
 
-// agentPolicyFile is the policy tosctl registers the Agent with: one
-// controller that alone meets both thresholds and carries every purpose.
+// agentPolicyFile is the policy tosctl registers the Agent with: the
+// packet controller, which alone meets both thresholds and carries every
+// purpose, and the card-signing controller, which stays below the threshold
+// without the recovery purpose, so it can sign key cards (any controller of
+// the policy can) but authorizes nothing on chain alone.
 type agentPolicyFile struct {
 	Threshold         uint32                  `json:"threshold"`
 	RecoveryThreshold uint32                  `json:"recovery_threshold"`
@@ -218,12 +234,18 @@ type agentPolicyController struct {
 
 const agentRecoveryTimelock = 3600
 
-func writeAgentPolicy(stateDir string, controller ControllerKey) (string, error) {
+func writeAgentPolicy(stateDir string, packet, card ControllerKey) (string, error) {
+	if packet.KeyID == card.KeyID {
+		return "", ErrCardControllerIsPacketController
+	}
 	encoded, err := json.Marshal(agentPolicyFile{
-		Threshold: 1, RecoveryThreshold: 1, RecoveryTimelock: agentRecoveryTimelock,
-		Controllers: []agentPolicyController{{
-			PublicKey: hex.EncodeToString(controller.PublicKey), Weight: 1, Purposes: 15,
-		}},
+		Threshold: agentPolicyThreshold, RecoveryThreshold: agentPolicyThreshold,
+		RecoveryTimelock: agentRecoveryTimelock,
+		Controllers: []agentPolicyController{
+			{PublicKey: hex.EncodeToString(packet.PublicKey), Weight: packetControllerWeight, Purposes: 15},
+			{PublicKey: hex.EncodeToString(card.PublicKey), Weight: cardControllerWeight,
+				Purposes: cardControllerPurposes},
+		},
 	})
 	if err != nil {
 		return "", errors.New("servicebridge: encode the Agent policy")
@@ -323,8 +345,9 @@ func requireFundedWallet(wallet WalletView, neededNano uint64, purpose string) e
 }
 
 // agentEffect reports whether the Agent is registered in finalized state
-// under a policy that holds the packet controller.
-func agentEffect(ctx context.Context, agentID, packetKeyID string) effectFunc {
+// under a policy that holds the packet controller and the card-signing
+// controller, the latter without authority of its own.
+func agentEffect(ctx context.Context, agentID, packetKeyID, cardKeyID string) effectFunc {
 	return func(session RailSession) (bool, error) {
 		state, found, err := session.ResolveRegistry(ctx, agentID)
 		if err != nil {
@@ -340,13 +363,21 @@ func agentEffect(ctx context.Context, agentID, packetKeyID string) effectFunc {
 		if agent.GetTombstoned() {
 			return false, fmt.Errorf("servicebridge: Agent %s is revoked", agentID)
 		}
+		holdsPacket := false
 		for _, controller := range agent.GetPolicy().GetControllers() {
 			if controller.GetKeyId() == packetKeyID {
-				return true, nil
+				holdsPacket = true
 			}
 		}
-		return false, fmt.Errorf("servicebridge: Agent %s is registered but its policy does not hold packet key %s",
-			agentID, packetKeyID)
+		if !holdsPacket {
+			return false, fmt.Errorf("servicebridge: Agent %s is registered but its policy does not hold packet key "+
+				"%s", agentID, packetKeyID)
+		}
+		if err := checkCardController(agent, cardKeyID, packetKeyID); err != nil {
+			return false, fmt.Errorf("servicebridge: Agent %s is registered but its card-signing controller is not "+
+				"usable: %w", agentID, err)
+		}
+		return true, nil
 	}
 }
 
@@ -432,6 +463,14 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 	if !cleanAbsolute(in.StateDir) {
 		return result, errors.New("servicebridge: init: the state directory must be an absolute clean path")
 	}
+	if in.CardController == "" && walletNamePattern.MatchString(in.PacketController) {
+		name, nameErr := defaultCardController(in.PacketController)
+		if nameErr != nil {
+			return result, nameErr
+		}
+		in.CardController = name
+	}
+	result.CardController = in.CardController
 	release, lockErr := lockSetup(in.StateDir)
 	if lockErr != nil {
 		return result, lockErr
@@ -587,20 +626,30 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 	run.notef("wallet.address", SetupDone, "wallet %q is %s", wallet.Name, wallet.Address)
 
 	packet, err := run.ensureController(ops, "controller.packet", in.PacketController)
-	if errors.Is(err, ErrConfirmationRequired) {
-		run.notef("agent.register", SetupPlanned, "an Agent registration will be signed with controller %q and sent "+
-			"from wallet %q (%s) attaching %s TOS", in.PacketController, wallet.Name, wallet.Address,
-			FormatTOSAmount(RegistryMessageValueNano))
+	if err != nil && !errors.Is(err, ErrConfirmationRequired) {
 		return result, err
 	}
-	if err != nil {
-		return result, err
+	card, cardErr := run.ensureController(ops, "controller.card", in.CardController)
+	if cardErr != nil && !errors.Is(cardErr, ErrConfirmationRequired) {
+		return result, cardErr
+	}
+	if err != nil || cardErr != nil {
+		run.notef("agent.register", SetupPlanned, "an Agent registration will be signed with packet controller %q "+
+			"and card-signing controller %q and sent from wallet %q (%s) attaching %s TOS", in.PacketController,
+			in.CardController, wallet.Name, wallet.Address, FormatTOSAmount(RegistryMessageValueNano))
+		return result, ErrConfirmationRequired
+	}
+	if packet.KeyID == card.KeyID {
+		return result, fmt.Errorf("%w: controllers %q and %q hold the same key", ErrCardControllerIsPacketController,
+			in.PacketController, in.CardController)
 	}
 	config.PacketKeyID, result.PacketKeyID = packet.Text(), packet.Text()
+	config.CardController, config.CardKeyID, result.CardKeyID = in.CardController, card.Text(), card.Text()
 
 	identity := InitIdentity{
 		NetworkID: in.NetworkLabel, GenesisRootHash: domain.GenesisRootHash, GenesisFileHash: domain.GenesisFileHash,
 		RegistryCodeHash: domain.CodeHash, PacketController: in.PacketController, PacketKeyID: packet.Text(),
+		CardController: in.CardController, CardKeyID: card.Text(),
 	}
 	switch {
 	case journal.Init == nil:
@@ -627,9 +676,9 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 
 	if state.AgentID == "" {
 		if !in.Yes {
-			run.notef("agent.register", SetupPlanned, "an Agent registration will be signed with controller %q and "+
-				"sent from wallet %q (%s) attaching %s TOS", in.PacketController, wallet.Name, wallet.Address,
-				FormatTOSAmount(RegistryMessageValueNano))
+			run.notef("agent.register", SetupPlanned, "an Agent registration will be signed with packet controller "+
+				"%q and card-signing controller %q and sent from wallet %q (%s) attaching %s TOS", in.PacketController,
+				in.CardController, wallet.Name, wallet.Address, FormatTOSAmount(RegistryMessageValueNano))
 			return result, ErrConfirmationRequired
 		}
 		needed, addErr := checkedAdd(RegistryMessageValueNano, walletFeeMarginNano)
@@ -649,13 +698,15 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 				return result, err
 			}
 		}
-		policyPath, policyErr := writeAgentPolicy(in.StateDir, packet)
+		policyPath, policyErr := writeAgentPolicy(in.StateDir, packet, card)
 		if policyErr != nil {
 			return result, policyErr
 		}
-		env.reportf("agent.register: signing an Agent registration with controller %q (%s) for network %q",
-			in.PacketController, packet.Text(), in.NetworkLabel)
-		message, buildErr := ops.registerAgent(ctx, policyPath, state.AgentNonce, in.PacketController)
+		env.reportf("agent.register: signing an Agent registration with packet controller %q (%s) and card-signing "+
+			"controller %q (%s) for network %q", in.PacketController, packet.Text(), in.CardController, card.Text(),
+			in.NetworkLabel)
+		message, buildErr := ops.registerAgent(ctx, policyPath, state.AgentNonce, in.PacketController,
+			in.CardController)
 		if buildErr != nil {
 			return result, fmt.Errorf("servicebridge: build the Agent registration: %w", buildErr)
 		}
@@ -679,7 +730,7 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 		state.AgentAddress = located.Address
 	}
 	result.AgentAddress = state.AgentAddress
-	effect := agentEffect(ctx, state.AgentID, packet.Text())
+	effect := agentEffect(ctx, state.AgentID, packet.Text(), card.Text())
 	err = run.runStep("agent.register", "the registration of Agent "+state.AgentID, &state.Agent, effect,
 		func() error {
 			if state.Registration == nil {

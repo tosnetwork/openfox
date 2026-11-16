@@ -65,6 +65,24 @@ func (s *switchableAgents) revoke(id string) {
 	s.agents[id] = state
 }
 
+// setCardController replaces the Agent's card-signing controller in its
+// finalized policy with the named one (a rotation), or removes it when name
+// is empty (a revocation of every chat card it signed). The packet
+// controller stays.
+func (s *switchableAgents) setCardController(id, name string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	state := agentState(id)
+	state.Policy.Controllers = state.Policy.Controllers[:1]
+	if name != "" {
+		state.Policy.Controllers = append(state.Policy.Controllers, &nativev1.ControllerV1{
+			KeyId: packetKeys.KeyID(name), Mldsa44PublicKey: packetKeys.PublicKey(name),
+			Weight: cardControllerWeight, PurposeMask: cardControllerPurposes,
+		})
+	}
+	s.agents[id] = state
+}
+
 const relayCapability = "cap_" + "33333333333333333333333333333333333333333333333333333333333333aa"
 
 var (

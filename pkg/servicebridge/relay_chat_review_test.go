@@ -129,8 +129,8 @@ func TestTheHeldChatCardIsThePublishedOneWhenAFreshInitHoldsTwoKeys(t *testing.T
 		if err := ensurePrivateDirectory(filepath.Join(dir, relayStateDir)); err != nil {
 			t.Fatal(err)
 		}
-		signer := testSigner(t, testSeller)
-		signer.now = clock.Now
+		signer := testCardSigner(t, testSeller)
+		signer.packet.now = clock.Now
 		keys, err := OpenChatRelayKeys(filepath.Join(dir, relayStateDir, relayChatKeysDir), testSeller, relays,
 			signer, clock.Now)
 		if err != nil {
@@ -154,7 +154,7 @@ func TestTheHeldChatCardIsThePublishedOneWhenAFreshInitHoldsTwoKeys(t *testing.T
 		}
 		config := NodeConfig{
 			AgentID: testSeller, StateDir: dir, RelayURLs: relays,
-			Chat: &ChatConfig{CardPath: cardPath},
+			CardKeyID: packetKeys.KeyID(testCardController(testSeller)), Chat: &ChatConfig{CardPath: cardPath},
 		}
 		held, published, err := heldChatCard(config, clock.Now())
 		if err != nil {
@@ -384,7 +384,7 @@ func TestTheCarrierTimeoutIsBoundedLikeTheDaemons(t *testing.T) {
 	open := func(timeout time.Duration) error {
 		_, openErr := openChatCarrier(filepath.Join(dir, relayStateDir), testSeller, chatLaneConfig{
 			Relays: []string{relay.URL}, CardPath: filepath.Join(dir, "card.json"), Signer: testSigner(t, testSeller),
-			Daemon: daemon, Timeout: timeout,
+			CardSigner: testCardSigner(t, testSeller), Daemon: daemon, Timeout: timeout,
 		}, packetKeys, relayAgents(), newRelayPool(nil), clock.Now, nil)
 		return openErr
 	}

@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -42,7 +41,11 @@ type ChatCardResult struct {
 	NotAfterUnix  uint64   `json:"not_after_unix"`
 	Relays        []string `json:"relays"`
 	CardPath      string   `json:"card_path"`
-	NextSteps     []string `json:"next_steps,omitempty"`
+	// CardController and CardKeyID name the card-signing controller that
+	// signed the card.
+	CardController string   `json:"card_controller"`
+	CardKeyID      string   `json:"card_key_id"`
+	NextSteps      []string `json:"next_steps,omitempty"`
 }
 
 // loadChatConfig reads a node configuration that has a valid chat section.
@@ -65,9 +68,13 @@ func loadChatConfig(path string) (NodeConfig, error) {
 }
 
 // ChatRepublish rotates the chat keys, issues a chat card signed by the
-// packet controller when none qualifies, and writes the current card to the
-// daemon's card path. `chat init` and `chat republish` both run it; `serve`
-// does the same at every maintenance pass.
+// card-signing controller when none qualifies, and writes the current card
+// to the daemon's card path. `chat init` and `chat republish` both run it;
+// `serve` does the same at every maintenance pass. Before anything is
+// signed, the card controller must be a controller of the Agent's
+// finalized policy without authority of its own: a card it signs is
+// otherwise refused by every peer. Cards an earlier card controller signed
+// are kept until their keys' retention ends but never handed out again.
 func ChatRepublish(ctx context.Context, configPath string, env SetupEnv) (*ChatCardResult, error) {
 	env.fill()
 	if ctx == nil {
@@ -77,6 +84,12 @@ func ChatRepublish(ctx context.Context, configPath string, env SetupEnv) (*ChatC
 	if err != nil {
 		return nil, err
 	}
+	return chatRepublish(ctx, configPath, config, env)
+}
+
+func chatRepublish(ctx context.Context, configPath string, config NodeConfig, env SetupEnv) (*ChatCardResult,
+	error,
+) {
 	relays, err := chatRelays(config)
 	if err != nil {
 		return nil, err
@@ -85,11 +98,14 @@ func ChatRepublish(ctx context.Context, configPath string, env SetupEnv) (*ChatC
 	if err != nil {
 		return nil, err
 	}
-	signer, err := NewPacketSigner(helper, config.PacketController, config.PacketKeyID, config.AgentID)
+	signer, err := newConfigCardSigner(helper, config)
 	if err != nil {
 		return nil, err
 	}
-	signer.now = env.Now
+	signer.packet.now = env.Now
+	if err = checkFinalizedCardController(ctx, config, env, config.CardKeyID); err != nil {
+		return nil, err
+	}
 	root := filepath.Join(config.StateDir, relayStateDir)
 	if err = ensurePrivateDirectory(root); err != nil {
 		return nil, err
@@ -115,6 +131,7 @@ func ChatRepublish(ctx context.Context, configPath string, env SetupEnv) (*ChatC
 	return &ChatCardResult{
 		AgentID: config.AgentID, KeyID: agentpacketseal.KeyIDText(key.KeyID), NotBeforeUnix: key.NotBeforeUnix,
 		NotAfterUnix: key.NotAfterUnix, Relays: key.Relays, CardPath: config.Chat.CardPath,
+		CardController: config.CardController, CardKeyID: config.CardKeyID,
 		NextSteps: []string{
 			"set the Messenger daemon's relay_carriage.card_path to " + config.Chat.CardPath + ", carry_socket_path " +
 				"to " + config.Chat.CarrierSocket + " and listen_socket_path to " + config.Chat.MessengerCarrierSocket,
@@ -122,6 +139,80 @@ func ChatRepublish(ctx context.Context, configPath string, env SetupEnv) (*ChatC
 				"published its relay evidence",
 		},
 	}, nil
+}
+
+// checkFinalizedCardController reads the Agent at a finalized checkpoint
+// and requires cardKeyID to be its card-signing controller (see
+// checkCardController).
+func checkFinalizedCardController(ctx context.Context, config NodeConfig, env SetupEnv, cardKeyID string) error {
+	chain, err := env.OpenChain(config)
+	if err != nil {
+		return fmt.Errorf("servicebridge: open the finalized reader: %s", redactEndpoints(err.Error(),
+			config.RPCEndpoints))
+	}
+	session, err := chain.BeginRail(ctx)
+	if err != nil {
+		return fmt.Errorf("servicebridge: no finalized checkpoint by strict majority: %s",
+			redactEndpoints(err.Error(), config.RPCEndpoints))
+	}
+	state, found, err := session.ResolveRegistry(ctx, config.AgentID)
+	if err != nil {
+		return fmt.Errorf("servicebridge: read Agent %s: %s", config.AgentID, redactEndpoints(err.Error(),
+			config.RPCEndpoints))
+	}
+	agent := state.GetAgent()
+	if !found || agent == nil || agent.GetAgentId() != config.AgentID {
+		return fmt.Errorf("servicebridge: Agent %s is not in finalized state", config.AgentID)
+	}
+	if err = checkCardController(agent, cardKeyID, config.PacketKeyID); err != nil {
+		return fmt.Errorf("%w (finalized checkpoint %d); a card it signs would be refused. Add a dedicated "+
+			"controller to the Agent's policy (tosctl agent native-registry action --kind update-policy) and name "+
+			"it with `openfox earning chat card-controller`", err, session.Checkpoint())
+	}
+	return nil
+}
+
+// ChatAdoptCardController makes a controller of the vault the node's
+// card-signing controller, after a policy update put it in the Agent's
+// finalized policy (a rotation, or the removal of a compromised card
+// controller), and republishes the chat card under it. Cards the previous
+// card controller signed are no longer handed out; once that controller is
+// out of the finalized policy every peer refuses them.
+func ChatAdoptCardController(ctx context.Context, configPath, controller string, env SetupEnv) (*ChatCardResult,
+	error,
+) {
+	env.fill()
+	if ctx == nil {
+		return nil, errors.New("servicebridge: no context")
+	}
+	if !walletNamePattern.MatchString(controller) {
+		return nil, errors.New("servicebridge: --name is not a valid controller name")
+	}
+	config, err := loadChatConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+	release, err := lockSetup(config.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	runner, err := env.Runner(config.TOSCTL, env.vaultURL(config.TOSCTL))
+	if err != nil {
+		return nil, err
+	}
+	key, err := (tosctlOps{runner: runner}).controller(ctx, controller)
+	if err != nil {
+		return nil, fmt.Errorf("servicebridge: controller %q could not be read from the vault: %w", controller, err)
+	}
+	if err = checkFinalizedCardController(ctx, config, env, key.Text()); err != nil {
+		return nil, err
+	}
+	config.CardController, config.CardKeyID = controller, key.Text()
+	if err = writeNodeConfig(configPath, config); err != nil {
+		return nil, err
+	}
+	return chatRepublish(ctx, configPath, config, env)
 }
 
 // heldChatCard returns the chat card a node hands out now, read from its
@@ -146,12 +237,16 @@ func heldChatCard(config NodeConfig, now time.Time) (OwnRelayKey, bool, error) {
 	if err = keys.load(); err != nil {
 		return OwnRelayKey{}, false, err
 	}
+	cardKey, err := mldsa44.ParseKeyIDText(config.CardKeyID)
+	if err != nil {
+		return OwnRelayKey{}, false, fmt.Errorf("%w: card_key_id is not set to a key id", ErrCardControllerMissing)
+	}
 	published, readErr := readPrivateFile(config.Chat.CardPath, relayframe.MaxCardBytes)
 	unix := uint64(now.Unix())
 	var longest *OwnRelayKey
 	for index := range keys.keys {
 		key := &keys.keys[index]
-		if key.NotBeforeUnix > unix || unix >= key.NotAfterUnix || !slices.Equal(key.Relays, relays) {
+		if !handsOut(*key, unix, relays, cardKey) {
 			continue
 		}
 		if readErr == nil && bytes.Equal(key.CardJSON, published) {
@@ -162,8 +257,8 @@ func heldChatCard(config NodeConfig, now time.Time) (OwnRelayKey, bool, error) {
 		}
 	}
 	if longest == nil {
-		return OwnRelayKey{}, false, errors.New("servicebridge: no held chat card is valid now; run `openfox " +
-			"earning chat republish`")
+		return OwnRelayKey{}, false, errors.New("servicebridge: no held chat card signed by the card-signing " +
+			"controller is valid now; run `openfox earning chat republish`")
 	}
 	return *longest, false, nil
 }

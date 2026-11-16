@@ -141,6 +141,9 @@ func serviceInitCommand() *cobra.Command {
 	flags.StringVar(&in.WalletName, "wallet", "", "tosctl wallet that owns and funds this node")
 	flags.StringVar(&in.PacketController, "packet-controller", "openfox-packet", "vault controller that signs "+
 		"Agent Packets and controls the Agent (created if absent)")
+	flags.StringVar(&in.CardController, "card-controller", "", "vault controller that signs the chat key cards "+
+		"and nothing else, registered in the Agent's policy without authority of its own (created if absent; "+
+		"default: the packet controller name with -card)")
 	flags.StringVar(&in.RegistryCodeBOC, "registry-code-boc", "", "Native Registry code BOC file (base64)")
 	flags.StringVar(&in.ActorCodeHash, "actor-code-hash", "", "pinned Service Actor release code hash "+
 		"(tvm-cell-sha256:<hex>)")

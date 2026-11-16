@@ -296,10 +296,19 @@ func (m SignedRegistryMessage) validate(needsStateInit bool) error {
 	return nil
 }
 
-// registerAgent builds and signs an Agent registration. Nothing is sent.
-func (o tosctlOps) registerAgent(ctx context.Context, policyPath, nonce, signer string) (SignedRegistryMessage, error) {
-	if !hex64Pattern.MatchString(nonce) || !walletNamePattern.MatchString(signer) {
+// registerAgent builds and signs an Agent registration. Every controller
+// of the new policy signs it (tosctl requires each one), in the order
+// given. Nothing is sent.
+func (o tosctlOps) registerAgent(ctx context.Context, policyPath, nonce string, signers ...string) (
+	SignedRegistryMessage, error,
+) {
+	if !hex64Pattern.MatchString(nonce) || len(signers) == 0 {
 		return SignedRegistryMessage{}, errors.New("servicebridge: invalid Agent registration")
+	}
+	for _, signer := range signers {
+		if !walletNamePattern.MatchString(signer) {
+			return SignedRegistryMessage{}, errors.New("servicebridge: invalid Agent registration signer")
+		}
 	}
 	var answer struct {
 		Kind         string `json:"kind"`
@@ -313,7 +322,11 @@ func (o tosctlOps) registerAgent(ctx context.Context, policyPath, nonce, signer 
 		BodyBOC      string `json:"body_boc"`
 	}
 	args := append([]string{"agent", "native-registry", "register-agent"}, o.domainFlags()...)
-	args = append(args, "--policy", policyPath, "--nonce", nonce, "--signer", signer, "--format", "json")
+	args = append(args, "--policy", policyPath, "--nonce", nonce)
+	for _, signer := range signers {
+		args = append(args, "--signer", signer)
+	}
+	args = append(args, "--format", "json")
 	if err := runTOSCTLJSON(ctx, o.runner, TOSCTLCall{
 		Label: "agent native-registry register-agent", Args: args, MaxOutput: maxTOSCTLJSONOutput,
 	}, false, &answer); err != nil {

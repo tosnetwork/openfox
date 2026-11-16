@@ -2,12 +2,16 @@ package servicebridge
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
 )
 
 func mustFail(t *testing.T, err error, target error, fragments ...string) {
@@ -29,7 +33,9 @@ func TestInitRegistersTheAgentAndWritesAConfigurationThatLoadsStrictly(t *testin
 	f := newSetupFixture(t)
 	result := f.mustInit(t)
 	world := f.world()
-	if world.count("agent native-registry new-controller") != 1 || world.count("wallet send") != 1 ||
+	// Two controllers are created: the packet controller and the
+	// card-signing controller.
+	if world.count("agent native-registry new-controller") != 2 || world.count("wallet send") != 1 ||
 		world.count("agent native-registry register-agent") != 1 {
 		t.Fatalf("calls = %+v", world.Calls)
 	}
@@ -56,6 +62,7 @@ func TestInitRegistersTheAgentAndWritesAConfigurationThatLoadsStrictly(t *testin
 		RegistryCodeBOC: f.init.RegistryCodeBOC, RegistryCodeHash: "tvm-cell-sha256:" + world.CodeHash,
 		ActorCodeHash: fakeCodeHashActor, StateDir: f.init.StateDir, AgentID: result.AgentID,
 		PacketController: "openfox-packet", PacketKeyID: fakeKey("openfox-packet").Text(),
+		CardController: "openfox-packet-card", CardKeyID: fakeKey("openfox-packet-card").Text(),
 		TOSCTL: TOSCTLConfig{
 			Binary: f.init.TOSCTLBinary, SHA256: result.TOSCTLSHA256, ConfigPath: f.init.TOSCTLConfigPath,
 			VaultURLEnv: pfVaultEnvName,
@@ -84,7 +91,7 @@ func TestInitRegistersTheAgentAndWritesAConfigurationThatLoadsStrictly(t *testin
 	// A second run changes nothing on chain and in the vault.
 	again := f.mustInit(t)
 	after := f.world()
-	if after.sends() != 1 || after.count("agent native-registry new-controller") != 1 ||
+	if after.sends() != 1 || after.count("agent native-registry new-controller") != 2 ||
 		after.count("agent native-registry register-agent") != 1 || again.AgentID != result.AgentID {
 		t.Fatalf("a re-run was not idempotent: %+v", after.Calls)
 	}
@@ -370,12 +377,116 @@ func TestInitNeverResendsARegistrationWhoseOutcomeIsUnknown(t *testing.T) {
 	})
 }
 
+// fakePolicyJSON is a stored policy of the fake world.
+func fakePolicyJSON(t *testing.T, threshold uint32, controllers ...agentPolicyController) string {
+	t.Helper()
+	encoded, err := json.Marshal(agentPolicyFile{
+		Threshold: threshold, RecoveryThreshold: threshold, RecoveryTimelock: agentRecoveryTimelock,
+		Controllers: controllers,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+func fakeController(name string, weight uint32, purposes uint16) agentPolicyController {
+	return agentPolicyController{
+		PublicKey: hex.EncodeToString(fakeKey(name).PublicKey), Weight: weight, Purposes: purposes,
+	}
+}
+
 func TestInitRefusesAnAgentWhoseFinalizedPolicyLacksThePacketKey(t *testing.T) {
 	f := newSetupFixture(t)
 	first := f.mustInit(t)
-	f.change(func(w *fakeWorld) { w.Agents[first.AgentID] = "mldsa44:" + strings.Repeat("ab", 32) })
+	f.change(func(w *fakeWorld) {
+		w.Agents[first.AgentID] = fakePolicyJSON(t, 2, fakeController("another", 2, 15),
+			fakeController(first.CardController, 1, cardControllerPurposes))
+	})
 	_, err := RunInit(context.Background(), f.init, f.env())
 	mustFail(t, err, nil, "does not hold packet key")
+}
+
+func TestInitRegistersTheCardControllerWithoutAuthorityBesideThePacketController(t *testing.T) {
+	f := newSetupFixture(t)
+	result := f.mustInit(t)
+	if result.CardController != f.init.PacketController+"-card" || result.CardKeyID == "" ||
+		result.CardKeyID == result.PacketKeyID {
+		t.Fatalf("card controller %q (%s), packet %s", result.CardController, result.CardKeyID, result.PacketKeyID)
+	}
+	config, err := LoadNodeConfig(f.init.RailConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.CardController != result.CardController || config.CardKeyID != result.CardKeyID {
+		t.Fatalf("the configuration names card controller %q (%s)", config.CardController, config.CardKeyID)
+	}
+	world := f.world()
+	policy, err := fakeFinalizedPolicy(world.Agents[result.AgentID])
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &nativev1.AgentStateV1{AgentId: result.AgentID, Policy: policy}
+	if err = checkCardController(agent, result.CardKeyID, result.PacketKeyID); err != nil {
+		t.Fatalf("the registered card controller is refused: %v", err)
+	}
+	// The packet controller alone still meets every threshold.
+	var packetWeight uint32
+	for _, controller := range policy.GetControllers() {
+		if controller.GetKeyId() == result.PacketKeyID {
+			packetWeight = controller.GetWeight()
+		}
+	}
+	if packetWeight < policy.GetThreshold() || packetWeight < policy.GetRecoveryThreshold() {
+		t.Fatalf("the packet controller (weight %d) no longer meets threshold %d / recovery %d", packetWeight,
+			policy.GetThreshold(), policy.GetRecoveryThreshold())
+	}
+	var signers []string
+	for _, call := range world.Calls {
+		if call.Label == "agent native-registry register-agent" {
+			signers = fakeArguments(call.Args, "--signer")
+		}
+	}
+	if len(signers) != 2 || signers[0] != f.init.PacketController || signers[1] != result.CardController {
+		t.Fatalf("the registration was signed by %v", signers)
+	}
+}
+
+func TestInitRefusesAnAgentWhoseCardControllerIsMissingOrHoldsAuthority(t *testing.T) {
+	cases := map[string]func(packet, card string) string{
+		"card controller missing": func(packet, _ string) string {
+			return fakePolicyJSON(t, 2, fakeController(packet, 2, 15))
+		},
+		"card controller meets the threshold": func(packet, card string) string {
+			return fakePolicyJSON(t, 2, fakeController(packet, 2, 15), fakeController(card, 2, 2))
+		},
+		"card controller holds recovery": func(packet, card string) string {
+			return fakePolicyJSON(t, 2, fakeController(packet, 2, 15), fakeController(card, 1, 4))
+		},
+	}
+	for name, policy := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newSetupFixture(t)
+			first := f.mustInit(t)
+			f.change(func(w *fakeWorld) {
+				w.Agents[first.AgentID] = policy(f.init.PacketController, first.CardController)
+			})
+			_, err := RunInit(context.Background(), f.init, f.env())
+			mustFail(t, err, nil, "card-signing controller is not usable")
+		})
+	}
+}
+
+func TestInitRefusesACardControllerThatIsThePacketController(t *testing.T) {
+	f := newSetupFixture(t)
+	f.init.CardController = f.init.PacketController
+	if _, err := RunInit(context.Background(), f.init, f.env()); err == nil ||
+		!strings.Contains(err.Error(), "another controller than the packet controller") {
+		t.Fatalf("accepted the packet controller as card controller: %v", err)
+	}
+	if len(f.world().Calls) != 0 {
+		t.Fatal("tosctl was run on invalid input")
+	}
 }
 
 func TestInitValidatesItsInputsBeforeTouchingAnything(t *testing.T) {

@@ -186,8 +186,11 @@ type chatDaemon interface {
 type chatLaneConfig struct {
 	Relays   []string
 	CardPath string
-	Signer   *PacketSigner
-	Daemon   chatDaemon
+	// Signer signs the chat frames with the packet controller.
+	Signer *PacketSigner
+	// CardSigner signs the chat key cards with the card-signing controller.
+	CardSigner *CardSigner
+	Daemon     chatDaemon
 	// Timeout bounds one carrier.carry the server handles; zero is 30 s.
 	Timeout time.Duration
 }
@@ -236,14 +239,20 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 		verifier == nil || agents == nil || pool == nil || !cleanAbsolute(lane.CardPath) {
 		return nil, errChatInvalidLane
 	}
+	if lane.CardSigner == nil {
+		return nil, ErrCardControllerMissing
+	}
 	if lane.Timeout == 0 {
 		lane.Timeout = defaultChatTimeout
 	}
 	if lane.Timeout < time.Second || lane.Timeout > maxChatTimeout {
 		return nil, errors.New("servicebridge: the chat carrier timeout is outside 1 s to 300 s")
 	}
-	if lane.Signer.AgentID != agentID {
+	if lane.Signer.AgentID != agentID || lane.CardSigner.AgentID() != agentID {
 		return nil, errors.New("servicebridge: the chat signer signs for another Agent")
+	}
+	if lane.CardSigner.KeyID() == lane.Signer.KeyID {
+		return nil, ErrCardControllerIsPacketController
 	}
 	if now == nil {
 		now = time.Now
@@ -255,7 +264,7 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 	if err != nil {
 		return nil, err
 	}
-	keys, err := OpenChatRelayKeys(filepath.Join(root, relayChatKeysDir), agentID, relays, lane.Signer, now)
+	keys, err := OpenChatRelayKeys(filepath.Join(root, relayChatKeysDir), agentID, relays, lane.CardSigner, now)
 	if err != nil {
 		return nil, err
 	}

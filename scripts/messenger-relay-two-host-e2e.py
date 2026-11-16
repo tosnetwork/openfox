@@ -825,7 +825,8 @@ def finish() -> None:
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            process.kill()
+            # The launcher is root's; its child is the invoking user's.
+            subprocess.run(["sudo", "-n", "kill", "-KILL", str(process.pid)], capture_output=True, check=False)
     try:
         netsh("down")
     except RuntimeError as error:
@@ -945,8 +946,9 @@ async def main() -> int:
     commands = log.read_text().splitlines() if log.exists() else []
     fd.evidence["ran_as_root"] = {
         "network_setup_and_teardown": sorted({line.replace(str(WORK), "<workdir>") for line in commands}),
-        "namespace_entry": LAUNCHED,
-        "note": "Only the namespace, firewall and teardown commands and the namespace entry run as root; every node, "
+        "namespace_entry": LAUNCHED, "launcher_signals": ROOT_SIGNALS,
+        "note": "Only the namespace, firewall and teardown commands, the namespace entry and a SIGCONT/SIGKILL to "
+                "a paused process's sudo launcher run as root; every node, "
                 "relay, forwarder and probe process runs as uid %d (setpriv) and the run itself runs as uid %d."
                 % (UID, UID)}
     fd.evidence["gate_items"] = GATE
@@ -1099,18 +1101,31 @@ def frames_of(node: str) -> list[dict]:
 
 # --- Scenario helpers -------------------------------------------------------------------
 
-def pause_serve(node: str) -> None:
-    signal_pattern(serve_pattern(node), "STOP")
-    stopped = poll(lambda: (lambda states: states if states and all(s == "T" for s in states) else None)(
-        [proc_state(pid) for pid in pids(serve_pattern(node))]), 10, 0.2)
-    require(f"{node}'s serve is paused (state T)", bool(stopped), stopped)
+def cut_off(node: str) -> None:
+    """The node's connections to both relays are refused (firewall), so what
+    the relays hold for it stays there; its processes keep running."""
+    for relay in RELAYS:
+        netsh("block", node, relay)
 
 
-def resume_serve(node: str) -> None:
-    signal_pattern(serve_pattern(node), "CONT")
-    resumed = poll(lambda: (lambda states: states if states and "T" not in states else None)(
-        [proc_state(pid) for pid in pids(serve_pattern(node))]), 10, 0.2)
-    require(f"{node}'s serve runs again", bool(resumed), resumed)
+def reconnect(node: str) -> None:
+    for relay in RELAYS:
+        netsh("unblock", node, relay)
+
+
+ROOT_SIGNALS: list[str] = []
+
+
+def continue_wrapper(key: str) -> None:
+    """A process paused with SIGSTOP stops its root `sudo` launcher too, and
+    a SIGCONT to the process does not resume the launcher, which then never
+    reaps it. The launcher is continued as root (and continues the process)."""
+    process = PROCESSES.get(key)
+    if process is not None and process.poll() is None:
+        entry = f"kill -CONT <the {key} launcher>"
+        if entry not in ROOT_SIGNALS:
+            ROOT_SIGNALS.append(entry)
+        subprocess.run(["sudo", "-n", "kill", "-CONT", str(process.pid)], capture_output=True, check=False)
 
 
 def require_sent(label: str) -> str:
@@ -1180,19 +1195,20 @@ def relay2_only(rows: list[dict]) -> bool:
 def conversation() -> None:
     stop_relay("relay1", "item 4: relay 1 is stopped before the conversation")
     RUN["relay1_down_at"] = now()
-    # A copy held at the relay: B's serve is paused while A sends.
-    pause_serve("b")
+    # A copy held at the relay: B cannot reach the relays while A sends.
+    cut_off("b")
     m1 = (send("a", "b", "m1"), require_sent("m1"))[1]
     carried = poll(lambda: delivery_of("a", m1).get("state") == "carried" and delivery_of("a", m1), 120, 1)
     gate("2", "A's copy of m1 is `carried` once relay 2 accepted it, and not yet delivered while B cannot answer",
          bool(carried) and carried.get("relay_generation") == 1, delivery_of("a", m1))
     RUN["snapshots"] = {"copy-held": snapshot("copy-held")}
-    # B's delivery ack held at the relay: A's serve is paused while B answers.
-    pause_serve("a")
-    resume_serve("b")
+    # B's delivery ack held at the relay: A cannot reach the relays while B
+    # answers.
+    cut_off("a")
+    reconnect("b")
     acked = poll(lambda: listed_ids("relay2", RUN["a"]["agent"]), 120, 1)
     RUN["snapshots"]["ack-held"] = snapshot("ack-held")
-    resume_serve("a")
+    reconnect("a")
     gate("9", "relay state is copied while relay 2 held A's copy for B and B's delivery ack for A",
          bool(acked) and RUN["snapshots"]["copy-held"]["relay2"]["envelope_files"] > 0 and
          RUN["snapshots"]["ack-held"]["relay2"]["envelope_files"] > 0, RUN["snapshots"])
@@ -1349,6 +1365,7 @@ def crash_windows() -> None:
     time.sleep(35)  # B's poller (15 s) has downloaded it and waits on its paused daemon
     stop_serve("b", "KILL")
     signal_pattern(daemon_pattern("b"), "CONT")
+    continue_wrapper("messengerd-b")
     committed = poll(lambda: m in inbound_texts("b"), 60, 1)
     held = {relay: envelope_id in listed_ids(relay, RUN["b"]["agent"]) for relay in RELAYS}
     gate("6", "B's serve is killed while its daemon commits the copy: the Event is committed and the envelope is "
@@ -1372,6 +1389,7 @@ def crash_windows() -> None:
     finally:
         for relay in RELAYS:
             signal_pattern(relay_pattern(relay), "CONT")
+            continue_wrapper(relay)
     accepted = poll(lambda: [row for row in copy_frames("a", m) if row["record"].get("accepted")], 120, 1)
     state_before = delivery_of("a", m).get("state")
     gate("6", "A's daemon is killed while its carrier deposits: the relays accept the envelope after the kill and "

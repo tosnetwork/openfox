@@ -86,7 +86,12 @@ func chatContactRemoveCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "remove <agent>",
 		Short: "Remove a contact's stored chat card and the contact file its import wrote",
-		Args:  cobra.ExactArgs(1), SilenceUsage: true,
+		Long: "Remove a contact's stored chat cards and the contact file its import wrote. This stops only this " +
+			"node from sealing to the peer: no copy is carried to it and no delivery ack goes back to it. It does " +
+			"not remove the peer's committed relay evidence in the Messenger daemon, which still treats the peer " +
+			"as admitted and accepts its copies. To stop receiving from the peer, change the daemon's admission " +
+			"policy.",
+		Args: cobra.ExactArgs(1), SilenceUsage: true,
 		RunE: func(command *cobra.Command, args []string) error {
 			removed, err := servicebridge.ChatContactRemove(path, args[0])
 			if err != nil {

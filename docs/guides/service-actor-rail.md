@@ -888,7 +888,11 @@ Setup, with the Messenger daemon configured to the same paths:
    deletes that Agent's stored chat cards and the contact file its import
    wrote (for example after the daemon refused its evidence), so it stops
    occupying a card slot; a running `serve` stops sealing to it at once. An
-   Agent with neither is refused.
+   Agent with neither is refused. This stops only this node from sealing to
+   the peer: no copy is carried to it and no delivery ack goes back to it.
+   It does not remove the peer's committed relay evidence in the Messenger
+   daemon, which still treats the peer as admitted and accepts its copies.
+   To stop receiving from the peer, change the daemon's admission policy.
 
 ## Configuration
 

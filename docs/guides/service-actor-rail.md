@@ -601,6 +601,43 @@ answers `409` holds other bytes under that public envelope id; it is abandoned
 for that envelope, and when no relay accepted and one answered `409` the packet
 is sealed again under a new id, journaled, and the courier retries with it.
 
+**Expiry and retention.** A packet expires at its business deadline, never
+later than 23 hours 55 minutes after signing:
+- a task at the Accepted Quote's response deadline;
+- a result and a result request at the result's retention end;
+- a result acknowledgement after one hour (a lost one costs one result
+  redelivery, answered with a fresh acknowledgement);
+- a chat delivery acknowledgement after one hour, and a chat evidence request
+  or response after one relay TTL of the peer's chat card.
+
+A message whose deadline has passed is not signed or sent. Each relay keeps
+an envelope at most its advertised `max_ttl_seconds` (1 hour on the project's
+test relays, 3 hours on its production relays, never more than 24 hours). The
+node reads each relay's `GET /v1/relay` description and uses it for an hour
+(a failed read is retried after 5 minutes; a value older than 2 hours, an
+unreadable description and a value outside 1 s to 24 h count as 24 hours).
+
+When an accepted envelope's own expiry is later than the relays keep it, the
+node replaces it at 80 % of the smallest TTL among the card's relays (never
+sooner than 10 minutes): 48 minutes against 1-hour relays, 2 hours 24 minutes
+against 3-hour relays. The replacement is a fresh seal of the same packet
+under a new acknowledgement secret, journaled before its deposit. The old
+envelope is withdrawn once a relay holds the new one. Before replacing, the
+node lists the relays that accepted the envelope: if every listing succeeds
+and none lists it, the recipient took it, and it is not deposited again. When
+no relay of the card has a readable description, nothing is replaced early,
+and the courier's own redelivery carries the message.
+
+The Messenger daemon schedules chat generations from the TTL the carrier
+reports with every `carried` answer (`relay_ttl_seconds`, the smallest of the
+peer card's relays). The 24-envelope per-peer chat cap counts every
+generation whose withdrawal was not confirmed until that envelope expires:
+withdrawals retried after transient failures, and withdrawals that ended in
+a refusal. An unreadable journal file counts as one stored envelope for every
+peer until 24 hours 5 minutes after it was last written. After that, nothing
+it describes can still be stored, so it is moved to `quarantine/` in the same
+directory, reported, and kept for inspection.
+
 **Receiving.** `serve` lists each relay of every key it holds every 15 seconds
 (plus up to 20 % jitter), backing off to 5 minutes on errors and honouring
 `Retry-After`. Each envelope is opened under the key its header names, then

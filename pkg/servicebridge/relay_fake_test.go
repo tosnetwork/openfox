@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -83,6 +84,37 @@ type fakeRelay struct {
 	ackRequests int
 	// ackBodies records every acknowledgement secret presented.
 	ackBodies [][]byte
+	// ttl is the retention the relay applies and advertises; zero is 24 h.
+	ttl uint64
+	// describeFails answers 503 to the relay description.
+	describeFails bool
+	// describes counts description requests.
+	describes int
+	// ackForbidden answers 403 to every acknowledgement, a refusal that
+	// cannot change, so a withdrawal there ends unconfirmed.
+	ackForbidden bool
+}
+
+// retention is the relay's TTL in seconds; the caller holds the mutex.
+func (f *fakeRelay) retention() uint64 {
+	if f.ttl == 0 {
+		return 86400
+	}
+	return f.ttl
+}
+
+// describeCount reports the description requests so far.
+func (f *fakeRelay) describeCount() int {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	return f.describes
+}
+
+// setTTL changes the relay's retention and advertised TTL.
+func (f *fakeRelay) setTTL(seconds uint64) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	f.ttl = seconds
 }
 
 type fakeDeposit struct {
@@ -122,9 +154,17 @@ func (f *fakeRelay) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if request.URL.Path == "/v1/relay" && request.Method == http.MethodGet {
+		f.mutex.Lock()
+		f.describes++
+		fails, ttl := f.describeFails, f.retention()
+		f.mutex.Unlock()
+		if fails {
+			f.errorBody(w, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"schema":"tos.service.agent-packet-relay.relay.v1","max_envelope_bytes":262144,` +
-			`"max_ttl_seconds":86400,"per_recipient_max_envelopes":256,"per_recipient_max_bytes":16777216}`))
+		_, _ = fmt.Fprintf(w, `{"schema":"tos.service.agent-packet-relay.relay.v1","max_envelope_bytes":262144,`+
+			`"max_ttl_seconds":%d,"per_recipient_max_envelopes":256,"per_recipient_max_bytes":16777216}`, ttl)
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(request.URL.Path, "/v1/mailboxes/"), "/")
@@ -224,8 +264,8 @@ func (f *fakeRelay) deposit(w http.ResponseWriter, request *http.Request, agent 
 		return
 	}
 	expires := header.ExpiresAtUnix
-	if expires > now+86400 {
-		expires = now + 86400
+	if expires > now+f.retention() {
+		expires = now + f.retention()
 	}
 	box[id] = &fakeStored{
 		raw: append([]byte(nil), raw...), keyID: header.RecipientKeyID, received: now,
@@ -329,7 +369,7 @@ func (f *fakeRelay) ack(w http.ResponseWriter, request *http.Request, agent stri
 		f.errorBody(w, http.StatusServiceUnavailable, "unavailable")
 		return
 	}
-	if !agentpacketseal.CheckAck(id, secret) {
+	if f.ackForbidden || !agentpacketseal.CheckAck(id, secret) {
 		f.errorBody(w, http.StatusForbidden, "forbidden")
 		return
 	}

@@ -35,12 +35,16 @@ func worstCaseRecord(key string) relayOutboxRecord {
 		ExpiresAtUnix:  ^uint64(0), Accepted: longRelays(), Conflicts: longRelays(), Seals: 1 << 30,
 		AckSecret: strings.Repeat("d", 64), CardNotAfterUnix: ^uint64(0),
 		PacketBase64:        base64.StdEncoding.EncodeToString(make([]byte, agentpacketseal.MaxPacketJSONBytes)),
-		PacketExpiresAtUnix: ^uint64(0),
+		PacketExpiresAtUnix: ^uint64(0), AcceptedAtUnix: ^uint64(0), Settled: true,
+		Residual: relayResidual{Count: maxRelayResidual, UntilUnix: ^uint64(0)},
 	}
+	relays := longRelays()
 	for range maxRelayWithdrawals {
+		// Splitting the relays between the two lists costs one more key.
 		record.Withdrawals = append(record.Withdrawals, relayWithdrawal{
-			EnvelopeID: strings.Repeat("e", 64), AckSecret: strings.Repeat("f", 64), Relays: longRelays(),
-			ExpiresAtUnix: ^uint64(0),
+			EnvelopeID: strings.Repeat("e", 64), AckSecret: strings.Repeat("f", 64),
+			Relays: relays[:len(relays)-1], Unconfirmed: relays[len(relays)-1:], ExpiresAtUnix: ^uint64(0),
+			AfterAccepted: true,
 		})
 	}
 	return record

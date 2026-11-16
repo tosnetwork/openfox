@@ -1121,21 +1121,6 @@ def reconnect(node: str) -> None:
 ROOT_SIGNALS: list[str] = []
 
 
-def carrier_calls(node: str) -> int:
-    """Connected streams on node's daemon carrier socket, read from the
-    daemon's own network namespace view (/proc/<pid>/net/unix; state 03 is
-    connected, 01 a listener)."""
-    path = str(sock(node, "carrier.sock"))
-    count = 0
-    for pid in pids(daemon_pattern(node)):
-        try:
-            lines = Path(f"/proc/{pid}/net/unix").read_text().splitlines()[1:]
-        except OSError:
-            continue
-        count += sum(1 for line in lines if line.split()[-1] == path and line.split()[5] == "03")
-    return count
-
-
 def continue_wrapper(key: str) -> None:
     """A process paused with SIGSTOP stops its root `sudo` launcher too, and
     a SIGCONT to the process does not resume the launcher, which then never
@@ -1383,11 +1368,14 @@ def crash_windows() -> None:
     sent = poll(lambda: [row for row in copy_frames("a", m) if row["record"].get("accepted")], 90, 1)
     envelope_id = sent[0]["record"]["envelope_id"] if sent else ""
     # B's poller may be in its failure backoff (up to 5 min) after the earlier
-    # cut-offs; wait until it has handed the frame to the paused daemon: a
-    # connected stream on the daemon's carrier socket.
-    waiting = poll(lambda: carrier_calls("b") > 0, 420, 2)
-    require("B's serve downloaded the copy and waits on its paused daemon (a connected carrier.deliver call)",
-            bool(waiting), {"connected_calls": carrier_calls("b")})
+    # cut-offs. Wait until it handed the frame to the paused daemon: the call
+    # times out and is logged, and its request stays queued at the daemon,
+    # which processes it once continued, after B's serve is gone.
+    unanswered = "the Messenger carrier socket did not answer"
+    before = log_text("serve-b").count(unanswered)
+    waiting = poll(lambda: log_text("serve-b").count(unanswered) > before, 480, 2)
+    require("B's serve downloaded the copy and called its paused daemon (the call is queued, unanswered)",
+            bool(waiting), log_text("serve-b")[-400:])
     stop_serve("b", "KILL")
     signal_pattern(daemon_pattern("b"), "CONT")
     continue_wrapper("messengerd-b")

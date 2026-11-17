@@ -254,6 +254,7 @@ def room_settings_check() -> None:
         "room_handshake_retention_seconds": RETENTION or "production (7 days)",
         "room_authorization_seconds": AUTHORIZATION or "production (24 h)",
         "redeposit_interval_seconds": REDEPOSIT, "daemon_check_lines": lines,
+        "daemon_build_tags": "roomtest" if ROOMTEST else "none (production build)",
         "note": "the relay TTL stands in for the test relays' 1 h; test settings are set only in a roomtest build"}
 
 
@@ -440,7 +441,7 @@ def event_text(node: str, event_id: str) -> str:
         event = item.get("event")
         event = json.loads(event) if isinstance(event, str) else event
         text = json.dumps(event)
-        content = (event or {}).get("content")
+        content = (event or {}).get("content_base64") or (event or {}).get("content")
         if isinstance(content, str):
             try:
                 text += base64.b64decode(content).decode("utf-8", "replace")
@@ -676,15 +677,21 @@ def add_c() -> None:
          "invited" and bool(joined.get("ok")) and c_room.get("room_epoch") == 3 and b_room.get("room_epoch") == 3,
          {"b": b_room, "c": c_room})
     objects = handshake_objects()
+    # The split is shown on C's full roster (about 22 KB in a three-member
+    # room); the Welcome (about 1.9 KB) is below any part size that also fits
+    # the roster in 8 parts.
+    roster_c = [d for d, o in objects.items() if o["type"] == 4 and RUN["c"]["agent"] in o["members"]]
+    parts = {d[:16]: sorted(objects[d]["members"][RUN["c"]["agent"]]["parts"]) for d in roster_c}
     welcome_c = [d for d, o in objects.items() if o["type"] == 2 and RUN["c"]["agent"] in o["members"]]
-    parts = {d: sorted(objects[d]["members"][RUN["c"]["agent"]]["parts"]) for d in welcome_c}
-    RUN["welcome_c"] = welcome_c
+    RUN["roster_c"] = roster_c
     if PART_BYTES:
-        gate("2", f"C's Welcome is cut at the test part size P = {PART_BYTES} into several parts and reassembled "
-             "by C", bool(welcome_c) and all(len(v) > 1 for v in parts.values()), parts)
+        gate("2", f"C's full roster is cut at the test part size P = {PART_BYTES} into several parts and "
+             "reassembled by C (its Welcome is a single part)", bool(roster_c) and bool(welcome_c) and
+             all(len(v) > 1 for v in parts.values()), {"roster_parts": parts})
     else:
-        gate("2", "C's Welcome is carried at the production cut (the local record; the split of a handshake "
-             "object at a test P is shown in the three-host record)", bool(welcome_c), parts)
+        gate("2", "C's Welcome and full roster are carried at the production cut, each one part (the local "
+             "record; the split at a test P is shown in the three-host record)", bool(roster_c) and
+             bool(welcome_c), {"roster_parts": parts})
     rosters_b = [d for d, o in objects.items() if o["type"] == 4 and RUN["b"]["agent"] in o["members"] and
                  o["room_epoch"] == 3]
     acks = {d[:16]: [f.get("ack_outcome") for f in acks_for("b", d)] for d in rosters_b}
@@ -1216,6 +1223,9 @@ def scenario() -> None:
 
 def finish() -> None:
     COUNTS["stop"] = True
+    fd.evidence.setdefault("room_settings", {})["daemon_startup_lines"] = {
+        node: sorted({line for line in log_text(f"messengerd-{node}").splitlines() if line.startswith("room_settings")})
+        for node in NODES}
     mr1.finish()
 
 

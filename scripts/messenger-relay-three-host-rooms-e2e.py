@@ -539,6 +539,14 @@ def start_sampler() -> None:
 
 # --- Setup ----------------------------------------------------------------------------
 
+def wait_evidence(node: str, peer: str) -> None:
+    """The room.invite is a 1:1 copy: the node's daemon must have committed
+    the peer's relay evidence from the imported contact file first."""
+    path = mdir(node) / "state" / "relay-evidence" / (RUN[peer]["agent"][6:] + ".json")
+    require(f"{node.upper()}'s daemon committed {peer.upper()}'s relay evidence from the imported contact file",
+            bool(poll(lambda: path.is_file() or None, 180, 2)))
+
+
 def contacts() -> None:
     """Out-of-band exchanges: B's, D's and E's contact files to A's owner
     (A's allow-list admits them). C's contact file reaches A only with C's
@@ -546,7 +554,8 @@ def contacts() -> None:
     other only from rosters."""
     for node in NODES:
         mr1.export_contact(node)
-    imported = {f"a<-{peer}": mr1.import_contact("a", peer) for peer in ("b", "d", "e")}
+    peers = ("b", "d", "e") + (("c",) if os.environ.get("MR2_TARGETED_C_ALLOWS_A") == "1" else ())
+    imported = {f"a<-{peer}": mr1.import_contact("a", peer) for peer in peers}
     require("A imports B's, D's and E's contact files; B, C, D and E import nothing yet",
             all(v.get("agent_id") == RUN[k[-1]]["agent"] for k, v in imported.items()) and
             all(not list((mdir(n) / "contacts").iterdir()) for n in ("b", "c", "d", "e")), imported)
@@ -630,6 +639,7 @@ def create_and_add_b() -> None:
     """Item 2, first half (while C is offline): A founds the room and adds B;
     B learns A in band from the room.invite and joins; A commits the Add and
     B installs the Welcome and the full roster."""
+    wait_evidence("a", "b")
     created = room_op("a", "create")
     founded = wait_room("a", lambda row: row.get("is_authority"), 60)
     gate("2", "A's owner founds the room (rooms.create): A is its authority, the only member",
@@ -697,6 +707,7 @@ def add_c() -> None:
     """Items 2 and 18: A adds C (a second Commit and Welcome); B, already
     joined, applies the Add Commit, accepts the roster of added members and
     learns C's card and evidence from it; all three exchange messages."""
+    wait_evidence("a", "c")
     added = room_op("a", "add", "c")
     invited = wait_room("c", lambda row: row.get("state") == "invited", 300)
     joined = room_op("c", "join", "a")

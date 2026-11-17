@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tosnetwork/ai/messenger/pkg/carrierapi"
@@ -294,26 +295,96 @@ func roomCardsViews(admissions []RoomAdmissionView) []RoomCardsView {
 // setDirectAdmission records, in the admission store below root, whether a
 // direct admission holds agentID's cards: `chat contact import` sets it and
 // `chat contact remove` clears it, both from another process than `serve`.
-// Only an Agent a room also admitted has a record to change.
-func setDirectAdmission(directory, agentID string, direct bool) error {
+// Only an Agent a room also admitted has a record to change. It reports the
+// rooms that still admit the Agent afterwards. The caller holds the
+// admission lock (lockRoomAdmissions).
+func setDirectAdmission(directory, agentID string, direct bool) ([]string, error) {
 	store := &roomAdmissions{directory: directory}
 	if _, err := os.Lstat(directory); errors.Is(err, os.ErrNotExist) {
-		return nil
+		return nil, nil
 	}
 	if err := checkPrivateDirectory(directory); err != nil {
-		return err
+		return nil, err
 	}
 	record, found, err := store.load(agentID)
-	if err != nil || !found || record.Direct == direct {
-		return err
+	if err != nil || !found {
+		return nil, err
+	}
+	rooms := make([]string, 0, len(record.Rooms))
+	for _, entry := range record.Rooms {
+		rooms = append(rooms, entry.RoomID)
+	}
+	sort.Strings(rooms)
+	if record.Direct == direct {
+		return rooms, nil
 	}
 	record.Direct = direct
 	if !record.holds() {
-		// The contact's cards are gone with the contact, and no room holds
-		// them: nothing is left to record.
-		return store.remove(agentID)
+		// The contact's cards go with the contact, and no room holds them:
+		// nothing is left to record.
+		return rooms, store.remove(agentID)
 	}
-	return store.store(record)
+	return rooms, store.store(record)
+}
+
+// roomAdmissionLockFile is the lock beside the chat card store that
+// serializes every change of an admission record, together with the card
+// change it guards, across `serve` and the `chat contact` commands.
+const roomAdmissionLockFile = "chat-room-admissions.lock"
+
+// roomAdmissionLockWait bounds the wait for the admission lock, in
+// nanoseconds (atomic, so a test may shorten it while handlers run);
+// roomAdmissionLockPoll is how often a held lock is tried again.
+var roomAdmissionLockWait = func() *atomic.Int64 {
+	var wait atomic.Int64
+	wait.Store(int64(10 * time.Second))
+	return &wait
+}()
+
+const roomAdmissionLockPoll = 20 * time.Millisecond
+
+// errRoomAdmissionBusy reports an admission lock another process kept past
+// the bounded wait.
+var errRoomAdmissionBusy = errors.New("servicebridge: another process holds the chat room admission lock " +
+	"beyond the wait; try again")
+
+// lockRoomAdmissions takes the inter-process admission lock of the chat
+// card store at cardsDir, waiting at most roomAdmissionLockWait. The lock is
+// per open file, so it also excludes another handle in the same process.
+func lockRoomAdmissions(cardsDir string) (func(), error) {
+	if !cleanAbsolute(cardsDir) {
+		return nil, errRoomAdmissionRecord
+	}
+	path := filepath.Join(filepath.Dir(cardsDir), roomAdmissionLockFile)
+	deadline := time.Now().Add(time.Duration(roomAdmissionLockWait.Load()))
+	for {
+		lock, err := acquireRunLock(path)
+		if err == nil {
+			return func() { releaseRunLock(lock) }, nil
+		}
+		if !errors.Is(err, ErrSetupBusy) {
+			return nil, fmt.Errorf("servicebridge: the chat room admission lock: %w", err)
+		}
+		if !time.Now().Before(deadline) {
+			return nil, errRoomAdmissionBusy
+		}
+		time.Sleep(roomAdmissionLockPoll)
+	}
+}
+
+// lockAdmissions takes the carrier's in-process and inter-process admission
+// locks, in that order.
+func (c *ChatCarrier) lockAdmissions() (func(), error) {
+	c.admissions.Lock()
+	unlock, err := lockRoomAdmissions(c.Cards.directory)
+	if err != nil {
+		c.admissions.Unlock()
+		return nil, err
+	}
+	return func() {
+		unlock()
+		c.admissions.Unlock()
+	}, nil
 }
 
 // cardSource is why an in-band card is learned, which decides the admission
@@ -347,8 +418,12 @@ func (c *ChatCarrier) learnFrom(ctx context.Context, sender string, card []byte,
 		c.report("chat.card", err)
 		return
 	}
-	c.admissions.Lock()
-	defer c.admissions.Unlock()
+	unlock, err := c.lockAdmissions()
+	if err != nil {
+		c.report("chat.card", fmt.Errorf("servicebridge: the card is not stored: %w", err))
+		return
+	}
+	defer unlock()
 	record, found, err := c.rooms.load(sender)
 	if err != nil {
 		c.report("chat.card", fmt.Errorf("servicebridge: the card is not stored: %w", err))
@@ -470,8 +545,11 @@ func (c *ChatCarrier) admitRoomCards(ctx context.Context, roomID string,
 // take: the peer is at its room bound, or the card directory is full.
 func (c *ChatCarrier) admitRoomCard(roomID string, card *peerCard) (bool, error) {
 	agentID := card.AgentID
-	c.admissions.Lock()
-	defer c.admissions.Unlock()
+	unlock, err := c.lockAdmissions()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	previous, found, err := c.rooms.load(agentID)
 	if err != nil {
 		return false, err
@@ -532,8 +610,11 @@ func (c *ChatCarrier) forgetRoomCards(roomID string, agentIDs []string) carriera
 // removed only when no admission is left; they go before the record, so a
 // crash in between leaves the record to finish the removal on a retry.
 func (c *ChatCarrier) forgetRoomCard(roomID, agentID string) error {
-	c.admissions.Lock()
-	defer c.admissions.Unlock()
+	unlock, err := c.lockAdmissions()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	record, found, err := c.rooms.load(agentID)
 	if err != nil {
 		return err

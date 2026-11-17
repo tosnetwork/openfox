@@ -2,10 +2,12 @@
 """Red control of the room carrier's caps and security checks.
 
 Each mutation disables one check with an exact, single-occurrence edit of
-the source, runs the tests that guard it and requires them to FAIL; the
-edit is then reversed (the mutated text replaced by the original) and the
-file is required to hold its original bytes again. A final run requires the
-same tests to pass on the restored tree.
+the source. The mutated package must build (go vet type-checks it and its
+tests): a mutation that does not build is an error of this script, never a
+catch. Its named guarding tests are then run, and at least one of them must
+report `--- FAIL`. The edit is then reversed (the mutated text replaced by
+the original) and the file must hold its original bytes again. A final run
+requires the same tests to pass on the restored tree.
 
 Run from the repository root:
 
@@ -28,7 +30,7 @@ MUTATIONS = [
         "the kind-3 share of the per-peer cap",
         "relay_chat.go",
         "if !carrierapi.PeerCapAllows(kind, count, roomCount) {",
-        "if count >= ChatPeerEnvelopeCap {",
+        "if !carrierapi.PeerCapAllows(relayframe.KindCopy, count, roomCount) {",
         "TestTheKind3CapIsSixteenBesideTheChatCapOfTwentyFour|TestAnUnreadableJournalRecordCountsAsKind3ForEveryPeer",
     ),
     (
@@ -63,7 +65,7 @@ MUTATIONS = [
         "the application lifetime of one relay TTL",
         "relay_chat.go",
         "if frame.Kind == relayframe.KindEvidence || application {",
-        "if frame.Kind == relayframe.KindEvidence {",
+        "if frame.Kind == relayframe.KindEvidence || application && false {",
         "TestARoomObjectIsCarriedInPartsWithItsFrameKindJournaled",
     ),
     (
@@ -84,7 +86,7 @@ MUTATIONS = [
         "room traffic creating no admission",
         "relay_room.go",
         "if !held {\n\t\t\t\t// No admission holds the sender",
-        "if false {\n\t\t\t\t// No admission holds the sender",
+        "if !held && false {\n\t\t\t\t// No admission holds the sender",
         "TestARoomObjectIsCarriedInPartsWithItsFrameKindJournaled|"
         "TestARoomAckReturnsToTheAuthorityAndPart0RenewsOnlyUnderAnAdmission",
     ),
@@ -158,18 +160,66 @@ MUTATIONS = [
         "if false {",
         "TestStatusAndPreflightShowRoomsAndTheKind3Counters",
     ),
+    (
+        "a split application object refused at carry",
+        "relay_room.go",
+        "if objectType == relayframe.RoomApplication && frame.PartCount != 1 {",
+        "if objectType == relayframe.RoomApplication && frame.PartCount > relayframe.MaxParts {",
+        "TestCarryRefusesMalformedRoomFrames",
+    ),
+    (
+        "the admission record put back after a failed card store",
+        "relay_room.go",
+        "restoreErr := c.rooms.restore(previous, found, agentID)",
+        "restoreErr := error(nil)",
+        "TestAFailedCardStorePutsTheAdmissionRecordBack",
+    ),
+    (
+        "a contact remove keeping the cards a room holds",
+        "relay_chat_setup.go",
+        "if card.AgentID != agent || len(rooms) > 0 {",
+        "if card.AgentID != agent {",
+        "TestRemovingAContactKeepsTheCardsARoomStillHolds|"
+        "TestRoomCardsAreAdmittedVerifiedAndForgottenOnlyWithoutAnotherAdmission",
+    ),
+    (
+        "serve taking the inter-process admission lock",
+        "relay_room.go",
+        "unlock, err := lockRoomAdmissions(c.Cards.directory)\n\tif err != nil {\n\t\tc.admissions.Unlock()",
+        "unlock, err := func() (func(), error) { return func() {}, nil }()\n\tif err != nil {\n\t\tc.admissions.Unlock()",
+        "TestTheRoomAdmissionLockExcludesAnotherHandle",
+    ),
+    (
+        "the contact commands taking the admission lock",
+        "relay_chat_setup.go",
+        "unlock, err := lockRoomAdmissions(cardsDir)",
+        "unlock, err := func() (func(), error) { return func() {}, nil }()",
+        "TestTheRoomAdmissionLockExcludesAnotherHandle",
+    ),
 ]
 
 
-def run(tests: str) -> bool:
-    command = ["go", "test", "-count=1", "-run", f"^({tests})$", PACKAGE]
-    result = subprocess.run(command, capture_output=True, text=True)
+def builds() -> bool:
+    """Whether the package and its tests compile (go vet type-checks both)."""
+    result = subprocess.run(["go", "vet", PACKAGE], capture_output=True, text=True)
     return result.returncode == 0
+
+
+def run(tests: str) -> tuple[bool, list[str]]:
+    """Runs the named tests; reports whether they passed and which of them
+    reported --- FAIL."""
+    command = ["go", "test", "-count=1", "-v", "-run", f"^({tests})$", PACKAGE]
+    result = subprocess.run(command, capture_output=True, text=True)
+    failed = [test for test in tests.split("|") if f"--- FAIL: {test} " in result.stdout]
+    return result.returncode == 0, failed
 
 
 def main() -> int:
     failures = []
     all_tests = set()
+    if not builds():
+        print("FAIL: the unmutated package does not build")
+        return 1
     for name, file, original, mutated, tests in MUTATIONS:
         all_tests.update(tests.split("|"))
         path = SOURCE / file
@@ -184,7 +234,10 @@ def main() -> int:
             continue
         path.write_text(changed)
         try:
-            passed = run(tests)
+            # A mutation that does not build proves nothing: it is an error of
+            # this script, never a catch.
+            built = builds()
+            passed, failed = run(tests) if built else (False, [])
         finally:
             current = path.read_text()
             if current.count(mutated) != 1:
@@ -192,11 +245,17 @@ def main() -> int:
             path.write_text(current.replace(mutated, original))
         if hashlib.sha256(path.read_bytes()).digest() != hashlib.sha256(before).digest():
             raise SystemExit(f"{name}: {file} is not restored to its original bytes")
-        status = "PASSED (not caught)" if passed else "failed as required"
-        print(f"{name}: {status}", flush=True)
-        if passed:
-            failures.append(f"{name}: the guarding tests passed with the check disabled")
-    if not run("|".join(sorted(all_tests))):
+        if not built:
+            print(f"{name}: DOES NOT BUILD (script error)", flush=True)
+            failures.append(f"{name}: the mutated package does not build")
+        elif failed:
+            print(f"{name}: caught by {', '.join(failed)}", flush=True)
+        else:
+            status = "PASSED (not caught)" if passed else "failed without a named test failing"
+            print(f"{name}: {status}", flush=True)
+            failures.append(f"{name}: no named guarding test reported --- FAIL")
+    passed, _ = run("|".join(sorted(all_tests)))
+    if not passed:
         failures.append("the guarding tests fail on the restored tree")
     else:
         print("restored tree: the guarding tests pass", flush=True)

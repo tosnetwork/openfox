@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -277,17 +278,156 @@ func TestRoomCardsAreAdmittedVerifiedAndForgottenOnlyWithoutAnotherAdmission(t *
 	if !b.chat.Cards.Has(a.agent) {
 		t.Fatal("forgetting a room dropped a card a later contact import holds")
 	}
-	// Removing the contact ends the direct admission: the room that still
-	// holds the Agent then forgets it whole.
+	// Removing the contact ends the direct admission but keeps the cards the
+	// room still holds, with no admission again; the room's forget then
+	// removes them whole.
 	requireResult(t, b.daemon.admitRoomCards(one, roomCardOf(a)), carrierapi.ResultApplied, "")
+	removed, err := removeChatContact(filepath.Join(b.dir, relayStateDir, relayChatPeersDir),
+		filepath.Join(b.dir, "contacts"), b.agent, a.agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed.RemovedCards) != 0 || strings.Join(removed.KeptForRooms, ",") != one || removed.ContactFile == "" {
+		t.Fatalf("contact remove reported %+v", removed)
+	}
+	if !b.chat.Cards.Has(a.agent) {
+		t.Fatal("removing the contact dropped a card a room still holds")
+	}
+	requireResult(t, b.daemon.forgetRoomCards(one, a.agent), carrierapi.ResultApplied, "")
+	if b.chat.Cards.Has(a.agent) {
+		t.Fatal("a removed contact's card stayed after its last room forgot it")
+	}
+}
+
+// A contact who is also admitted under a room keeps its cards through a
+// contact remove, so the room keeps carrying to it with no new admission.
+func TestRemovingAContactKeepsTheCardsARoomStillHolds(t *testing.T) {
+	clock := newRelayClock()
+	relay := startFakeRelay(t, clock)
+	a, b := chatPair(t, clock, relay.URL)
+	room := testRoomID("held")
+	b.importContact(a)
+	requireResult(t, b.daemon.admitRoomCards(room, roomCardOf(a)), carrierapi.ResultApplied, "")
 	if _, err := removeChatContact(filepath.Join(b.dir, relayStateDir, relayChatPeersDir),
 		filepath.Join(b.dir, "contacts"), b.agent, a.agent); err != nil {
 		t.Fatal(err)
 	}
-	requireResult(t, b.daemon.admitRoomCards(one, roomCardOf(a)), carrierapi.ResultApplied, "")
-	requireResult(t, b.daemon.forgetRoomCards(one, a.agent), carrierapi.ResultApplied, "")
+	views, err := readRoomAdmissions(filepath.Join(b.dir, relayStateDir, relayChatRoomAdmissionsDir))
+	if err != nil || len(views) != 1 || views[0].Direct {
+		t.Fatalf("admissions after the contact remove: %+v %v", views, err)
+	}
+	if !b.chat.Cards.Has(a.agent) {
+		t.Fatal("the room still admits A but A's card is gone")
+	}
+	// B still carries a room frame to A in a quiet room.
+	requireResult(t, b.daemon.carryFrame(a.agent, roomKey("quiet"), "", b.daemon.application(room, "q")),
+		carrierapi.ResultCarried, "")
+	// Without a room, the contact remove deletes the cards as before.
+	requireResult(t, b.daemon.forgetRoomCards(room, a.agent), carrierapi.ResultApplied, "")
+	b.importContact(a)
+	removed, err := removeChatContact(filepath.Join(b.dir, relayStateDir, relayChatPeersDir),
+		filepath.Join(b.dir, "contacts"), b.agent, a.agent)
+	if err != nil || len(removed.RemovedCards) != 1 || len(removed.KeptForRooms) != 0 || b.chat.Cards.Has(a.agent) {
+		t.Fatalf("a contact no room admits: %+v %v held %v", removed, err, b.chat.Cards.Has(a.agent))
+	}
+}
+
+// The admission lock serializes serve's record and card changes with the
+// contact commands of another process: a second, independent handle on the
+// lock file excludes them, and a held lock past the wait is a clear error.
+func TestTheRoomAdmissionLockExcludesAnotherHandle(t *testing.T) {
+	clock := newRelayClock()
+	relay := startFakeRelay(t, clock)
+	a, b := chatPair(t, clock, relay.URL)
+	cardsDir := filepath.Join(b.dir, relayStateDir, relayChatPeersDir)
+	previousWait := roomAdmissionLockWait.Load()
+	roomAdmissionLockWait.Store(int64(300 * time.Millisecond))
+	t.Cleanup(func() { roomAdmissionLockWait.Store(previousWait) })
+	unlock, err := lockRoomAdmissions(cardsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := testRoomID("locked")
+	admissions := filepath.Join(b.dir, relayStateDir, relayChatRoomAdmissionsDir)
+	// serve waits for the lock and answers retry, writing nothing.
+	requireResult(t, b.daemon.admitRoomCards(room, roomCardOf(a)), carrierapi.ResultRetry, "")
 	if b.chat.Cards.Has(a.agent) {
-		t.Fatal("a removed contact's card stayed after its last room forgot it")
+		t.Fatal("a card was stored while another handle held the admission lock")
+	}
+	if views, _ := readRoomAdmissions(admissions); len(views) != 0 {
+		t.Fatalf("an admission was written while the lock was held: %+v", views)
+	}
+	// The contact commands wait the same way and fail with a clear error.
+	if _, err := removeChatContact(cardsDir, filepath.Join(b.dir, "contacts"), b.agent, a.agent); !errors.Is(err,
+		errRoomAdmissionBusy) {
+		t.Fatalf("contact remove under a held lock: %v", err)
+	}
+	if _, err := importChatContact(context.Background(), b.chat.Cards, filepath.Join(b.dir, "contacts"), b.agent,
+		a.contactOf()); !errors.Is(err, errRoomAdmissionBusy) {
+		t.Fatalf("contact import under a held lock: %v", err)
+	}
+	// Released within the wait, the admission goes through.
+	done := make(chan carrierapi.Response, 1)
+	roomAdmissionLockWait.Store(int64(5 * time.Second))
+	cards := []carrierapi.RoomCard{roomCardOf(a)}
+	go func() {
+		response, callErr := b.daemon.carrier.RoomCards(context.Background(), room, cards)
+		if callErr != nil {
+			response = carrierapi.Retry()
+		}
+		done <- response
+	}()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case response := <-done:
+		t.Fatalf("the admission finished while the lock was held: %+v", response)
+	default:
+	}
+	unlock()
+	requireResult(t, <-done, carrierapi.ResultApplied, "")
+	if !b.chat.Cards.Has(a.agent) {
+		t.Fatal("the admission after the lock was released stored nothing")
+	}
+}
+
+// A store that fails after the admission record was written puts the
+// record back: a new peer leaves no record, a held one keeps its rooms.
+func TestAFailedCardStorePutsTheAdmissionRecordBack(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop root")
+	}
+	clock := newRelayClock()
+	relay := startFakeRelay(t, clock)
+	a, b := chatPair(t, clock, relay.URL)
+	cardsDir := filepath.Join(b.dir, relayStateDir, relayChatPeersDir)
+	admissions := filepath.Join(b.dir, relayStateDir, relayChatRoomAdmissionsDir)
+	one, two := testRoomID("kept"), testRoomID("failed")
+	readOnly := func() {
+		if err := os.Chmod(cardsDir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writable := func() {
+		if err := os.Chmod(cardsDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(writable)
+	readOnly()
+	requireResult(t, b.daemon.admitRoomCards(one, roomCardOf(a)), carrierapi.ResultRetry, "")
+	if views, err := readRoomAdmissions(admissions); err != nil || len(views) != 0 {
+		t.Fatalf("a failed store left a record: %+v %v", views, err)
+	}
+	writable()
+	requireResult(t, b.daemon.admitRoomCards(one, roomCardOf(a)), carrierapi.ResultApplied, "")
+	// The same key is stored again under another room: replacing the file
+	// fails, and the record keeps only the first room.
+	readOnly()
+	requireResult(t, b.daemon.admitRoomCards(two, roomCardOf(a)), carrierapi.ResultRetry, "")
+	writable()
+	views, err := readRoomAdmissions(admissions)
+	if err != nil || len(views) != 1 || strings.Join(views[0].Rooms, ",") != one {
+		t.Fatalf("the record after a failed store: %+v %v", views, err)
 	}
 }
 
@@ -588,6 +728,23 @@ func TestCarryRefusesMalformedRoomFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireResult(t, a.daemon.carryFrame(b.agent, roomKey("junk"), "", junk), carrierapi.ResultRefused,
+		carrierapi.CodeFrameMalformed)
+	// An application object is never split: a part 0 of two naming one is
+	// malformed.
+	object, err := relayframe.EncodeRoomObject(relayframe.RoomObject{
+		Type: relayframe.RoomApplication, RoomID: testRoomID("split"), RoomEpoch: 1, MLSEpoch: 1, Body: []byte("app"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	split, err := relayframe.Encode(relayframe.Frame{
+		Kind: relayframe.KindRoom, PartIndex: 0, PartCount: 2, ObjectDigest: relayframe.ObjectDigest(object),
+		Card: a.daemon.card(), Evidence: a.daemon.evidence, Part: object,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireResult(t, a.daemon.carryFrame(b.agent, roomKey("split"), "", split), carrierapi.ResultRefused,
 		carrierapi.CodeFrameMalformed)
 	// A room frame carrying another node's card.
 	foreign := b.daemon.roomFrames(relayframe.RoomCommit, testRoomID("f"), []byte("c"), 0)

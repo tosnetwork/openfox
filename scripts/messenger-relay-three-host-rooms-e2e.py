@@ -203,6 +203,30 @@ def init_nodes() -> None:
           for n, c in configs.items()})
 
 
+def identities() -> None:
+    """The M-R1 Messaging Endpoint identities, with a delegation that also
+    grants the room event class (room.invite, room.key-package and the room
+    messages)."""
+    for node in NODES:
+        out = in_ns(node, [ROOT / "bin" / "messenger-relay-e2e-tool", "identity", "--agent", RUN[node]["agent"],
+                           "--network-id", RUN["domain"]["network_id"], "--genesis-root", RUN["domain"]["genesis_root"],
+                           "--genesis-file", RUN["domain"]["genesis_file"], "--rule", "allow-list",
+                           "--unknown", "require-admission", "--descriptor-lifetime", str(mr1.DESCRIPTOR_LIFETIME),
+                           "--delegation-lifetime", str(2 * 86400), "--session-lifetime", str(86400),
+                           "--classes", "agent.packet,room,text",
+                           "--private-dir", nd(node) / "keys", "--public-dir", mdir(node)],
+                    "messenger-relay-e2e-tool identity", timeout=60)
+        RUN[node]["identity"] = json.loads(out.stdout)
+        action = mr1.registry_action(node, "delegate", "--delegation", RUN[node]["identity"]["delegation_digest_hex"])
+        ok = bool(action["landed"]) and all(row["compute_success"] and not row["aborted"] for row in action["landed"])
+        require(f"not OpenFox: {node}'s Messaging Endpoint delegation (relay-only, classes agent.packet, room and "
+                "text, allow-list inbox) is committed by its Agent on chain", ok,
+                {"identity": RUN[node]["identity"], "action": action})
+    fd.evidence["messenger_identities"] = {node: {key: RUN[node]["identity"][key] for key in (
+        "endpoint_id", "device_id", "delegation_digest", "descriptor_policy_digest", "inbox_policy_digest")}
+        for node in NODES}
+
+
 def chat_owner_socket() -> None:
     """The owner points each node's chat section at its daemon's owner
     socket, which `chat room`, `chat invite` and `chat owner submit` use."""
@@ -261,9 +285,14 @@ def submit(node: str, signed: Path) -> dict:
     result = fox(node, "chat", "owner", "submit", "--rail-config", str(rail(node)), "--decision", str(signed),
                  check=False)
     try:
-        answer = json.loads(result.stdout)
+        answer = json.loads(result.stdout) if result.returncode == 0 else {}
     except ValueError:
-        answer = {"ok": False, "error": fd.redact(result.stderr)[-800:]}
+        answer = {}
+    # `chat owner submit` prints the daemon's answer and exits non-zero on a
+    # refusal.
+    answer["ok"] = result.returncode == 0 and bool(answer)
+    if result.returncode != 0:
+        answer["error"] = fd.redact(result.stderr)[-800:]
     return answer
 
 
@@ -509,7 +538,7 @@ def setup() -> None:
     init_nodes()
     chat_owner_socket()
     mr1.domain()
-    mr1.identities()
+    identities()
     mr1.write_configs()
     room_settings_check()
     for node in NODES:
@@ -551,6 +580,9 @@ def invite_first_contact() -> None:
     gate("1", "A's owner imports C's contact file with C's unscoped invite and presents it (invites.present, "
          "signed by A's owner)", imported.get("agent_id") == RUN["c"]["agent"] and bool(presented.get("ok")),
          {"imported": {k: imported.get(k) for k in ("agent_id", "key_id")}, "presented": presented.get("ok")})
+    committed = poll(lambda: (mdir("a") / "state" / "relay-evidence" / (RUN["c"]["agent"][6:] + ".json")).is_file()
+                     or None, 180, 2)
+    require("A's daemon verified and committed C's relay evidence from the imported contact file", bool(committed))
     stop_node("c")
     RUN["c_offline_at"] = now()
     m = (mr1.send("a", "c", "inv1"), mr1.require_sent("inv1"))[1]

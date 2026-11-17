@@ -28,6 +28,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -461,6 +462,7 @@ type frameView struct {
 	// Room fields: the object digest of every kind-3 part, the object's
 	// public prefix in part 0, and a room ack in kind 2.
 	ObjectDigest    string `json:"object_digest,omitempty"`
+	PartSHA256      string `json:"part_sha256,omitempty"`
 	RoomObjectType  uint8  `json:"room_object_type,omitempty"`
 	RoomID          string `json:"room_id,omitempty"`
 	RoomEpoch       uint64 `json:"room_epoch,omitempty"`
@@ -553,6 +555,8 @@ func inspectFrame(raw []byte) (*frameView, error) {
 		view.AckOutcome, view.AckCode = ack.Outcome, string(ack.Code)
 	case relayframe.KindRoom:
 		view.ObjectDigest = hex.EncodeToString(frame.ObjectDigest[:])
+		partDigest := sha256.Sum256(frame.Part)
+		view.PartSHA256 = hex.EncodeToString(partDigest[:])
 		if frame.PartIndex == 0 {
 			prefix, err := roomObjectPrefix(frame.Part)
 			if err != nil {

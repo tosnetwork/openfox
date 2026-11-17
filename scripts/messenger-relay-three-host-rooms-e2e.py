@@ -137,6 +137,37 @@ _mr1_daemon_config = mr1.daemon_config
 mr1.daemon_config = daemon_config
 
 
+def init_nodes() -> None:
+    """The M-R1 node initialisation for every node of this run."""
+    for node in NODES:
+        init = mr1.fox_json(node, "service", "init", *mr1.init_flags(node), "--yes")
+        agent, address = init.get("agent_id", ""), init.get("agent_address", "")
+        require(f"{node}: `openfox earning service init` registered the node's Agent and wrote a chat section",
+                init.get("confirmed") is True and agent.startswith("agent_") and
+                fd.account_state(address) == "active", init)
+        config = read_json(rail(node))
+        RUN[node] = {"agent": agent, "agent_address": address, "controller": config["packet_controller"],
+                     "key_id": config["packet_key_id"], "wallet": config["wallet_address"]}
+        chat = mr1.fox_json(node, "chat", "init", "--rail-config", str(rail(node)))
+        RUN[node]["chat_key"] = chat.get("key_id")
+        require(f"{node}: `openfox earning chat init` issued the chat key and published a card naming both relays",
+                chat.get("agent_id") == agent and chat.get("relays") == RELAY_URLS and card_path(node).is_file(), chat)
+    agents = {node: RUN[node]["agent"] for node in NODES}
+    fd.evidence["objects"] = {node: {"agent_id": RUN[node]["agent"], "agent_address": RUN[node]["agent_address"]}
+                              for node in NODES}
+    require(f"{len(NODES)} distinct Agents", len(set(agents.values())) == len(NODES), agents)
+    configs = {node: read_json(rail(node)) for node in NODES}
+    ca = mr1.CA.read_bytes()
+    gate("relay-only", "every node names both relays for rail and chat, pins the run's CA and names no direct peer "
+         "and no Messenger packet socket",
+         all(c.get("relay_urls") == RELAY_URLS and not c.get("direct_peers") and not c.get("messenger_socket") and
+             c.get("relay_ca_sha256") == hashlib.sha256(ca).hexdigest() and
+             Path(c.get("relay_ca_file", "")).read_bytes() == ca and (c.get("chat") or {}).get(
+                 "messenger_carrier_socket") == str(sock(n, "carrier.sock")) for n, c in configs.items()),
+         {n: {k: c.get(k) for k in ("relay_urls", "direct_peers", "messenger_socket", "relay_ca_sha256")}
+          for n, c in configs.items()})
+
+
 def chat_owner_socket() -> None:
     """The owner points each node's chat section at its daemon's owner
     socket, which `chat room`, `chat invite` and `chat owner submit` use."""
@@ -437,7 +468,7 @@ def setup() -> None:
         mr1.start_relay(relay, "start")
     mr1.relay_reachability()
     mr1.trust_negative_control()
-    mr1.init_nodes()
+    init_nodes()
     chat_owner_socket()
     mr1.domain()
     mr1.identities()

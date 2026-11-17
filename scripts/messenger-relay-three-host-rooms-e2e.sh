@@ -45,6 +45,9 @@
 # Additionally required there:
 #   B_SSH, B_SSH_KEY, C_SSH, C_SSH_KEY   user@host and SSH identity of B's and C's hosts
 #   RELAY_URLS, RELAY_SSHS, RELAY_SSH_KEYS, RELAY_CA_FILE   as for the M-R1 remote run
+#   E2E_RELAY_SOURCE  a clean ai checkout at the commit the deployed relays
+#                     were built from; the relay binary for the identity check
+#                     is built from it, every node binary from E2E_AI_SOURCE
 # Optional:
 #   B_REMOTE_BASE, C_REMOTE_BASE   the scratch base (default
 #                     /opt/tos-relay-test, the same on both: the node files
@@ -108,6 +111,11 @@ fi
 if [ "$remote" = 1 ]; then
   : "${B_SSH:?}" "${B_SSH_KEY:?}" "${C_SSH:?}" "${C_SSH_KEY:?}" "${RELAY_URLS:?}" "${RELAY_SSHS:?}"
   : "${RELAY_SSH_KEYS:?}" "${RELAY_CA_FILE:?}"
+  : "${E2E_RELAY_SOURCE:?a clean ai checkout at the build commit of the deployed relays}"
+  if [ -n "$(git -C "$E2E_RELAY_SOURCE" status --porcelain)" ]; then
+    echo "$E2E_RELAY_SOURCE is not a clean checkout" >&2
+    exit 2
+  fi
   echo "MR2_REMOTE=1: run it only after the owner's go-ahead; see the run plan" >&2
   if [ "${MR2_REMOTE_GO:-0}" != 1 ]; then exit 2; fi
   export B_REMOTE_BASE=${B_REMOTE_BASE:-/opt/tos-relay-test}
@@ -218,7 +226,15 @@ tags=()
 (cd "$E2E_AI_SOURCE" && GOWORK=off GOFLAGS=-trimpath CGO_ENABLED=0 go build "${tags[@]}" -o "$E2E_BIN/" \
   ./messenger/cmd/tos-messengerd)
 (cd "$E2E_AI_SOURCE" && GOWORK=off GOFLAGS=-trimpath CGO_ENABLED=0 go build -o "$E2E_BIN/" \
-  ./messenger/cmd/tos-messenger-owner ./protocol/cmd/tos-service-packet-relay)
+  ./messenger/cmd/tos-messenger-owner)
+# The relay binary: in local mode the run's own relays, from the run's ai
+# commit; in remote mode the identity check against the deployed relays, from
+# the commit they were built from (E2E_RELAY_SOURCE), whose server code the
+# run proves unchanged in the run's ai commit.
+relay_source=$E2E_AI_SOURCE
+[ "$remote" = 1 ] && relay_source=$E2E_RELAY_SOURCE
+(cd "$relay_source" && GOWORK=off GOFLAGS=-trimpath CGO_ENABLED=0 go build -o "$E2E_BIN/" \
+  ./protocol/cmd/tos-service-packet-relay)
 cargo_target=${E2E_CARGO_TARGET:-$work/cargo-target}
 cargo build --locked --release --manifest-path "$E2E_AI_SOURCE/messenger/rust/openmls-driver/Cargo.toml" \
   --target-dir "$cargo_target"

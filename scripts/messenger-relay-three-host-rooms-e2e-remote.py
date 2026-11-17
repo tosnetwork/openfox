@@ -62,6 +62,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import urllib.parse
 from pathlib import Path
@@ -239,7 +240,54 @@ def shared_host_check() -> None:
                 detail["same_machine_id"] and all(v == "connected" for v in detail["reaches"].values()), detail)
 
 
+# Non-test files that may differ between the deployed relay's commit and the
+# run's ai commit inside the packages the relay binary links, each with why
+# the relay server's behaviour is unchanged by it.
+RELAY_SERVER_EXPLAINED = {
+    "protocol/pkg/agentpacketrelay/client.go": "client-side code paths only (the relay client the nodes use); "
+                                               "the server handlers in the same package are unchanged",
+}
+RELAY_MODULE = "github.com/tosnetwork/ai/"
+
+
+def relay_packages(tree: Path) -> list[str]:
+    """The module-internal packages the relay binary links, as directories."""
+    out = subprocess.run(["go", "list", "-deps", "./protocol/cmd/tos-service-packet-relay"], cwd=tree,
+                         capture_output=True, text=True, check=True,
+                         env={**os.environ, "GOWORK": "off", "GOFLAGS": "-mod=readonly"}).stdout.split()
+    return sorted(pkg[len(RELAY_MODULE):] for pkg in out if pkg.startswith(RELAY_MODULE))
+
+
+def relay_server_proof() -> None:
+    """The deployed relays run a build of an older ai commit. Their binary is
+    checked byte-identical to one built here from that commit (the relay
+    source), and the packages that binary links are shown unchanged in the
+    run's ai commit except explained client-only files."""
+    relay_tree = Path(os.environ["E2E_RELAY_SOURCE"])
+    ai_tree = Path(os.environ["E2E_AI_SOURCE"])
+    relay_commit = mr1.git(relay_tree, "rev-parse", "HEAD")
+    ai_commit = mr1.git(ai_tree, "rev-parse", "HEAD")
+    packages = sorted(set(relay_packages(relay_tree)) | set(relay_packages(ai_tree)))
+    stat = mr1.git(ai_tree, "diff", "--stat", relay_commit, ai_commit, "--", *packages)
+    changed = mr1.git(ai_tree, "diff", "--name-only", relay_commit, ai_commit, "--", *packages).splitlines()
+    cmd_stat = mr1.git(ai_tree, "diff", "--stat", relay_commit, ai_commit, "--", "protocol/cmd/tos-service-packet-relay")
+    unexplained = [f for f in changed if not f.endswith("_test.go") and f not in RELAY_SERVER_EXPLAINED]
+    fd.evidence["relay_build"] = {
+        "relay_build_commit": relay_commit, "run_ai_commit": ai_commit,
+        "relay_binary": "built from the relay build commit and checked byte-identical to both deployed relays",
+        "nodes_built_from": "the run's ai commit (daemon, owner tool, MLS driver)",
+        "linked_module_packages": packages,
+        "diff_stat_cmd_dir": cmd_stat or "(empty)",
+        "diff_stat_linked_packages": stat or "(empty)", "changed_files": changed,
+        "explained_changes": {f: RELAY_SERVER_EXPLAINED[f] for f in changed if f in RELAY_SERVER_EXPLAINED}}
+    fd.require("the relay server is unchanged between the deployed relays' commit and the run's ai commit: the "
+               "relay command directory has no diff, and every other change in the packages it links is a test "
+               "file or an explained client-only file", not cmd_stat and not unexplained,
+               {"unexplained": unexplained, "changed": changed})
+
+
 def setup() -> None:
+    relay_server_proof()
     remote.prepare_hosts()
     relay_ttl_check()
     mr1.stage()

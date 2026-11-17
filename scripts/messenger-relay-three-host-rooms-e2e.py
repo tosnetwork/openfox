@@ -916,6 +916,20 @@ def catch_up_in_order() -> None:
     renewal_exchange()
 
 
+def room_credential_agents(node: str) -> set[str]:
+    """The Agents whose leaf credentials node's room ledger holds now: the
+    credential list the fused room record names."""
+    state = mdir(node) / "state"
+    try:
+        record = read_json(state / "room-mls" / f"{ROOM[5:]}.json")
+        digest = record["credential_list_digest"].split(":", 1)[1]
+        blob = read_json(state / "room-blobs" / f"l-{digest}.json")
+        listing = json.loads(base64.b64decode(blob["data_base64"]))
+    except (OSError, ValueError, KeyError, IndexError):
+        return set()
+    return {entry.get("agent_id", "") for entry in listing.get("entries") or []}
+
+
 def driver_children(node: str) -> list[int]:
     daemon = mr1.pids(mr1.daemon_pattern(node))
     out = []
@@ -1131,12 +1145,22 @@ def remove_c_with_authority_crash() -> None:
     gate("5", "C's driver fails to open a later room message the harness handed it: relay-acknowledged, never "
          "listed to C's runtime", status == 201 and bool(acked) and
          SENT["after-remove-a"]["event_id"] not in inbound_texts("c"), {"deposit": status})
-    cards_b = mr1.peer_cards("b")
+    # Spec 11.4 (as amended): members forget the removed member's chat card
+    # and leaf credential; its relay evidence (public signed routing data,
+    # never used for the room) is left to the evidence store's expiry sweep.
     evidence = mdir("b") / "state" / "relay-evidence" / (RUN["c"]["agent"][6:] + ".json")
-    forgotten = poll(lambda: (RUN["c"]["agent"] not in mr1.peer_cards("b") and not evidence.is_file()) or None,
-                     300, 5)
-    gate("5", "B, for whom C is no contact, has forgotten C's chat card and relay evidence", bool(forgotten),
-         {"b_holds_c_card": RUN["c"]["agent"] in cards_b, "b_holds_c_evidence": evidence.is_file()})
+    forgotten = poll(lambda: (RUN["c"]["agent"] not in mr1.peer_cards("b") and
+                              RUN["c"]["agent"] not in room_credential_agents("b")) or None, 300, 5)
+    to_c_after = [row for row in room_frames("b") if row["packet"]["recipient_agent_id"] == RUN["c"]["agent"] and
+                  (row["frame"].get("room_epoch") or 0) >= removed_epoch]
+    gate("5", "B, for whom C is no contact, has forgotten C's chat card and holds no leaf credential for C in the "
+         "room, and deposits nothing to C; C's relay evidence may remain until its expiry sweep",
+         bool(forgotten) and not to_c_after,
+         {"b_holds_c_card": RUN["c"]["agent"] in mr1.peer_cards("b"),
+          "b_room_credentials": sorted(a[:14] for a in room_credential_agents("b")),
+          "b_kind3_to_c_after_remove": len(to_c_after),
+          "b_holds_c_relay_evidence": evidence.is_file(),
+          "relay_evidence_note": "left to the evidence store's expiry sweep (spec 11.4)"})
 
 
 @step

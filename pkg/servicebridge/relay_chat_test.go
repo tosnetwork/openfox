@@ -66,6 +66,10 @@ type standInDaemon struct {
 	calls     int
 	// retryNext answers retry to that many deliveries.
 	retryNext int
+	// roomFrames counts the kind-3 frames delivered; roomAcked holds the
+	// room objects a verified room ack settled, by object digest.
+	roomDelivered int
+	roomAcked     map[[32]byte]bool
 }
 
 func standInIDs(agent string) (endpoint, device string) {
@@ -89,7 +93,7 @@ func newStandInDaemon(t *testing.T, agent string, clock *relayClock) *standInDae
 	return &standInDaemon{
 		t: t, agent: agent, endpoint: endpoint, device: device, key: ed25519.NewKeyFromSeed(seed[:]),
 		evidence: evidence, clock: clock, admitted: map[string]bool{}, peers: map[string]standInPeer{},
-		accepted: map[string]int{}, delivered: map[string]bool{},
+		accepted: map[string]int{}, delivered: map[string]bool{}, roomAcked: map[[32]byte]bool{},
 	}
 }
 
@@ -189,6 +193,56 @@ func (d *standInDaemon) Carry(context.Context, carrierapi.Request, []byte) carri
 	return carrierapi.NotServed()
 }
 
+// RoomCards implements carrierapi.Handler: the daemon does not serve it.
+func (d *standInDaemon) RoomCards(context.Context, carrierapi.Request) carrierapi.Response {
+	return carrierapi.NotServed()
+}
+
+// Withdraw implements carrierapi.Handler: the daemon does not serve it.
+func (d *standInDaemon) Withdraw(context.Context, carrierapi.Request) carrierapi.Response {
+	return carrierapi.NotServed()
+}
+
+// deliverRoom answers a kind-3 frame as the daemon's room runtime would: a
+// sender it does not admit is refused; a later part, a part 0 of a split
+// object and an application object are admitted; a complete single-part
+// handshake object is answered with a signed room ack.
+func (d *standInDaemon) deliverRoom(admitted bool, frame relayframe.Frame) carrierapi.Response {
+	d.mutex.Lock()
+	d.roomDelivered++
+	d.mutex.Unlock()
+	if !admitted {
+		return carrierapi.Refusal(carrierapi.CodeNotAdmitted)
+	}
+	if frame.PartIndex != 0 || frame.PartCount != 1 {
+		return carrierapi.Response{Result: carrierapi.ResultAdmitted}
+	}
+	roomID, objectType, err := relayframe.RoomObjectPrefix(frame.Part)
+	if err != nil {
+		return carrierapi.Refusal(carrierapi.CodeFrameMalformed)
+	}
+	if objectType == relayframe.RoomApplication {
+		return carrierapi.Response{Result: carrierapi.ResultAdmitted}
+	}
+	authenticator := bytes.Repeat([]byte{7}, 32)
+	ack, err := relayframe.SignRoomAck(relayframe.RoomAck{
+		RoomID: roomID, ObjectDigest: frame.ObjectDigest, RecipientEndpointID: d.endpoint,
+		RecipientDeviceID: d.device, MLSEpoch: 1, EpochAuthenticator: authenticator,
+		Outcome: relayframe.OutcomeAccepted, AckedAtUnix: uint64(d.clock.Now().Unix()),
+	}, d.key)
+	if err != nil {
+		return carrierapi.Retry()
+	}
+	object, err := relayframe.EncodeRoomAck(ack)
+	if err != nil {
+		return carrierapi.Retry()
+	}
+	return carrierapi.Response{
+		Result: carrierapi.ResultAck, AckOutcome: relayframe.OutcomeAccepted,
+		AckFrameBase64: base64.StdEncoding.EncodeToString(d.frame(relayframe.KindDeliveryAck, object)),
+	}
+}
+
 // Deliver applies a copy or evidence frame as the daemon's admission would:
 // an allow-listed sender is admitted, every other sender is refused with a
 // signed rejection.
@@ -211,6 +265,9 @@ func (d *standInDaemon) Deliver(_ context.Context, sender string, raw []byte) ca
 			return carrierapi.Response{Result: carrierapi.ResultIgnored}
 		}
 		return carrierapi.Response{Result: carrierapi.ResultAdmitted}
+	}
+	if frame.Kind == relayframe.KindRoom {
+		return d.deliverRoom(admitted, frame)
 	}
 	value, err := relayframe.DecodeCopy(frame.Part)
 	if err != nil || value.RecipientDeviceID != d.device || value.RecipientEndpointID != d.endpoint {
@@ -255,6 +312,22 @@ func (d *standInDaemon) DeliveryAck(_ context.Context, sender string, raw []byte
 	frame, err := relayframe.Decode(raw)
 	if err != nil || frame.Kind != relayframe.KindDeliveryAck {
 		return carrierapi.Refusal(carrierapi.CodeFrameMalformed)
+	}
+	if relayframe.IsRoomAck(frame.Part) {
+		ack, decodeErr := relayframe.DecodeRoomAck(frame.Part)
+		if decodeErr != nil {
+			return carrierapi.Refusal(carrierapi.CodeFrameMalformed)
+		}
+		if !known || ack.RecipientEndpointID != peer.endpoint || relayframe.VerifyRoomAck(ack, peer.public) != nil {
+			return carrierapi.Refusal(carrierapi.CodeSenderMismatch)
+		}
+		d.mutex.Lock()
+		defer d.mutex.Unlock()
+		if d.roomAcked[ack.ObjectDigest] {
+			return carrierapi.Response{Result: carrierapi.ResultIgnored}
+		}
+		d.roomAcked[ack.ObjectDigest] = true
+		return carrierapi.Response{Result: carrierapi.ResultApplied}
 	}
 	ack, err := relayframe.DecodeAck(frame.Part)
 	if err != nil {

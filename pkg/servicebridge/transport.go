@@ -47,6 +47,10 @@ type OutboundPacket struct {
 	JSON             []byte
 	IdempotencyKey   string
 	ExpiresAtUnix    uint64
+	// FrameKind is the relay frame kind a chat packet carries, journaled with
+	// its record so the per-peer caps count kinds without decoding; zero for
+	// a rail packet.
+	FrameKind uint8
 }
 
 // PacketTransport hands one signed Agent Packet to a carrier that delivers

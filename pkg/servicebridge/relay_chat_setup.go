@@ -279,7 +279,23 @@ func importChatContact(ctx context.Context, cards *PeerCards, contactDir, ownAge
 	if err != nil {
 		return ChatContactImported{}, fmt.Errorf("%w: %v", ErrCardRefused, err)
 	}
-	if err := cards.Learn(ctx, contact.Card, contact.AgentID, ""); err != nil {
+	verified, err := cards.verified(ctx, contact.Card, contact.AgentID, "")
+	if err != nil {
+		return ChatContactImported{}, err
+	}
+	// A contact is a direct admission: recorded before the card is stored,
+	// so forgetting a room that also admitted the Agent never removes it. The
+	// admission lock keeps a running `serve` from changing the record between.
+	unlock, err := lockRoomAdmissions(cards.directory)
+	if err != nil {
+		return ChatContactImported{}, err
+	}
+	_, err = setDirectAdmission(chatRoomAdmissionsDir(cards.directory), contact.AgentID, true)
+	if err == nil {
+		err = cards.keep(verified)
+	}
+	unlock()
+	if err != nil {
 		return ChatContactImported{}, err
 	}
 	if err := os.MkdirAll(contactDir, 0o700); err != nil {
@@ -299,13 +315,19 @@ type ChatContactRemoved struct {
 	AgentID      string   `json:"agent_id"`
 	RemovedCards []string `json:"removed_card_key_ids"`
 	ContactFile  string   `json:"removed_contact_file,omitempty"`
+	// KeptForRooms names the rooms that still admit the Agent: its cards
+	// stay for them, and go when the last of them forgets the Agent.
+	KeptForRooms []string `json:"cards_kept_for_rooms,omitempty"`
 }
 
-// removeChatContact deletes every stored chat card of agent and the contact
-// file import wrote for it in the daemon's contact directory, so a contact
-// whose evidence the daemon refused stops occupying a card slot. A running
-// `serve` forgets the cards at its next use of the store. An Agent with
-// neither a card nor a contact file is unknown and refused.
+// removeChatContact ends the contact's direct admission and deletes the
+// contact file import wrote for it in the daemon's contact directory. Its
+// stored chat cards are deleted too, so a contact whose evidence the daemon
+// refused stops occupying a card slot, unless a room still admits the
+// Agent: those cards stay for the room, which forgets them later. A running
+// `serve` forgets deleted cards at its next use of the store. An Agent with
+// neither a card, a contact file nor a direct admission is unknown and
+// refused.
 func removeChatContact(cardsDir, contactDir, ownAgent, agent string) (ChatContactRemoved, error) {
 	if !cleanAbsolute(cardsDir) || (contactDir != "" && !cleanAbsolute(contactDir)) ||
 		!agentIDPattern.MatchString(ownAgent) {
@@ -318,13 +340,25 @@ func removeChatContact(cardsDir, contactDir, ownAgent, agent string) (ChatContac
 	if agent == ownAgent {
 		return ChatContactRemoved{}, errors.New("servicebridge: this node's own Agent is not a contact")
 	}
+	unlock, err := lockRoomAdmissions(cardsDir)
+	if err != nil {
+		return ChatContactRemoved{}, err
+	}
+	defer unlock()
 	held, err := readPeerCards(cardsDir)
 	if err != nil {
 		return ChatContactRemoved{}, err
 	}
-	removed := ChatContactRemoved{AgentID: agent, RemovedCards: []string{}}
+	// The direct admission ends before any card goes: a crash in between
+	// leaves the cards held only by the rooms that admitted the Agent, if
+	// any, and a later forget of the last of them removes them.
+	rooms, err := setDirectAdmission(chatRoomAdmissionsDir(cardsDir), agent, false)
+	if err != nil {
+		return ChatContactRemoved{}, err
+	}
+	removed := ChatContactRemoved{AgentID: agent, RemovedCards: []string{}, KeptForRooms: rooms}
 	for _, card := range held {
-		if card.AgentID != agent {
+		if card.AgentID != agent || len(rooms) > 0 {
 			continue
 		}
 		path := filepath.Join(cardsDir, peerCardFile(card))
@@ -354,7 +388,7 @@ func removeChatContact(cardsDir, contactDir, ownAgent, agent string) (ChatContac
 			removed.ContactFile = path
 		}
 	}
-	if len(removed.RemovedCards) == 0 && removed.ContactFile == "" {
+	if len(removed.RemovedCards) == 0 && removed.ContactFile == "" && len(rooms) == 0 {
 		return removed, errors.New("servicebridge: no chat card or contact file of that Agent is held")
 	}
 	return removed, nil
@@ -473,6 +507,13 @@ type ChatStatusReport struct {
 	CurrentKeyProblem      string            `json:"current_key_problem,omitempty"`
 	PeerCards              []PeerCardView    `json:"peer_cards"`
 	Outbox                 []RelayOutboxView `json:"outbox"`
+	// Rooms are the rooms whose rosters admitted peer cards, and
+	// RoomAdmissions each such peer's admissions.
+	Rooms          []RoomCardsView     `json:"rooms"`
+	RoomAdmissions []RoomAdmissionView `json:"room_admissions"`
+	// PeerEnvelopes are the journal's per-peer counts against the caps of 24
+	// chat and 16 kind-3 envelopes.
+	PeerEnvelopes []PeerEnvelopeCount `json:"peer_envelopes"`
 }
 
 // ReadChatStatus reads the chat lane's state without taking it over, so it
@@ -489,7 +530,8 @@ func ReadChatStatus(configPath string, now time.Time) (*ChatStatusReport, error)
 	report := &ChatStatusReport{
 		AgentID: config.AgentID, Relays: relays, CarrierSocket: config.Chat.CarrierSocket,
 		MessengerCarrierSocket: config.Chat.MessengerCarrierSocket, CardPath: config.Chat.CardPath,
-		PeerCards: []PeerCardView{}, Outbox: []RelayOutboxView{},
+		PeerCards: []PeerCardView{}, Outbox: []RelayOutboxView{}, Rooms: []RoomCardsView{},
+		RoomAdmissions: []RoomAdmissionView{}, PeerEnvelopes: []PeerEnvelopeCount{},
 	}
 	if key, published, keyErr := heldChatCard(config, now); keyErr != nil {
 		report.CurrentKeyProblem = strings.TrimPrefix(keyErr.Error(), "servicebridge: ")
@@ -516,6 +558,20 @@ func ReadChatStatus(configPath string, now time.Time) (*ChatStatusReport, error)
 	}
 	if outbox != nil {
 		report.Outbox = outbox
+	}
+	admissions, err := readRoomAdmissions(filepath.Join(root, relayChatRoomAdmissionsDir))
+	if err != nil {
+		return nil, err
+	}
+	if admissions != nil {
+		report.RoomAdmissions, report.Rooms = admissions, roomCardsViews(admissions)
+	}
+	counts, err := ReadPeerEnvelopeCounts(filepath.Join(root, relayChatOutboxDir), now)
+	if err != nil {
+		return nil, err
+	}
+	if counts != nil {
+		report.PeerEnvelopes = counts
 	}
 	return report, nil
 }

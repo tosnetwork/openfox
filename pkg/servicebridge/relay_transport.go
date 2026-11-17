@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tosnetwork/ai/messenger/pkg/relayframe"
 	"github.com/tosnetwork/ai/protocol/pkg/agentpacketrelay"
 	"github.com/tosnetwork/ai/protocol/pkg/agentpacketseal"
 )
@@ -78,6 +79,11 @@ type relayOutboxRecord struct {
 	Schema         string `json:"schema"`
 	Recipient      string `json:"recipient"`
 	IdempotencyKey string `json:"idempotency_key"`
+	// FrameKind is the relay frame kind of a chat packet (zero on the rail).
+	// It is set when the record is created, kept across every reseal and
+	// withdrawal, and present while the record holds no envelope, so the
+	// per-peer kind-3 count never decodes a packet.
+	FrameKind uint8 `json:"frame_kind,omitempty"`
 	// KeyID, Relays, EnvelopeID, EnvelopeBase64, ExpiresAtUnix, AckSecret
 	// and CardNotAfterUnix describe the current envelope; they are empty
 	// while a replacement waits for a valid card.
@@ -252,9 +258,9 @@ func (r relayOutboxRecord) revokedBy(now uint64) bool {
 // replace takes a fresh seal of the same packet as the current envelope,
 // keeping the withdrawals still due.
 func (r *relayOutboxRecord) replace(fresh relayOutboxRecord) {
-	withdrawals, background, residual := r.Withdrawals, r.Background, r.Residual
+	withdrawals, background, residual, kind := r.Withdrawals, r.Background, r.Residual, r.FrameKind
 	*r = fresh
-	r.Withdrawals, r.Background, r.Residual = withdrawals, background, residual
+	r.Withdrawals, r.Background, r.Residual, r.FrameKind = withdrawals, background, residual, kind
 }
 
 func (r relayOutboxRecord) pending() []string {
@@ -315,6 +321,9 @@ type RelayTransport struct {
 	// onQuarantined receives the name of each unreadable journal file moved
 	// to the quarantine directory.
 	onQuarantined func(name string)
+	// pace, when set, decides whether one deposit of a frame kind may go to
+	// a relay now and takes its token: the chat lane paces kind 3.
+	pace func(relay string, kind uint8) bool
 }
 
 // ErrRelayRecordTooLarge refuses a journal record above the bound the
@@ -558,9 +567,9 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 	if err != nil {
 		return errors.New("servicebridge: the journaled envelope does not decode")
 	}
-	var failures int
+	var failures, paced int
 	for _, relay := range record.pending() {
-		outcome := t.deposit(ctx, relay, envelope)
+		outcome := t.deposit(ctx, relay, envelope, record.FrameKind)
 		switch outcome {
 		case depositAccepted:
 			if t.afterDeposit != nil {
@@ -577,6 +586,8 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 			if err := t.store(path, record); err != nil {
 				return err
 			}
+		case depositPaced:
+			paced++
 		default:
 			failures++
 		}
@@ -591,6 +602,9 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 			return err
 		}
 		return ErrRelayResealed
+	}
+	if failures == 0 && paced > 0 {
+		return ErrRelayPaced
 	}
 	return fmt.Errorf("%w (%d relays failed)", ErrRelayUndelivered, failures)
 }
@@ -634,7 +648,8 @@ func (t *RelayTransport) seal(ctx context.Context, packet OutboundPacket, seals 
 	}
 	return relayOutboxRecord{
 		Schema: relayOutboxSchema, Recipient: packet.RecipientAgentID, IdempotencyKey: packet.IdempotencyKey,
-		KeyID: agentpacketseal.KeyIDText(card.Key.KeyID), Relays: append([]string(nil), card.Card.Relays...),
+		FrameKind: packet.FrameKind,
+		KeyID:     agentpacketseal.KeyIDText(card.Key.KeyID), Relays: append([]string(nil), card.Card.Relays...),
 		EnvelopeID: hex.EncodeToString(
 			header.EnvelopeID[:],
 		), EnvelopeBase64: base64.StdEncoding.EncodeToString(envelope),
@@ -655,7 +670,7 @@ func (r relayOutboxRecord) journaledPacket() (OutboundPacket, bool) {
 	}
 	return OutboundPacket{
 		RecipientAgentID: r.Recipient, JSON: encoded, IdempotencyKey: r.IdempotencyKey,
-		ExpiresAtUnix: r.PacketExpiresAtUnix,
+		ExpiresAtUnix: r.PacketExpiresAtUnix, FrameKind: r.FrameKind,
 	}, true
 }
 
@@ -676,10 +691,23 @@ const (
 	depositFailed depositClass = iota
 	depositAccepted
 	depositConflict
+	// depositPaced is a deposit the kind-3 pacing held back: nothing was
+	// sent, and the relay is tried again later.
+	depositPaced
 )
 
-// deposit sends the journaled bytes to one relay with a bounded timeout.
-func (t *RelayTransport) deposit(ctx context.Context, relay string, envelope []byte) depositClass {
+// ErrRelayPaced reports a send whose every pending deposit the per-relay
+// kind-3 pacing held back: nothing was sent, and the same packet is tried
+// again later under the same key.
+var ErrRelayPaced = errors.New("servicebridge: the room frame deposits to the recipient's relays are paced; " +
+	"try again later")
+
+// deposit sends the journaled bytes of a frame kind to one relay with a
+// bounded timeout, unless the pacing holds a deposit of that kind back.
+func (t *RelayTransport) deposit(ctx context.Context, relay string, envelope []byte, kind uint8) depositClass {
+	if t.pace != nil && !t.pace(relay, kind) {
+		return depositPaced
+	}
 	client, err := t.pool.client(relay)
 	if err != nil {
 		return depositFailed
@@ -709,7 +737,7 @@ func (t *RelayTransport) load(path string) (relayOutboxRecord, bool, error) {
 		!idempotencyKeyPattern.MatchString(record.IdempotencyKey) || t.recordPath(record.IdempotencyKey) != path ||
 		(record.AckSecret != "" && !hex64Pattern.MatchString(record.AckSecret)) ||
 		len(record.Withdrawals) > maxRelayWithdrawals || record.Residual.Count < 0 ||
-		record.Residual.Count > maxRelayResidual {
+		record.Residual.Count > maxRelayResidual || record.FrameKind > relayframe.KindEvidence {
 		return relayOutboxRecord{}, false, errors.New("servicebridge: invalid relay envelope journal record")
 	}
 	for _, withdrawal := range record.Withdrawals {
@@ -1049,7 +1077,7 @@ func (t *RelayTransport) depositPending(ctx context.Context, record *relayOutbox
 	}
 	changed, failed := false, false
 	for _, relay := range pending {
-		switch t.deposit(ctx, relay, envelope) {
+		switch t.deposit(ctx, relay, envelope, record.FrameKind) {
 		case depositAccepted:
 			record.accept(relay, uint64(now.Unix()))
 			changed = true
@@ -1272,7 +1300,9 @@ func (t *RelayTransport) journalState(idempotencyKey string) (journalEntry, erro
 	}
 	packet, ok := record.journaledPacket()
 	if !ok {
-		packet = OutboundPacket{RecipientAgentID: record.Recipient, IdempotencyKey: idempotencyKey}
+		packet = OutboundPacket{
+			RecipientAgentID: record.Recipient, IdempotencyKey: idempotencyKey, FrameKind: record.FrameKind,
+		}
 	}
 	entry.Packet = packet
 	return entry, nil
@@ -1286,6 +1316,53 @@ type storedEnvelope struct {
 	// Pending reports a current envelope some relay of its card has not
 	// answered yet: a later deposit may still store it there.
 	Pending bool
+	// FrameKind is the frame kind its record journals; an unreadable record
+	// counts as kind 3, the kind with the tighter cap.
+	FrameKind uint8
+}
+
+// storedEnvelopes lists the envelopes of one record a relay may still hold
+// at now: the unexpired current envelope (accepted or not, since an
+// ambiguous deposit may have left it stored), each unexpired envelope still
+// to be withdrawn and the residual count of dropped withdrawals.
+func (r relayOutboxRecord) storedEnvelopes(now uint64) []storedEnvelope {
+	var out []storedEnvelope
+	if r.sealed() && now < r.ExpiresAtUnix {
+		var id [32]byte
+		if decodeHex32(r.EnvelopeID, &id) == nil {
+			out = append(out, storedEnvelope{
+				IdempotencyKey: r.IdempotencyKey, EnvelopeID: id, FrameKind: r.FrameKind,
+				Relays: append([]string(nil), r.Relays...), Pending: len(r.pending()) > 0,
+			})
+		}
+	}
+	for _, withdrawal := range r.Withdrawals {
+		var id [32]byte
+		if now >= withdrawal.ExpiresAtUnix || decodeHex32(withdrawal.EnvelopeID, &id) != nil {
+			continue
+		}
+		// Relays whose withdrawal ended unconfirmed still count, until the
+		// envelope expires.
+		out = append(out, storedEnvelope{
+			IdempotencyKey: r.IdempotencyKey, EnvelopeID: id, Relays: withdrawal.storedAt(), FrameKind: r.FrameKind,
+		})
+	}
+	if r.Residual.Count > 0 && now < r.Residual.UntilUnix {
+		// Dropped withdrawals name no relay, so they are never taken for
+		// gone.
+		for range r.Residual.Count {
+			out = append(out, storedEnvelope{IdempotencyKey: r.IdempotencyKey, Pending: true, FrameKind: r.FrameKind})
+		}
+	}
+	return out
+}
+
+// unreadableStored is how an unreadable journal record counts for every
+// peer: one envelope, never taken for gone, of the kind with the tighter cap.
+func unreadableStored(name string) storedEnvelope {
+	return storedEnvelope{
+		IdempotencyKey: "idem_" + strings.TrimSuffix(name, ".json"), Pending: true, FrameKind: relayframe.KindRoom,
+	}
 }
 
 // storedFor lists, for one recipient, every envelope of the journal a relay
@@ -1319,41 +1396,88 @@ func (t *RelayTransport) storedFor(recipient string) ([]storedEnvelope, error) {
 			if t.handleUnreadable(entry.Name(), err) {
 				continue
 			}
-			out = append(out, storedEnvelope{
-				IdempotencyKey: "idem_" + strings.TrimSuffix(entry.Name(), ".json"), Pending: true,
-			})
+			out = append(out, unreadableStored(entry.Name()))
 			continue
 		}
 		if !found || record.Recipient != recipient {
 			continue
 		}
-		if record.sealed() && now < record.ExpiresAtUnix {
-			var id [32]byte
-			if decodeHex32(record.EnvelopeID, &id) == nil {
-				out = append(out, storedEnvelope{
-					IdempotencyKey: record.IdempotencyKey, EnvelopeID: id,
-					Relays: append([]string(nil), record.Relays...), Pending: len(record.pending()) > 0,
-				})
+		out = append(out, record.storedEnvelopes(now)...)
+	}
+	return out, nil
+}
+
+// PeerEnvelopeCount is what the envelope journal says a relay may still
+// hold for one peer: every chat envelope and the kind-3 ones among them,
+// beside their caps. It counts from the journal alone; the carrier also
+// drops envelopes no relay lists any more when a count reaches its cap.
+type PeerEnvelopeCount struct {
+	AgentID           string `json:"agent_id"`
+	Envelopes         int    `json:"envelopes"`
+	EnvelopeCap       int    `json:"envelope_cap"`
+	RoomEnvelopes     int    `json:"room_envelopes"`
+	RoomEnvelopeCap   int    `json:"room_envelope_cap"`
+	UnreadableCounted int    `json:"unreadable_counted,omitempty"`
+}
+
+// ReadPeerEnvelopeCounts counts a journal's stored envelopes per peer
+// without taking ownership of it or moving anything: an unreadable record
+// counts once for every peer, as the carrier counts it.
+func ReadPeerEnvelopeCounts(directory string, now time.Time) ([]PeerEnvelopeCount, error) {
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.New("servicebridge: read the relay envelope journal")
+	}
+	reader := &RelayTransport{directory: directory}
+	at := uint64(0)
+	if unix := now.Unix(); unix > 0 {
+		at = uint64(unix)
+	}
+	counts := map[string]*PeerEnvelopeCount{}
+	unreadable := 0
+	for _, entry := range entries {
+		if !relayOutboxFilePattern.MatchString(entry.Name()) {
+			continue
+		}
+		record, found, err := reader.load(filepath.Join(directory, entry.Name()))
+		if err != nil {
+			unreadable++
+			continue
+		}
+		if !found {
+			continue
+		}
+		stored := record.storedEnvelopes(at)
+		if len(stored) == 0 {
+			continue
+		}
+		count := counts[record.Recipient]
+		if count == nil {
+			count = &PeerEnvelopeCount{AgentID: record.Recipient}
+			counts[record.Recipient] = count
+		}
+		for _, envelope := range stored {
+			count.Envelopes++
+			if envelope.FrameKind == relayframe.KindRoom {
+				count.RoomEnvelopes++
 			}
 		}
-		for _, withdrawal := range record.Withdrawals {
-			var id [32]byte
-			if now >= withdrawal.ExpiresAtUnix || decodeHex32(withdrawal.EnvelopeID, &id) != nil {
-				continue
-			}
-			// Relays whose withdrawal ended unconfirmed still count, until
-			// the envelope expires.
-			out = append(out, storedEnvelope{
-				IdempotencyKey: record.IdempotencyKey, EnvelopeID: id, Relays: withdrawal.storedAt(),
-			})
-		}
-		if record.Residual.Count > 0 && now < record.Residual.UntilUnix {
-			// Dropped withdrawals name no relay, so they are never taken for
-			// gone.
-			for range record.Residual.Count {
-				out = append(out, storedEnvelope{IdempotencyKey: record.IdempotencyKey, Pending: true})
-			}
-		}
+	}
+	agents := make([]string, 0, len(counts))
+	for agent := range counts {
+		agents = append(agents, agent)
+	}
+	slices.Sort(agents)
+	out := make([]PeerEnvelopeCount, 0, len(agents))
+	for _, agent := range agents {
+		count := *counts[agent]
+		count.Envelopes, count.RoomEnvelopes = count.Envelopes+unreadable, count.RoomEnvelopes+unreadable
+		count.EnvelopeCap, count.RoomEnvelopeCap = ChatPeerEnvelopeCap, ChatPeerRoomEnvelopeCap
+		count.UnreadableCounted = unreadable
+		out = append(out, count)
 	}
 	return out, nil
 }
@@ -1362,8 +1486,11 @@ func (t *RelayTransport) storedFor(recipient string) ([]storedEnvelope, error) {
 type RelayOutboxView struct {
 	// Unreadable names a journal file that failed to load; the other
 	// fields are then empty.
-	Unreadable    string   `json:"unreadable,omitempty"`
-	Recipient     string   `json:"recipient"`
+	Unreadable string `json:"unreadable,omitempty"`
+	Recipient  string `json:"recipient"`
+	// FrameKind is the relay frame kind a chat record carries (zero on the
+	// rail).
+	FrameKind     uint8    `json:"frame_kind,omitempty"`
 	EnvelopeID    string   `json:"envelope_id"`
 	KeyID         string   `json:"recipient_key_id"`
 	ExpiresAtUnix uint64   `json:"expires_at_unix"`
@@ -1416,7 +1543,8 @@ func ReadRelayOutbox(directory string) ([]RelayOutboxView, error) {
 			continue
 		}
 		view := RelayOutboxView{
-			Recipient: record.Recipient, EnvelopeID: record.EnvelopeID, KeyID: record.KeyID,
+			Recipient: record.Recipient, FrameKind: record.FrameKind, EnvelopeID: record.EnvelopeID,
+			KeyID:         record.KeyID,
 			ExpiresAtUnix: record.ExpiresAtUnix, Accepted: append([]string{}, record.Accepted...),
 			Conflicts: record.Conflicts, Pending: append([]string{}, record.pending()...), Seals: record.Seals,
 			AwaitingCard: !record.sealed() && !record.Withdrawn, Withdrawn: record.Withdrawn,

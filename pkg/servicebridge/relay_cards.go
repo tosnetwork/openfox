@@ -45,6 +45,10 @@ var ErrCardRefused = errors.New("servicebridge: the encryption key card is refus
 // answer; the card is kept and checked again later.
 var errCardUnavailable = errors.New("servicebridge: the encryption key card cannot be checked now")
 
+// errPeerCardsFull reports a card of a new peer refused because the card
+// directory holds its maximum of peers, none of whose cards has expired.
+var errPeerCardsFull = errors.New("servicebridge: the peer card directory is full")
+
 // CapabilityOwners reads a Capability's owner from finalized state.
 type CapabilityOwners interface {
 	CapabilityOwner(ctx context.Context, capabilityID string) (string, error)
@@ -294,19 +298,72 @@ func (c *peerCard) KeyID() [agentpacketseal.KeyIDSize]byte { return c.Key.KeyID 
 // owner, read from chain now and at every later verification: an offer
 // file is unsigned, so it is never the source of the owner.
 func (p *PeerCards) Learn(ctx context.Context, raw []byte, agentID, capabilityID string) error {
-	if p == nil || ctx == nil || !agentIDPattern.MatchString(agentID) {
-		return errors.New("servicebridge: invalid key card learning")
-	}
-	card, err := decodePeerCard(raw, agentID, capabilityID)
+	card, err := p.verified(ctx, raw, agentID, capabilityID)
 	if err != nil {
 		return err
 	}
+	return p.keep(card)
+}
+
+// verified decodes a card offered for agentID and verifies it against
+// finalized state now, without storing it.
+func (p *PeerCards) verified(ctx context.Context, raw []byte, agentID, capabilityID string) (*peerCard, error) {
+	if p == nil || ctx == nil || !agentIDPattern.MatchString(agentID) {
+		return nil, errors.New("servicebridge: invalid key card learning")
+	}
+	card, err := decodePeerCard(raw, agentID, capabilityID)
+	if err != nil {
+		return nil, err
+	}
 	if err := p.verify(ctx, card); err != nil {
-		return err
+		return nil, err
+	}
+	return card, nil
+}
+
+// keep stores a card verified just before.
+func (p *PeerCards) keep(card *peerCard) error {
+	if p == nil || card == nil {
+		return errors.New("servicebridge: invalid key card learning")
 	}
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	return p.storeLocked(card)
+}
+
+// holdsAny reports whether any card of agentID is stored, expired or not:
+// what an admission decision counts as held.
+func (p *PeerCards) holdsAny(agentID string) (bool, error) {
+	if p == nil {
+		return false, errors.New("servicebridge: invalid peer card lookup")
+	}
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	if err := p.reloadLocked(); err != nil {
+		return false, fmt.Errorf("servicebridge: read the peer card directory: %w", err)
+	}
+	return len(p.cards[agentID]) > 0, nil
+}
+
+// forgetAgent removes every stored card of agentID, file and memory, and
+// reports how many it removed.
+func (p *PeerCards) forgetAgent(agentID string) (int, error) {
+	if p == nil || !agentIDPattern.MatchString(agentID) {
+		return 0, errors.New("servicebridge: invalid peer card removal")
+	}
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	if err := p.reloadLocked(); err != nil {
+		return 0, fmt.Errorf("servicebridge: read the peer card directory: %w", err)
+	}
+	list := p.cards[agentID]
+	for _, card := range list {
+		if err := p.removeFile(card); err != nil {
+			return 0, err
+		}
+	}
+	delete(p.cards, agentID)
+	return len(list), nil
 }
 
 // verify checks a card against finalized state now: the signature by a
@@ -360,7 +417,7 @@ func (p *PeerCards) storeLocked(card *peerCard) error {
 	if existing == nil && len(p.cards) >= maxCardPeers {
 		p.pruneLocked(now)
 		if len(p.cards) >= maxCardPeers {
-			return errors.New("servicebridge: the peer card directory is full")
+			return errPeerCardsFull
 		}
 	}
 	for index, held := range existing {

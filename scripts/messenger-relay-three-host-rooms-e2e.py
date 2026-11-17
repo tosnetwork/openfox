@@ -119,8 +119,44 @@ mr1.relay_argv = relay_argv
 
 
 def daemon_config(node: str) -> dict:
-    config = _mr1_daemon_config(node)
-    config["admission"]["known_agent_ids"] = sorted(RUN[p]["agent"] for p in ALLOW[node])
+    """The M-R1 daemon configuration with this run's allow-lists and the
+    room runtime (the OpenMLS driver and the own relays' TTL)."""
+    identity = RUN[node]["identity"]
+    config = {
+        "schema": "tos.messaging.daemon-config.v10",
+        "state_dir": str(mdir(node) / "state"),
+        "socket_path": str(sock(node, "runtime.sock")),
+        "owner_socket_path": str(sock(node, "owner.sock")),
+        "network_id": RUN["domain"]["network_id"],
+        "genesis_root_hash": RUN["domain"]["genesis_root"],
+        "genesis_file_hash": RUN["domain"]["genesis_file"],
+        "registries": [{"code_hash": RUN["domain"]["code_hash"],
+                        "code_boc": (ROOT / "etc" / "registry-code.boc").read_text().strip(), "workchain": 0}],
+        "chain_endpoints": fd.rpc_endpoints(),
+        "chain_quorum": 2,
+        "native_registry_code_hash": RUN["domain"]["code_hash"],
+        "chain_checkpoint_path": str(mdir(node) / "state" / "chain.checkpoint"),
+        "delegation_path": str(mdir(node) / "delegation.json"),
+        "discovery": {"mode": "contact-files", "contact_dir": str(mdir(node) / "contacts"),
+                      "refresh_interval_seconds": 60},
+        "publication": {"mode": "prekeys", "device_socket_path": str(sock(node, "device.sock")),
+                        "device_ids": [identity["device_id"]], "algorithm_id": "tos.messaging.e2ee.x3dh-aes256gcm-dr.v2",
+                        "generation_lifetime_seconds": 3600, "replenish_before_seconds": 600,
+                        "check_interval_seconds": 60},
+        "agent_id": RUN[node]["agent"], "endpoint_id": identity["endpoint_id"], "device_id": identity["device_id"],
+        "owner_public_key": identity["owner_public_key"],
+        "admission": {"rule": "allow-list", "unknown": "require-admission",
+                      "known_agent_ids": sorted(RUN[p]["agent"] for p in ALLOW[node]),
+                      "max_content_bytes": 128 << 10, "max_clock_skew_seconds": 300},
+        "firewall": {"unattended_ceiling": "message", "own_initiative_ceiling": "message"},
+        "transport": "agent-packet-relay",
+        "relay_carriage": {"carry_socket_path": str(sock(node, "chat-carrier.sock")),
+                           "listen_socket_path": str(sock(node, "carrier.sock")),
+                           "card_path": str(card_path(node)), "evidence_export_dir": str(mdir(node) / "export"),
+                           "timeout_seconds": mr1.CHAT_TIMEOUT, "redeposit_interval_seconds": REDEPOSIT},
+        "sweep_interval_seconds": 2,
+        "maintenance_interval_seconds": 3600,
+    }
     carriage = config["relay_carriage"]
     carriage["mls_driver_path"] = str(ROOT / "bin" / "tos-openmls-driver")
     carriage["own_relay_max_ttl_seconds"] = RELAY_TTL
@@ -133,7 +169,6 @@ def daemon_config(node: str) -> dict:
     return config
 
 
-_mr1_daemon_config = mr1.daemon_config
 mr1.daemon_config = daemon_config
 
 
@@ -181,6 +216,9 @@ def chat_owner_socket() -> None:
 
 
 def room_settings_check() -> None:
+    fd.evidence["daemon_configuration"]["admission"] = {
+        node: "allow-list: " + (", ".join(p.upper() for p in ALLOW[node]) or "nobody") +
+        " (unknown senders: require-admission)" for node in NODES}
     lines = {}
     for node in NODES:
         check = in_ns(node, [ROOT / "bin" / "tos-messengerd", "-config", mdir(node) / "config.json",
@@ -545,6 +583,595 @@ def create_and_add_b() -> None:
     results = exchange(("a", "b"), "ab")
     gate("2", "A and B exchange room messages, each applied once", all(
         r["applied"] and not r["listed_again_after"] for r in results.values()), results)
+
+
+@step
+def invite_claimed() -> None:
+    """Item 1, second half: generation 2 of A's first copy is deposited and
+    generation 1 withdrawn while C is offline; C, restarted, admits A's copy
+    by the invite, and the claim makes A a contact of C."""
+    m = SENT["inv1"]["event_id"]
+    second = poll(lambda: mr1.delivery_of("a", m).get("relay_generation", 0) >= 2 and mr1.delivery_of("a", m),
+                  REDEPOSIT + 600, 10)
+    gen1 = RUN.get("inv1_gen1", "")
+    gone = poll(lambda: (lambda codes: codes if all(code in (404, 410) for code in codes.values()) else None)(
+        {relay: mr1.envelope_status(relay, RUN["c"]["agent"], gen1) for relay in RELAYS}), 300, 5)
+    gate("1", "while C is offline A re-deposits its first copy as generation 2 (the same token sealed again) and "
+         "withdraws generation 1", bool(second) and bool(gone) and all(
+             row["frame"].get("carries_admission_token") for row in mr1.copy_frames("a", m)),
+         {"generations": (second or {}).get("relay_generations"), "generation_1_status": gone})
+    start_node("c", "after the invite copy was held")
+    done = mr1.wait_delivered("a", m)
+    applied = mr1.apply_once("c", "inv1")
+    gate("1", "C, with no allow-list entry for A, admits A's first copy by the invite and its runtime applies it "
+         "once; A's copy becomes delivered", done.get("state") == "delivered" and applied["applied"] and
+         not applied["listed_again_after"], {"applied": applied})
+    # Another generation of the same Event: a fresh envelope carrying A's
+    # generation-1 frame, signed by A and sealed to C's card.
+    record_ = mr1.copy_frames("a", m)[0]["record"]
+    payload = base64.b64decode(json.loads(base64.b64decode(record_["packet_base64"]))["payload_base64"])
+    frame_file = nd("a") / "handed" / "inv1-frame.bin"
+    frame_file.write_bytes(payload)
+    replay = craft("a", "c", hand_file(card_path("c"), "a", "card-c.json"), "inv1-again", payload=frame_file)
+    status = deposit("relay1", RUN["c"]["agent"], replay["envelope_id"], replay["path"].read_bytes())
+    dup = poll(lambda: [row for row in mr1.copy_frames("c", m, kind=2)
+                        if row["frame"].get("ack_outcome") == "duplicate"], 180, 2)
+    gate("1", "another generation of that Event is answered `duplicate` and not listed to C's runtime again",
+         status in (200, 201) and bool(dup) and m not in inbound_texts("c"), {"deposit": status})
+    m2 = (mr1.send("a", "c", "inv2"), mr1.require_sent("inv2"))[1]
+    done2 = mr1.wait_delivered("a", m2)
+    applied2 = mr1.apply_once("c", "inv2")
+    carries = [row["frame"].get("carries_admission_token") for row in mr1.copy_frames("a", m2)]
+    gate("1", "the claim made A a known contact of C (D12): A's next Event carries no token and is admitted",
+         done2.get("state") == "delivered" and applied2["applied"] and not any(carries),
+         {"carries_token": carries, "c_files_naming_a": mr1.files_naming(mdir("c") / "state",
+                                                                          [RUN["a"]["agent"]])[:12]})
+
+
+@step
+def add_c() -> None:
+    """Items 2 and 18: A adds C (a second Commit and Welcome); B, already
+    joined, applies the Add Commit, accepts the roster of added members and
+    learns C's card and evidence from it; all three exchange messages."""
+    added = room_op("a", "add", "c")
+    invited = wait_room("c", lambda row: row.get("state") == "invited", 300)
+    joined = room_op("c", "join", "a")
+    c_room = joined_at("c", 3)
+    b_room = joined_at("b", 3)
+    ROOM_MEMBERS.add("c")
+    gate("2", "A adds C: the room.invite reaches C, C's owner joins, A commits the Add (room epoch 3), C installs "
+         "its Welcome and roster and B applies the Add Commit", bool(added.get("ok")) and invited.get("state") ==
+         "invited" and bool(joined.get("ok")) and c_room.get("room_epoch") == 3 and b_room.get("room_epoch") == 3,
+         {"b": b_room, "c": c_room})
+    objects = handshake_objects()
+    welcome_c = [d for d, o in objects.items() if o["type"] == 2 and RUN["c"]["agent"] in o["members"]]
+    parts = {d: sorted(objects[d]["members"][RUN["c"]["agent"]]["parts"]) for d in welcome_c}
+    RUN["welcome_c"] = welcome_c
+    if PART_BYTES:
+        gate("2", f"C's Welcome is cut at the test part size P = {PART_BYTES} into several parts and reassembled "
+             "by C", bool(welcome_c) and all(len(v) > 1 for v in parts.values()), parts)
+    else:
+        gate("2", "C's Welcome is carried at the production cut (the local record; the split of a handshake "
+             "object at a test P is shown in the three-host record)", bool(welcome_c), parts)
+    rosters_b = [d for d, o in objects.items() if o["type"] == 4 and RUN["b"]["agent"] in o["members"] and
+                 o["room_epoch"] == 3]
+    acks = {d[:16]: [f.get("ack_outcome") for f in acks_for("b", d)] for d in rosters_b}
+    cards_b = mr1.peer_cards("b")
+    evidence = mdir("b") / "state" / "relay-evidence" / (RUN["c"]["agent"][6:] + ".json")
+    gate("18", "B, already joined, accepts the roster of added members (answered `accepted`, not `room-fork`) and "
+         "learns C's chat card and relay evidence from it",
+         bool(rosters_b) and all(v and set(v) <= {"accepted"} for v in acks.values()) and
+         RUN["c"]["agent"] in cards_b and evidence.is_file(), {"acks": acks, "b_holds_c_card":
+                                                                RUN["c"]["agent"] in cards_b})
+    results = exchange(("a", "b", "c"), "abc")
+    gate("2", "all three exchange room messages, each applied once", all(
+        r["applied"] and not r["listed_again_after"] for r in results.values()), results)
+    gate("18", "B and C, no contacts of each other, exchange room messages",
+         results.get("b->c", {}).get("applied") and results.get("c->b", {}).get("applied"),
+         {k: results.get(k) for k in ("b->c", "c->b")})
+    RUN["renewal"] = [{"at": now(), "b->c": results.get("b->c"), "c->b": results.get("c->b")}]
+
+
+def state_view(node: str) -> dict:
+    """Digests of what a refusal must leave unchanged at a node: its Messenger
+    journal's Event and admission records, contacts, rollback boundary and the
+    OpenFox chat-card store."""
+    base = mdir(node) / "state"
+    view = {}
+    for name in sorted(p.name for p in base.iterdir()) if base.is_dir() else []:
+        path = base / name
+        if name in VOLATILE_STATE:
+            continue
+        files = sorted(f for f in path.rglob("*") if f.is_file()) if path.is_dir() else [path]
+        digest = hashlib.sha256()
+        for f in files:
+            digest.update(str(f.relative_to(base)).encode() + b"\0")
+            try:
+                digest.update(f.read_bytes())
+            except OSError:
+                pass
+        view[name] = digest.hexdigest()[:16]
+    peers = nd(node) / "state" / "relay" / "chat-peers"
+    view["openfox chat-peers"] = hashlib.sha256(b"".join(
+        f.read_bytes() for f in sorted(peers.rglob("*")) if f.is_file()) if peers.is_dir() else b"").hexdigest()[:16]
+    return view
+
+
+# State a node rewrites on its own timers, whatever it receives.
+VOLATILE_STATE = {"chain.checkpoint", "prekeys", "publication", "LOCK", "maintenance"}
+
+
+@step
+def refusals_at_c() -> None:
+    """Items 1 (refusals) and 12: B is a room member but no contact of C. A 1:1
+    copy of B's not naming the room meets C's normal policy and is refused;
+    B presenting the spent token, and B presenting a second invite that has
+    expired by the time C reads it, are refused too. No refusal changes C's
+    journal, contacts, rollback boundary or chat-card store."""
+    results = {}
+    for label, prepare in (("plain", None), ("spent", "spent"), ("expired", "expired")):
+        if prepare == "spent":
+            token = hand_file(nd("a") / "handed" / "invite-1.token", "b", "invite-1.token")
+            results["present-spent"] = present_invite("b", "c", token, RUN["invite1"]["expires_at"], "spent")
+        if prepare == "expired":
+            expires = now() + 150
+            token = issue_invite("c", "b", expires, "2")
+            results["present-expired"] = present_invite("b", "c", token, expires, "expired")
+            stop_node("c")
+        before = state_view("c")
+        m = (mr1.send("b", "c", f"refused-{label}"), mr1.require_sent(f"refused-{label}"))[1]
+        sent = poll(lambda: [r for r in mr1.copy_frames("b", m) if r["record"].get("accepted")], 120, 1) or []
+        envelopes = [r["record"]["envelope_id"] for r in sent]
+        if prepare == "expired":
+            poll(lambda: now() > expires + 5 or None, 400, 5)
+            start_node("c", "after the second invite expired")
+            before = state_view("c")
+        acked = poll(lambda: all(all(e not in listed_ids(relay, RUN["c"]["agent"]) for relay in RELAYS)
+                                 for e in envelopes) or None, 300, 3)
+        time.sleep(5)
+        after = state_view("c")
+        changed = sorted(k for k in before if before.get(k) != after.get(k))
+        results[label] = {"carries_token": [r["frame"].get("carries_admission_token") for r in sent],
+                          "relay_acknowledged": bool(acked), "listed_at_c": m in inbound_texts("c"),
+                          "state_changed": changed, "b_delivery": mr1.delivery_of("b", m).get("state")}
+        ok = bool(envelopes) and bool(acked) and not results[label]["listed_at_c"] and not changed
+        item = "12" if label == "plain" else "1"
+        gate(item, {"plain": "a 1:1 copy of B (a member, no contact of C) not naming the room meets C's normal "
+                             "policy: refused and relay-acknowledged, C's state unchanged",
+                    "spent": "B presenting A's spent token: the copy carries it, C re-runs its policy without it "
+                             "and refuses; C's journal, contacts, rollback boundary and chat-card store unchanged",
+                    "expired": "B presenting C's second invite, expired when C reads the copy: refused; C's "
+                               "state unchanged"}[label], ok, results[label])
+    fd.evidence["refusals_at_c"] = {k: v for k, v in results.items() if not k.startswith("present")}
+    gate("12", "B's room messages are admitted by room-scoped admission while its 1:1 copies are refused",
+         RUN["renewal"][0]["b->c"]["applied"], RUN["renewal"][0])
+
+
+def filler_joins(filler: str, room_epoch: int) -> dict:
+    """A adds a filler joiner, whose owner joins; the Add is one Commit."""
+    added = room_op("a", "add", filler)
+    wait_room(filler, lambda row: row.get("state") == "invited", 300)
+    joined = room_op(filler, "join", "a")
+    row = joined_at(filler, room_epoch)
+    require(f"filler {filler.upper()} joins at room epoch {room_epoch} (one Add Commit by A)",
+            bool(added.get("ok")) and bool(joined.get("ok")) and row.get("room_epoch") == room_epoch, row)
+    return row
+
+
+def snapshot_held(name: str) -> None:
+    RUN.setdefault("snapshots", {})[name] = snapshot(name)
+
+
+def ack_time(node: str, object_digest: str) -> int:
+    times = [row["record"].get("accepted_at_unix", 0) for row in room_acks(node)
+             if row["frame"].get("room_ack_object_digest") == object_digest]
+    return min(times) if times else 0
+
+
+def deposit_times(node: str, object_digest: str, recipient: str) -> list[int]:
+    return sorted(row["record"].get("accepted_at_unix", 0) for row in room_frames(node)
+                  if row["frame"].get("object_digest") == object_digest and
+                  row["packet"]["recipient_agent_id"] == RUN[recipient]["agent"])
+
+
+def commits_to(member: str, after_epoch: int) -> list[tuple[int, str]]:
+    return sorted((o["mls_epoch"] or 0, d) for d, o in handshake_objects().items()
+                  if o["type"] == 1 and RUN[member]["agent"] in o["members"] and (o["room_epoch"] or 0) > after_epoch)
+
+
+@step
+def catch_up_in_order() -> None:
+    """Items 3 and 14: C is stopped while A commits twice (adds and removes
+    filler D) and B posts in the newest epoch; on restart C gets the second
+    Commit only after acking the first, applies both in order and opens the
+    buffered newer-epoch message."""
+    base = room_of("c")
+    stop_node("c")
+    stopped_at = now()
+    filler_joins("d", base["room_epoch"] + 1)
+    removed = room_op("a", "remove", "d")
+    a_room = wait_room("a", lambda row: row.get("room_epoch", 0) >= base["room_epoch"] + 2, 300)
+    b_room = wait_room("b", lambda row: row.get("room_epoch", 0) >= base["room_epoch"] + 2, 600)
+    require("A removes D (the second Commit while C is stopped); B follows", bool(removed.get("ok")) and
+            b_room.get("room_epoch") == a_room.get("room_epoch"), {"a": a_room, "b": b_room})
+    newer = compose("b", "buffered-b")
+    snapshot_held("c-catch-up-held")
+    if AUTHORIZATION:
+        poll(lambda: now() > stopped_at + AUTHORIZATION + 30 or None, AUTHORIZATION + 120, 5)
+    offline = now() - stopped_at
+    start_node("c", "after the catch-up gap")
+    c_room = joined_at("c", a_room["room_epoch"], 900)
+    commits = commits_to("c", base["room_epoch"])
+    order = [{"mls_epoch": e, "first_deposit": (deposit_times("a", d, "c") or [0])[0], "acked": ack_time("c", d)}
+             for e, d in commits]
+    in_order = len(order) >= 2 and all(order[i + 1]["first_deposit"] >= order[i]["acked"] > 0
+                                       for i in range(len(order) - 1))
+    gate("3", "C, restarted, got the second Commit only after its room ack of the first and applied both in "
+         "epoch order", c_room.get("room_epoch") == a_room.get("room_epoch") and in_order,
+         {"commits": order, "c": c_room, "offline_seconds": offline})
+    opened = room_applied("c", "buffered-b", 600)
+    gate("3", "C opens B's message sealed in the newer epoch, buffered until the Commits were applied",
+         opened["applied"], {"opened": opened, "sealed_at_mls_epoch": newer.get("mls_epoch")})
+    results = exchange(("c",), "after-catch-up")
+    if AUTHORIZATION:
+        gate("14", f"C was stopped {offline} s, longer than the test authorization lifetime "
+             f"({AUTHORIZATION} s) and shorter than the test handshake retention ({RETENTION} s); it applied both "
+             "Commits in order and exchanges messages", offline > AUTHORIZATION and
+             (not RETENTION or offline < RETENTION) and in_order and all(r["applied"] for r in results.values()),
+             {"offline_seconds": offline, "results": results})
+    else:
+        gate("3", "C exchanges messages after the catch-up", all(r["applied"] for r in results.values()), results)
+    renewal_exchange()
+
+
+def driver_children(node: str) -> list[int]:
+    daemon = mr1.pids(mr1.daemon_pattern(node))
+    out = []
+    for pid in mr1.pids(f"^{ROOT / 'bin' / 'tos-openmls-driver'}"):
+        try:
+            parent = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        if parent in daemon:
+            out.append(pid)
+    return out
+
+
+@step
+def offline_beyond_ttl() -> None:
+    """Items 4 and 15 (C's crash window): B is stopped beyond the relay TTL
+    while A commits (adds filler E) and C posts. C's daemon is paused while
+    the Commit reaches it, its serve killed after handing the object over,
+    so C applies it with no room ack sent; restarted, C answers the same
+    envelope `duplicate`. B, restarted after the TTL, applies the
+    re-deposited Commit (generations and withdrawals recorded) and gets a
+    room.gap naming C."""
+    base = room_of("b")
+    stop_node("b")
+    stopped_at = now()
+    mr1.signal_pattern(mr1.daemon_pattern("c"), "STOP")
+    filler_joins("e", base["room_epoch"] + 1)
+    commit = (commits_to("c", base["room_epoch"]) or [(0, "")])[-1][1]
+    RUN["commit_e"] = commit
+    unanswered = "the Messenger carrier socket did not answer"
+    before = log_text("serve-c").count(unanswered)
+    waiting = poll(lambda: log_text("serve-c").count(unanswered) > before, 480, 2)
+    stop_serve("c", "KILL")
+    mr1.signal_pattern(mr1.daemon_pattern("c"), "CONT")
+    mr1.continue_wrapper("messengerd-c")
+    c_room = wait_room("c", lambda row: row.get("room_epoch", 0) > base["room_epoch"], 120)
+    gate("15", "C's serve is killed after handing the Commit to C's paused daemon: the daemon applies it, no room "
+         "ack is sent and the envelope stays at the relays", bool(waiting) and
+         c_room.get("room_epoch") == base["room_epoch"] + 1 and not acks_for("c", commit),
+         {"c": c_room, "acks": acks_for("c", commit)})
+    start_serve("c", "after the crash window")
+    dup = poll(lambda: [f for f in acks_for("c", commit) if f.get("ack_outcome") == "duplicate"], 600, 3)
+    gate("15", "restarted, C finds the same envelope, answers it `duplicate` and its room stays usable",
+         bool(dup), {"acks": acks_for("c", commit)})
+    lost = compose("c", "lost-to-b")
+    poll(lambda: now() > stopped_at + RELAY_TTL + 120 or None, RELAY_TTL + 400, 10)
+    generations = sorted({row["record"]["envelope_id"] for row in room_frames("a")
+                          if row["frame"].get("object_digest") == commit and
+                          row["packet"]["recipient_agent_id"] == RUN["b"]["agent"]})
+    parts = {row["frame"].get("part_sha256") for row in room_frames("a")
+             if row["frame"].get("object_digest") == commit and
+             row["packet"]["recipient_agent_id"] == RUN["b"]["agent"] and row["frame"].get("part_index") == 0}
+    withdrawn = {e[:12]: {relay: mr1.envelope_status(relay, RUN["b"]["agent"], e) for relay in RELAYS}
+                 for e in generations[:-1]}
+    gate("4", f"B is stopped {now() - stopped_at} s, beyond the relay TTL ({RELAY_TTL} s); A re-deposits its Commit "
+         "to B in new generations, byte-identical, and withdraws the older ones",
+         len(generations) >= 2 and len(parts) == 1 and all(code in (404, 410) for codes in withdrawn.values()
+                                                            for code in codes.values()),
+         {"generations": len(generations), "withdrawn": withdrawn})
+    start_node("b", "after the TTL")
+    b_room = joined_at("b", base["room_epoch"] + 1, 900)
+    gate("4", "B, restarted, applies the re-deposited Commit", b_room.get("room_epoch") == base["room_epoch"] + 1,
+         b_room)
+    compose("c", "after-gap-c")
+    applied = room_applied("b", "after-gap-c", 600)
+    gap = poll(lambda: [g for g in gaps("b") if g.get("sender_agent_id") == RUN["c"]["agent"]] or None,
+               RELAY_TTL + 900, 15)
+    gate("4", "B never received C's message sealed while it was offline (expired at the relays) and gets a "
+         "room.gap naming C once C's next message arrived", applied["applied"] and bool(gap) and
+         SENT["lost-to-b"]["event_id"] not in inbound_texts("b"), {"gap": gap, "next": applied})
+    renewal_exchange()
+
+
+@step
+def crafted_objects() -> None:
+    """Items 6 (live refusal) and 10 (the production cut): B, a member but not
+    the authority, sends C a Commit (an MLS-only refresh shape with a 1 MiB
+    body) cut by the production rule into 6 parts. C reassembles and refuses
+    it `not-authentic`; every part is relay-acknowledged, nothing changes."""
+    out = nd("b") / "handed" / "crafted-commit"
+    room = room_of("c")
+    contact = hand_file(mdir("b") / "export" / "relay-contact.json", "b", "own-relay-contact.json")
+    cut = json.loads(in_ns("b", [ROOT / "bin" / "messenger-relay-e2e-tool", "room-frames", "--type", "1",
+                                 "--room", ROOM, "--room-epoch", str(room["room_epoch"]), "--mls-epoch",
+                                 str(room["mls_epoch"] + 1), "--body-bytes", str(1 << 20), "--contact", contact,
+                                 "--out-dir", out], "messenger-relay-e2e-tool room-frames", timeout=60).stdout)
+    card = hand_file(card_path("c"), "b", "card-c.json")
+    stop_serve("c")
+    envelopes = []
+    for index in range(cut["parts"]):
+        crafted = craft("b", "c", card, f"crafted-part-{index}", payload=out / f"part-{index}.bin")
+        status = deposit("relay2", RUN["c"]["agent"], crafted["envelope_id"], crafted["path"].read_bytes())
+        envelopes.append({"envelope_id": crafted["envelope_id"], "bytes": crafted["bytes"], "deposit": status})
+    snapshot_held("crafted-6-part-held")
+    sizes = cut["frame_bytes"]
+    stored = mr1.relay_envelope_sizes(mr1.SNAPSHOTS / "crafted-6-part-held" / "relay2")
+    gate("10", "a production-cut 6-part object (1 MiB body): parts 0..4 are 190,464-byte frames, the last is its "
+         "smallest bucket, and each stored envelope matches 1,373 + F + 4·⌈B/3⌉",
+         cut["parts"] == 6 and sizes[:-1] == [190464] * 5 and sizes[-1] in mr1.relayframe_buckets() and
+         all(e["deposit"] == 201 for e in envelopes) and
+         all(mr1.relayframe_envelope_size(e["bytes"]) for e in envelopes) and
+         all(mr1.relayframe_envelope_size(size) for size in stored),
+         {"cut": cut, "envelope_bytes": [e["bytes"] for e in envelopes]})
+    before = state_view("c")
+    start_serve("c", "after the crafted deposit")
+    acked = poll(lambda: all(e["envelope_id"] not in listed_ids("relay2", RUN["c"]["agent"]) for e in envelopes)
+                 or None, 300, 3)
+    after_room = room_of("c")
+    refused = [line for line in log_text("messengerd-c").splitlines() if "not-authentic" in line]
+    gate("6", "a Commit from B (a member, not the authority) is reassembled by C and refused `not-authentic`: "
+         "every part relay-acknowledged, C's room epoch and MLS epoch unchanged",
+         bool(acked) and after_room.get("mls_epoch") == room["mls_epoch"] and
+         after_room.get("room_epoch") == room["room_epoch"] and bool(refused),
+         {"room_before": room, "room_after": after_room, "refusal_lines": refused[-2:],
+          "state_changed": sorted(k for k in before if before[k] != state_view("c").get(k))})
+    fd.evidence["crafted_6_part_object"] = {"cut": cut, "envelopes": envelopes}
+    renewal_exchange()
+
+
+@step
+def remove_c_with_authority_crash() -> None:
+    """Items 5 and 15 (A's crash window): with C's serve stopped (A's Commit
+    adding E... already delivered; A's next Commit to C is in flight), A
+    removes E then C. A's daemon is killed while its OpenMLS driver runs
+    the Remove; after the restart the Remove is published once or the
+    decision is made again, and no member forks."""
+    stop_serve("c")
+    room_op("a", "remove", "e")
+    in_flight = poll(lambda: commits_to("c", room_of("a").get("room_epoch", 0) - 1) or None, 120, 2)
+    base = room_of("a")
+    holder = {}
+
+    def kill_during_driver() -> None:
+        children = poll(lambda: driver_children("a") or None, 60, 0.05)
+        if children:
+            mr1.signal_pattern(mr1.daemon_pattern("a"), "KILL")
+            holder["killed_during_driver"] = children
+    killer = threading.Thread(target=kill_during_driver)
+    killer.start()
+    answer = room_op("a", "remove", "c")
+    killer.join()
+    mr1.PROCESSES.pop("messengerd-a", None)
+    start_daemon("a", "after the crash during the Remove")
+    after = room_of("a")
+    if RUN["c"]["agent"] in (after.get("members") or []):
+        again = room_op("a", "remove", "c")
+        holder["decision_made_again"] = bool(again.get("ok"))
+        after = wait_room("a", lambda row: RUN["c"]["agent"] not in (row.get("members") or []), 300)
+    removed_epoch = after.get("room_epoch", 0)
+    b_room = joined_at("b", removed_epoch, 900)
+    gate("15", "A's daemon is killed while its driver runs the Remove; after the restart the Remove is published "
+         "once (or the decision is made again), and B follows to the same epoch with the same MLS epoch (no fork)",
+         bool(holder.get("killed_during_driver")) and RUN["c"]["agent"] not in (after.get("members") or []) and
+         b_room.get("room_epoch") == removed_epoch and b_room.get("mls_epoch") == after.get("mls_epoch"),
+         {"first_answer": answer, "holder": holder, "a": after, "b": b_room})
+    stale = [d for _, d in (in_flight or [])]
+    statuses = {}
+    for row in room_frames("a"):
+        if row["frame"].get("object_digest") in stale and row["packet"]["recipient_agent_id"] == RUN["c"]["agent"]:
+            statuses[row["record"]["envelope_id"][:12]] = {relay: mr1.envelope_status(relay, RUN["c"]["agent"],
+                                                                                      row["record"]["envelope_id"])
+                                                           for relay in RELAYS}
+    gate("5", "A's in-flight handshake envelopes to C are withdrawn after the Remove",
+         bool(statuses) and all(code in (404, 410) for codes in statuses.values() for code in codes.values()),
+         statuses)
+    after_a = compose("a", "after-remove-a")
+    after_b = compose("b", "after-remove-b")
+    ROOM_MEMBERS.discard("c")
+    addressed = [row["packet"]["recipient_agent_id"][:14] for node in ("a", "b") for row in room_frames(node)
+                 if row["frame"].get("part_index") == 0 and (row["frame"].get("room_epoch") or 0) >= removed_epoch
+                 and row["packet"]["recipient_agent_id"] == RUN["c"]["agent"] and
+                 row["frame"].get("room_object_type") == 3]
+    gate("5", "later room messages of A and B are not addressed to C (their chat outboxes)", not addressed and
+         room_applied("b", "after-remove-a")["applied"] and room_applied("a", "after-remove-b")["applied"],
+         addressed)
+    start_serve("c", "after the Remove")
+    c_room = wait_room("c", lambda row: row.get("state") != "joined" or
+                       row.get("room_epoch", 0) >= removed_epoch, 300)
+    attempt = mcall("c", {"op": "outbox.compose", "room_id": ROOM, "conversation_id": CONV, "media_type": TEXT,
+                          "body": mr1.marker("removed-c"), "idempotency_key": idem(),
+                          "membership_epoch": c_room.get("room_epoch", 0), "expires_at_unix": now() + 3600})
+    gate("5", "C, told by the removing Commit, has its room messages refused `not-a-room-member`",
+         not attempt.get("ok") and "not-a-room-member" in json.dumps(attempt), {"c": c_room, "answer": attempt})
+    # A's application to B, sealed after the Remove, handed to C by the harness.
+    row = next(r for r in room_frames("a") if r["frame"].get("room_object_type") == 3 and
+               r["packet"]["recipient_agent_id"] == RUN["b"]["agent"] and
+               (r["frame"].get("room_epoch") or 0) >= removed_epoch)
+    payload = base64.b64decode(json.loads(base64.b64decode(row["record"]["packet_base64"]))["payload_base64"])
+    frame_file = nd("a") / "handed" / "after-remove-frame.bin"
+    frame_file.write_bytes(payload)
+    handed = craft("a", "c", hand_file(card_path("c"), "a", "card-c-removed.json"), "after-remove-to-c",
+                   payload=frame_file)
+    status = deposit("relay1", RUN["c"]["agent"], handed["envelope_id"], handed["path"].read_bytes())
+    acked = poll(lambda: handed["envelope_id"] not in listed_ids("relay1", RUN["c"]["agent"]) or None, 180, 3)
+    gate("5", "C's driver fails to open a later room message the harness handed it: relay-acknowledged, never "
+         "listed to C's runtime", status == 201 and bool(acked) and
+         SENT["after-remove-a"]["event_id"] not in inbound_texts("c"), {"deposit": status})
+    cards_b = mr1.peer_cards("b")
+    evidence = mdir("b") / "state" / "relay-evidence" / (RUN["c"]["agent"][6:] + ".json")
+    forgotten = poll(lambda: (RUN["c"]["agent"] not in mr1.peer_cards("b") and not evidence.is_file()) or None,
+                     300, 5)
+    gate("5", "B, for whom C is no contact, has forgotten C's chat card and relay evidence", bool(forgotten),
+         {"b_holds_c_card": RUN["c"]["agent"] in cards_b, "b_holds_c_evidence": evidence.is_file()})
+    removed = remove_contact("c", "a")
+    m = (mr1.send("a", "c", "after-contact-removed"), mr1.require_sent("after-contact-removed"))[1]
+    sent = poll(lambda: [r for r in mr1.copy_frames("a", m) if r["record"].get("accepted")], 120, 1) or []
+    acked = poll(lambda: all(all(r["record"]["envelope_id"] not in listed_ids(relay, RUN["c"]["agent"])
+                                 for relay in RELAYS) for r in sent) or None, 300, 3)
+    gate("1", "after C's owner removes A (contacts.remove), A's next Event meets C's policy again and is refused",
+         bool(removed.get("ok")) and bool(sent) and bool(acked) and m not in inbound_texts("c"), removed)
+
+
+@step
+def renewal_among_non_contacts() -> None:
+    """Item 16: B and C exchanged room messages across the run; their
+    descriptors (test lifetime MR1_DESCRIPTOR_LIFETIME) expired several times
+    and each renewed the other's only through kind-3 part 0."""
+    span = RUN["renewal"][-1]["at"] - RUN["renewal"][0]["at"]
+    expiries = sorted({row["frame"].get("descriptor_expires_at_unix") for row in room_frames("c")
+                       if row["packet"]["recipient_agent_id"] == RUN["b"]["agent"] and
+                       row["frame"].get("descriptor_expires_at_unix")})
+    kind4 = [row for node, peer in (("b", "c"), ("c", "b")) for row in frames_of(node)
+             if row["frame"].get("kind") == 4 and row["packet"]["recipient_agent_id"] == RUN[peer]["agent"]]
+    gate("16", f"B and C (no contacts) exchanged room messages over {span} s while C's descriptor (lifetime "
+         f"{mr1.DESCRIPTOR_LIFETIME} s) was renewed {len(expiries)} times in its kind-3 part 0 to B, with no "
+         "kind-4 evidence exchange between them", len(expiries) >= 3 and not kind4 and
+         all(r["b->c"]["applied"] and r["c->b"]["applied"] for r in RUN["renewal"]),
+         {"descriptor_expiries": expiries, "exchanges": RUN["renewal"]})
+
+
+def renewal_exchange() -> None:
+    results = exchange(("b", "c"), f"renewal-{len(RUN['renewal'])}")
+    RUN["renewal"].append({"at": now(), "b->c": results.get("b->c"), "c->b": results.get("c->b")})
+
+
+@step
+def states_counters_sizes_search() -> None:
+    """Items 8, 9, 10 and 11, read from the journals, the counters sampled
+    during the run and the relay snapshots."""
+    objects = handshake_objects()
+    settled, unsettled = {}, {}
+    for digest, entry in objects.items():
+        for agent in entry["members"]:
+            member = next(n for n in NODES if RUN[n]["agent"] == agent)
+            outcomes = [f.get("ack_outcome") for f in acks_for(member, digest)]
+            key = f"{digest[:12]}->{member} (type {entry['type']}, mls {entry['mls_epoch']})"
+            (settled if set(outcomes) & {"accepted", "duplicate"} else unsettled)[key] = outcomes
+    removal_commits = {k for k in unsettled if k.endswith("(type 1, mls %s)" % k.split("mls ")[-1][:-1])}
+    application_acked = [row for node in MEMBERS for row in room_acks(node)
+                         if row["frame"].get("room_ack_object_digest") not in objects]
+    gate("8", "every handshake object reached each member and settled on that member's verified room ack "
+         "(`accepted` or `duplicate`), except a removed member's removing Commit and objects to a member removed "
+         "while they were in flight; no application object is ever room-acked",
+         bool(settled) and not application_acked,
+         {"settled": settled, "unsettled": unsettled, "removal_commits": sorted(removal_commits)}, required=False)
+    room_max = max(COUNTS["max_room"].values() or [0])
+    chat_max = max(COUNTS["max_chat"].values() or [0])
+    pacing = {}
+    for node in MEMBERS:
+        times = sorted(row["record"].get("accepted_at_unix", 0) for row in room_frames(node))
+        worst = 0
+        for i, start in enumerate(times):
+            j = i
+            while j < len(times) and times[j] < start + 60:
+                j += 1
+            worst = max(worst, j - i)
+        pacing[node] = {"kind3_deposits": len(times), "most_in_any_60_s": worst}
+    gate("9", "no peer held more than 16 kind-3 or 24 chat envelopes (sampled every 30 s from `chat status`), and "
+         "no node deposited more kind-3 envelopes in any 60 s than the 30-per-minute, burst-16 bucket allows (46)",
+         COUNTS["samples"] > 0 and room_max <= 16 and chat_max <= 24 and
+         all(v["most_in_any_60_s"] <= 46 for v in pacing.values()),
+         {"samples": COUNTS["samples"], "max_kind3": room_max, "max_chat": chat_max, "pacing": pacing})
+    sizes, envelope_ok, nonfinal = [], [], []
+    for node in NODES:
+        for row in room_frames(node):
+            frame = row["frame"]
+            sizes.append(frame.get("frame_bytes"))
+            envelope_ok.append(frame.get("frame_bytes") == frame.get("smallest_bucket"))
+            if frame.get("part_index", 0) + 1 < frame.get("part_count", 1):
+                nonfinal.append(frame.get("frame_bytes"))
+            if row["record"].get("envelope_base64") and row["packet"].get("expected_envelope_bytes"):
+                envelope_ok.append(len(base64.b64decode(row["record"]["envelope_base64"])) ==
+                                   row["packet"]["expected_envelope_bytes"])
+    stored = {name: {relay: mr1.relay_envelope_sizes(mr1.SNAPSHOTS / name / relay) for relay in RELAYS}
+              for name in RUN.get("snapshots", {})}
+    stored_ok = all(mr1.relayframe_envelope_size(size) for v in stored.values() for sizes_ in v.values()
+                    for size in sizes_)
+    production = not PART_BYTES
+    gate("10", "every kind-3 frame the daemons cut is its smallest bucket" +
+         (", non-final parts are 190,464 bytes" if production else " (cut at the test P: buckets only)") +
+         ", and every stored envelope matches 1,373 + F + 4·⌈B/3⌉",
+         bool(sizes) and all(envelope_ok) and stored_ok and (not production or all(n == 190464 for n in nonfinal)),
+         {"frame_sizes": sorted(set(sizes)), "nonfinal": sorted(set(nonfinal)), "stored": stored})
+    texts = [SENT[label]["text"].encode() for label in SENT if SENT[label].get("text")]
+    agents = {RUN[n]["agent"] for n in NODES}
+    endpoints = {RUN[n]["identity"]["endpoint_id"] for n in NODES} | {RUN[n]["identity"]["device_id"] for n in NODES}
+    events = {SENT[label]["event_id"] for label in SENT if SENT[label].get("event_id")}
+    needles = {"message text": texts, "room id": mr1.hexforms({ROOM}), "conversation id": mr1.hexforms({CONV}),
+               "event id": mr1.hexforms(events), "member or sender agent id": mr1.hexforms(agents),
+               "endpoint or device id": mr1.hexforms(endpoints),
+               "invite token": [t.encode() for t in SECRETS_HANDED],
+               "chat key id (roster contents)": [RUN[n]["chat_key"].encode() for n in NODES if RUN[n].get("chat_key")]}
+    needles = {k: [i for i in v if i and len(i) >= 8] for k, v in needles.items()}
+    control = PRIVATE / "plaintext-control.bin"
+    control.write_bytes(b"".join(secrets.token_bytes(32) + items[0] for items in needles.values() if items))
+    control_found = mr1.search([control], needles)
+    require("the relay plaintext search finds every searched value in a control file holding one of each",
+            set(control_found) == {k for k, v in needles.items() if v}, sorted(control_found))
+    roots = [WORK / relay / "state" for relay in RELAYS] + [mr1.SNAPSHOTS] + [WORK / f"{r}.log" for r in RELAYS]
+    found = mr1.search([root for root in roots if root.exists()], needles)
+    gate("11", "nothing readable at the relays: no live relay state, no snapshot (taken while relays held room "
+         "objects and acks) and no relay log holds a message text, the room id, a member, conversation, Event, "
+         "Endpoint or device id, a roster's chat key id or the invite token", not found and
+         bool(RUN.get("snapshots")), {"found": found, "snapshots": sorted(RUN.get("snapshots", {}))})
+    fd.evidence["sizes"] = {"kind3_frame_sizes": sorted(set(sizes)), "stored_envelope_sizes": stored}
+
+
+@step
+def unit_items() -> None:
+    NOT_VERIFIED.extend([
+        {"item": "7 (reassembly caps)", "reason": "named unit tests (section 4 caps, an oversize object, a "
+         "non-member's part, inconsistent part counts, a digest mismatch, an incomplete object expiring)",
+         "unit_tests": ["ai messenger/pkg/relayframe TestReassemblerEnforcesEachBound",
+                        "ai messenger/pkg/relayframe TestReassemblerReleasesAnObjectInAnyOrderOnce",
+                        "ai messenger/pkg/eventlog TestRoomPartStoreHoldsNoMoreThanTheReassemblerBounds",
+                        "ai messenger/pkg/eventlog TestRoomPartUnsettledObjectsAreBounded"]},
+        {"item": "6 (a second Commit for one epoch is refused room-fork)", "reason": "only the authority could "
+         "make it (a restored backup); named unit test",
+         "unit_tests": ["ai messenger/pkg/daemon TestRoomCommitForkAndGapAreAnswered"]},
+        {"item": "12 (a room Event whose packet sender is not in the latest committed roster at its epoch)",
+         "reason": "unit", "unit_tests": ["ai messenger/pkg/daemon TestRoomCommitFromAnotherMemberIsRefusedAndStoresNothing"]},
+        {"item": "13 (owner-only management)", "reason": "unit",
+         "unit_tests": ["ai messenger/pkg/localapi TestRoomManagementIsOwnerOnly"]},
+        {"item": "17 (driver bounds)", "reason": "unit",
+         "unit_tests": ["ai messenger/pkg/daemon TestPrivateRoomCapacityProfile"]},
+        {"item": "18 (roster refusals and late rosters)", "reason": "unit",
+         "unit_tests": ["ai messenger/pkg/eventlog TestRoomRosterJudgement"]},
+        {"item": "16 (test-shortened chat card lifetime)", "reason": "openfox has no test setting for the chat "
+         "card lifetime (30 days); only the descriptor lifetime is test-shortened, so card renewal through part 0 "
+         "is not shown live", "unit_tests": []},
+        {"item": "14 (a header older than the handshake retention W is refused)", "reason": "unit",
+         "unit_tests": ["ai messenger/pkg/daemon TestRoomCommitAuthorizationOutsideTheRelayWindowIsRefused"]},
+    ])
+    if not AUTHORIZATION:
+        NOT_VERIFIED.append({"item": "14 (catch-up beyond the authorization window)", "reason": "this run's "
+                             "daemons are a production build, which refuses the test authorization lifetime; the "
+                             "catch-up in order is shown live under item 3",
+                             "unit_tests": ["ai messenger/pkg/daemon TestRoomCommitAuthorizationOutsideTheRelayWindowIsRefused"]})
 
 
 def scenario() -> None:

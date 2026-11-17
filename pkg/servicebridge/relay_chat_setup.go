@@ -279,7 +279,16 @@ func importChatContact(ctx context.Context, cards *PeerCards, contactDir, ownAge
 	if err != nil {
 		return ChatContactImported{}, fmt.Errorf("%w: %v", ErrCardRefused, err)
 	}
-	if err := cards.Learn(ctx, contact.Card, contact.AgentID, ""); err != nil {
+	verified, err := cards.verified(ctx, contact.Card, contact.AgentID, "")
+	if err != nil {
+		return ChatContactImported{}, err
+	}
+	// A contact is a direct admission: recorded before the card is stored,
+	// so forgetting a room that also admitted the Agent never removes it.
+	if err := setDirectAdmission(chatRoomAdmissionsDir(cards.directory), contact.AgentID, true); err != nil {
+		return ChatContactImported{}, err
+	}
+	if err := cards.keep(verified); err != nil {
 		return ChatContactImported{}, err
 	}
 	if err := os.MkdirAll(contactDir, 0o700); err != nil {
@@ -320,6 +329,11 @@ func removeChatContact(cardsDir, contactDir, ownAgent, agent string) (ChatContac
 	}
 	held, err := readPeerCards(cardsDir)
 	if err != nil {
+		return ChatContactRemoved{}, err
+	}
+	// The direct admission ends before the cards go: a crash in between
+	// leaves them held only by the rooms that admitted the Agent, if any.
+	if err := setDirectAdmission(chatRoomAdmissionsDir(cardsDir), agent, false); err != nil {
 		return ChatContactRemoved{}, err
 	}
 	removed := ChatContactRemoved{AgentID: agent, RemovedCards: []string{}}
@@ -473,6 +487,13 @@ type ChatStatusReport struct {
 	CurrentKeyProblem      string            `json:"current_key_problem,omitempty"`
 	PeerCards              []PeerCardView    `json:"peer_cards"`
 	Outbox                 []RelayOutboxView `json:"outbox"`
+	// Rooms are the rooms whose rosters admitted peer cards, and
+	// RoomAdmissions each such peer's admissions.
+	Rooms          []RoomCardsView     `json:"rooms"`
+	RoomAdmissions []RoomAdmissionView `json:"room_admissions"`
+	// PeerEnvelopes are the journal's per-peer counts against the caps of 24
+	// chat and 16 kind-3 envelopes.
+	PeerEnvelopes []PeerEnvelopeCount `json:"peer_envelopes"`
 }
 
 // ReadChatStatus reads the chat lane's state without taking it over, so it
@@ -489,7 +510,8 @@ func ReadChatStatus(configPath string, now time.Time) (*ChatStatusReport, error)
 	report := &ChatStatusReport{
 		AgentID: config.AgentID, Relays: relays, CarrierSocket: config.Chat.CarrierSocket,
 		MessengerCarrierSocket: config.Chat.MessengerCarrierSocket, CardPath: config.Chat.CardPath,
-		PeerCards: []PeerCardView{}, Outbox: []RelayOutboxView{},
+		PeerCards: []PeerCardView{}, Outbox: []RelayOutboxView{}, Rooms: []RoomCardsView{},
+		RoomAdmissions: []RoomAdmissionView{}, PeerEnvelopes: []PeerEnvelopeCount{},
 	}
 	if key, published, keyErr := heldChatCard(config, now); keyErr != nil {
 		report.CurrentKeyProblem = strings.TrimPrefix(keyErr.Error(), "servicebridge: ")
@@ -516,6 +538,20 @@ func ReadChatStatus(configPath string, now time.Time) (*ChatStatusReport, error)
 	}
 	if outbox != nil {
 		report.Outbox = outbox
+	}
+	admissions, err := readRoomAdmissions(filepath.Join(root, relayChatRoomAdmissionsDir))
+	if err != nil {
+		return nil, err
+	}
+	if admissions != nil {
+		report.RoomAdmissions, report.Rooms = admissions, roomCardsViews(admissions)
+	}
+	counts, err := ReadPeerEnvelopeCounts(filepath.Join(root, relayChatOutboxDir), now)
+	if err != nil {
+		return nil, err
+	}
+	if counts != nil {
+		report.PeerEnvelopes = counts
 	}
 	return report, nil
 }

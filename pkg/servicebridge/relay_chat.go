@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -218,6 +219,12 @@ type ChatCarrier struct {
 	// gone remembers envelopes no relay of theirs listed any more (the peer
 	// acknowledged them), until they could have expired anyway.
 	gone map[[32]byte]uint64
+	// rooms records the room admissions of peer cards; admissions
+	// serializes every change of a record with the card change it guards.
+	rooms      *roomAdmissions
+	admissions sync.Mutex
+	// pacer paces kind-3 deposits per relay.
+	pacer *roomPacer
 }
 
 // chatNoOwners refuses every Capability owner lookup: chat cards are never
@@ -280,11 +287,18 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 	if err := transport.setPacketBound(agentpacketseal.MaxPacketJSONBytes); err != nil {
 		return nil, err
 	}
+	rooms, err := openRoomAdmissions(filepath.Join(root, relayChatRoomAdmissionsDir))
+	if err != nil {
+		return nil, err
+	}
+	pacer := newRoomPacer(now)
+	transport.pace = pacer.allow
 	return &ChatCarrier{
 		agentID: agentID, Keys: keys, Cards: cards, Transport: transport, signer: lane.Signer, daemon: lane.Daemon,
 		verifier: verifier, agents: agents, pool: pool, cardPath: lane.CardPath, timeout: lane.Timeout, now: now,
 		report: report,
 		gone:   map[[32]byte]uint64{},
+		rooms:  rooms, pacer: pacer,
 	}, nil
 }
 
@@ -327,9 +341,13 @@ func (c *ChatCarrier) Carry(ctx context.Context, request carrierapi.Request, raw
 		return chatFrameRefusal(err)
 	}
 	// Acknowledgements leave through the inbound path; the daemon carries
-	// only copies and evidence frames.
-	if frame.Kind != relayframe.KindCopy && frame.Kind != relayframe.KindEvidence {
+	// copies, room parts and evidence frames.
+	if frame.Kind != relayframe.KindCopy && frame.Kind != relayframe.KindEvidence && frame.Kind != relayframe.KindRoom {
 		return carrierapi.Refusal(carrierapi.CodeKindNotCarried)
+	}
+	application, err := roomFrameIsApplication(frame)
+	if err != nil {
+		return carrierapi.Refusal(carrierapi.CodeFrameMalformed)
 	}
 	if len(frame.Card) > 0 && !c.ownCard(frame.Card) {
 		return carrierapi.Refusal(carrierapi.CodeFrameMalformed)
@@ -345,10 +363,12 @@ func (c *ChatCarrier) Carry(ctx context.Context, request carrierapi.Request, raw
 	if request.ExpiresAtUnix < expires {
 		expires = request.ExpiresAtUnix
 	}
-	if frame.Kind == relayframe.KindEvidence {
+	if frame.Kind == relayframe.KindEvidence || application {
 		// An evidence request or response lives one relay TTL of the peer's
 		// card: the relays would not keep it longer, and the daemon deposits
-		// an outstanding request again at 80 % of that TTL.
+		// an outstanding request again at 80 % of that TTL. A room
+		// application object is deposited once and lives as long; handshake
+		// parts take the copy rule.
 		if card, cardErr := c.Cards.Current(ctx, peer); cardErr == nil {
 			if limit := saturatingAdd(now, c.pool.smallestTTL(ctx, card.Card.Relays)); limit < expires {
 				expires = limit
@@ -366,7 +386,7 @@ func (c *ChatCarrier) Carry(ctx context.Context, request carrierapi.Request, raw
 			return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
 		}
 	}
-	packet, accepted, err := c.prepare(ctx, peer, request.IdempotencyKey, raw, expires)
+	packet, accepted, err := c.prepare(ctx, peer, request.IdempotencyKey, frame.Kind, raw, expires)
 	switch {
 	case err == nil:
 	case errors.Is(err, errChatNoCard):
@@ -384,7 +404,7 @@ func (c *ChatCarrier) Carry(ctx context.Context, request carrierapi.Request, raw
 	if !accepted {
 		if err := c.Transport.Send(ctx, packet); err != nil {
 			response := chatSendFailure(err)
-			if response.Result == carrierapi.ResultRetry {
+			if response.Result == carrierapi.ResultRetry && !errors.Is(err, ErrRelayPaced) {
 				c.report("chat.carry", err)
 			}
 			return response
@@ -446,10 +466,11 @@ func (c *ChatCarrier) cardTTL(ctx context.Context, key string) uint64 {
 //     never be accepted by the recipient, so an ambiguous earlier deposit
 //     that did land is refused there, and only the fresh one can deliver.
 //   - A new key is admitted only when a chat card of the peer is held and
-//     the peer's stored envelopes leave room under the cap.
+//     the peer's stored envelopes leave room under the cap: 24 chat
+//     envelopes, of which at most 16 of kind 3.
 //
 // The caller holds the peer lock.
-func (c *ChatCarrier) prepare(ctx context.Context, peer, key string, frame []byte,
+func (c *ChatCarrier) prepare(ctx context.Context, peer, key string, kind uint8, frame []byte,
 	expires uint64,
 ) (OutboundPacket, bool, error) {
 	entry, err := c.Transport.journalState(key)
@@ -472,11 +493,11 @@ func (c *ChatCarrier) prepare(ctx context.Context, peer, key string, frame []byt
 		return OutboundPacket{}, false, errChatNoCard
 	}
 	if !entry.Found {
-		count, countErr := c.storedCount(ctx, peer)
+		count, roomCount, countErr := c.storedCount(ctx, peer, kind)
 		if countErr != nil {
 			return OutboundPacket{}, false, countErr
 		}
-		if count >= ChatPeerEnvelopeCap {
+		if !carrierapi.PeerCapAllows(kind, count, roomCount) {
 			return OutboundPacket{}, false, errChatPeerCap
 		}
 	}
@@ -488,8 +509,9 @@ func (c *ChatCarrier) prepare(ctx context.Context, peer, key string, frame []byt
 	if err != nil {
 		return OutboundPacket{}, false, errors.New("servicebridge: encode the chat packet")
 	}
-	return OutboundPacket{RecipientAgentID: peer, JSON: encoded, IdempotencyKey: key, ExpiresAtUnix: expires},
-		false, nil
+	return OutboundPacket{
+		RecipientAgentID: peer, JSON: encoded, IdempotencyKey: key, ExpiresAtUnix: expires, FrameKind: kind,
+	}, false, nil
 }
 
 // Deliver implements carrierapi.Handler; the daemon serves it, not this side.
@@ -523,36 +545,44 @@ func (c *ChatCarrier) ownCard(card []byte) bool {
 	return false
 }
 
-// storedCount is how many chat envelopes a relay may still hold for peer.
-// The journal's count is exact for what this node deposited but cannot see
-// a peer's relay acknowledgement; only when it reaches the cap are the
-// peer's mailbox listings (open to anyone) read to drop the envelopes no
-// relay lists any more. A listing that fails counts its envelopes as held.
-func (c *ChatCarrier) storedCount(ctx context.Context, peer string) (int, error) {
+// storedCount is how many chat envelopes a relay may still hold for peer,
+// and how many of them are kind 3. The journal's count is exact for what
+// this node deposited but cannot see a peer's relay acknowledgement; only
+// when a count would refuse a new envelope of kind are the peer's mailbox
+// listings (open to anyone) read to drop the envelopes no relay lists any
+// more, one refresh for both counts. A listing that fails counts its
+// envelopes as held.
+func (c *ChatCarrier) storedCount(ctx context.Context, peer string, kind uint8) (int, int, error) {
 	stored, err := c.Transport.storedFor(peer)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	count := c.liveCount(stored)
-	if count < ChatPeerEnvelopeCap {
-		return count, nil
+	count, roomCount := c.liveCount(stored)
+	if carrierapi.PeerCapAllows(kind, count, roomCount) {
+		return count, roomCount, nil
 	}
 	c.refreshGone(ctx, peer, stored)
-	return c.liveCount(stored), nil
+	count, roomCount = c.liveCount(stored)
+	return count, roomCount, nil
 }
 
-func (c *ChatCarrier) liveCount(stored []storedEnvelope) int {
+// liveCount counts the stored envelopes not taken for gone, and the kind-3
+// ones among them.
+func (c *ChatCarrier) liveCount(stored []storedEnvelope) (int, int) {
 	now := c.nowUnix()
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	count := 0
+	count, roomCount := 0, 0
 	for _, envelope := range stored {
 		if expiry, gone := c.gone[envelope.EnvelopeID]; gone && now < expiry {
 			continue
 		}
 		count++
+		if envelope.FrameKind == relayframe.KindRoom {
+			roomCount++
+		}
 	}
-	return count
+	return count, roomCount
 }
 
 // refreshGone lists the peer's mailbox at every relay the counted envelopes
@@ -680,7 +710,7 @@ func (c *ChatCarrier) receive(ctx context.Context, raw []byte) bool {
 	}
 	sender := packet.SenderAgentID
 	switch frame.Kind {
-	case relayframe.KindCopy, relayframe.KindEvidence:
+	case relayframe.KindCopy, relayframe.KindEvidence, relayframe.KindRoom:
 		response, err := c.daemon.Deliver(ctx, sender, packet.Payload)
 		if err != nil {
 			c.report("chat.deliver", errors.New("servicebridge: the Messenger carrier socket did not answer; "+
@@ -699,9 +729,14 @@ func (c *ChatCarrier) receive(ctx context.Context, raw []byte) bool {
 		case carrierapi.ResultRetry:
 			return false
 		case carrierapi.ResultApplied:
-			// The ack settled a copy of this node's to the sender: the
-			// sender is a peer with an established session.
-			c.learn(ctx, sender, frame.Card)
+			// The ack settled a copy or a room object of this node's to the
+			// sender. A copy ack keeps the sender's admission; a room ack
+			// renews a card only under an admission already held.
+			source := cardRenewed
+			if relayframe.IsRoomAck(frame.Part) {
+				source = cardRoomRenewed
+			}
+			c.learnFrom(ctx, sender, frame.Card, source)
 		}
 		return true
 	default:
@@ -717,14 +752,16 @@ func (c *ChatCarrier) afterDeliver(ctx context.Context, sender string, nonce [32
 	case carrierapi.ResultRetry:
 		return false
 	case carrierapi.ResultAdmitted:
-		// An evidence frame of an admitted peer was committed.
-		c.learn(ctx, sender, frame.Card)
+		// An evidence frame of an admitted peer was committed, or a room
+		// object or stored part of it was admitted; only part 0 carries a
+		// card.
+		c.learnFrom(ctx, sender, frame.Card, admittedSource(frame.Kind))
 		return true
 	case carrierapi.ResultAck:
 		// The card is kept only when the daemon admitted the sender; a
 		// refused stranger's card is never stored.
 		if chatAdmits(response.AckOutcome) {
-			c.learn(ctx, sender, frame.Card)
+			c.learnFrom(ctx, sender, frame.Card, ackSource(frame.Kind, response.AckOutcome))
 		}
 		ack, err := response.AckFrame()
 		if err != nil {
@@ -755,14 +792,27 @@ func chatAdmits(outcome string) bool {
 		outcome == relayframe.OutcomeHeld
 }
 
-// learn verifies an in-band card of sender and keeps it. A card that fails
-// is ignored and never invalidates the frame that carried it.
-func (c *ChatCarrier) learn(ctx context.Context, sender string, card []byte) {
-	if len(card) == 0 {
-		return
+// admittedSource is the card source of an admitted frame: room traffic for
+// kind 3, the peer's own admission otherwise.
+func admittedSource(kind uint8) cardSource {
+	if kind == relayframe.KindRoom {
+		return cardRoomRenewed
 	}
-	if err := c.Cards.Learn(ctx, card, sender, ""); err != nil {
-		c.report("chat.card", err)
+	return cardRenewed
+}
+
+// ackSource is the card source of a frame the daemon acknowledged with an
+// admitting outcome: a copy accepted or deduplicated is a direct admission
+// (the relay route admits copies only under the contact policy), a held one
+// keeps the peer's admission, and a room object is room traffic.
+func ackSource(kind uint8, outcome string) cardSource {
+	switch {
+	case kind == relayframe.KindRoom:
+		return cardRoomRenewed
+	case outcome == relayframe.OutcomeAccepted, outcome == relayframe.OutcomeDuplicate:
+		return cardEstablished
+	default:
+		return cardRenewed
 	}
 }
 
@@ -784,7 +834,7 @@ func (c *ChatCarrier) sendAck(ctx context.Context, peer string, nonce [32]byte, 
 	key := chatAckKey(nonce)
 	unlock := c.lockPeer(peer)
 	defer unlock()
-	packet, accepted, err := c.prepare(ctx, peer, key, ack,
+	packet, accepted, err := c.prepare(ctx, peer, key, relayframe.KindDeliveryAck, ack,
 		saturatingAdd(now, uint64(AckPacketLifetime/time.Second)))
 	switch {
 	case err == nil:
@@ -914,11 +964,38 @@ type ChatStatus struct {
 	PeerCards []PeerCardView    `json:"peer_cards"`
 	CardPath  string            `json:"card_path"`
 	Outbox    []RelayOutboxView `json:"outbox,omitempty"`
+	// Rooms are the rooms whose rosters admitted peer cards, and
+	// RoomAdmissions each such peer's admissions.
+	Rooms          []RoomCardsView     `json:"rooms"`
+	RoomAdmissions []RoomAdmissionView `json:"room_admissions"`
+	// PeerEnvelopes are the journal's per-peer counts against the caps of 24
+	// chat and 16 kind-3 envelopes.
+	PeerEnvelopes []PeerEnvelopeCount `json:"peer_envelopes"`
+	// RoomPacing lists the relays whose kind-3 deposit bucket is not full.
+	RoomPacing []RoomPacingView `json:"room_pacing"`
+	// Problems names the parts of this status that could not be read.
+	Problems []string `json:"problems,omitempty"`
 }
 
 func (c *ChatCarrier) status() *ChatStatus {
 	if c == nil {
 		return nil
 	}
-	return &ChatStatus{Keys: relayKeyViews(c.Keys.Held()), PeerCards: c.Cards.List(), CardPath: c.cardPath}
+	status := &ChatStatus{
+		Keys: relayKeyViews(c.Keys.Held()), PeerCards: c.Cards.List(), CardPath: c.cardPath,
+		Rooms: []RoomCardsView{}, RoomAdmissions: []RoomAdmissionView{}, PeerEnvelopes: []PeerEnvelopeCount{},
+		RoomPacing: c.pacer.views(),
+	}
+	if admissions, err := readRoomAdmissions(c.rooms.directory); err != nil {
+		problem := strings.TrimPrefix(err.Error(), "servicebridge: ")
+		status.Problems = append(status.Problems, "room admissions: "+problem)
+	} else if admissions != nil {
+		status.RoomAdmissions, status.Rooms = admissions, roomCardsViews(admissions)
+	}
+	if counts, err := ReadPeerEnvelopeCounts(c.Transport.directory, c.now()); err != nil {
+		status.Problems = append(status.Problems, "peer envelopes: "+strings.TrimPrefix(err.Error(), "servicebridge: "))
+	} else if counts != nil {
+		status.PeerEnvelopes = counts
+	}
+	return status
 }

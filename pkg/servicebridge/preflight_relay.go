@@ -123,6 +123,7 @@ func (p *preflight) checkChat() {
 	p.addf("chat.config", CheckPass, "chat relays %s; carrier socket %s; Messenger carrier socket %s; the "+
 		"Messenger packet transport is not configured", strings.Join(relays, ", "), p.config.Chat.CarrierSocket,
 		p.config.Chat.MessengerCarrierSocket)
+	p.checkChatRooms()
 	key, published, err := heldChatCard(p.config, p.env.Now())
 	if err != nil {
 		p.addf("chat.card", CheckFail, "%v", err)
@@ -155,6 +156,54 @@ func (p *preflight) checkChat() {
 		"finalized checkpoint %d", agentpacketseal.KeyIDText(key.KeyID),
 		time.Unix(int64(key.NotAfterUnix), 0).UTC().Format(time.RFC3339), p.config.Chat.CardPath,
 		p.session.Checkpoint())
+}
+
+// checkChatRooms reports the room card admissions and the per-peer
+// envelope counts against the caps of 24 chat and 16 kind-3 envelopes. It
+// reads state only. An unreadable admission record fails: the carrier
+// answers every forget of that peer retry until it is repaired. A peer at a
+// cap warns: its next envelope of that class is refused peer-cap until the
+// peer acknowledges.
+func (p *preflight) checkChatRooms() {
+	root := filepath.Join(p.config.StateDir, relayStateDir)
+	admissions, err := readRoomAdmissions(filepath.Join(root, relayChatRoomAdmissionsDir))
+	if err != nil {
+		p.addf("chat.rooms", CheckFail, "%v", err)
+		return
+	}
+	var unreadable []string
+	for _, admission := range admissions {
+		if admission.Unreadable != "" {
+			unreadable = append(unreadable, admission.Unreadable)
+		}
+	}
+	if len(unreadable) > 0 {
+		p.addf("chat.rooms", CheckFail, "room admission records %s are unreadable; the carrier cannot forget "+
+			"those peers' cards until they are repaired or removed", strings.Join(unreadable, ", "))
+	} else {
+		rooms := roomCardsViews(admissions)
+		p.addf("chat.rooms", CheckPass, "%d rooms admitted the chat cards of %d peers", len(rooms), len(admissions))
+	}
+	counts, err := ReadPeerEnvelopeCounts(filepath.Join(root, relayChatOutboxDir), p.env.Now())
+	if err != nil {
+		p.addf("chat.peer-caps", CheckFail, "%v", err)
+		return
+	}
+	var full []string
+	for _, count := range counts {
+		if count.Envelopes >= count.EnvelopeCap || count.RoomEnvelopes >= count.RoomEnvelopeCap {
+			full = append(full, fmt.Sprintf("%s (%d of %d chat, %d of %d kind 3)", count.AgentID, count.Envelopes,
+				count.EnvelopeCap, count.RoomEnvelopes, count.RoomEnvelopeCap))
+		}
+	}
+	if len(full) > 0 {
+		p.addf("chat.peer-caps", CheckWarn, "the journal counts peers at a cap until they acknowledge: %s",
+			strings.Join(full, "; "))
+		return
+	}
+	p.addf("chat.peer-caps", CheckPass, "%d peers have envelopes in the journal, none at the cap of %d chat or "+
+		"%d kind-3 envelopes; kind-3 deposits are paced to %d per minute per relay, burst %d", len(counts),
+		ChatPeerEnvelopeCap, ChatPeerRoomEnvelopeCap, RoomDepositsPerMinute, RoomDepositBurst)
 }
 
 // relayCAExpiryWarning is how close to its expiry a pinned certificate

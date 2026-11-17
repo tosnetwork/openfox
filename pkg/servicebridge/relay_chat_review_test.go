@@ -96,7 +96,8 @@ func TestAnEnvelopeStillDueAtARelayIsNeverTakenForGone(t *testing.T) {
 			t.Fatal(err)
 		}
 		a.chat.refreshGone(ctx, b.agent, stored)
-		return a.chat.liveCount(stored)
+		count, _ := a.chat.liveCount(stored)
+		return count
 	}
 	// B acknowledges at the first relay before the second deposit lands: no
 	// relay lists the envelope, but the second deposit is still due.

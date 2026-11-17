@@ -1302,7 +1302,33 @@ def unit_items() -> None:
                              "unit_tests": ["ai messenger/pkg/daemon TestRoomCommitAuthorizationOutsideTheRelayWindowIsRefused"]})
 
 
+def add_filler_e() -> None:
+    """Targeted runs only: E joins, so the Remove step has a Commit in flight
+    to C (the full run adds E in offline_beyond_ttl)."""
+    filler_joins("e", room_of("a").get("room_epoch", 0) + 1)
+
+
+# A targeted run (MR2_STEPS, comma separated) runs only the named steps, for
+# a quick recheck of items after a fix. It is never an acceptance: the record
+# says so. MR2_TARGETED_C_ALLOWS_A=1 lets C admit A by its allow-list, so the
+# invite steps can be skipped.
+SELECTED = [name for name in os.environ.get("MR2_STEPS", "").split(",") if name]
+EXTRA_STEPS = {"add_filler_e": add_filler_e}
+if os.environ.get("MR2_TARGETED_C_ALLOWS_A") == "1":
+    ALLOW["c"] = ["a"]
+
+
 def scenario() -> None:
+    if SELECTED:
+        known = {function.__name__: function for function in STEPS} | EXTRA_STEPS
+        unknown = [name for name in SELECTED if name not in known]
+        require("the targeted run names only known steps", not unknown, unknown)
+        fd.evidence["targeted_steps"] = SELECTED
+        fd.evidence["qualifies_as_acceptance"] = False
+        for name in SELECTED:
+            known[name]()
+            mr1.hold(name)
+        return
     for function in STEPS:
         function()
         mr1.hold(function.__name__)
@@ -1457,6 +1483,9 @@ async def main() -> int:
     fd.evidence["pass_count"] = sum(1 for step_ in fd.steps if step_["pass"])
     if mr1.DEV_SCRIPTS_RUN:
         fd.evidence["result"] = "NOT A VALID ACCEPTANCE: dev scripts were executed during the run"
+    elif SELECTED:
+        fd.evidence["result"] = ("TARGETED PASS" if passed else "TARGETED FAIL") + \
+            ": only the named steps ran; not an acceptance"
     else:
         fd.evidence["result"] = "ALL PASS" if passed else "FAIL"
     (WORK / "evidence.json").write_text(json.dumps(fd.redact_value(fd.evidence), indent=2, default=str) + "\n")

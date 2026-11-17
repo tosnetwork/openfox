@@ -933,7 +933,12 @@ def offline_beyond_ttl() -> None:
     stopped_at = now()
     mr1.signal_pattern(mr1.daemon_pattern("c"), "STOP")
     filler_joins("e", base["room_epoch"] + 1)
-    commit = (commits_to("c", base["room_epoch"]) or [(0, "")])[-1][1]
+    # The window opens on the Commit itself: once A's Commit to C is at the
+    # relays, C's serve hands it to the paused daemon (its call is logged
+    # unanswered). Earlier unanswered calls belong to other envelopes.
+    deposited = poll(lambda: (lambda c: c if c and deposit_times("a", c[-1][1], "c") else None)(
+        commits_to("c", base["room_epoch"])), 300, 2) or [(0, "")]
+    commit = deposited[-1][1]
     RUN["commit_e"] = commit
     unanswered = "the Messenger carrier socket did not answer"
     before = log_text("serve-c").count(unanswered)

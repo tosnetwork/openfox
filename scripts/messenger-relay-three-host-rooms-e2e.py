@@ -158,7 +158,7 @@ def daemon_config(node: str) -> dict:
         "maintenance_interval_seconds": 3600,
     }
     carriage = config["relay_carriage"]
-    carriage["mls_driver_path"] = str(ROOT / "bin" / "tos-openmls-driver")
+    carriage["mls_driver_path"] = str(DRIVER_HOLD if node == "a" else ROOT / "bin" / "tos-openmls-driver")
     carriage["own_relay_max_ttl_seconds"] = RELAY_TTL
     if PART_BYTES:
         carriage["room_part_bytes"] = PART_BYTES
@@ -568,6 +568,7 @@ def setup() -> None:
     mr1.stage()
     MLS_DRIVER_ROOT = ROOT / "bin" / "tos-openmls-driver"
     fd.install_node(MLS_DRIVER, MLS_DRIVER_ROOT, "0755")
+    install_driver_hold()
     fd.evidence["binaries"]["tos-openmls-driver"] = {"sha256": hashlib.sha256(MLS_DRIVER.read_bytes()).hexdigest()}
     mr1.start_forwarders()
     mr1.isolation()
@@ -941,10 +942,27 @@ def room_credential_agents(node: str) -> set[str]:
     return {entry.get("agent_id", "") for entry in listing.get("entries") or []}
 
 
+# A's daemon reaches the OpenMLS driver through a test wrapper that, while
+# the hold marker exists, waits 3 s before running the real driver, so the
+# authority's crash window (item 15) is opened inside a driver call on
+# purpose rather than by racing a short-lived process.
+DRIVER_HOLD = ROOT / "bin" / "tos-openmls-driver-hold"
+DRIVER_HOLD_MARKER = ROOT / "a" / "s" / "hold-driver"
+
+
+def install_driver_hold() -> None:
+    DRIVER_HOLD.write_text("#!/bin/sh\n"
+                           f"[ -e {DRIVER_HOLD_MARKER} ] && sleep 3\n"
+                           f"exec {ROOT / 'bin' / 'tos-openmls-driver'} \"$@\"\n")
+    DRIVER_HOLD.chmod(0o755)
+    fd.evidence["driver_hold"] = "A's daemon runs the OpenMLS driver through a test wrapper that waits 3 s while a " \
+                                 "marker exists (only during the authority crash window of item 15)"
+
+
 def driver_children(node: str) -> list[int]:
     daemon = mr1.pids(mr1.daemon_pattern(node))
     out = []
-    for pid in mr1.pids(f"^{ROOT / 'bin' / 'tos-openmls-driver'}"):
+    for pid in mr1.pids(str(ROOT / "bin" / "tos-openmls-driver")):
         try:
             parent = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
         except (OSError, ValueError, IndexError):
@@ -1101,10 +1119,12 @@ def remove_c_with_authority_crash() -> None:
         if children:
             mr1.signal_pattern(mr1.daemon_pattern("a"), "KILL")
             holder["killed_during_driver"] = children
+    DRIVER_HOLD_MARKER.write_text("hold\n")
     killer = threading.Thread(target=kill_during_driver)
     killer.start()
     answer = room_op("a", "remove", "c")
     killer.join()
+    DRIVER_HOLD_MARKER.unlink(missing_ok=True)
     mr1.PROCESSES.pop("messengerd-a", None)
     start_daemon("a", "after the crash during the Remove")
     after = wait_room("a", lambda row: row.get("room_epoch", 0) >= base.get("room_epoch", 0), 300)

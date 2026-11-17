@@ -291,6 +291,7 @@ def setup() -> None:
     remote.prepare_hosts()
     relay_ttl_check()
     mr1.stage()
+    mr2.install_driver_hold()
     mr1.start_forwarders()
     mr1.isolation()
     mr1.hidden_files()

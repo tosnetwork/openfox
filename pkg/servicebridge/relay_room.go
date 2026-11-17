@@ -539,14 +539,10 @@ func (c *ChatCarrier) admitRoomCards(ctx context.Context, roomID string, endsAtU
 		}
 		seen[offered.AgentID] = struct{}{}
 	}
-	held, found, err := c.roomEnd(roomID)
-	if err != nil {
-		c.report("chat.room-cards", err)
-		return carrierapi.Retry()
-	}
-	if found && held != endsAtUnix {
-		return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
-	}
+	// The room's end is checked once, under the admission lock, for each
+	// card as it is admitted (admitRoomCard): every card of a batch shares
+	// the batch's end, so a conflicting end refuses the batch at its first
+	// card that verifies, before anything is stored.
 	refused := []string{}
 	for _, offered := range cards {
 		raw, err := base64.StdEncoding.Strict().DecodeString(offered.CardBase64)
@@ -595,6 +591,16 @@ func (c *ChatCarrier) admitRoomCard(roomID string, endsAtUnix uint64, card *peer
 		return false, err
 	}
 	defer unlock()
+	// The room's end is read again under the lock this admission is written
+	// under: two concurrent admissions of a new room under two ends cannot
+	// both pass a check made before either was written.
+	heldEnd, roomHeld, err := c.roomEndLocked(roomID)
+	if err != nil {
+		return false, err
+	}
+	if roomHeld && heldEnd != endsAtUnix {
+		return false, errRoomEndConflict
+	}
 	previous, found, err := c.rooms.load(agentID)
 	if err != nil {
 		return false, err
@@ -610,11 +616,8 @@ func (c *ChatCarrier) admitRoomCard(roomID string, endsAtUnix uint64, card *peer
 		}
 		record = roomAdmissionRecord{Schema: roomAdmissionSchema, AgentID: agentID, Direct: held}
 	}
-	if entry, held := record.room(roomID); held {
-		if entry.EndsAtUnix != endsAtUnix {
-			return false, errRoomEndConflict
-		}
-	} else {
+	// The room-wide check above covers this member's own record too.
+	if !record.hasRoom(roomID) {
 		if len(record.Rooms) >= maxAgentRoomAdmissions {
 			return false, nil
 		}
@@ -702,14 +705,11 @@ func (a *roomAdmissions) agents() ([]string, error) {
 	return out, nil
 }
 
-// roomEnd returns the end the store holds for roomID, if any peer is
-// admitted under it. An unreadable record is reported and skipped.
-func (c *ChatCarrier) roomEnd(roomID string) (uint64, bool, error) {
-	unlock, err := c.lockAdmissions()
-	if err != nil {
-		return 0, false, err
-	}
-	defer unlock()
+// roomEndLocked returns the end the store holds for roomID, if any peer is
+// admitted under it. The caller holds the admission lock, so the end it
+// reads and the admission it writes cannot be split by another admission.
+// An unreadable record is reported and skipped; the others are still read.
+func (c *ChatCarrier) roomEndLocked(roomID string) (uint64, bool, error) {
 	agents, err := c.rooms.agents()
 	if err != nil {
 		return 0, false, err

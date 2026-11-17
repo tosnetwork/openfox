@@ -124,6 +124,7 @@ func (p *preflight) checkChat() {
 		"Messenger packet transport is not configured", strings.Join(relays, ", "), p.config.Chat.CarrierSocket,
 		p.config.Chat.MessengerCarrierSocket)
 	p.checkChatRooms()
+	p.checkChatOwner()
 	key, published, err := heldChatCard(p.config, p.env.Now())
 	if err != nil {
 		p.addf("chat.card", CheckFail, "%v", err)
@@ -204,6 +205,35 @@ func (p *preflight) checkChatRooms() {
 	p.addf("chat.peer-caps", CheckPass, "%d peers have envelopes in the journal, none at the cap of %d chat or "+
 		"%d kind-3 envelopes; kind-3 deposits are paced to %d per minute per relay, burst %d", len(counts),
 		ChatPeerEnvelopeCap, ChatPeerRoomEnvelopeCap, RoomDepositsPerMinute, RoomDepositBurst)
+}
+
+// checkChatOwner reports the daemon's private rooms and the room invites it
+// holds, read from the owner socket (rooms.list needs no owner signature).
+// An owner socket that is configured but does not answer fails: `chat room`
+// and `chat invite` would fail the same way.
+func (p *preflight) checkChatOwner() {
+	if p.config.Chat == nil || p.config.Chat.OwnerSocket == "" {
+		p.addf("chat.owner", CheckPass, "chat.owner_socket is not configured; room management through openfox "+
+			"is off")
+		return
+	}
+	owner, err := chatOwnerClient(p.config)
+	var rooms ChatRooms
+	if err == nil {
+		rooms, err = listChatRooms(p.ctx, owner)
+	}
+	if err != nil {
+		p.addf("chat.owner", CheckFail, "the owner socket %s: %v", p.config.Chat.OwnerSocket, err)
+		return
+	}
+	authority := 0
+	for _, held := range rooms.Rooms {
+		if held.IsAuthority {
+			authority++
+		}
+	}
+	p.addf("chat.owner", CheckPass, "the owner socket %s answers: %d private rooms held (%d as authority), %d "+
+		"room invites pending", p.config.Chat.OwnerSocket, len(rooms.Rooms), authority, len(rooms.Invites))
 }
 
 // relayCAExpiryWarning is how close to its expiry a pinned certificate

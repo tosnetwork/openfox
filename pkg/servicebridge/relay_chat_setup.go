@@ -478,7 +478,7 @@ func ChatContactImportWithInvite(ctx context.Context, configPath, file string, i
 	if err != nil {
 		return nil, err
 	}
-	return importWithInvite(ctx, owner, raw, invite, out, now(), func() (*ChatContactImported, error) {
+	return importWithInvite(ctx, owner, raw, invite, configPath, out, now(), func() (*ChatContactImported, error) {
 		return ChatContactImport(ctx, configPath, file, now)
 	})
 }
@@ -487,8 +487,8 @@ func ChatContactImportWithInvite(ctx context.Context, configPath, file string, i
 // is imported, imports, then prepares the decision. A preparation that fails
 // after the import says so: the contact stays, and `chat invite present`
 // prepares the decision again.
-func importWithInvite(ctx context.Context, owner chatOwnerCaller, raw []byte, invite ChatInvite, out string,
-	now time.Time, doImport func() (*ChatContactImported, error),
+func importWithInvite(ctx context.Context, owner chatOwnerCaller, raw []byte, invite ChatInvite,
+	configPath, out string, now time.Time, doImport func() (*ChatContactImported, error),
 ) (*ChatContactImported, error) {
 	contact, _, err := decodeChatContact(raw)
 	if err != nil {
@@ -508,10 +508,11 @@ func importWithInvite(ctx context.Context, owner chatOwnerCaller, raw []byte, in
 	if err != nil {
 		return nil, err
 	}
-	prepared, err := prepareToFile(ctx, owner, request, out)
+	prepared, err := prepareToFile(ctx, owner, request, configPath, out)
 	if err != nil {
 		return imported, fmt.Errorf("servicebridge: the contact %s was imported, but its invite decision was "+
-			"not prepared; run `openfox chat invite present`: %w", imported.AgentID, err)
+			"not prepared; run `openfox earning chat invite present --rail-config %s --recipient %s "+
+			"--token-file FILE --expires-at UNIX --out FILE`: %w", imported.AgentID, configPath, imported.AgentID, err)
 	}
 	imported.InviteDecision = &prepared
 	return imported, nil

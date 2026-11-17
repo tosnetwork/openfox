@@ -32,8 +32,10 @@ func chatCommand() *cobra.Command {
 // takes.
 const chatOwnerLong = "Prepares an owner decision for the Messenger daemon's owner socket (chat.owner_socket) " +
 	"and writes it to --out, a new owner-only file. The owner signs it away from the Agent runtime, for example " +
-	"with `tos-messenger-owner sign -key FILE -decision DECISION -out SIGNED`, and submits it with `openfox chat " +
-	"owner submit --decision SIGNED` within two minutes. openfox never reads the owner's key."
+	"with `tos-messenger-owner -out SIGNED sign -key OWNER_KEY_FILE -decision DECISION` (-out goes before sign " +
+	"and writes a new 0600 file: a signed decision can carry an invite bearer token), and submits it within two " +
+	"minutes with `openfox earning chat owner submit --rail-config CONFIG --decision SIGNED`. The output's " +
+	"next field gives these commands with the actual paths. openfox never reads the owner's key."
 
 func chatRoomCommand() *cobra.Command {
 	command := &cobra.Command{
@@ -247,7 +249,9 @@ func chatContactImportCommand() *cobra.Command {
 		Use: "import", Short: "Verify and import a peer's contact file (admits that peer)",
 		Long: "Verify and import a peer's contact file (admits that peer). With --invite, the invite the peer's " +
 			"owner issued to this node is presented with it: its invites.present decision is prepared into " +
-			"--invite-out for the owner to sign and submit (`openfox chat owner submit`).",
+			"--invite-out for the owner to sign and submit; the output's invite_decision.next field gives the " +
+			"exact `tos-messenger-owner -out SIGNED sign` and `openfox earning chat owner submit --rail-config " +
+			"CONFIG --decision SIGNED` commands.",
 		Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(command *cobra.Command, _ []string) error {
 			var imported *servicebridge.ChatContactImported

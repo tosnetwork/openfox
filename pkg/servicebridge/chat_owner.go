@@ -282,16 +282,30 @@ func roomRequest(op ChatRoomOp, roomID, agentID string) (localapi.Request, error
 type ChatPrepared struct {
 	Op           localapi.Operation `json:"op"`
 	DecisionFile string             `json:"decision_file"`
-	// Next is what the owner does with it.
+	// SignedFile is where Next has the owner's tool write the signed
+	// decision: a new owner-only file, since a signed decision can carry an
+	// invite bearer token.
+	SignedFile string `json:"signed_file"`
+	// Next is what the owner runs, exactly.
 	Next string `json:"next"`
 }
 
-const chatPreparedNext = "sign the decision with the owner key away from the Agent runtime (for example " +
-	"`tos-messenger-owner sign -key FILE -decision DECISION`), then run `openfox chat owner submit " +
-	"--decision SIGNED` within two minutes of preparing it"
+// signedDecisionSuffix names the signed decision beside the prepared one.
+const signedDecisionSuffix = ".signed"
 
-// prepareToFile prepares a decision and writes it to out.
-func prepareToFile(ctx context.Context, owner chatOwnerCaller, request localapi.Request, out string,
+// chatPreparedNext is the exact commands that take a prepared decision to
+// the daemon. The daemon's owner tool reads -out as a global flag, before
+// its command, and writes a new 0600 file there instead of standard output.
+func chatPreparedNext(configPath, decisionFile, signedFile string) string {
+	return fmt.Sprintf("sign it away from the Agent runtime with `tos-messenger-owner -out %s sign -key "+
+		"OWNER_KEY_FILE -decision %s` (-out goes before sign and writes a new 0600 file), then within two "+
+		"minutes of preparing it run `openfox earning chat owner submit --rail-config %s --decision %s`",
+		signedFile, decisionFile, configPath, signedFile)
+}
+
+// prepareToFile prepares a decision, writes it to out and says how the
+// owner signs and submits it under the configuration at configPath.
+func prepareToFile(ctx context.Context, owner chatOwnerCaller, request localapi.Request, configPath, out string,
 ) (ChatPrepared, error) {
 	decision, err := prepareOwnerDecision(ctx, owner, request)
 	if err != nil {
@@ -300,7 +314,10 @@ func prepareToFile(ctx context.Context, owner chatOwnerCaller, request localapi.
 	if err := writeOwnerDecision(out, decision); err != nil {
 		return ChatPrepared{}, err
 	}
-	return ChatPrepared{Op: request.Op, DecisionFile: out, Next: chatPreparedNext}, nil
+	signed := out + signedDecisionSuffix
+	return ChatPrepared{
+		Op: request.Op, DecisionFile: out, SignedFile: signed, Next: chatPreparedNext(configPath, out, signed),
+	}, nil
 }
 
 // ChatRoomPrepare prepares one room membership decision into out.
@@ -314,7 +331,7 @@ func ChatRoomPrepare(ctx context.Context, configPath string, op ChatRoomOp, room
 	if err != nil {
 		return nil, err
 	}
-	prepared, err := prepareToFile(ctx, owner, request, out)
+	prepared, err := prepareToFile(ctx, owner, request, configPath, out)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +351,7 @@ func ChatInvitePresent(ctx context.Context, configPath, recipient string, invite
 	if err != nil {
 		return nil, err
 	}
-	prepared, err := prepareToFile(ctx, owner, request, out)
+	prepared, err := prepareToFile(ctx, owner, request, configPath, out)
 	if err != nil {
 		return nil, err
 	}

@@ -6,9 +6,11 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -444,16 +446,16 @@ func TestAnInviteIsPresentedAloneOrWithItsContactImport(t *testing.T) {
 		return &ChatContactImported{AgentID: testBuyer}, nil
 	}
 	expired := ChatInvite{TokenFile: token, ExpiresAtUnix: 1}
-	if _, err = importWithInvite(ctx, client, contact, expired, filepath.Join(out, "x.json"), time.Now(),
+	if _, err = importWithInvite(ctx, client, contact, expired, config, filepath.Join(out, "x.json"), time.Now(),
 		doImport); err == nil || imports != 0 {
 		t.Fatalf("an expired invite: %v, %d imports", err, imports)
 	}
-	if _, err = importWithInvite(ctx, client, contact, invite, alone, time.Now(), doImport); err == nil ||
+	if _, err = importWithInvite(ctx, client, contact, invite, config, alone, time.Now(), doImport); err == nil ||
 		imports != 0 {
 		t.Fatalf("an existing --invite-out: %v, %d imports", err, imports)
 	}
 	withImport := filepath.Join(out, "with-import.json")
-	imported, err := importWithInvite(ctx, client, contact, invite, withImport, time.Now(), doImport)
+	imported, err := importWithInvite(ctx, client, contact, invite, config, withImport, time.Now(), doImport)
 	if err != nil || imports != 1 || imported.InviteDecision == nil {
 		t.Fatalf("an import with an invite: %+v %v", imported, err)
 	}
@@ -533,5 +535,69 @@ func TestStatusAndPreflightShowTheDaemonsRoomsAndInvites(t *testing.T) {
 	}
 	if check := run(ownerTestConfig(t, "")); check.Status != CheckPass || !strings.Contains(check.Message, "off") {
 		t.Fatalf("preflight without an owner socket: %+v", check)
+	}
+}
+
+// The commands a prepared decision prints run as printed: the daemon's own
+// owner tool (built from the pinned module) signs into a new 0600 file with
+// nothing on standard output, and the openfox command named submits it.
+func TestThePrintedNextStepsRunAsGiven(t *testing.T) {
+	tool := filepath.Join(t.TempDir(), "tos-messenger-owner")
+	build := exec.Command("go", "build", "-o", tool, "github.com/tosnetwork/ai/messenger/cmd/tos-messenger-owner")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the daemon's owner tool: %v\n%s", err, output)
+	}
+	socket := startOwnerSocket(t, localapi.PrincipalOwner)
+	config := ownerTestConfig(t, socket.path)
+	out := t.TempDir()
+	token := filepath.Join(out, "token")
+	if err := os.WriteFile(token, []byte(testInviteToken(0x5c)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(out, "owner.key")
+	if err := os.WriteFile(key, []byte(hex.EncodeToString(ownerTestKey())+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := ChatInvitePresent(context.Background(), config, ownerTestAgent,
+		ChatInvite{TokenFile: token, ExpiresAtUnix: uint64(time.Now().Add(time.Hour).Unix())},
+		filepath.Join(out, "present.json"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(prepared.Next, "`")
+	if len(parts) != 5 {
+		t.Fatalf("the next steps name %d commands: %s", (len(parts)-1)/2, prepared.Next)
+	}
+	sign, submit := strings.Fields(parts[1]), strings.Fields(parts[3])
+	if sign[0] != "tos-messenger-owner" {
+		t.Fatalf("the signing command: %v", sign)
+	}
+	for index, field := range sign {
+		if field == "OWNER_KEY_FILE" {
+			sign[index] = key
+		}
+	}
+	command := exec.Command(tool, sign[1:]...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err = command.Run(); err != nil {
+		t.Fatalf("the printed signing command failed: %v\n%s", err, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatal("the signed decision went to standard output")
+	}
+	info, err := os.Lstat(prepared.SignedFile)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the signed decision is not a new owner-only file: %v %v", info, err)
+	}
+	want := []string{
+		"openfox", "earning", "chat", "owner", "submit", "--rail-config", config, "--decision",
+		prepared.SignedFile,
+	}
+	if strings.Join(submit, " ") != strings.Join(want, " ") {
+		t.Fatalf("the submit command: %v", submit)
+	}
+	if _, err := ChatOwnerSubmit(context.Background(), submit[6], submit[8]); err != nil {
+		t.Fatalf("the printed submit command's decision: %v", err)
 	}
 }

@@ -351,6 +351,20 @@ MUTATIONS = [
         "p.addf(\"chat.owner\", CheckWarn,",
         "TestStatusAndPreflightShowTheDaemonsRoomsAndInvites",
     ),
+    (
+        "the printed signing command's -out before its command",
+        "chat_owner.go",
+        "with `tos-messenger-owner -out %s sign -key \"+",
+        "with `tos-messenger-owner sign -out %s -key \"+",
+        "TestThePrintedNextStepsRunAsGiven",
+    ),
+    (
+        "the printed submit command's full path and configuration",
+        "chat_owner.go",
+        "run `openfox earning chat owner submit --rail-config %s --decision %s`\",\n\t\tsignedFile, decisionFile, configPath, signedFile)",
+        "run `openfox chat owner submit --decision %s%.0s`\",\n\t\tsignedFile, decisionFile, signedFile, configPath)",
+        "TestThePrintedNextStepsRunAsGiven",
+    ),
 ]
 
 

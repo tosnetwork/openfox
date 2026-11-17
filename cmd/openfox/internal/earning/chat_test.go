@@ -9,6 +9,13 @@ import (
 // The room, invite and owner commands exist with the flags their decisions
 // need, and an invite on a contact import needs all three of its flags.
 func TestTheChatRoomInviteAndOwnerCommandsTakeTheirFlags(t *testing.T) {
+	// The submit command the prepared decisions print lives under earning.
+	earning := NewCommand()
+	submit, rest, err := earning.Find([]string{"chat", "owner", "submit"})
+	if err != nil || len(rest) != 0 || submit.Name() != "submit" || submit.Flags().Lookup("rail-config") == nil ||
+		submit.Flags().Lookup("decision") == nil {
+		t.Fatalf("earning chat owner submit: %v", err)
+	}
 	root := chatCommand()
 	for path, flags := range map[string][]string{
 		"room create":    {"rail-config", "room", "out"},

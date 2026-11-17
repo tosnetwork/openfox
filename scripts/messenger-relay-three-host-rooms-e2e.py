@@ -1087,7 +1087,12 @@ def remove_c_with_authority_crash() -> None:
     decision is made again, and no member forks."""
     stop_serve("c")
     room_op("a", "remove", "e")
-    in_flight = poll(lambda: commits_to("c", room_of("a").get("room_epoch", 0) - 1) or None, 120, 2)
+    # What is in flight to C when its Remove is made: every handshake object
+    # A deposited to C that C has not room-acked (C's serve is stopped).
+    def unacked_to_c():
+        return [d for d, o in handshake_objects().items() if RUN["c"]["agent"] in o["members"] and
+                deposit_times("a", d, "c") and not acks_for("c", d)] or None
+    in_flight = poll(unacked_to_c, 120, 2) or []
     base = room_of("a")
     holder = {}
 
@@ -1114,7 +1119,7 @@ def remove_c_with_authority_crash() -> None:
          bool(holder.get("killed_during_driver")) and RUN["c"]["agent"] not in (after.get("members") or []) and
          b_room.get("room_epoch") == removed_epoch and b_room.get("mls_epoch") == after.get("mls_epoch"),
          {"first_answer": answer, "holder": holder, "a": after, "b": b_room})
-    stale = [d for _, d in (in_flight or [])]
+    stale = list(in_flight)
     statuses = {}
     for row in room_frames("a"):
         if row["frame"].get("object_digest") in stale and row["packet"]["recipient_agent_id"] == RUN["c"]["agent"]:

@@ -381,12 +381,40 @@ def gaps(node: str) -> list[dict]:
     return mcall(node, {"op": "rooms.gaps", "room_id": ROOM}).get("room_gaps") or []
 
 
+FRAMES_SEEN: dict[str, dict] = {}
+HEADS_SEEN: dict[str, dict] = {}
+
+
+def seen_frames(node: str) -> list[dict]:
+    """Every chat outbox frame of node seen during the run: the carrier
+    collects a record once it is settled, so the sampler keeps a copy."""
+    seen = FRAMES_SEEN.setdefault(node, {})
+    try:
+        current = frames_of(node)
+    except (OSError, ValueError, RuntimeError):
+        current = []
+    for row in current:
+        seen[row["record"].get("idempotency_key", "") + row["record"].get("envelope_id", "")] = row
+    return list(seen.values())
+
+
+def sample_heads() -> None:
+    """The authority's room outbox heads (per-member states) as they were
+    last seen; a head is deleted once every member is settled."""
+    for path in (mdir("a") / "state" / "room-outbox").glob("*.json"):
+        try:
+            head = read_json(path)
+        except (OSError, ValueError):
+            continue
+        HEADS_SEEN[head.get("object_digest", path.stem)] = head
+
+
 def room_frames(node: str, kind: int = 3) -> list[dict]:
-    return [row for row in frames_of(node) if row["frame"].get("kind") == kind]
+    return [row for row in seen_frames(node) if row["frame"].get("kind") == kind]
 
 
 def room_acks(node: str) -> list[dict]:
-    return [row for row in frames_of(node) if row["frame"].get("kind") == 2 and row["frame"].get("room_ack")]
+    return [row for row in seen_frames(node) if row["frame"].get("kind") == 2 and row["frame"].get("room_ack")]
 
 
 def handshake_objects(node: str = "a") -> dict[str, dict]:
@@ -495,6 +523,9 @@ def sample_counts() -> None:
                 COUNTS["max_room"][key] = max(COUNTS["max_room"].get(key, 0), row.get("room_envelopes", 0))
                 COUNTS["max_chat"][key] = max(COUNTS["max_chat"].get(key, 0), row.get("envelopes", 0))
             COUNTS["samples"] += 1
+        for node in NODES:
+            seen_frames(node)
+        sample_heads()
         for _ in range(30):
             if COUNTS["stop"]:
                 return
@@ -692,11 +723,18 @@ def add_c() -> None:
         gate("2", "C's Welcome and full roster are carried at the production cut, each one part (the local "
              "record; the split at a test P is shown in the three-host record)", bool(roster_c) and
              bool(welcome_c), {"roster_parts": parts})
-    rosters_b = [d for d, o in objects.items() if o["type"] == 4 and RUN["b"]["agent"] in o["members"] and
-                 o["room_epoch"] == 3]
-    acks = {d[:16]: [f.get("ack_outcome") for f in acks_for("b", d)] for d in rosters_b}
-    cards_b = mr1.peer_cards("b")
+    # The roster of added members follows the Add Commit in B's queue: it is
+    # deposited once B's room ack of the Commit arrived.
     evidence = mdir("b") / "state" / "relay-evidence" / (RUN["c"]["agent"][6:] + ".json")
+
+    def roster_learned():
+        rosters = [d for d, o in handshake_objects().items() if o["type"] == 4 and
+                   RUN["b"]["agent"] in o["members"] and o["room_epoch"] == 3]
+        acked = {d[:16]: [f.get("ack_outcome") for f in acks_for("b", d)] for d in rosters}
+        cards = mr1.peer_cards("b")
+        done = rosters and all(acked.values()) and RUN["c"]["agent"] in cards and evidence.is_file()
+        return (rosters, acked, cards) if done else None
+    rosters_b, acks, cards_b = poll(roster_learned, 900, 5) or ([], {}, {})
     gate("18", "B, already joined, accepts the roster of added members (answered `accepted`, not `room-fork`) and "
          "learns C's chat card and relay evidence from it",
          bool(rosters_b) and all(v and set(v) <= {"accepted"} for v in acks.values()) and
@@ -737,7 +775,8 @@ def state_view(node: str) -> dict:
 
 
 # State a node rewrites on its own timers, whatever it receives.
-VOLATILE_STATE = {"chain.checkpoint", "prekeys", "publication", "LOCK", "maintenance"}
+VOLATILE_STATE = {"chain.checkpoint", "prekeys", "prekey-contributions", "publication", "LOCK",
+                  "maintenance", "relay-pull"}
 
 
 @step
@@ -971,13 +1010,21 @@ def crafted_objects() -> None:
     acked = poll(lambda: all(e["envelope_id"] not in listed_ids("relay2", RUN["c"]["agent"]) for e in envelopes)
                  or None, 300, 3)
     after_room = room_of("c")
-    refused = [line for line in log_text("messengerd-c").splitlines() if "not-authentic" in line]
-    gate("6", "a Commit from B (a member, not the authority) is reassembled by C and refused `not-authentic`: "
-         "every part relay-acknowledged, C's room epoch and MLS epoch unchanged",
+    answers = poll(lambda: [(f.get("ack_outcome"), f.get("ack_code")) for f in acks_for("c", cut["object_digest"])]
+                   or None, 300, 3) or []
+    parts_left = sorted(str(f.relative_to(mdir("c") / "state")) for f in (mdir("c") / "state" / "room-parts").rglob("*")
+                        if f.is_file() and RUN["b"]["agent"][6:] in str(f))
+    gate("6", "a Commit from B (a member, not the authority) is reassembled by C and refused `not-authentic` with "
+         "a signed room ack: every part relay-acknowledged, C's room epoch and MLS epoch unchanged",
          bool(acked) and after_room.get("mls_epoch") == room["mls_epoch"] and
-         after_room.get("room_epoch") == room["room_epoch"] and bool(refused),
-         {"room_before": room, "room_after": after_room, "refusal_lines": refused[-2:],
+         after_room.get("room_epoch") == room["room_epoch"] and answers == [("rejected", "not-authentic")],
+         {"room_before": room, "room_after": after_room, "answers": answers,
           "state_changed": sorted(k for k in before if before[k] != state_view("c").get(k))})
+    RUN["crafted_parts_left"] = parts_left
+    record("[M-R2 6] nothing of the refused object stays stored at C (its part store holds none of B's parts)",
+           not poll(lambda: not [f for f in (mdir("c") / "state" / "room-parts").rglob("*")
+                                 if f.is_file() and RUN["b"]["agent"][6:] in str(f)] or None, 120, 10) is None,
+           {"parts_left_after_refusal": len(parts_left)})
     fd.evidence["crafted_6_part_object"] = {"cut": cut, "envelopes": envelopes}
     renewal_exchange()
 
@@ -1006,7 +1053,7 @@ def remove_c_with_authority_crash() -> None:
     killer.join()
     mr1.PROCESSES.pop("messengerd-a", None)
     start_daemon("a", "after the crash during the Remove")
-    after = room_of("a")
+    after = wait_room("a", lambda row: row.get("room_epoch", 0) >= base.get("room_epoch", 0), 300)
     if RUN["c"]["agent"] in (after.get("members") or []):
         again = room_op("a", "remove", "c")
         holder["decision_made_again"] = bool(again.get("ok"))
@@ -1084,7 +1131,7 @@ def renewal_among_non_contacts() -> None:
     expiries = sorted({row["frame"].get("descriptor_expires_at_unix") for row in room_frames("c")
                        if row["packet"]["recipient_agent_id"] == RUN["b"]["agent"] and
                        row["frame"].get("descriptor_expires_at_unix")})
-    kind4 = [row for node, peer in (("b", "c"), ("c", "b")) for row in frames_of(node)
+    kind4 = [row for node, peer in (("b", "c"), ("c", "b")) for row in seen_frames(node)
              if row["frame"].get("kind") == 4 and row["packet"]["recipient_agent_id"] == RUN[peer]["agent"]]
     gate("16", f"B and C (no contacts) exchanged room messages over {span} s while C's descriptor (lifetime "
          f"{mr1.DESCRIPTOR_LIFETIME} s) was renewed {len(expiries)} times in its kind-3 part 0 to B, with no "
@@ -1102,22 +1149,23 @@ def renewal_exchange() -> None:
 def states_counters_sizes_search() -> None:
     """Items 8, 9, 10 and 11, read from the journals, the counters sampled
     during the run and the relay snapshots."""
-    objects = handshake_objects()
-    settled, unsettled = {}, {}
-    for digest, entry in objects.items():
-        for agent in entry["members"]:
-            member = next(n for n in NODES if RUN[n]["agent"] == agent)
-            outcomes = [f.get("ack_outcome") for f in acks_for(member, digest)]
-            key = f"{digest[:12]}->{member} (type {entry['type']}, mls {entry['mls_epoch']})"
-            (settled if set(outcomes) & {"accepted", "duplicate"} else unsettled)[key] = outcomes
-    removal_commits = {k for k in unsettled if k.endswith("(type 1, mls %s)" % k.split("mls ")[-1][:-1])}
+    sample_heads()
+    states = {}
+    for digest, head in HEADS_SEEN.items():
+        for member in head.get("members") or []:
+            name = next((n for n in NODES if RUN[n]["agent"] == member.get("agent_id")), "?")
+            states[f"{digest[:12]}->{name} (type {head.get('object_type')}, mls {head.get('mls_epoch')})"] = \
+                {"state": member.get("state"), "once": bool(member.get("once"))}
+    deleted = [d for d in HEADS_SEEN if not (mdir("a") / "state" / "room-outbox" / f"{d}.json").exists()]
     application_acked = [row for node in MEMBERS for row in room_acks(node)
-                         if row["frame"].get("room_ack_object_digest") not in objects]
-    gate("8", "every handshake object reached each member and settled on that member's verified room ack "
-         "(`accepted` or `duplicate`), except a removed member's removing Commit and objects to a member removed "
-         "while they were in flight; no application object is ever room-acked",
-         bool(settled) and not application_acked,
-         {"settled": settled, "unsettled": unsettled, "removal_commits": sorted(removal_commits)}, required=False)
+                         if row["frame"].get("room_ack_object_digest") not in HEADS_SEEN]
+    ok_states = all(v["state"] in (("carried", "delivered") if v["once"] else ("delivered",)) for v in states.values()
+                    if v["state"] != "pending" or v["once"])
+    gate("8", "the authority's room outbox heads: each handshake object went pending -> carried -> delivered per "
+         "member on a verified room ack (a removed member's removing Commit ends carried), settled heads are "
+         "collected, and no application object is ever room-acked",
+         bool(states) and ok_states and not application_acked,
+         {"last_seen_states": states, "heads_collected_once_settled": len(deleted)}, required=False)
     room_max = max(COUNTS["max_room"].values() or [0])
     chat_max = max(COUNTS["max_chat"].values() or [0])
     pacing = {}

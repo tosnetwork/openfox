@@ -12,7 +12,9 @@
 # tosmr-b (10.231.78.11) for the two OpenFox nodes, tosmr-c (10.231.78.12)
 # for a stranger node, tosmr-relay1 (10.231.78.20) and tosmr-relay2
 # (10.231.78.21) for the two relays. No namespace has a default route, so
-# none reaches anything beyond the bridge.
+# none reaches anything beyond the bridge. MR_NET_NODES names the node
+# namespaces (default "a b c"); the private-room run adds d (10.231.78.13)
+# and e (10.231.78.14).
 #
 # firewall: in each node namespace, outgoing connections only to the two
 # relays' TLS port and to the chain RPC forwarder ports on the host end of the
@@ -42,9 +44,16 @@ bridge=tosmr-br0
 prefix=10.231.78
 host_ip=$prefix.1
 relay_port=8443
-declare -A address=([a]=$prefix.10 [b]=$prefix.11 [c]=$prefix.12 [relay1]=$prefix.20 [relay2]=$prefix.21)
-names=(a b c relay1 relay2)
-nodes=(a b c)
+declare -A address=([a]=$prefix.10 [b]=$prefix.11 [c]=$prefix.12 [d]=$prefix.13 [e]=$prefix.14
+  [relay1]=$prefix.20 [relay2]=$prefix.21)
+read -r -a nodes <<< "${MR_NET_NODES:-a b c}"
+for node in "${nodes[@]}"; do
+  case "$node" in a|b|c|d|e) ;; *) echo "MR_NET_NODES: unknown node $node" >&2; exit 2 ;; esac
+done
+# down removes every namespace this script can make, whatever MR_NET_NODES
+# says, so a leftover of another run's node set is removed too.
+all_names=(a b c d e relay1 relay2)
+names=("${nodes[@]}" relay1 relay2)
 relays=(relay1 relay2)
 
 root() {
@@ -53,7 +62,7 @@ root() {
 }
 
 down() {
-  for name in "${names[@]}"; do
+  for name in "${all_names[@]}"; do
     ns=tosmr-$name
     if ip netns list | grep -qw "$ns"; then
       pids=$(root ip netns pids "$ns" || true)

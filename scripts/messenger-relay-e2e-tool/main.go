@@ -13,7 +13,11 @@
 //   - inspect: decode a signed packet and the relay frame it carries, or a
 //     sealed envelope's public header;
 //   - craft: sign a packet as a given Agent through tosctl custody, seal it to
-//     a key card and write the envelope, for the run's adversarial cases.
+//     a key card and write the envelope, for the run's adversarial cases;
+//   - room-frames: build one room object of a given type and size and cut it
+//     into its kind-3 frames, each written as a payload file for craft, for
+//     the private-room run's crafted objects (a production-cut 6-part object,
+//     a Commit from a non-authority).
 //
 // Private keys are written only to files of mode 0600 that this tool reads
 // back; no key is printed.
@@ -56,7 +60,7 @@ func main() {
 	if len(os.Args) < 2 {
 		fail(
 			errors.New(
-				"usage: messenger-relay-e2e-tool identity|signer|call|inspect|craft [flags]",
+				"usage: messenger-relay-e2e-tool identity|signer|call|inspect|craft|room-frames [flags]",
 			),
 		)
 	}
@@ -72,6 +76,8 @@ func main() {
 		err = inspectCommand(os.Args[2:])
 	case "craft":
 		err = craftCommand(os.Args[2:])
+	case "room-frames":
+		err = roomFramesCommand(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
@@ -452,6 +458,17 @@ type frameView struct {
 	DescriptorIssued    uint64 `json:"descriptor_issued_at_unix,omitempty"`
 	DescriptorExpires   uint64 `json:"descriptor_expires_at_unix,omitempty"`
 	EvidenceAgentID     string `json:"evidence_agent_id,omitempty"`
+	// Room fields: the object digest of every kind-3 part, the object's
+	// public prefix in part 0, and a room ack in kind 2.
+	ObjectDigest    string `json:"object_digest,omitempty"`
+	RoomObjectType  uint8  `json:"room_object_type,omitempty"`
+	RoomID          string `json:"room_id,omitempty"`
+	RoomEpoch       uint64 `json:"room_epoch,omitempty"`
+	MLSEpoch        uint64 `json:"mls_epoch,omitempty"`
+	RoomHeader      bool   `json:"room_header,omitempty"`
+	RoomAck         bool   `json:"room_ack,omitempty"`
+	RoomAckObject   string `json:"room_ack_object_digest,omitempty"`
+	RoomAckMLSEpoch uint64 `json:"room_ack_mls_epoch,omitempty"`
 }
 
 type packetView struct {
@@ -516,6 +533,17 @@ func inspectFrame(raw []byte) (*frameView, error) {
 		view.CiphertextBytes = len(value.Ciphertext)
 		view.CiphertextHex = hex.EncodeToString(value.Ciphertext[:min(24, len(value.Ciphertext))])
 	case 2:
+		if relayframe.IsRoomAck(frame.Part) {
+			ack, err := relayframe.DecodeRoomAck(frame.Part)
+			if err != nil {
+				return view, err
+			}
+			view.RoomAck, view.RoomID = true, ack.RoomID
+			view.RoomAckObject = hex.EncodeToString(ack.ObjectDigest[:])
+			view.RecipientEndpointID, view.RecipientDeviceID = ack.RecipientEndpointID, ack.RecipientDeviceID
+			view.RoomAckMLSEpoch, view.AckOutcome, view.AckCode = ack.MLSEpoch, ack.Outcome, string(ack.Code)
+			return view, nil
+		}
 		ack, err := relayframe.DecodeAck(frame.Part)
 		if err != nil {
 			return view, err
@@ -523,6 +551,16 @@ func inspectFrame(raw []byte) (*frameView, error) {
 		view.EventID, view.SessionID = ack.EventID, ack.SessionID
 		view.RecipientEndpointID, view.RecipientDeviceID = ack.RecipientEndpointID, ack.RecipientDeviceID
 		view.AckOutcome, view.AckCode = ack.Outcome, string(ack.Code)
+	case relayframe.KindRoom:
+		view.ObjectDigest = hex.EncodeToString(frame.ObjectDigest[:])
+		if frame.PartIndex == 0 {
+			prefix, err := roomObjectPrefix(frame.Part)
+			if err != nil {
+				return view, err
+			}
+			view.RoomObjectType, view.RoomID = prefix.objectType, prefix.roomID
+			view.RoomEpoch, view.MLSEpoch, view.RoomHeader = prefix.roomEpoch, prefix.mlsEpoch, prefix.header
+		}
 	case 4:
 		if len(frame.Part) == 1 {
 			view.EvidenceObject = map[byte]string{1: "request", 2: "response"}[frame.Part[0]]
@@ -728,5 +766,93 @@ func craftCommand(args []string) error {
 			header.RecipientKeyID,
 		), "bytes": len(envelope),
 		"sign_seconds": signSeconds, "relays": card.Relays,
+	})
+}
+
+// --- room-frames -----------------------------------------------------------------
+
+// roomPrefix is the public start of a room object (section 11.1), which part
+// 0 always holds whole: its domain, type, room, epochs and header length.
+type roomPrefix struct {
+	objectType          uint8
+	roomID              string
+	roomEpoch, mlsEpoch uint64
+	header              bool
+}
+
+// roomObjectPrefix decodes the fixed start of a room object from part 0.
+func roomObjectPrefix(part []byte) (roomPrefix, error) {
+	domain := []byte("tos.messaging.relay-room-object.v1\x00")
+	fixed := len(domain) + 1 + 32 + 8 + 8 + 2
+	if len(part) < fixed || !bytes.Equal(part[:len(domain)], domain) {
+		return roomPrefix{}, errors.New("part 0 does not start with a room object")
+	}
+	at := len(domain)
+	prefix := roomPrefix{objectType: part[at], roomID: "room_" + hex.EncodeToString(part[at+1:at+33])}
+	prefix.roomEpoch = binary.BigEndian.Uint64(part[at+33 : at+41])
+	prefix.mlsEpoch = binary.BigEndian.Uint64(part[at+41 : at+49])
+	prefix.header = binary.BigEndian.Uint16(part[at+49:at+51]) != 0
+	return prefix, nil
+}
+
+// roomFramesCommand builds a room object with an empty header and a random
+// body, the shape of an MLS-only refresh Commit or an application object,
+// and writes each kind-3 frame of its cut to <out-dir>/part-<i>.bin. Part 0
+// carries the sender's card and evidence from its exported relay contact.
+func roomFramesCommand(args []string) error {
+	flags := flag.NewFlagSet("room-frames", flag.ContinueOnError)
+	objectType := flags.Uint("type", uint(relayframe.RoomCommit), "room object type: 1 Commit, 3 application")
+	roomID := flags.String("room", "", "the room id (room_<64 hex>)")
+	roomEpoch := flags.Uint64("room-epoch", 1, "the object's room epoch")
+	mlsEpoch := flags.Uint64("mls-epoch", 1, "the object's MLS epoch")
+	bodyBytes := flags.Int("body-bytes", 1024, "random body bytes, 1 .. 1,048,576")
+	partBytes := flags.Int("part-bytes", 0, "test part size P; 0 is the production cut")
+	contactFile := flags.String("contact", "", "the sender's exported relay contact (card and evidence)")
+	outDir := flags.String("out-dir", "", "a new directory the frames are written to")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *bodyBytes < 1 || *bodyBytes > relayframe.MaxRoomBodyBytes {
+		return errors.New("room-frames: --body-bytes is outside 1 .. 1,048,576")
+	}
+	if *objectType != uint(relayframe.RoomCommit) && *objectType != uint(relayframe.RoomApplication) {
+		return errors.New("room-frames: only a Commit or an application object has an empty header")
+	}
+	raw, err := os.ReadFile(*contactFile)
+	if err != nil {
+		return err
+	}
+	contact, err := relayframe.DecodeContactJSON(raw)
+	if err != nil {
+		return err
+	}
+	body := make([]byte, *bodyBytes)
+	if _, err := rand.Read(body); err != nil {
+		return err
+	}
+	object, err := relayframe.EncodeRoomObject(relayframe.RoomObject{
+		Type: uint8(*objectType), RoomID: *roomID, RoomEpoch: *roomEpoch, MLSEpoch: *mlsEpoch, Body: body,
+	})
+	if err != nil {
+		return err
+	}
+	frames, err := relayframe.SplitRoomObject(object, contact.Card, contact.Evidence, *partBytes)
+	if err != nil {
+		return err
+	}
+	if err := os.Mkdir(*outDir, 0o700); err != nil {
+		return err
+	}
+	sizes := make([]int, 0, len(frames))
+	for index, frame := range frames {
+		if err := os.WriteFile(filepath.Join(*outDir, fmt.Sprintf("part-%d.bin", index)), frame, 0o600); err != nil {
+			return err
+		}
+		sizes = append(sizes, len(frame))
+	}
+	digest := relayframe.ObjectDigest(object)
+	return printJSON(map[string]any{
+		"object_digest": hex.EncodeToString(digest[:]), "object_bytes": len(object), "parts": len(frames),
+		"frame_bytes": sizes,
 	})
 }

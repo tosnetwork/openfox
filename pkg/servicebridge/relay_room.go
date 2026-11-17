@@ -83,19 +83,34 @@ type roomAdmissionRecord struct {
 	Rooms   []roomAdmissionEntry `json:"rooms"`
 }
 
-// roomAdmissionEntry is one room's admission of the cards.
+// roomAdmissionEntry is one room's admission of the cards. EndsAtUnix is the
+// room's end (D18), fixed for the room's life: the carrier drops the entry
+// on its own at carrierapi.RoomAdmissionDropAtUnix of it, so a daemon that
+// never forgets cannot leave an admission behind.
 type roomAdmissionEntry struct {
 	RoomID         string `json:"room_id"`
 	AdmittedAtUnix uint64 `json:"admitted_at_unix"`
+	EndsAtUnix     uint64 `json:"ends_at_unix"`
+}
+
+// dropAt is when the sweep drops the entry.
+func (e roomAdmissionEntry) dropAt() (uint64, bool) {
+	return carrierapi.RoomAdmissionDropAtUnix(e.EndsAtUnix)
 }
 
 func (r roomAdmissionRecord) hasRoom(roomID string) bool {
+	_, held := r.room(roomID)
+	return held
+}
+
+// room returns the entry of roomID.
+func (r roomAdmissionRecord) room(roomID string) (roomAdmissionEntry, bool) {
 	for _, entry := range r.Rooms {
 		if entry.RoomID == roomID {
-			return true
+			return entry, true
 		}
 	}
-	return false
+	return roomAdmissionEntry{}, false
 }
 
 // withoutRoom returns the record without roomID and whether it was there.
@@ -165,7 +180,7 @@ func validRoomAdmission(record roomAdmissionRecord) error {
 	}
 	seen := make(map[string]struct{}, len(record.Rooms))
 	for _, entry := range record.Rooms {
-		if !roomIDPattern.MatchString(entry.RoomID) {
+		if _, valid := entry.dropAt(); !roomIDPattern.MatchString(entry.RoomID) || !valid {
 			return errRoomAdmissionRecord
 		}
 		if _, duplicate := seen[entry.RoomID]; duplicate {
@@ -223,6 +238,9 @@ type RoomAdmissionView struct {
 	// peer's cards, so forgetting the rooms keeps them.
 	Direct bool     `json:"direct"`
 	Rooms  []string `json:"rooms"`
+	// RoomEndsAtUnix is each room's end; the carrier drops the room's
+	// admission one RoomEndSlackSeconds after it.
+	RoomEndsAtUnix map[string]uint64 `json:"room_ends_at_unix,omitempty"`
 	// Unreadable names a record that failed to load; the other fields are
 	// then empty and every forget of that peer is answered retry.
 	Unreadable string `json:"unreadable,omitempty"`
@@ -253,9 +271,13 @@ func readRoomAdmissions(directory string) ([]RoomAdmissionView, error) {
 		if !found {
 			continue
 		}
-		view := RoomAdmissionView{AgentID: agentID, Direct: record.Direct, Rooms: make([]string, 0, len(record.Rooms))}
+		view := RoomAdmissionView{
+			AgentID: agentID, Direct: record.Direct, Rooms: make([]string, 0, len(record.Rooms)),
+			RoomEndsAtUnix: make(map[string]uint64, len(record.Rooms)),
+		}
 		for _, room := range record.Rooms {
 			view.Rooms = append(view.Rooms, room.RoomID)
+			view.RoomEndsAtUnix[room.RoomID] = room.EndsAtUnix
 		}
 		sort.Strings(view.Rooms)
 		out = append(out, view)
@@ -475,14 +497,17 @@ func (c *ChatCarrier) RoomCards(ctx context.Context, request carrierapi.Request)
 	}
 	switch request.RoomCardsAction {
 	case carrierapi.RoomCardsAdmit:
-		if len(request.RoomCards) == 0 || len(request.RoomCards) > carrierapi.MaxRoomCards ||
+		// The server bounded the end against its clock; a missing one, or one
+		// whose drop time overflows, is never stored.
+		if _, valid := carrierapi.RoomAdmissionDropAtUnix(request.RoomEndsAtUnix); !valid ||
+			len(request.RoomCards) == 0 || len(request.RoomCards) > carrierapi.MaxRoomCards ||
 			len(request.ForgetAgentIDs) != 0 {
 			return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
 		}
-		return c.admitRoomCards(ctx, request.RoomID, request.RoomCards)
+		return c.admitRoomCards(ctx, request.RoomID, request.RoomEndsAtUnix, request.RoomCards)
 	case carrierapi.RoomCardsForget:
-		if len(request.ForgetAgentIDs) == 0 || len(request.ForgetAgentIDs) > carrierapi.MaxRoomCards ||
-			len(request.RoomCards) != 0 {
+		if request.RoomEndsAtUnix != 0 || len(request.ForgetAgentIDs) == 0 ||
+			len(request.ForgetAgentIDs) > carrierapi.MaxRoomCards || len(request.RoomCards) != 0 {
 			return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
 		}
 		return c.forgetRoomCards(request.RoomID, request.ForgetAgentIDs)
@@ -491,14 +516,19 @@ func (c *ChatCarrier) RoomCards(ctx context.Context, request carrierapi.Request)
 	}
 }
 
-// admitRoomCards admits a batch. A card that does not verify, or that the
-// store cannot take, is named in the answer and skipped; a check finalized
-// state cannot answer, or a store failure, makes the whole batch a retry,
-// which admits the cards already done again as a no-op.
-func (c *ChatCarrier) admitRoomCards(ctx context.Context, roomID string,
+// errRoomEndConflict is an admission naming another end than the one held
+// for its room: a room's end is fixed for its life (D18).
+var errRoomEndConflict = errors.New("servicebridge: the admission names another end than its room's")
+
+// admitRoomCards admits a batch under the room's end. A room already
+// admitted under another end refuses the whole batch with invalid-request
+// and keeps its end; the same end re-admits as a no-op. A card that does not
+// verify, or that the store cannot take, is named in the answer and skipped;
+// a check finalized state cannot answer, or a store failure, makes the whole
+// batch a retry, which admits the cards already done again as a no-op.
+func (c *ChatCarrier) admitRoomCards(ctx context.Context, roomID string, endsAtUnix uint64,
 	cards []carrierapi.RoomCard,
 ) carrierapi.Response {
-	refused := []string{}
 	seen := make(map[string]struct{}, len(cards))
 	for _, offered := range cards {
 		if !agentIDPattern.MatchString(offered.AgentID) {
@@ -508,6 +538,17 @@ func (c *ChatCarrier) admitRoomCards(ctx context.Context, roomID string,
 			return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
 		}
 		seen[offered.AgentID] = struct{}{}
+	}
+	held, found, err := c.roomEnd(roomID)
+	if err != nil {
+		c.report("chat.room-cards", err)
+		return carrierapi.Retry()
+	}
+	if found && held != endsAtUnix {
+		return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
+	}
+	refused := []string{}
+	for _, offered := range cards {
 		raw, err := base64.StdEncoding.Strict().DecodeString(offered.CardBase64)
 		if offered.AgentID == c.agentID || err != nil || len(raw) == 0 || len(raw) > relayframe.MaxCardBytes {
 			refused = append(refused, offered.AgentID)
@@ -522,7 +563,10 @@ func (c *ChatCarrier) admitRoomCards(ctx context.Context, roomID string,
 			refused = append(refused, offered.AgentID)
 			continue
 		}
-		admitted, err := c.admitRoomCard(roomID, card)
+		admitted, err := c.admitRoomCard(roomID, endsAtUnix, card)
+		if errors.Is(err, errRoomEndConflict) {
+			return carrierapi.Refusal(carrierapi.CodeInvalidRequest)
+		}
 		if err != nil {
 			c.report("chat.room-cards", err)
 			return carrierapi.Retry()
@@ -542,8 +586,9 @@ func (c *ChatCarrier) admitRoomCards(ctx context.Context, roomID string,
 // the card. The record is written first, so a crash in between leaves an
 // admission without its card, never a card no admission names; a store that
 // fails puts the record back. It reports false for a card the store cannot
-// take: the peer is at its room bound, or the card directory is full.
-func (c *ChatCarrier) admitRoomCard(roomID string, card *peerCard) (bool, error) {
+// take: the peer is at its room bound, or the card directory is full, and
+// errRoomEndConflict when the peer holds the room under another end.
+func (c *ChatCarrier) admitRoomCard(roomID string, endsAtUnix uint64, card *peerCard) (bool, error) {
 	agentID := card.AgentID
 	unlock, err := c.lockAdmissions()
 	if err != nil {
@@ -565,11 +610,17 @@ func (c *ChatCarrier) admitRoomCard(roomID string, card *peerCard) (bool, error)
 		}
 		record = roomAdmissionRecord{Schema: roomAdmissionSchema, AgentID: agentID, Direct: held}
 	}
-	if !record.hasRoom(roomID) {
+	if entry, held := record.room(roomID); held {
+		if entry.EndsAtUnix != endsAtUnix {
+			return false, errRoomEndConflict
+		}
+	} else {
 		if len(record.Rooms) >= maxAgentRoomAdmissions {
 			return false, nil
 		}
-		record.Rooms = append(record.Rooms, roomAdmissionEntry{RoomID: roomID, AdmittedAtUnix: c.nowUnix()})
+		record.Rooms = append(record.Rooms, roomAdmissionEntry{
+			RoomID: roomID, AdmittedAtUnix: c.nowUnix(), EndsAtUnix: endsAtUnix,
+		})
 		if err := c.rooms.store(record); err != nil {
 			return false, err
 		}
@@ -634,6 +685,105 @@ func (c *ChatCarrier) forgetRoomCard(roomID, agentID string) error {
 		return err
 	}
 	return c.rooms.remove(agentID)
+}
+
+// agents lists the Agents the store holds a record file for, by file name.
+func (a *roomAdmissions) agents() ([]string, error) {
+	entries, err := os.ReadDir(a.directory)
+	if err != nil {
+		return nil, errors.New("servicebridge: read the room admission directory")
+	}
+	var out []string
+	for _, entry := range entries {
+		if relayOutboxFilePattern.MatchString(entry.Name()) {
+			out = append(out, "agent_"+strings.TrimSuffix(entry.Name(), ".json"))
+		}
+	}
+	return out, nil
+}
+
+// roomEnd returns the end the store holds for roomID, if any peer is
+// admitted under it. An unreadable record is reported and skipped.
+func (c *ChatCarrier) roomEnd(roomID string) (uint64, bool, error) {
+	unlock, err := c.lockAdmissions()
+	if err != nil {
+		return 0, false, err
+	}
+	defer unlock()
+	agents, err := c.rooms.agents()
+	if err != nil {
+		return 0, false, err
+	}
+	for _, agentID := range agents {
+		record, found, err := c.rooms.load(agentID)
+		if err != nil {
+			c.report("chat.room-cards", fmt.Errorf("servicebridge: room admission record of %s skipped: %w",
+				agentID, err))
+			continue
+		}
+		if !found {
+			continue
+		}
+		if entry, held := record.room(roomID); held {
+			return entry.EndsAtUnix, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+// roomAdmissionDue is one room admission past its drop time.
+type roomAdmissionDue struct {
+	roomID  string
+	agentID string
+}
+
+// sweepRoomAdmissions drops every room admission whose room ended at least
+// carrierapi.RoomEndSlackSeconds ago, through the forget path, which keeps
+// the cards another admission holds. It runs when the carrier opens and on
+// every maintenance pass, so admissions a daemon never forgot (it crashed,
+// or its forget failed) end with their room. An unreadable record is
+// reported and skipped; the others are still swept.
+func (c *ChatCarrier) sweepRoomAdmissions() error {
+	if c == nil {
+		return errChatInvalidLane
+	}
+	now := c.nowUnix()
+	if now == 0 {
+		return errors.New("servicebridge: the clock is not set")
+	}
+	unlock, err := c.lockAdmissions()
+	if err != nil {
+		return err
+	}
+	agents, err := c.rooms.agents()
+	var due []roomAdmissionDue
+	for _, agentID := range agents {
+		record, found, loadErr := c.rooms.load(agentID)
+		if loadErr != nil {
+			c.report("chat.room-cards", fmt.Errorf("servicebridge: room admission record of %s skipped by the "+
+				"sweep: %w", agentID, loadErr))
+			continue
+		}
+		if !found {
+			continue
+		}
+		for _, entry := range record.Rooms {
+			if drop, valid := entry.dropAt(); valid && now >= drop {
+				due = append(due, roomAdmissionDue{roomID: entry.RoomID, agentID: agentID})
+			}
+		}
+	}
+	unlock()
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, admission := range due {
+		if err := c.forgetRoomCard(admission.roomID, admission.agentID); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // Withdraw implements carrierapi.Handler: carrier.withdraw. The envelope

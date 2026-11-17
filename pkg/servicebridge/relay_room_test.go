@@ -84,7 +84,15 @@ func (d *standInDaemon) carryFrame(peer, key, withdraw string, frame []byte) car
 
 func (d *standInDaemon) admitRoomCards(roomID string, cards ...carrierapi.RoomCard) carrierapi.Response {
 	d.t.Helper()
-	response, err := d.carrier.RoomCards(context.Background(), roomID, cards)
+	return d.admitRoomCardsEnding(roomID, d.roomEndsAt, cards...)
+}
+
+// admitRoomCardsEnding admits cards under a room with the given end.
+func (d *standInDaemon) admitRoomCardsEnding(roomID string, endsAtUnix uint64,
+	cards ...carrierapi.RoomCard,
+) carrierapi.Response {
+	d.t.Helper()
+	response, err := d.carrier.RoomCards(context.Background(), roomID, endsAtUnix, cards)
 	if err != nil {
 		d.t.Fatal(err)
 	}
@@ -371,7 +379,7 @@ func TestTheRoomAdmissionLockExcludesAnotherHandle(t *testing.T) {
 	roomAdmissionLockWait.Store(int64(5 * time.Second))
 	cards := []carrierapi.RoomCard{roomCardOf(a)}
 	go func() {
-		response, callErr := b.daemon.carrier.RoomCards(context.Background(), room, cards)
+		response, callErr := b.daemon.carrier.RoomCards(context.Background(), room, b.daemon.roomEndsAt, cards)
 		if callErr != nil {
 			response = carrierapi.Retry()
 		}

@@ -70,6 +70,9 @@ type standInDaemon struct {
 	// room objects a verified room ack settled, by object digest.
 	roomDelivered int
 	roomAcked     map[[32]byte]bool
+	// roomEndsAt is the end every room this daemon admits cards under has,
+	// a day after the daemon started.
+	roomEndsAt uint64
 }
 
 func standInIDs(agent string) (endpoint, device string) {
@@ -94,6 +97,7 @@ func newStandInDaemon(t *testing.T, agent string, clock *relayClock) *standInDae
 		t: t, agent: agent, endpoint: endpoint, device: device, key: ed25519.NewKeyFromSeed(seed[:]),
 		evidence: evidence, clock: clock, admitted: map[string]bool{}, peers: map[string]standInPeer{},
 		accepted: map[string]int{}, delivered: map[string]bool{}, roomAcked: map[[32]byte]bool{},
+		roomEndsAt: uint64(clock.Now().Add(24 * time.Hour).Unix()),
 	}
 }
 

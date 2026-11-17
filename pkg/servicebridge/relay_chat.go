@@ -88,6 +88,12 @@ type ChatConfig struct {
 	// daemon's relay_carriage.timeout_seconds does on its side: 0 means 30 s,
 	// otherwise 1 to 300. Set both to the same value.
 	TimeoutSeconds uint64 `json:"timeout_seconds,omitempty"`
+	// OwnerSocket is the daemon's owner socket, which `chat room`, `chat
+	// invite`, `chat owner submit` and `chat contact import --invite-token-
+	// file` call. Empty means room management through openfox is off. It
+	// carries owner decisions only as signed envelopes: openfox never holds
+	// the owner's signing key.
+	OwnerSocket string `json:"owner_socket,omitempty"`
 }
 
 // Bounds of the carrier operation timeout.
@@ -161,6 +167,18 @@ func validateChatConfig(config NodeConfig) error {
 		chat.CarrierSocket == config.ReceiverSocket || chat.MessengerCarrierSocket == config.ReceiverSocket) {
 		problems = append(problems, errors.New("chat.carrier_socket, chat.messenger_carrier_socket and "+
 			"receiver_socket must be three different sockets"))
+	}
+	if chat.OwnerSocket != "" {
+		switch {
+		case !cleanAbsolute(chat.OwnerSocket):
+			problems = append(problems, errors.New("chat.owner_socket must be an absolute clean path"))
+		case len(chat.OwnerSocket) > maxUnixSocketPath:
+			problems = append(problems, fmt.Errorf("chat.owner_socket exceeds %d bytes", maxUnixSocketPath))
+		case chat.OwnerSocket == chat.CarrierSocket || chat.OwnerSocket == chat.MessengerCarrierSocket ||
+			chat.OwnerSocket == config.ReceiverSocket:
+			problems = append(problems, errors.New("chat.owner_socket must differ from the carrier, Messenger "+
+				"carrier and receiver sockets"))
+		}
 	}
 	if len(chat.RelayURLs) > 0 {
 		if _, err := canonicalRelayURLs(chat.RelayURLs); err != nil {

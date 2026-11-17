@@ -967,9 +967,14 @@ def offline_beyond_ttl() -> None:
          bool(dup), {"acks": acks_for("c", commit)})
     lost = compose("c", "lost-to-b")
     poll(lambda: now() > stopped_at + RELAY_TTL + 120 or None, RELAY_TTL + 400, 10)
-    generations = sorted({row["record"]["envelope_id"] for row in room_frames("a")
-                          if row["frame"].get("object_digest") == commit and
-                          row["packet"]["recipient_agent_id"] == RUN["b"]["agent"]})
+    # One envelope per generation of part 0, in deposit order; the newest is
+    # the one still held, every older one must be withdrawn.
+    deposits = {}
+    for row in room_frames("a"):
+        if row["frame"].get("object_digest") == commit and row["frame"].get("part_index") == 0 and \
+           row["packet"]["recipient_agent_id"] == RUN["b"]["agent"] and row["record"].get("envelope_id"):
+            deposits[row["record"]["envelope_id"]] = row["record"].get("accepted_at_unix") or 0
+    generations = [e for e, _ in sorted(deposits.items(), key=lambda item: item[1])]
     parts = {row["frame"].get("part_sha256") for row in room_frames("a")
              if row["frame"].get("object_digest") == commit and
              row["packet"]["recipient_agent_id"] == RUN["b"]["agent"] and row["frame"].get("part_index") == 0}

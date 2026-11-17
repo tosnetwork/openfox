@@ -293,13 +293,19 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 	}
 	pacer := newRoomPacer(now)
 	transport.pace = pacer.allow
-	return &ChatCarrier{
+	carrier := &ChatCarrier{
 		agentID: agentID, Keys: keys, Cards: cards, Transport: transport, signer: lane.Signer, daemon: lane.Daemon,
 		verifier: verifier, agents: agents, pool: pool, cardPath: lane.CardPath, timeout: lane.Timeout, now: now,
 		report: report,
 		gone:   map[[32]byte]uint64{},
 		rooms:  rooms, pacer: pacer,
-	}, nil
+	}
+	// Admissions of rooms that ended while the node was down go now, before
+	// any carriage; a failure is reported and the maintenance pass retries.
+	if err := carrier.sweepRoomAdmissions(); err != nil {
+		report("chat.room-cards", err)
+	}
+	return carrier, nil
 }
 
 func (c *ChatCarrier) lockPeer(peer string) func() {
@@ -860,10 +866,15 @@ func (c *ChatCarrier) sendAck(ctx context.Context, peer string, nonce [32]byte, 
 // Maintain rotates and destroys chat keys and republishes the current chat
 // card to the daemon's card path. The card handed out lasts the longest
 // lifetime and is replaced once less than half of it is left, so a contact
-// file exported now stays usable for at least 15 days.
+// file exported now stays usable for at least 15 days. Every pass also drops
+// the room admissions whose room has ended (sweepRoomAdmissions); a failure
+// there is reported and does not stop the key work.
 func (c *ChatCarrier) Maintain(ctx context.Context) error {
 	if c == nil || ctx == nil {
 		return errChatInvalidLane
+	}
+	if err := c.sweepRoomAdmissions(); err != nil {
+		c.report("chat.room-cards", err)
 	}
 	if _, err := c.Keys.Maintain(ctx); err != nil {
 		return err

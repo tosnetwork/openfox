@@ -142,8 +142,8 @@ MUTATIONS = [
     (
         "the bounds of a room-cards request",
         "relay_room.go",
-        "if len(request.ForgetAgentIDs) == 0 || len(request.ForgetAgentIDs) > carrierapi.MaxRoomCards ||",
-        "if len(request.ForgetAgentIDs) == 0 || len(request.ForgetAgentIDs) > 1<<20 ||",
+        "len(request.ForgetAgentIDs) > carrierapi.MaxRoomCards || len(request.RoomCards) != 0 {",
+        "len(request.ForgetAgentIDs) > 1<<20 || len(request.RoomCards) != 0 {",
         "TestRoomCardsRequestsAreBounded",
     ),
     (
@@ -195,6 +195,77 @@ MUTATIONS = [
         "unlock, err := lockRoomAdmissions(cardsDir)",
         "unlock, err := func() (func(), error) { return func() {}, nil }()",
         "TestTheRoomAdmissionLockExcludesAnotherHandle",
+    ),
+    (
+        "dropping an admission at exactly its drop time",
+        "relay_room.go",
+        "if drop, valid := entry.dropAt(); valid && now >= drop {",
+        "if drop, valid := entry.dropAt(); valid && now > drop {",
+        "TestARoomAdmissionIsDroppedAtItsEndPlusTheSlackAndNotBefore",
+    ),
+    (
+        "the slack after the room's end",
+        "relay_room.go",
+        "return carrierapi.RoomAdmissionDropAtUnix(e.EndsAtUnix)",
+        "return e.EndsAtUnix, e.EndsAtUnix != 0",
+        "TestARoomAdmissionIsDroppedAtItsEndPlusTheSlackAndNotBefore",
+    ),
+    (
+        "the sweep on every maintenance pass",
+        "relay_chat.go",
+        "if err := c.sweepRoomAdmissions(); err != nil {\n\t\tc.report(\"chat.room-cards\", err)\n\t}\n"
+        "\tif _, err := c.Keys.Maintain(ctx); err != nil {",
+        "if _, err := c.Keys.Maintain(ctx); err != nil {",
+        "TestARoomAdmissionIsDroppedAtItsEndPlusTheSlackAndNotBefore|TestTheSweepKeepsCardsAnotherAdmissionHolds",
+    ),
+    (
+        "the sweep when the carrier opens",
+        "relay_chat.go",
+        "if err := carrier.sweepRoomAdmissions(); err != nil {",
+        "if err := error(nil); err != nil {",
+        "TestTheSweepRunsWhenTheCarrierOpens",
+    ),
+    (
+        "the sweep going through the forget path",
+        "relay_room.go",
+        "if err := c.forgetRoomCard(admission.roomID, admission.agentID); err != nil {",
+        "if _, err := c.Cards.forgetAgent(admission.agentID); err != nil {",
+        "TestTheSweepKeepsCardsAnotherAdmissionHolds",
+    ),
+    (
+        "an unreadable record skipped by the sweep",
+        "relay_room.go",
+        "\"sweep: %w\", agentID, loadErr))\n\t\t\tcontinue",
+        "\"sweep: %w\", agentID, loadErr))\n\t\t\tunlock()\n\t\t\treturn loadErr",
+        "TestTheSweepSkipsAnUnreadableRecordAndSweepsTheRest",
+    ),
+    (
+        "a required room end on admit",
+        "relay_room.go",
+        "if _, valid := carrierapi.RoomAdmissionDropAtUnix(request.RoomEndsAtUnix); !valid ||",
+        "if _, valid := carrierapi.RoomAdmissionDropAtUnix(request.RoomEndsAtUnix); !valid && false ||",
+        "TestARoomAdmissionWithoutAnEndIsRefused",
+    ),
+    (
+        "a forget naming no end",
+        "relay_room.go",
+        "if request.RoomEndsAtUnix != 0 || len(request.ForgetAgentIDs) == 0 ||",
+        "if len(request.ForgetAgentIDs) == 0 ||",
+        "TestARoomAdmissionWithoutAnEndIsRefused",
+    ),
+    (
+        "a room's held end refusing another",
+        "relay_room.go",
+        "if found && held != endsAtUnix {",
+        "if found && held != endsAtUnix && false {",
+        "TestARoomAdmissionKeepsItsFixedEnd",
+    ),
+    (
+        "a member's held end refusing another under the lock",
+        "relay_room.go",
+        "if entry.EndsAtUnix != endsAtUnix {",
+        "if entry.EndsAtUnix != endsAtUnix && false {",
+        "TestARoomAdmissionKeepsItsFixedEnd",
     ),
 ]
 

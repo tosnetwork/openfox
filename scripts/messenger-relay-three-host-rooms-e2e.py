@@ -707,7 +707,11 @@ def add_c() -> None:
          "its Welcome and roster and B applies the Add Commit", bool(added.get("ok")) and invited.get("state") ==
          "invited" and bool(joined.get("ok")) and c_room.get("room_epoch") == 3 and b_room.get("room_epoch") == 3,
          {"b": b_room, "c": c_room})
-    objects = handshake_objects()
+    # C's full roster follows its Welcome in C's queue: it is deposited once
+    # C's room ack of the Welcome arrived.
+    objects = poll(lambda: (lambda o: o if any(v["type"] == 4 and RUN["c"]["agent"] in v["members"]
+                                               for v in o.values()) else None)(handshake_objects()), 600, 5) or \
+        handshake_objects()
     # The split is shown on C's full roster (about 22 KB in a three-member
     # room); the Welcome (about 1.9 KB) is below any part size that also fits
     # the roster in 8 parts.

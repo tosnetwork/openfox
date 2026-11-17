@@ -827,6 +827,16 @@ def refusals_at_c() -> None:
     fd.evidence["refusals_at_c"] = {k: v for k, v in results.items() if not k.startswith("present")}
     gate("12", "B's room messages are admitted by room-scoped admission while its 1:1 copies are refused",
          RUN["renewal"][0]["b->c"]["applied"], RUN["renewal"][0])
+    # D12's other half: C's owner removes A, whom the claimed invite made a
+    # contact; A's next 1:1 Event meets C's policy again. Room objects from A
+    # stay admitted by room-scoped admission (D11).
+    removed = remove_contact("c", "a")
+    m = (mr1.send("a", "c", "after-contact-removed"), mr1.require_sent("after-contact-removed"))[1]
+    sent = poll(lambda: [r for r in mr1.copy_frames("a", m) if r["record"].get("accepted")], 120, 1) or []
+    acked = poll(lambda: all(all(r["record"]["envelope_id"] not in listed_ids(relay, RUN["c"]["agent"])
+                                 for relay in RELAYS) for r in sent) or None, 300, 3)
+    gate("1", "after C's owner removes A (contacts.remove), A's next Event meets C's policy again and is refused",
+         bool(removed.get("ok")) and bool(sent) and bool(acked) and m not in inbound_texts("c"), removed)
 
 
 def filler_joins(filler: str, room_epoch: int) -> dict:
@@ -1122,13 +1132,6 @@ def remove_c_with_authority_crash() -> None:
                      300, 5)
     gate("5", "B, for whom C is no contact, has forgotten C's chat card and relay evidence", bool(forgotten),
          {"b_holds_c_card": RUN["c"]["agent"] in cards_b, "b_holds_c_evidence": evidence.is_file()})
-    removed = remove_contact("c", "a")
-    m = (mr1.send("a", "c", "after-contact-removed"), mr1.require_sent("after-contact-removed"))[1]
-    sent = poll(lambda: [r for r in mr1.copy_frames("a", m) if r["record"].get("accepted")], 120, 1) or []
-    acked = poll(lambda: all(all(r["record"]["envelope_id"] not in listed_ids(relay, RUN["c"]["agent"])
-                                 for relay in RELAYS) for r in sent) or None, 300, 3)
-    gate("1", "after C's owner removes A (contacts.remove), A's next Event meets C's policy again and is refused",
-         bool(removed.get("ok")) and bool(sent) and bool(acked) and m not in inbound_texts("c"), removed)
 
 
 @step

@@ -250,6 +250,9 @@ type ChatContactImported struct {
 	AgentID     string `json:"agent_id"`
 	KeyID       string `json:"key_id"`
 	ContactFile string `json:"contact_file"`
+	// InviteDecision is the prepared invites.present decision of an import
+	// with an invite.
+	InviteDecision *ChatPrepared `json:"invite_decision,omitempty"`
 }
 
 // importChatContact verifies a contact file's chat card against finalized
@@ -454,6 +457,66 @@ func ChatContactImport(ctx context.Context, configPath, file string, now func() 
 	return &imported, nil
 }
 
+// ChatContactImportWithInvite imports a peer's contact file and prepares
+// the invites.present decision of the invite the peer's owner issued to this
+// one, into out, so every delivery to the peer carries it once the owner
+// signed and submitted it.
+func ChatContactImportWithInvite(ctx context.Context, configPath, file string, invite ChatInvite, out string,
+	now func() time.Time,
+) (*ChatContactImported, error) {
+	if ctx == nil || !cleanAbsolute(file) {
+		return nil, errors.New("servicebridge: --file must be an absolute clean path")
+	}
+	if now == nil {
+		now = time.Now
+	}
+	owner, err := ownerFromConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := readBoundedFile(file, maxChatContactBytes)
+	if err != nil {
+		return nil, err
+	}
+	return importWithInvite(ctx, owner, raw, invite, out, now(), func() (*ChatContactImported, error) {
+		return ChatContactImport(ctx, configPath, file, now)
+	})
+}
+
+// importWithInvite checks the invite and the decision file before anything
+// is imported, imports, then prepares the decision. A preparation that fails
+// after the import says so: the contact stays, and `chat invite present`
+// prepares the decision again.
+func importWithInvite(ctx context.Context, owner chatOwnerCaller, raw []byte, invite ChatInvite, out string,
+	now time.Time, doImport func() (*ChatContactImported, error),
+) (*ChatContactImported, error) {
+	contact, _, err := decodeChatContact(raw)
+	if err != nil {
+		return nil, err
+	}
+	request, err := presentInviteRequest(contact.AgentID, invite, now)
+	if err != nil {
+		return nil, err
+	}
+	if !cleanAbsolute(out) {
+		return nil, errors.New("servicebridge: --out must be an absolute clean path")
+	}
+	if _, statErr := os.Lstat(out); !errors.Is(statErr, os.ErrNotExist) {
+		return nil, errors.New("servicebridge: --out names an existing file; it is never replaced")
+	}
+	imported, err := doImport()
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareToFile(ctx, owner, request, out)
+	if err != nil {
+		return imported, fmt.Errorf("servicebridge: the contact %s was imported, but its invite decision was "+
+			"not prepared; run `openfox chat invite present`: %w", imported.AgentID, err)
+	}
+	imported.InviteDecision = &prepared
+	return imported, nil
+}
+
 // openChatVerification opens the pinned tosctl verifier and the finalized
 // Agent reader a card verification needs.
 func openChatVerification(config NodeConfig) (mldsa44.Verifier, agentpacket.AgentResolver, error) {
@@ -514,11 +577,20 @@ type ChatStatusReport struct {
 	// PeerEnvelopes are the journal's per-peer counts against the caps of 24
 	// chat and 16 kind-3 envelopes.
 	PeerEnvelopes []PeerEnvelopeCount `json:"peer_envelopes"`
+	// DaemonRooms are the daemon's private rooms and pending room invites,
+	// read from the owner socket when one is configured; DaemonRoomsProblem
+	// says why they could not be read.
+	DaemonRooms        *ChatRooms `json:"daemon_rooms,omitempty"`
+	DaemonRoomsProblem string     `json:"daemon_rooms_problem,omitempty"`
 }
 
 // ReadChatStatus reads the chat lane's state without taking it over, so it
 // runs beside `serve`.
 func ReadChatStatus(configPath string, now time.Time) (*ChatStatusReport, error) {
+	return readChatStatus(context.Background(), configPath, now)
+}
+
+func readChatStatus(ctx context.Context, configPath string, now time.Time) (*ChatStatusReport, error) {
 	config, err := loadChatConfig(configPath)
 	if err != nil {
 		return nil, err
@@ -572,6 +644,18 @@ func ReadChatStatus(configPath string, now time.Time) (*ChatStatusReport, error)
 	}
 	if counts != nil {
 		report.PeerEnvelopes = counts
+	}
+	if config.Chat.OwnerSocket != "" {
+		owner, ownerErr := chatOwnerClient(config)
+		var rooms ChatRooms
+		if ownerErr == nil {
+			rooms, ownerErr = listChatRooms(ctx, owner)
+		}
+		if ownerErr != nil {
+			report.DaemonRoomsProblem = strings.TrimPrefix(ownerErr.Error(), "servicebridge: ")
+		} else {
+			report.DaemonRooms = &rooms
+		}
 	}
 	return report, nil
 }

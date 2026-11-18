@@ -59,7 +59,9 @@
 #                     remote run
 # Remote-mode defaults (the test-shortened values the record states):
 # MR2_RELAY_TTL=3600 (required: the test relays' -ttl 1h), MR2_ROOMTEST=1,
-# MR2_ROOM_PART_BYTES=4096, MR2_HANDSHAKE_RETENTION=10800,
+# MR2_ROOM_PART_BYTES=8192 (8 parts of P must hold the largest roster of the
+# run, 3 entries of about 11.2 KiB; 4096 caps an object at 32,768 bytes and a
+# 4-member room's roster is 33,537), MR2_HANDSHAKE_RETENTION=10800,
 # MR2_AUTHORIZATION_SECONDS=600, MR1_REDEPOSIT_SECONDS=600,
 # MR1_DESCRIPTOR_LIFETIME=1800.
 #
@@ -91,7 +93,7 @@ if [ "$remote" = 1 ]; then
   fi
   export MR2_ROOMTEST=${MR2_ROOMTEST:-1}
   if [ "$MR2_ROOMTEST" = 1 ]; then
-    export MR2_ROOM_PART_BYTES=${MR2_ROOM_PART_BYTES:-4096}
+    export MR2_ROOM_PART_BYTES=${MR2_ROOM_PART_BYTES:-8192}
     export MR2_HANDSHAKE_RETENTION=${MR2_HANDSHAKE_RETENTION:-10800}
     export MR2_AUTHORIZATION_SECONDS=${MR2_AUTHORIZATION_SECONDS:-600}
   fi

@@ -994,16 +994,27 @@ def offline_beyond_ttl() -> None:
     commit = deposited[-1][1]
     RUN["commit_e"] = commit
     unanswered = "the Messenger carrier socket did not answer"
-    before = log_text("serve-c").count(unanswered)
-    waiting = poll(lambda: log_text("serve-c").count(unanswered) > before, 480, 2)
-    stop_serve("c", "KILL")
-    mr1.signal_pattern(mr1.daemon_pattern("c"), "CONT")
-    mr1.continue_wrapper("messengerd-c")
-    c_room = wait_room("c", lambda row: row.get("room_epoch", 0) > base["room_epoch"], 120)
+    # C's serve may first hand the paused daemon another envelope it holds;
+    # the window is opened again (daemon paused, a fresh serve) until the
+    # call cut off is the Commit's, at most four times.
+    attempts = []
+    for attempt in range(4):
+        if attempt:
+            mr1.signal_pattern(mr1.daemon_pattern("c"), "STOP")
+            start_serve("c", f"crash window attempt {attempt + 1}")
+        before = log_text("serve-c").count(unanswered)
+        waiting = poll(lambda: log_text("serve-c").count(unanswered) > before, 480, 2)
+        stop_serve("c", "KILL")
+        mr1.signal_pattern(mr1.daemon_pattern("c"), "CONT")
+        mr1.continue_wrapper("messengerd-c")
+        c_room = wait_room("c", lambda row: row.get("room_epoch", 0) > base["room_epoch"], 60)
+        attempts.append({"handed_unanswered": bool(waiting), "room_epoch_after": c_room.get("room_epoch")})
+        if c_room.get("room_epoch") == base["room_epoch"] + 1:
+            break
     gate("15", "C's serve is killed after handing the Commit to C's paused daemon: the daemon applies it, no room "
          "ack is sent and the envelope stays at the relays", bool(waiting) and
          c_room.get("room_epoch") == base["room_epoch"] + 1 and not acks_for("c", commit),
-         {"c": c_room, "acks": acks_for("c", commit)})
+         {"c": c_room, "acks": acks_for("c", commit), "attempts": attempts})
     start_serve("c", "after the crash window")
     dup = poll(lambda: [f for f in acks_for("c", commit) if f.get("ack_outcome") == "duplicate"], 600, 3)
     gate("15", "restarted, C finds the same envelope, answers it `duplicate` and its room stays usable",

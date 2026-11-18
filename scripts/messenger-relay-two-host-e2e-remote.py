@@ -639,9 +639,13 @@ def firewall_state(node: str) -> dict:
               on_node(node, "nft list tables", check=False).stdout.splitlines() if line.startswith("table ")]
     listed = "".join(on_node(node, f"nft list table {table}", check=False).stdout
                      for table in tables if table not in NFT_IGNORE)
+    state = {"ufw": on_node(node, "ufw status verbose", check=False).stdout, "nft": COUNTER.sub("counter", listed)}
     if NFT_IGNORE:
-        fd.evidence.setdefault("firewall_fingerprint", {})["nft_tables_ignored"] = NFT_IGNORE
-    return {"ufw": on_node(node, "ufw status verbose", check=False).stdout, "nft": COUNTER.sub("counter", listed)}
+        # Kept beside the compared rules, never compared: its change is
+        # recorded as information.
+        state["ignored"] = COUNTER.sub("counter", "".join(on_node(node, f"nft list table {table}", check=False).stdout
+                                                          for table in tables if table in NFT_IGNORE))
+    return state
 
 
 def node_block(node: str, relay: str) -> None:
@@ -1467,12 +1471,21 @@ def reverse_remote_node(node: str, reversal: dict) -> None:
         for name, text in after.items():
             (WORK / "net" / f"{node}-{name}-after.txt").write_text(redact(text))
         before = remote.state["firewall_before"]
+        compared = [name for name in before if name != "ignored"]
         reversal[f"{node}_firewall"] = {name: {"before_sha256": hashlib.sha256(before[name].encode()).hexdigest(),
                                                "after_sha256": hashlib.sha256(after[name].encode()).hexdigest()}
-                                        for name in before}
-        fd.record(f"{upper}'s host firewall is exactly as before the run: `ufw status verbose` and `nft list ruleset` "
-                  "are identical (the run's own nft table removed)",
-                  all(before[name] == after[name] for name in before) and
+                                        for name in compared}
+        if "ignored" in before:
+            import difflib
+            diff = [line for line in difflib.unified_diff(before["ignored"].splitlines(),
+                                                          after.get("ignored", "").splitlines(), lineterm="", n=0)
+                    if line[:1] in "+-" and not line.startswith(("+++", "---"))]
+            reversal[f"{node}_firewall"]["ignored_tables"] = {"tables": NFT_IGNORE,
+                                                              "element_diff": [redact(line) for line in diff][:200],
+                                                              "note": "informational: not compared"}
+        fd.record(f"{upper}'s host firewall is exactly as before the run: `ufw status verbose` and every nft table "
+                  "but the ignored ones are identical (the run's own nft table removed)",
+                  all(before[name] == after[name] for name in compared) and
                   remote.table not in after["nft"], reversal[f"{node}_firewall"])
     if "base_created" in remote.state:
         outside = on_node(node, f"find /root /tmp /var/tmp -xdev -mindepth 1 -maxdepth 2 -newer {base}/started "

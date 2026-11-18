@@ -257,6 +257,9 @@ func serviceOfferCommand() *cobra.Command {
 		"the actor's 1 TOS reserve plus a fee margin)")
 	flags.StringVar(&in.OfferPath, "offer-out", "", "where to write the offer file (default: "+
 		"<state_dir>/setup/offer.json)")
+	flags.StringVar(&in.GatewayCardPath, "gateway-card-out", "", "the gateway quote profile's "+
+		"provider_key_card_file: write the current key card there and keep it current while serving (needs "+
+		"relays; default: the path the provider section already names, if any)")
 	flags.BoolVar(&in.Yes, "yes", false, "create the controller, sign and send as previewed")
 	for _, name := range []string{
 		"price", "storage-fee", "cleanup-bounty", "response-sla", "refund-claim-window",

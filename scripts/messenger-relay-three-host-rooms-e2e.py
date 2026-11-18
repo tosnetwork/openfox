@@ -1609,7 +1609,8 @@ def add_filler_e() -> None:
 
 def pull_state(node: str) -> dict:
     """A node's relay-pull records and held evidence, by peer label."""
-    labels = {RUN[peer]["agent"][6:]: peer for peer in RUN if RUN[peer].get("agent")}
+    labels = {RUN[peer]["agent"][6:]: peer for peer in NODES
+              if isinstance(RUN.get(peer), dict) and RUN[peer].get("agent")}
     state = {}
     for path in sorted((mdir(node) / "state" / "relay-pull").glob("*.json")):
         record = read_json(path)

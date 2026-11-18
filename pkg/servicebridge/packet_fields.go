@@ -2,6 +2,9 @@ package servicebridge
 
 import (
 	"errors"
+	"fmt"
+
+	"github.com/tosnetwork/ai/protocol/pkg/railwork"
 )
 
 // ErrPacketFieldsMismatch reports a rail message whose Agent Packets name
@@ -12,15 +15,38 @@ var ErrPacketFieldsMismatch = errors.New(
 	"servicebridge: the packets name another Capability or Accepted Quote than the request",
 )
 
+// packetRefusal is the section 12 label a packet-field mismatch of a
+// message kind is refused with.
+func packetRefusal(kind byte) railwork.Refusal {
+	switch kind {
+	case FrameTask:
+		return railwork.RefusalTaskNotAdmitted
+	case FrameResult:
+		return railwork.RefusalResultNotAccepted
+	case FrameResultAck:
+		return railwork.RefusalAckUnmatched
+	default:
+		return railwork.RefusalResultRequestRefused
+	}
+}
+
 // checkPacketFields requires a message's packets to name capabilityID and
-// quoteCommitment, both taken from the provider's own Capability, the
-// verified Quote or the stored request, never from the message.
+// quoteCommitment, both taken from the stored purchase or request, never
+// from the message. It is railwork's packet-field check.
 func checkPacketFields(message Message, capabilityID, quoteCommitment string) error {
-	if capabilityID == "" || quoteCommitment == "" {
-		return errors.New("servicebridge: no Capability or Accepted Quote to check the packets against")
+	return packetFieldsError(railwork.CheckPacketFields(message.Packet.CapabilityID, message.Packet.QuoteCommitment,
+		capabilityID, quoteCommitment, packetRefusal(message.Kind)))
+}
+
+// packetFieldsError marks a refused packet-field check with
+// ErrPacketFieldsMismatch, keeping railwork's labelled refusal; a caller
+// error passes unchanged.
+func packetFieldsError(err error) error {
+	if err == nil {
+		return nil
 	}
-	if message.Packet.CapabilityID != capabilityID || message.Packet.QuoteCommitment != quoteCommitment {
-		return ErrPacketFieldsMismatch
+	if _, refused := railwork.RefusalOf(err); refused {
+		return fmt.Errorf("%w: %w", ErrPacketFieldsMismatch, err)
 	}
-	return nil
+	return fmt.Errorf("servicebridge: no Capability or Accepted Quote to check the packets against: %w", err)
 }

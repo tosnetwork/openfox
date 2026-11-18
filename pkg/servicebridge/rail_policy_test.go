@@ -181,3 +181,57 @@ func TestABuyerDiscardsAResultThatFailsAcceptanceAndTakesTheNextDelivery(t *test
 	// discarded in turn and the purchase is still open.
 	examine(2)
 }
+
+// A message's first frame must arrive in packets that name a Capability
+// and an Accepted Quote: the inbox refuses to open an assembly for one
+// that does not.
+func TestTheInboxRefusesAFirstFrameInPacketsWithoutFields(t *testing.T) {
+	inbox, _ := openTestInbox(t, 8, 64)
+	frames, err := SplitMessage(FrameResult, [32]byte{7}, 1, [32]byte{8}, fill(100, 5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := testPacket(t)
+	for name, fields := range map[string]PacketFields{
+		"no fields":     {},
+		"no Quote":      {CapabilityID: packet.CapabilityID},
+		"no Capability": {QuoteCommitment: packet.QuoteCommitment},
+		"malformed":     {CapabilityID: packet.CapabilityID, QuoteCommitment: "sha256:" + strings.Repeat("ab", 32)},
+	} {
+		if _, _, err = inbox.Put(testSeller, fields, frames[0]); !errors.Is(err, ErrInboxRefused) {
+			t.Errorf("%s: err=%v", name, err)
+		}
+	}
+	if pending, err := inbox.Pending(); err != nil || len(pending) != 0 {
+		t.Fatalf("a refused frame left %d messages: %v", len(pending), err)
+	}
+	if status, _, err := inbox.Put(testSeller, packet, frames[0]); err != nil || status != InboxComplete {
+		t.Fatalf("the frame with its fields: status %v err=%v", status, err)
+	}
+}
+
+// A result request whose packets name another Capability or Accepted
+// Quote than the request is refused and moves nothing.
+func TestAResultRequestInPacketsNamingAnotherQuoteIsRefused(t *testing.T) {
+	f := newAwayFixture(t)
+	before := f.record(t)
+	body, err := EncodeResultRequest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, packet := range map[string]PacketFields{
+		"another Quote":      {CapabilityID: relayCapability, QuoteCommitment: "tvm-cell-sha256:" + strings.Repeat("ab", 32)},
+		"another Capability": {CapabilityID: "cap_" + strings.Repeat("37", 32), QuoteCommitment: f.key.QuoteCommitment},
+	} {
+		err = f.provider.HandleResultRequest(context.Background(), Message{
+			SenderAgentID: testBuyer, Kind: FrameResultRequest, ActorAccount: testActor, RequestID: 3,
+			RequestHash: testRequest, Body: body, Packet: packet,
+		})
+		if !errors.Is(err, ErrResultRequestRefused) || !errors.Is(err, ErrPacketFieldsMismatch) {
+			t.Errorf("%s: err=%v", name, err)
+		}
+	}
+	if after := f.record(t); after.NextDeliveryUnix != before.NextDeliveryUnix || after.ResultRequestUnix != 0 {
+		t.Fatal("a refused result request moved the delivery")
+	}
+}

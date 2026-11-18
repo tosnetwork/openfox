@@ -551,8 +551,39 @@ ROOM_MEMBERS: set[str] = set()
 OFFLINE: list[dict] = []
 
 
+# Blackout windows (UTC "HH:MM-HH:MM", comma separated, MR2_BLACKOUT_UTC):
+# no member is started, stopped or paused inside one. Before an offline
+# window opens, the harness waits until the window's expected length fits
+# outside every blackout.
+BLACKOUTS = [w for w in os.environ.get("MR2_BLACKOUT_UTC", "").split(",") if w]
+BLACKOUT_WAITS: list[dict] = []
+WINDOW_LENGTH = {"b": RELAY_TTL + 900, "c": 900}
+
+
+def blackout_intervals(at: int) -> list[tuple[int, int]]:
+    day = at - at % 86400
+    out = []
+    for window in BLACKOUTS:
+        start, end = window.split("-")
+        begin = day + int(start[:2]) * 3600 + int(start[3:5]) * 60
+        finish = day + int(end[:2]) * 3600 + int(end[3:5]) * 60
+        out += [(begin, finish), (begin + 86400, finish + 86400)]
+    return out
+
+
+def wait_outside_blackout(node: str, length: int) -> None:
+    while True:
+        at = now()
+        hit = next(((b, e) for b, e in blackout_intervals(at) if at < e and at + length > b), None)
+        if not hit:
+            return
+        BLACKOUT_WAITS.append({"node": node, "from": at, "until": hit[1] + 5, "window_length": length})
+        time.sleep(max(1, hit[1] + 5 - at))
+
+
 def offline_window(node: str, edge: str) -> None:
     if edge == "start":
+        wait_outside_blackout(node, WINDOW_LENGTH.get(node, 900))
         if not any(w["node"] == node and w["end"] is None for w in OFFLINE):
             OFFLINE.append({"node": node, "start": now(), "end": None})
         return
@@ -1716,6 +1747,8 @@ async def main() -> int:
         "network_setup_and_teardown": sorted({line.replace(str(WORK), "<workdir>") for line in commands}),
         "namespace_entry": mr1.LAUNCHED, "launcher_signals": mr1.ROOT_SIGNALS}
     fd.evidence["owner_decisions"] = DECISIONS
+    fd.evidence["blackouts"] = {"windows_utc": BLACKOUTS, "waits": BLACKOUT_WAITS,
+                                "rule": "no member started, stopped or paused inside a blackout window"}
     fd.evidence["host_overlap"] = {
         "note": "samples (every 30 s) when this host's 1-minute load was above 32 or another agent's test, build "
                 "or validator job ran beside the run; the run's own processes are excluded",

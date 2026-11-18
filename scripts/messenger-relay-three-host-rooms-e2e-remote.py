@@ -62,6 +62,8 @@ import json
 import os
 import re
 import shlex
+import time
+import threading
 import subprocess
 import sys
 import urllib.parse
@@ -189,6 +191,12 @@ def states_counters_sizes_search_step(step):
 
 
 def finish() -> None:
+    GUARD["stop"] = True
+    fd.evidence["validator_guard"] = {
+        "nodes": list(GUARD_NODES), "unit": GUARD_UNIT, "samples": GUARD["samples"], "tripped": GUARD["tripped"],
+        "baseline": GUARD["baseline"], "limits": {"mem_available_min_kb": GUARD_MEM_KB, "head_stall_seconds": GUARD_STALL},
+        "rule": "read-only every 30 s: validator unit state, its head (loopback JSON-RPC) and MemAvailable; a trip "
+                "stops that member's slice and fails the run"}
     _finish()
     settings = fd.evidence.get("room_settings", {})
     fd.evidence.setdefault("test_shortened_values", {})["room_settings_lines"] = {
@@ -286,7 +294,110 @@ def relay_server_proof() -> None:
                {"unexplained": unexplained, "changed": changed})
 
 
+# --- The validator guard on hosts shared with a testnet validator -----------------
+#
+# MR2_GUARD_NODES names the members whose host also runs a testnet validator.
+# Read-only, before the run and every 30 s: the validator unit's state, its
+# masterchain head (its own JSON-RPC on the host's loopback) and the host's
+# MemAvailable. If the validator restarts or stops, its head does not advance
+# for more than 2 minutes, or MemAvailable drops below 1.5 GB, that member's
+# slice is stopped at once and the run fails.
+
+GUARD_NODES = tuple(os.environ.get("MR2_GUARD_NODES", "").split())
+GUARD_UNIT = os.environ.get("MR2_GUARD_UNIT", "tos-testnet-validator")
+GUARD_RPC = os.environ.get("MR2_GUARD_RPC", "http://127.0.0.1:8081/")
+GUARD_MEM_KB = 1536 * 1024
+GUARD_STALL = 120
+GUARD = {"stop": False, "tripped": None, "samples": 0, "baseline": {}, "last": {}, "thread": None}
+GUARD_READ = ("systemctl show -p ActiveState,NRestarts,ExecMainStartTimestampMonotonic {unit}; "
+              "grep MemAvailable /proc/meminfo; "
+              "curl -s -m 5 -H 'Content-Type: application/json' "
+              "-d '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getMasterchainInfo\",\"params\":{{}}}}' {rpc}")
+
+
+def guard_read(node: str) -> dict:
+    out = remote.on_node(node, GUARD_READ.format(unit=shlex.quote(GUARD_UNIT), rpc=shlex.quote(GUARD_RPC)),
+                         check=False, timeout=30).stdout
+    state = dict(line.split("=", 1) for line in out.splitlines() if "=" in line and not line.startswith("{"))
+    memory = re.search(r"MemAvailable:\s+(\d+)", out)
+    head = re.search(r'"seqno":(\d+)', out)
+    return {"active": state.get("ActiveState"), "restarts": state.get("NRestarts"),
+            "started": state.get("ExecMainStartTimestampMonotonic"),
+            "mem_available_kb": int(memory.group(1)) if memory else 0, "head": int(head.group(1)) if head else None,
+            "at": mr2.now()}
+
+
+def guard_problem(node: str, sample: dict) -> str:
+    base = GUARD["baseline"][node]
+    if sample["active"] != "active" or sample["restarts"] != base["restarts"] or sample["started"] != base["started"]:
+        return f"the validator unit changed: {sample['active']}, restarts {sample['restarts']}"
+    if sample["mem_available_kb"] < GUARD_MEM_KB:
+        return f"MemAvailable fell to {sample['mem_available_kb']} kB"
+    last = GUARD["last"].setdefault(node, {"head": sample["head"], "since": sample["at"]})
+    if sample["head"] is not None and (last["head"] is None or sample["head"] > last["head"]):
+        last.update(head=sample["head"], since=sample["at"])
+    elif sample["at"] - last["since"] > GUARD_STALL:
+        return f"the validator head stayed at {last['head']} for {sample['at'] - last['since']} s"
+    return ""
+
+
+def guard_trip(node: str, problem: str) -> None:
+    GUARD["tripped"] = {"node": node, "problem": problem, "at": mr2.now()}
+    unit = remote.contain_slice(node)
+    remote.on_node(node, f"systemctl stop {shlex.quote(unit)}", check=False, timeout=60)
+    remote.change(f"{node.upper()} host: stopped {unit} (the validator guard tripped: {problem})")
+    fd.record(f"the validator guard on {node.upper()}'s host never tripped", False, GUARD["tripped"])
+
+
+def guard_loop() -> None:
+    while not GUARD["stop"] and not GUARD["tripped"]:
+        for node in GUARD_NODES:
+            try:
+                problem = guard_problem(node, guard_read(node))
+            except Exception as error:  # noqa: BLE001 - a failed read is retried; three in a row trip
+                GUARD.setdefault("read_failures", {}).setdefault(node, []).append(repr(error)[-200:])
+                problem = "three guard reads in a row failed" if len(GUARD["read_failures"][node]) >= 3 else ""
+            else:
+                GUARD.setdefault("read_failures", {})[node] = []
+            GUARD["samples"] += 1
+            if problem:
+                guard_trip(node, problem)
+                return
+        for _ in range(30):
+            if GUARD["stop"]:
+                return
+            time.sleep(1)
+
+
+def guard_start() -> None:
+    for node in GUARD_NODES:
+        sample = guard_read(node)
+        GUARD["baseline"][node] = sample
+        fd.require(f"{node.upper()}'s host before the run: its validator unit is active, its head readable and "
+                   "MemAvailable at least 1.5 GB", sample["active"] == "active" and sample["head"] is not None and
+                   sample["mem_available_kb"] >= GUARD_MEM_KB, sample)
+    GUARD["thread"] = threading.Thread(target=guard_loop, daemon=True)
+    GUARD["thread"].start()
+
+
+def guarded_poll(predicate, timeout: float, interval: float = 2.0):
+    """fd.poll that gives up at once once the validator guard tripped."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if GUARD["tripped"]:
+            raise fd.Stop(f"the validator guard tripped: {GUARD['tripped']}")
+        try:
+            last = predicate()
+            if last:
+                return last
+        except Exception:  # noqa: BLE001 - polled reads retry
+            pass
+        time.sleep(interval)
+    return None
+
+
 def setup() -> None:
+    guard_start()
     relay_server_proof()
     remote.prepare_hosts()
     relay_ttl_check()
@@ -403,6 +514,8 @@ def install() -> None:
     mr2.decision_path, mr2.issue_invite, mr2.state_view = decision_path, issue_invite, state_view
     mr2.chat_owner_socket, mr2.room_settings_check = chat_owner_socket, room_settings_check
     mr2.setup, mr2.acceptance, mr2.finish = setup, acceptance, finish
+    if GUARD_NODES:
+        fd.poll = mr1.poll = mr2.poll = guarded_poll
     mr2.STEPS[:] = [states_counters_sizes_search_step(step) if step.__name__ == "states_counters_sizes_search" else step
                     for step in mr2.STEPS]
 

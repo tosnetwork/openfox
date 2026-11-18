@@ -714,12 +714,53 @@ def node_vault(node: str) -> str:
     return f"file://{REMOTES[node].root}/{node}/vault.json?master_key={fd.MASTER_KEYS[node]}"
 
 
+# Nodes whose long-running processes run contained on their host
+# (MR_CONTAIN_NODES, e.g. on a host shared with a validator): each process in
+# its own transient scope (Nice 10, idle I/O class) under one transient slice
+# per node holding MemoryMax and CPUQuota for all of them. The scopes end
+# with their processes and the slice when it is empty.
+CONTAIN = set(os.environ.get("MR_CONTAIN_NODES", "").split())
+CONTAIN_MEMORY = os.environ.get("MR_CONTAIN_MEMORY_MAX", "1G")
+CONTAIN_CPU = os.environ.get("MR_CONTAIN_CPU_QUOTA", "100%")
+
+
+def contain_slice(node: str) -> str:
+    return "tosmr" + re.sub(r"[^A-Za-z0-9]", "", WORK.name) + node + ".slice"
+
+
+def contained(node: str, argv: list) -> list:
+    if node not in CONTAIN:
+        return list(argv)
+    return ["systemd-run", "--scope", "--quiet", "--collect", f"--slice={contain_slice(node)}",
+            "-p", "Nice=10", "-p", "IOSchedulingClass=idle", "--", *map(str, argv)]
+
+
+def limit_slice(node: str) -> None:
+    """The slice's limits, set once it exists (its first scope started)."""
+    if node not in CONTAIN:
+        return
+    unit = contain_slice(node)
+    on_node(node, f"systemctl set-property --runtime {shlex.quote(unit)} MemoryMax={shlex.quote(CONTAIN_MEMORY)} "
+                  f"CPUQuota={shlex.quote(CONTAIN_CPU)}", timeout=60)
+    shown = on_node(node, f"systemctl show -p MemoryMax,CPUQuotaPerSecUSec {shlex.quote(unit)}", check=False).stdout
+    entry = f"{node.upper()} host: transient slice {unit} (MemoryMax {CONTAIN_MEMORY}, CPUQuota {CONTAIN_CPU}) with one " \
+            "scope per process (Nice 10, idle I/O); reversal: the scopes end with their processes, the slice when empty"
+    if entry not in CONTAINED_LOGGED:
+        CONTAINED_LOGGED.append(entry)
+        change(entry)
+    fd.evidence.setdefault("containment", {})[node] = {"slice": unit, "properties": shown.strip().splitlines()}
+
+
+CONTAINED_LOGGED: list[str] = []
+
+
 class RemoteProcess:
     """A supervised long-running process of a remote node on its host, with
     the Popen methods the phase-1 harness uses."""
 
     def __init__(self, node: str, key: str, argv: list, vault: str | None) -> None:
         base = REMOTES[node].base
+        argv = contained(node, argv)
         self.node, self.key, self.returncode = node, key, None
         self.pid_file = f"{base}/{key}.pid"
         self.exit_file = f"{base}/{key}.exit"
@@ -735,6 +776,7 @@ class RemoteProcess:
                            30, 0.5)
         if not self.pid:
             raise RuntimeError(f"{key} did not start on {node.upper()}'s host")
+        limit_slice(node)
 
     def poll(self):
         if self.returncode is not None:

@@ -731,8 +731,10 @@ def contain_slice(node: str) -> str:
 def contained(node: str, argv: list) -> list:
     if node not in CONTAIN:
         return list(argv)
-    return ["systemd-run", "--scope", "--quiet", "--collect", f"--slice={contain_slice(node)}",
-            "-p", "Nice=10", "-p", "IOSchedulingClass=idle", "--", *map(str, argv)]
+    # A scope runs no exec of its own, so niceness and the idle I/O class are
+    # set by nice and ionice, which exec the process in place (its pid stays).
+    return ["systemd-run", "--scope", "--quiet", "--collect", f"--slice={contain_slice(node)}", "--",
+            "nice", "-n", "10", "ionice", "-c", "3", *map(str, argv)]
 
 
 def limit_slice(node: str) -> None:
@@ -743,8 +745,9 @@ def limit_slice(node: str) -> None:
     on_node(node, f"systemctl set-property --runtime {shlex.quote(unit)} MemoryMax={shlex.quote(CONTAIN_MEMORY)} "
                   f"CPUQuota={shlex.quote(CONTAIN_CPU)}", timeout=60)
     shown = on_node(node, f"systemctl show -p MemoryMax,CPUQuotaPerSecUSec {shlex.quote(unit)}", check=False).stdout
-    entry = f"{node.upper()} host: transient slice {unit} (MemoryMax {CONTAIN_MEMORY}, CPUQuota {CONTAIN_CPU}) with one " \
-            "scope per process (Nice 10, idle I/O); reversal: the scopes end with their processes, the slice when empty"
+    entry = f"{node.upper()} host: transient slice {unit} (MemoryMax {CONTAIN_MEMORY}, CPUQuota {CONTAIN_CPU}, runtime " \
+            "drop-in) with one scope per process (nice 10, idle I/O); reversal: the scopes end with their processes, " \
+            "the slice when empty, and systemctl revert removes the runtime drop-in at the end"
     if entry not in CONTAINED_LOGGED:
         CONTAINED_LOGGED.append(entry)
         change(entry)
@@ -752,6 +755,20 @@ def limit_slice(node: str) -> None:
 
 
 CONTAINED_LOGGED: list[str] = []
+
+
+def revert_slices() -> None:
+    """Remove the runtime limits drop-in of every slice this run made."""
+    for node in sorted(CONTAIN):
+        if node not in REMOTES:
+            continue
+        unit = contain_slice(node)
+        result = on_node(node, f"systemctl stop {shlex.quote(unit)} 2>/dev/null; systemctl revert {shlex.quote(unit)}",
+                         check=False, timeout=60)
+        left = on_node(node, f"ls -d /run/systemd/system.control/{shlex.quote(unit)}.d 2>/dev/null | wc -l",
+                       check=False).stdout.strip()
+        change(f"{node.upper()} host: stopped and reverted {unit} (runtime drop-in left: {left})")
+        fd.evidence.setdefault("containment", {}).setdefault(node, {})["reverted"] = left == "0" and result.returncode == 0
 
 
 class RemoteProcess:
@@ -1465,6 +1482,10 @@ def reverse_remote_node(node: str, reversal: dict) -> None:
 
 def reverse_remote_changes() -> None:
     reversal: dict = {}
+    try:
+        revert_slices()
+    except (RuntimeError, OSError) as error:
+        fd.record("the containment slices are reverted", False, redact(str(error))[-300:])
     for node in REMOTES:
         reverse_remote_node(node, reversal)
     # Relays: a unit this run stopped and did not start again (a failure

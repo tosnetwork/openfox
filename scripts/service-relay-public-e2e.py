@@ -904,8 +904,16 @@ def sale() -> None:
                "to)", all(before.values()), before)
     setup_nodes()
     first = buy("sale-r0", use_offer=True)
-    fd.verify_sale(first)
-    fd.withdraw()
+    # R0's checks read the state right after its sale and its withdrawal
+    # (credited revenue, then a zero credit), so a resumed run does not
+    # repeat them once an earlier attempt passed them; it records which.
+    verified = MARKERS / "sale-r0.verified.json"
+    if verified.exists():
+        fd.evidence["sale_r0_verified_in_earlier_attempt"] = json.loads(verified.read_text())
+    else:
+        fd.verify_sale(first)
+        fd.withdraw()
+        write_private(verified, json.dumps({"utc": now_utc(), "request_hash": first.get("request_hash")}).encode())
     second = buy("sale-r1", use_offer=False)
     verify_responded("sale-r1", second)
     unanswered_sales()

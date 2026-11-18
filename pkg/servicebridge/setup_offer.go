@@ -41,7 +41,12 @@ type OfferInput struct {
 	DeployFundingNano    uint64 `json:"deploy_funding_nanotos"`
 	// OfferPath is where the offer file for buyers is written.
 	OfferPath string `json:"offer_path"`
-	Yes       bool   `json:"yes"`
+	// GatewayCardPath, when set, is the gateway quote profile's
+	// provider_key_card_file: the provider's current key card is written
+	// there and `serve` keeps it current. Empty keeps the path the provider
+	// section already names, if any.
+	GatewayCardPath string `json:"gateway_card_path,omitempty"`
+	Yes             bool   `json:"yes"`
 }
 
 // Offer defaults.
@@ -128,6 +133,8 @@ type OfferResult struct {
 	RailConfig string        `json:"rail_config"`
 	Preview    *OfferPreview `json:"preview,omitempty"`
 	OfferFile  string        `json:"offer_file,omitempty"`
+	// GatewayCardFile is the gateway card file written, when one is named.
+	GatewayCardFile string `json:"gateway_card_file,omitempty"`
 	// ExecutorSocket is the executor service the provider section names.
 	ExecutorSocket string `json:"executor_socket,omitempty"`
 	// ExecutorSHA256 and ExecutorPin say how the executor was pinned.
@@ -223,6 +230,9 @@ func (in *OfferInput) validate() error {
 		problems = append(problems, "--executor-sha256 must be 64 lowercase hex digits")
 	}
 	paths := map[string]string{"the offer file path": in.OfferPath}
+	if in.GatewayCardPath != "" {
+		paths["the gateway key card file path"] = in.GatewayCardPath
+	}
 	switch {
 	case in.ExecutorSocket != "" && in.subprocess():
 		problems = append(problems, "--executor-socket cannot be combined with --executor, --executor-sha256, "+
@@ -521,7 +531,13 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 	}
 	defer release()
 	in.fill(config.StateDir)
+	if in.GatewayCardPath == "" && config.Provider != nil {
+		in.GatewayCardPath = config.Provider.GatewayCardFile
+	}
 	if err = in.validate(); err != nil {
+		return result, err
+	}
+	if err = (&ProviderNode{GatewayCardFile: in.GatewayCardPath}).checkGatewayCardConfig(config.RelayURLs); err != nil {
 		return result, err
 	}
 	if !agentIDPattern.MatchString(config.AgentID) || !rawAddressPattern.MatchString(config.WalletAddress) ||
@@ -791,9 +807,11 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 	}
 	var keyCard []byte
 	if len(config.RelayURLs) > 0 {
-		// The offer file carries the provider's current card; `serve`
-		// rewrites the file when it issues a successor.
+		// The offer file, and the gateway card file when one is named,
+		// carry the provider's current card; `serve` rewrites both when it
+		// issues a successor.
 		config.Provider.OfferFile = in.OfferPath
+		config.Provider.GatewayCardFile = in.GatewayCardPath
 		key, cardErr := offerKeyCard(ctx, config, env)
 		if cardErr != nil {
 			return result, cardErr
@@ -839,6 +857,14 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 	result.OfferFile = in.OfferPath
 	run.notef("offer.file", SetupDone, "wrote the offer file %s; give it to buyers (it holds nothing secret)",
 		in.OfferPath)
+	if config.Provider.GatewayCardFile != "" {
+		if err = publishGatewayCard(config.Provider.GatewayCardFile, config.AgentID, keyCard, env.Now()); err != nil {
+			return result, err
+		}
+		result.GatewayCardFile = config.Provider.GatewayCardFile
+		run.notef("gateway.card", SetupDone, "wrote the key card to the gateway card file %s; name it as "+
+			"provider_key_card_file in the gateway's quote profile", config.Provider.GatewayCardFile)
+	}
 	result.Confirmed = true
 	result.NextSteps = []string{
 		"openfox earning service preflight --rail-config " + in.RailConfigPath,

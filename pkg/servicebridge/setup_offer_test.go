@@ -112,6 +112,10 @@ func TestOfferRefusesEveryOutOfBoundTermBeforeAnyTOSCTLCall(t *testing.T) {
 		"relative containerd":     func(in *OfferInput) { in.ContainerdSocket = "containerd.sock" },
 		"malformed executor pin":  func(in *OfferInput) { in.ExecutorSHA256 = "abc" },
 		"executor is another one": func(in *OfferInput) { in.ExecutorSHA256 = strings.Repeat("0", 64) },
+		"relative gateway card":   func(in *OfferInput) { in.GatewayCardPath = "gateway/card.json" },
+		// The fixture's node has no relays, so it has no key card to
+		// publish to a gateway.
+		"gateway card without relays": func(in *OfferInput) { in.GatewayCardPath = "/srv/gateway/card.json" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

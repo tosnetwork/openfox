@@ -196,7 +196,8 @@ that a re-run adopts the Agent the configuration names.
    window are 3600 to 2592000 seconds. Optional: `--version` (default
    `1.0.0`), `--attestor-controller` (default `service-attestor`, created if
    absent), `--deploy-funding` (default and minimum 1.2 TOS),
-   `--retention-seconds`, `--respond-budget-seconds`, `--offer-out`, and for
+   `--retention-seconds`, `--respond-budget-seconds`, `--offer-out`,
+   `--gateway-card-out` (below), and for
    the legacy mode `--executor-sha256` (otherwise the executor is pinned on
    first use, as tosctl is) and `--fifo-dir`.
 
@@ -232,6 +233,30 @@ that a re-run adopts the Agent the configuration names.
    and, when `relay_urls` is configured, the provider's current encryption key
    card ([Relay](#relay-any-hosts-end-to-end-encrypted)). It holds nothing
    secret and carries no authority; give it to buyers.
+
+   **Selling through a gateway.** A buyer whose first purchase is quoted by a
+   gateway has no offer file, so it cannot reach a provider that receives
+   only through a relay unless the gateway hands it the provider's key card.
+   The reference gateway does this when its quote profile names a
+   `provider_key_card_file`: it reads that file for every Quote and serves the
+   card next to the Quote package (never inside it). Give `offer` the same
+   path with `--gateway-card-out <file>` (it needs `relay_urls`). `offer`
+   records it as `provider.gateway_key_card_file`, writes the current key card
+   there, and `serve` replaces the file whenever it issues a successor card, at
+   the same moments it rewrites the offer file
+   ([Relay](#relay-any-hosts-end-to-end-encrypted)). The file holds exactly the
+   signed key card packet JSON (at most 16,384 bytes); it is written to a
+   temporary file in the same directory, synced, given mode `0600` and renamed
+   into place, so the gateway reads the previous card or the new one, never
+   part of one. A card that is not yet valid or already expired is never
+   written. **The gateway and the provider node must run as the same user:**
+   the gateway accepts the file only when it is a regular `0600` file whose
+   owner is the gateway's effective uid, so a card written by another user is
+   never served. Point both at the same absolute path (a directory that does
+   not exist is created `0700`). The gateway refuses to start while
+   a configured card file is missing or invalid, so run `offer` (or `serve`)
+   before starting the gateway. Re-running `offer` without the flag keeps the
+   path already recorded.
 3. `openfox earning service preflight --rail-config <file>` (below).
 4. Run `openfox earning service serve --rail-config <file>`. For each task it
    verifies the packets and the Quote, refuses input over the quoted bound,
@@ -438,6 +463,21 @@ treated as paused and its error is logged.
 
    Exactly one Quote source is used: `--offer`, `--quote-package` (a package
    obtained out of band) or, with neither, the configured gateway.
+
+   A gateway may serve the provider's encryption key card next to the Quote
+   (`provider_key_card_packet_json`). With `relay_urls` configured the buyer
+   takes it like an offer-file card: only after it verifies against finalized
+   state (signed by a controller of the provider's finalized, live Agent,
+   valid now) and its Agent is the Capability's **finalized owner, read from
+   chain**, never from the response or the proposal. A card that fails is
+   discarded and reported (`buyer.quote_card`); it does not invalidate the
+   Quote. So a first purchase quoted by a gateway can reach a provider that
+   receives only through a relay.
+
+   Before anything is prepared or paid, the buyer requires a route to the
+   provider: a direct peer, a Messenger, or a verified key card of the
+   provider for the relays. Without one the purchase is refused (the task
+   could not be delivered, so the call would only lead to a refund).
 
    With `--offer` the Quote Proposal package is built locally; it needs no
    provider secret and no signature. The provider Agent is the Capability's
@@ -681,13 +721,16 @@ out again for any long request while it still runs at least 15 days, so a node
 holds a few keys at most whatever its requests' deadlines; such a request may
 outlive its card, and the newer card reaches the peer in band. Each
 maintenance pass also picks up and destroys on time keys that `offer` or `buy`
-wrote while `serve` ran, and rewrites the provider's offer file whenever the
-card it carries is no longer the current one (a failed rewrite is retried at
-the next pass).
+wrote while `serve` ran, and rewrites the provider's offer file and gateway
+card file whenever the card it carries is no longer the current one (each is
+written independently; a failed rewrite is retried at the next pass).
 
 **How cards travel.** The provider's card is in its offer file; `serve`
 rewrites the offer file when it issues a successor, and the owner hands the
-new file out as before. Each result also carries the provider's current card,
+new file out as before. With `provider.gateway_key_card_file` the gateway also
+serves the current card next to each Quote
+([Selling through a gateway](#provider)); the buyer verifies it exactly like an
+offer-file card. Each result also carries the provider's current card,
 valid until the end of the redelivery window, so a buyer whose offer-file card
 expired during a long request keeps a route back for its acknowledgement. The
 buyer takes it only from a result of one of its own purchases from that
@@ -1037,7 +1080,8 @@ write it; it can also be written by hand:
   "provider": {"capability_id": "cap_…", "version": "1.0.0", "manifest_file": "/…/<digest>.cbor",
                "attestor_controller": "service-attestor", "respond_budget_seconds": 120,
                "executor_socket": "/run/tos-service-executor/executor.sock",
-               "offer_file": "/…/rail/setup/offer.json"},
+               "offer_file": "/…/rail/setup/offer.json",
+               "gateway_key_card_file": "/…/gateway/provider-key-card.json"},
   "buyer": {"gateway_url": "https://…", "gateway_token_file": "/…/token", "caller_id": "…",
             "policy": {"max_committed_per_purchase_nanotos": "2000000000", "max_committed_in_window_nanotos": "10000000000",
                        "window_seconds": 86400, "max_open_purchases": 4, "refund_reserve_nanotos": "300000000",
@@ -1050,6 +1094,11 @@ identity domain from it). Any of `messenger_socket`, `direct_peers` and
 `relay_urls` may be omitted as long as one is set. `relay_urls` is in ascending
 byte order, as the key card lists it. `provider.offer_file` is the offer file
 `offer` wrote; with relays, `serve` rewrites it with each successor key card.
+`provider.gateway_key_card_file` (optional, needs `relay_urls`, absolute and
+clean) is the file the gateway's quote profile names as
+`provider_key_card_file`; `serve` keeps the current key card there, owner-only
+([Selling through a gateway](#provider)). A section that names it without
+relays is refused by `serve`.
 
 The provider section names exactly one executor: `executor_socket`, or the
 legacy `executor_binary` with `executor_sha256`, `containerd_socket` and

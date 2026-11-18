@@ -15,9 +15,39 @@ import (
 // GatewayQuotes asks a gateway's discovery service for a Quote Proposal.
 // The package carries no authority; the buyer validates it and re-verifies
 // every rail field against finalized state.
+//
+// A gateway may serve the provider's encryption key card next to the
+// package. The card is a hint like an offer file: with Cards set it is
+// learned only after it verifies against finalized state as a card of the
+// requested Capability's finalized owner, exactly as an offer-file or
+// result-carried card is. A card that fails is discarded and does not
+// invalidate the Quote; Report, when set, is told why.
 type GatewayQuotes struct {
 	Client   *nativeclient.Client
 	CallerID string
+	Cards    *PeerCards
+	Report   func(stage string, err error)
+}
+
+// learnQuoteCard takes the key card a gateway served next to a package for
+// request. The Agent it is learned for is the proposal's provider, and the
+// card must also be of the Capability's finalized owner, read from chain by
+// Learn itself, so neither the response nor the proposal is trusted.
+func (g GatewayQuotes) learnQuoteCard(
+	ctx context.Context,
+	request *nativev1.RequestQuoteProposalRequest,
+	pkg *nativev1.QuoteProposalPackageV1,
+	card []byte,
+) error {
+	if len(card) == 0 || g.Cards == nil {
+		return nil
+	}
+	proposal := pkg.GetProposal()
+	if proposal == nil || proposal.GetCapabilityId() != request.GetCapabilityId() ||
+		!agentIDPattern.MatchString(proposal.GetProviderAgentId()) {
+		return fmt.Errorf("%w: the Quote names no provider of the requested Capability", ErrCardRefused)
+	}
+	return g.Cards.Learn(ctx, card, proposal.GetProviderAgentId(), request.GetCapabilityId())
 }
 
 // Quote implements QuoteSource.
@@ -45,6 +75,10 @@ func (g GatewayQuotes) Quote(
 	}
 	if response == nil || response.GetPackage() == nil {
 		return nil, errors.New("servicebridge: the gateway returned no Quote package")
+	}
+	if err := g.learnQuoteCard(ctx, request, response.GetPackage(), response.GetProviderKeyCardPacketJson()); err != nil &&
+		g.Report != nil {
+		g.Report("buyer.quote_card", fmt.Errorf("the provider key card served with the Quote was discarded: %w", err))
 	}
 	return response.GetPackage(), nil
 }

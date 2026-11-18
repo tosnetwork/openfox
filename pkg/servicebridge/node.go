@@ -117,6 +117,28 @@ type ProviderNode struct {
 	// OfferFile is the offer file `offer` wrote. With relays configured the
 	// node rewrites it when it issues a successor key card.
 	OfferFile string `json:"offer_file,omitempty"`
+	// GatewayCardFile is the file a gateway's quote profile names as its
+	// provider_key_card_file. With relays configured the node writes its
+	// current key card packet there, owner-only, and replaces it whenever it
+	// issues a successor, so the gateway serves the card next to each Quote.
+	GatewayCardFile string `json:"gateway_key_card_file,omitempty"`
+}
+
+// checkGatewayCardConfig refuses a gateway card file the node could not
+// keep current: a path that is not absolute and clean, or a node without
+// relays, which has no key card to publish.
+func (p *ProviderNode) checkGatewayCardConfig(relays []string) error {
+	if p == nil || p.GatewayCardFile == "" {
+		return nil
+	}
+	if !cleanAbsolute(p.GatewayCardFile) {
+		return errors.New("servicebridge: provider.gateway_key_card_file must be an absolute clean path")
+	}
+	if len(relays) == 0 {
+		return errors.New("servicebridge: provider.gateway_key_card_file needs relay_urls: a node without relays " +
+			"has no encryption key card to publish")
+	}
+	return nil
 }
 
 // Executor modes of a provider node.
@@ -344,6 +366,9 @@ func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Nod
 	if err := validateChatConfig(config); err != nil {
 		return nil, err
 	}
+	if err := config.Provider.checkGatewayCardConfig(config.RelayURLs); err != nil {
+		return nil, err
+	}
 	if !filepath.IsAbs(config.StateDir) || filepath.Clean(config.StateDir) != config.StateDir {
 		return nil, errors.New("servicebridge: state_dir must be absolute and clean")
 	}
@@ -432,10 +457,47 @@ func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Nod
 		}
 		node.Receiver.Notify = node.Service.Notify
 	}
-	if node.Relay != nil && config.Provider != nil && config.Provider.OfferFile != "" {
-		node.Relay.SetRotationHook(node.republishOffer)
-	}
+	node.registerCardPublishing()
 	return node, nil
+}
+
+// registerCardPublishing hands every maintenance pass's current own card to
+// the provider's published copies of it: the offer file and the gateway card
+// file, each when configured.
+func (n *Node) registerCardPublishing() {
+	provider := n.Config.Provider
+	if n.Relay == nil || provider == nil || (provider.OfferFile == "" && provider.GatewayCardFile == "") {
+		return
+	}
+	n.Relay.SetRotationHook(n.republishCards)
+}
+
+// republishCards rewrites each published copy of the provider's own card.
+// One failing does not keep the other from being written; both are retried
+// at the next pass.
+func (n *Node) republishCards(ctx context.Context, key OwnRelayKey) error {
+	var failures []error
+	if n.Config.Provider.OfferFile != "" {
+		if err := n.republishOffer(ctx, key); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	if n.Config.Provider.GatewayCardFile != "" {
+		if err := n.republishGatewayCard(key); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// republishGatewayCard writes the current own card to the gateway card file
+// when the file does not already hold it.
+func (n *Node) republishGatewayCard(key OwnRelayKey) error {
+	now := time.Now
+	if n.Relay != nil && n.Relay.now != nil {
+		now = n.Relay.now
+	}
+	return publishGatewayCard(n.Config.Provider.GatewayCardFile, n.Config.AgentID, key.CardJSON, now())
 }
 
 // openRelay opens the relay carrier and the peer card directory. The
@@ -691,7 +753,12 @@ func (n *Node) openBuyer(options NodeOptions, lifecycle LifecycleSender, vaultUR
 		if clientErr != nil {
 			return clientErr
 		}
-		quotes = &PackageQuotes{manifests: n.Manifests, next: GatewayQuotes{Client: client, CallerID: config.CallerID}}
+		// With a relay carrier the provider key card a gateway serves next to
+		// the Quote is learned once it verifies against finalized state, so a
+		// first purchase from a relay-only provider can be delivered.
+		quotes = &PackageQuotes{manifests: n.Manifests, next: GatewayQuotes{
+			Client: client, CallerID: config.CallerID, Cards: n.Cards, Report: options.Report,
+		}}
 	}
 	n.Buyer, err = NewBuyer(BuyerConfig{
 		AgentID:   n.Config.AgentID,

@@ -862,6 +862,22 @@ def resume_stage() -> None:
     local = {name: fd.root_sha256(fd.ROOT / "bin" / name) for name in built}
     remote = {name: mh.on_buyer(["sha256sum", str(mh.REMOTE_ROOT / "bin" / name)]).stdout.split()[0]
               for name in built}
+    # A fix committed between attempts rebuilds a binary: stage the new
+    # build on both hosts (no node runs between attempts) and record the
+    # replaced hashes, then verify again below.
+    sources = {"openfox": (fd.BIN / "openfox", "0755"), "tosctl": (fd.TOSCTL, "0700")}
+    restaged = {}
+    for name in built:
+        if local[name] != built[name] or remote[name] != built[name]:
+            source, mode = sources[name]
+            fd.install_node(source, fd.ROOT / "bin" / name, mode)
+            mh.upload(source, str(mh.REMOTE_ROOT / "bin" / name), mode)
+            restaged[name] = {"provider_host_before": local[name], "buyer_host_before": remote[name]}
+    if restaged:
+        fd.evidence.setdefault("restaged_binaries", []).append({"utc": now_utc(), "binaries": restaged})
+        local = {name: fd.root_sha256(fd.ROOT / "bin" / name) for name in built}
+        remote = {name: mh.on_buyer(["sha256sum", str(mh.REMOTE_ROOT / "bin" / name)]).stdout.split()[0]
+                  for name in built}
     fd.evidence.setdefault("binaries", {}).update({name: {"sha256": built[name], "on_provider_host": local[name],
                                                           "on_buyer_host": remote[name]} for name in built})
     fd.require("resumed in the same work directory: the staged openfox and tosctl binaries on both hosts are the "

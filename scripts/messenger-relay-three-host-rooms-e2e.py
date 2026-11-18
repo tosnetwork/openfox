@@ -524,6 +524,33 @@ def offline_window(node: str, edge: str) -> None:
 # --- Counters sampled during the run (item 9) -------------------------------------------
 
 COUNTS = {"stop": False, "samples": 0, "max_room": {}, "max_chat": {}, "thread": None}
+# Other agents' heavy jobs on this host during the run (load average and
+# other processes' test, build and validator jobs), for the record.
+OVERLAP: list[dict] = []
+OVERLAP_PATTERNS = ("go test", ".test -test.", "cargo ", "validator-engine", "cmake", "ninja")
+
+
+def sample_overlap() -> None:
+    try:
+        load = os.getloadavg()[0]
+    except OSError:
+        return
+    ours = str(WORK)
+    others = {}
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if ours in command:
+            continue
+        for pattern in OVERLAP_PATTERNS:
+            if pattern in command:
+                others[pattern] = others.get(pattern, 0) + 1
+    if load > 32 or others:
+        OVERLAP.append({"at": now(), "load_1m": round(load, 1), "other_jobs": others})
 
 
 def sample_counts() -> None:
@@ -541,6 +568,7 @@ def sample_counts() -> None:
         for node in NODES:
             seen_frames(node)
         sample_heads()
+        sample_overlap()
         for _ in range(30):
             if COUNTS["stop"]:
                 return
@@ -1641,6 +1669,10 @@ async def main() -> int:
         "network_setup_and_teardown": sorted({line.replace(str(WORK), "<workdir>") for line in commands}),
         "namespace_entry": mr1.LAUNCHED, "launcher_signals": mr1.ROOT_SIGNALS}
     fd.evidence["owner_decisions"] = DECISIONS
+    fd.evidence["host_overlap"] = {
+        "note": "samples (every 30 s) when this host's 1-minute load was above 32 or another agent's test, build "
+                "or validator job ran beside the run; the run's own processes are excluded",
+        "samples": OVERLAP[-200:], "sampled_overlaps": len(OVERLAP)}
     fd.evidence["peer_counters"] = {"samples": COUNTS["samples"], "max_kind3_per_peer": COUNTS["max_room"],
                                     "max_chat_per_peer": COUNTS["max_chat"]}
     fd.evidence["gate_items"] = GATE

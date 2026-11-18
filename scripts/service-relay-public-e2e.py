@@ -107,9 +107,10 @@ if set(FUNDING) != {"provider", "buyer", SWEEPER}:
 QUIET_S = 600
 
 # The terms. The contract's minimum response SLA and refund window are one
-# hour each; the storage fee is at least 0.1 TOS.
-fd.PRICE, fd.STORAGE_FEE, fd.CLEANUP_BOUNTY = "0.1", "0.1", "0.1"
-fd.PRICE_NANO, fd.STORAGE_FEE_NANO = 100_000_000, 100_000_000
+# hour each; OpenFox requires a storage fee of at least 0.1 TOS plus the
+# cleanup bounty.
+fd.PRICE, fd.STORAGE_FEE, fd.CLEANUP_BOUNTY = "0.1", "0.2", "0.1"
+fd.PRICE_NANO, fd.STORAGE_FEE_NANO = 100_000_000, 200_000_000
 BOUNTY_NANO = 100_000_000
 SLA_S = REFUND_WINDOW_S = 3600
 
@@ -815,9 +816,28 @@ def relays_answer() -> dict:
     return {relay.name: mh.relay_up(relay) for relay in mh.RELAYS}
 
 
+def resume_stage() -> None:
+    """A rerun in the same work directory after an earlier attempt stopped:
+    the staged files are kept, and the binaries must still be the ones built
+    and pinned now."""
+    fd.RELAY_CA_FILE = str(fd.ROOT / "etc" / "relay-ca.pem")
+    built = {name: hashlib.sha256(path.read_bytes()).hexdigest()
+             for name, path in (("openfox", fd.BIN / "openfox"), ("tosctl", fd.TOSCTL))}
+    local = {name: fd.root_sha256(fd.ROOT / "bin" / name) for name in built}
+    remote = {name: mh.on_buyer(["sha256sum", str(mh.REMOTE_ROOT / "bin" / name)]).stdout.split()[0]
+              for name in built}
+    fd.evidence.setdefault("binaries", {}).update({name: {"sha256": built[name], "on_provider_host": local[name],
+                                                          "on_buyer_host": remote[name]} for name in built})
+    fd.require("resumed in the same work directory: the staged openfox and tosctl binaries on both hosts are the "
+               "ones built and pinned now", local == built and remote == built, fd.evidence["binaries"])
+
+
 def sale() -> None:
     wallets_ready()
-    mh.stage()
+    if fd.ROOT.exists():
+        resume_stage()
+    else:
+        mh.stage()
     start_tunnel()
     before = relays_answer()
     fd.require("every installed relay answers over TLS with the pinned CA (read only; no relay host is logged in "

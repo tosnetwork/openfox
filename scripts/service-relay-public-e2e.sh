@@ -74,9 +74,13 @@ if [ "$command" = prepare ]; then
 else
   [ -f "$E2E_WORKDIR/funding-plan.json" ] || { echo "run prepare first" >&2; exit 2; }
   : "${THERMAL_GUARD:?}"
+  # A rerun keeps every earlier attempt's evidence and log beside it; the
+  # attempt markers make sure no value step of it is sent again.
   if [ -e "$E2E_WORKDIR/evidence.json" ]; then
-    echo "$E2E_WORKDIR already holds a finished run" >&2
-    exit 2
+    n=1
+    while [ -e "$E2E_WORKDIR/evidence-attempt-$n.json" ]; do n=$((n + 1)); done
+    mv "$E2E_WORKDIR/evidence.json" "$E2E_WORKDIR/evidence-attempt-$n.json"
+    [ -e "$E2E_WORKDIR/run.log" ] && mv "$E2E_WORKDIR/run.log" "$E2E_WORKDIR/run-attempt-$n.log"
   fi
 fi
 for port in "${ports[@]}" "${E2E_GATEWAY_PORT:-18890}" $(( ${E2E_GATEWAY_PORT:-18890} + 1 )) \

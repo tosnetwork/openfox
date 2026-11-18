@@ -190,7 +190,16 @@ def states_counters_sizes_search_step(step):
     return wrapped
 
 
+# The longest the teardown of B and C takes, kept clear of a blackout.
+TEARDOWN_SECONDS = 900
+
+
 def finish() -> None:
+    # The teardown stops B's and C's processes: like every stop on those
+    # hosts it waits out a blackout window (a validator set switch), with
+    # the guard still sampling.
+    if mr2.BLACKOUTS:
+        mr2.wait_outside_blackout("teardown", TEARDOWN_SECONDS)
     GUARD["stop"] = True
     fd.evidence["validator_guard"] = {
         "nodes": list(GUARD_NODES), "unit": GUARD_UNIT, "samples": GUARD["samples"], "tripped": GUARD["tripped"],

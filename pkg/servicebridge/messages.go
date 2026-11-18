@@ -1,37 +1,25 @@
 package servicebridge
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"io"
 	"regexp"
+
+	"github.com/tosnetwork/ai/protocol/pkg/railwork"
 )
 
 const (
-	maxMessageHeaderBytes = 64 << 10
-	maxTaskMessageBytes   = 4 + maxMessageHeaderBytes + MaxInlineInputBytes
-	maxResultMessageBytes = 4 + maxMessageHeaderBytes + MaxResultBytes
-	// An acknowledgement may carry the buyer's key card: its header holds
-	// the base64 of at most maxCardJSON bytes besides its own fields.
-	maxAckMessageBytes = 4 + 4<<10 + (maxCardJSON+2)/3*4
-	// A result request carries nothing but its schema and the buyer's card;
-	// the request it names is the frame's own binding.
-	maxResultRequestBytes = maxAckMessageBytes
+	maxMessageHeaderBytes = railwork.MaxMessageHeaderBytes
+	maxTaskMessageBytes   = railwork.MaxTaskMessageBytes
+	maxResultMessageBytes = railwork.MaxResultMessageBytes
+	maxAckMessageBytes    = railwork.MaxAckMessageBytes
+	maxResultRequestBytes = railwork.MaxResultRequestMessageBytes
 
-	taskSchema   = "tos.openfox.rail-task.v1"
-	resultSchema = "tos.openfox.rail-result.v1"
-	ackSchema    = "tos.openfox.rail-result-ack.v1"
-
-	resultRequestSchema = "tos.openfox.rail-result-request.v1"
-
-	// inputDomain separates the request's input digest from the raw
-	// source digest it commits to.
-	inputDomain = "tos.openfox.rail-input.v1\x00"
+	taskSchema          = railwork.TaskSchema
+	resultSchema        = railwork.ResultSchema
+	ackSchema           = railwork.AckSchema
+	resultRequestSchema = railwork.ResultRequestSchema
 )
 
 var (
@@ -44,34 +32,15 @@ var (
 
 // InputDigest is the request input commitment for a source archive digest.
 func InputDigest(sourceDigest [32]byte) [32]byte {
-	return sha256.Sum256(append([]byte(inputDomain), sourceDigest[:]...))
+	return railwork.InputDigest(sourceDigest)
 }
 
 // TaskHeader describes one paid request's work. Every field is a claim the
 // provider re-proves from finalized state.
-type TaskHeader struct {
-	Schema            string `json:"schema"`
-	BuyerAgentID      string `json:"buyer_agent_id"`
-	BuyerWallet       string `json:"buyer_wallet"`
-	CapabilityID      string `json:"capability_id"`
-	CapabilityVersion string `json:"capability_version"`
-	PackageBase64     string `json:"package_base64"`
-	ExecutionID       string `json:"execution_id"`
-	// ExecutionNonce opens ExecutionID to BuyerAgentID; see ExecutionIDFor.
-	ExecutionNonce string `json:"execution_nonce"`
-	SourceDigest   string `json:"source_digest"`
-	RequestID      uint64 `json:"request_id"`
-	CallLT         uint64 `json:"call_lt"`
-	CallHash       string `json:"call_hash"`
-	// BuyerKeyCard is the buyer's current encryption key card packet
-	// (standard base64 of its exact signed JSON), present when the buyer
-	// receives over the relay carrier. It travels inside the signed, and
-	// over the relay encrypted, task; the provider verifies it against
-	// finalized state and seals the result to it.
-	BuyerKeyCard string `json:"buyer_key_card_base64,omitempty"`
-}
+type TaskHeader = railwork.TaskHeader
 
-// Task is a decoded task message.
+// Task is a decoded task message. Header.BuyerKeyCard carries the buyer's
+// key card as its Base64 text.
 type Task struct {
 	Header  TaskHeader
 	Package []byte
@@ -79,18 +48,7 @@ type Task struct {
 }
 
 // ResultHeader names the attested Receipt of a request.
-type ResultHeader struct {
-	Schema           string `json:"schema"`
-	ResponseHash     string `json:"response_hash"`
-	ReceiptBOCBase64 string `json:"receipt_boc_base64"`
-	// ProviderKeyCard is the provider's current encryption key card packet
-	// (standard base64 of its exact signed JSON), present when the provider
-	// receives over the relay carrier. It gives a buyer whose offer-file
-	// card expired during a long request a route back for its
-	// acknowledgement; the buyer binds it to the Capability's finalized
-	// owner before sealing to it.
-	ProviderKeyCard string `json:"provider_key_card_base64,omitempty"`
-}
+type ResultHeader = railwork.ResultHeader
 
 // Result is a decoded result message: the Receipt and the artifact.
 type Result struct {
@@ -100,128 +58,47 @@ type Result struct {
 }
 
 // AckHeader acknowledges a validated result.
-type AckHeader struct {
-	Schema       string `json:"schema"`
-	ResponseHash string `json:"response_hash"`
-	// BuyerKeyCard is the buyer's current encryption key card packet
-	// (standard base64 of its exact signed JSON), present when the buyer
-	// receives over the relay carrier, so the card is refreshed in band.
-	BuyerKeyCard string `json:"buyer_key_card_base64,omitempty"`
-}
+type AckHeader = railwork.AckHeader
 
-func encodeMessage(header any, body []byte, bound int) ([]byte, error) {
-	encoded, err := json.Marshal(header)
-	if err != nil {
-		return nil, errors.New("servicebridge: encode message header")
-	}
-	if len(encoded) > maxMessageHeaderBytes {
-		return nil, errors.New("servicebridge: message header is oversized")
-	}
-	out := binary.BigEndian.AppendUint32(make([]byte, 0, 4+len(encoded)+len(body)), uint32(len(encoded)))
-	out = append(append(out, encoded...), body...)
-	if len(out) > bound {
-		return nil, errors.New("servicebridge: message is oversized")
-	}
-	return out, nil
-}
+// ResultRequestHeader asks for a responded request's result again. The
+// request is named by the frame binding (actor, request id, request hash);
+// the header holds only the buyer's current key card.
+type ResultRequestHeader = railwork.ResultRequestHeader
 
-func decodeMessage(raw []byte, bound int, header any) ([]byte, error) {
-	if len(raw) < 4 || len(raw) > bound {
-		return nil, errors.New("servicebridge: message is outside its bounds")
-	}
-	length := binary.BigEndian.Uint32(raw[:4])
-	if length == 0 || length > maxMessageHeaderBytes || uint64(length) > uint64(len(raw)-4) {
-		return nil, errors.New("servicebridge: message header length is invalid")
-	}
-	headerBytes := raw[4 : 4+length]
-	decoder := json.NewDecoder(bytes.NewReader(headerBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(header); err != nil {
-		return nil, errors.New("servicebridge: message header does not decode")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, errors.New("servicebridge: message header has trailing data")
-	}
-	reencoded, err := json.Marshal(header)
-	if err != nil || !bytes.Equal(reencoded, headerBytes) {
-		return nil, errors.New("servicebridge: message header is not canonical")
-	}
-	return raw[4+length:], nil
-}
-
-// EncodeTask builds a task message.
+// EncodeTask builds a task message. A key card in Header.BuyerKeyCard must
+// be canonical Base64; the schema, package and source digest are set from
+// the task's bytes.
 func EncodeTask(task Task) ([]byte, error) {
 	header := task.Header
-	header.Schema = taskSchema
-	header.PackageBase64 = base64.StdEncoding.EncodeToString(task.Package)
-	sourceDigest := sha256.Sum256(task.Archive)
-	header.SourceDigest = "sha256:" + hex.EncodeToString(sourceDigest[:])
-	if err := validateTaskHeader(header, len(task.Archive)); err != nil {
-		return nil, err
+	var card []byte
+	if header.BuyerKeyCard != "" {
+		decoded, err := base64.StdEncoding.Strict().DecodeString(header.BuyerKeyCard)
+		if err != nil || base64.StdEncoding.EncodeToString(decoded) != header.BuyerKeyCard {
+			return nil, errors.New("servicebridge: the buyer key card is not canonical Base64")
+		}
+		card = decoded
 	}
-	return encodeMessage(header, task.Archive, maxTaskMessageBytes)
+	header.Schema, header.BuyerKeyCard, header.PackageBase64, header.SourceDigest = "", "", "", ""
+	return railwork.EncodeTask(railwork.Task{Header: header, Package: task.Package, Archive: task.Archive, BuyerKeyCard: card})
 }
 
 // DecodeTask parses a task message and checks the archive against its
 // digest and the inline input bound.
 func DecodeTask(raw []byte) (Task, error) {
-	var header TaskHeader
-	archive, err := decodeMessage(raw, maxTaskMessageBytes, &header)
+	task, err := railwork.DecodeTask(raw)
 	if err != nil {
 		return Task{}, err
 	}
-	if err = validateTaskHeader(header, len(archive)); err != nil {
-		return Task{}, err
-	}
-	digest := sha256.Sum256(archive)
-	if header.SourceDigest != "sha256:"+hex.EncodeToString(digest[:]) {
-		return Task{}, errors.New("servicebridge: the source archive does not match its digest")
-	}
-	pkg, err := base64.StdEncoding.Strict().DecodeString(header.PackageBase64)
-	if err != nil || len(pkg) == 0 {
-		return Task{}, errors.New("servicebridge: the task Quote package does not decode")
-	}
-	return Task{Header: header, Package: pkg, Archive: append([]byte(nil), archive...)}, nil
+	return Task{Header: task.Header, Package: task.Package, Archive: task.Archive}, nil
 }
-
-// executionIDDomain separates the execution id commitment from every other
-// hash.
-const executionIDDomain = "tos.openfox.rail-execution-id.v1"
 
 // ExecutionIDFor commits an execution id to the Agent the result returns to.
 // The buyer's wallet pays a call carrying this id, so a task naming another
 // return Agent than the one committed cannot open it: without the binding,
 // anyone who knows the source could resend the paid task as their own Agent,
 // take the result and consume the provider's single execution.
-func ExecutionIDFor(buyerAgentID string, nonce [32]byte) [32]byte {
-	hash := sha256.New()
-	hash.Write([]byte(executionIDDomain))
-	hash.Write([]byte{0})
-	hash.Write([]byte(buyerAgentID))
-	hash.Write([]byte{0})
-	hash.Write(nonce[:])
-	var out [32]byte
-	copy(out[:], hash.Sum(nil))
-	return out
-}
-
-func validateTaskHeader(header TaskHeader, archiveBytes int) error {
-	if header.Schema != taskSchema || !agentIDPattern.MatchString(header.BuyerAgentID) ||
-		!rawAddressPattern.MatchString(header.BuyerWallet) || !capabilityPattern.MatchString(header.CapabilityID) ||
-		header.CapabilityVersion == "" || len(header.CapabilityVersion) > 128 || header.PackageBase64 == "" ||
-		!hex64Pattern.MatchString(header.ExecutionID) || !hex64Pattern.MatchString(header.ExecutionNonce) ||
-		!sha256Pattern.MatchString(header.SourceDigest) ||
-		!hex64Pattern.MatchString(header.CallHash) || header.CallLT == 0 {
-		return errors.New("servicebridge: the task header is incomplete")
-	}
-	if len(header.BuyerKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
-		return errors.New("servicebridge: the buyer key card exceeds its bound")
-	}
-	if archiveBytes == 0 || archiveBytes > MaxInlineInputBytes {
-		return errors.New("servicebridge: the source archive exceeds the advertised 1 MiB inline input or is empty")
-	}
-	return nil
+func ExecutionIDFor(buyerAgentID string, nonce [32]byte) ([32]byte, error) {
+	return railwork.ExecutionID(buyerAgentID, nonce)
 }
 
 // EncodeResult builds a result message.
@@ -232,41 +109,16 @@ func EncodeResult(responseHash [32]byte, receiptBOC, artifact []byte) ([]byte, e
 // EncodeResultWithCard builds a result message carrying the provider's key
 // card packet JSON, or none when card is empty.
 func EncodeResultWithCard(responseHash [32]byte, receiptBOC, artifact, card []byte) ([]byte, error) {
-	header := ResultHeader{
-		Schema: resultSchema, ResponseHash: hex.EncodeToString(responseHash[:]),
-		ReceiptBOCBase64: base64.StdEncoding.EncodeToString(receiptBOC),
-	}
-	if len(receiptBOC) == 0 || len(artifact) == 0 || len(artifact) > MaxResultBytes {
-		return nil, errors.New("servicebridge: the result is empty or oversized")
-	}
-	if len(card) > maxCardJSON {
-		return nil, errors.New("servicebridge: the provider key card exceeds its bound")
-	}
-	if len(card) > 0 {
-		header.ProviderKeyCard = base64.StdEncoding.EncodeToString(card)
-	}
-	return encodeMessage(header, artifact, maxResultMessageBytes)
+	return railwork.EncodeResult(responseHash, receiptBOC, artifact, card)
 }
 
 // DecodeResult parses a result message.
 func DecodeResult(raw []byte) (Result, error) {
-	var header ResultHeader
-	artifact, err := decodeMessage(raw, maxResultMessageBytes, &header)
+	result, err := railwork.DecodeResult(raw)
 	if err != nil {
 		return Result{}, err
 	}
-	if header.Schema != resultSchema || !hex64Pattern.MatchString(header.ResponseHash) ||
-		len(artifact) == 0 || len(artifact) > MaxResultBytes {
-		return Result{}, errors.New("servicebridge: the result header is incomplete")
-	}
-	if len(header.ProviderKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
-		return Result{}, errors.New("servicebridge: the provider key card exceeds its bound")
-	}
-	receipt, err := base64.StdEncoding.Strict().DecodeString(header.ReceiptBOCBase64)
-	if err != nil || len(receipt) == 0 {
-		return Result{}, errors.New("servicebridge: the result Receipt does not decode")
-	}
-	return Result{Header: header, Receipt: receipt, Artifact: append([]byte(nil), artifact...)}, nil
+	return Result{Header: result.Header, Receipt: result.Receipt, Artifact: result.Artifact}, nil
 }
 
 // EncodeAck builds a result acknowledgement.
@@ -277,63 +129,31 @@ func EncodeAck(responseHash [32]byte) ([]byte, error) {
 // EncodeAckWithCard builds a result acknowledgement carrying the buyer's
 // key card packet JSON, or none when card is empty.
 func EncodeAckWithCard(responseHash [32]byte, card []byte) ([]byte, error) {
-	if len(card) > maxCardJSON {
-		return nil, errors.New("servicebridge: the buyer key card exceeds its bound")
-	}
-	header := AckHeader{Schema: ackSchema, ResponseHash: hex.EncodeToString(responseHash[:])}
-	if len(card) > 0 {
-		header.BuyerKeyCard = base64.StdEncoding.EncodeToString(card)
-	}
-	return encodeMessage(header, nil, maxAckMessageBytes)
+	return railwork.EncodeAck(responseHash, card)
 }
 
 // DecodeAck parses a result acknowledgement.
 func DecodeAck(raw []byte) (AckHeader, error) {
-	var header AckHeader
-	rest, err := decodeMessage(raw, maxAckMessageBytes, &header)
+	ack, err := railwork.DecodeAck(raw)
 	if err != nil {
 		return AckHeader{}, err
 	}
-	if len(rest) != 0 || header.Schema != ackSchema || !hex64Pattern.MatchString(header.ResponseHash) ||
-		len(header.BuyerKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
-		return AckHeader{}, errors.New("servicebridge: invalid result acknowledgement")
-	}
-	return header, nil
+	return ack.Header, nil
 }
 
 func sha256Sum(value []byte) [32]byte { return sha256.Sum256(value) }
 
-// ResultRequestHeader asks for a responded request's result again. The
-// request is named by the frame binding (actor, request id, request hash);
-// the header holds only the buyer's current key card.
-type ResultRequestHeader struct {
-	Schema       string `json:"schema"`
-	BuyerKeyCard string `json:"buyer_key_card_base64,omitempty"`
-}
-
 // EncodeResultRequest builds a result request carrying the buyer's key card
 // packet JSON, or none when card is empty.
 func EncodeResultRequest(card []byte) ([]byte, error) {
-	if len(card) > maxCardJSON {
-		return nil, errors.New("servicebridge: the buyer key card exceeds its bound")
-	}
-	header := ResultRequestHeader{Schema: resultRequestSchema}
-	if len(card) > 0 {
-		header.BuyerKeyCard = base64.StdEncoding.EncodeToString(card)
-	}
-	return encodeMessage(header, nil, maxResultRequestBytes)
+	return railwork.EncodeResultRequest(card)
 }
 
 // DecodeResultRequest parses a result request.
 func DecodeResultRequest(raw []byte) (ResultRequestHeader, error) {
-	var header ResultRequestHeader
-	rest, err := decodeMessage(raw, maxResultRequestBytes, &header)
+	request, err := railwork.DecodeResultRequest(raw)
 	if err != nil {
 		return ResultRequestHeader{}, err
 	}
-	if len(rest) != 0 || header.Schema != resultRequestSchema ||
-		len(header.BuyerKeyCard) > base64.StdEncoding.EncodedLen(maxCardJSON) {
-		return ResultRequestHeader{}, errors.New("servicebridge: invalid result request")
-	}
-	return header, nil
+	return request.Header, nil
 }

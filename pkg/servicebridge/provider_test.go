@@ -10,6 +10,7 @@ import (
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 	"github.com/tosnetwork/ai/protocol/pkg/quoteexchange"
+	"github.com/tosnetwork/ai/protocol/pkg/railwork"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -125,7 +126,7 @@ func TestTheBuyerRefusesInputOverTheQuotedInlineBoundBeforePaying(t *testing.T) 
 
 var (
 	testExecutionNonce = [32]byte{0x4e}
-	testExecutionID    = ExecutionIDFor(testBuyer, testExecutionNonce)
+	testExecutionID    = mustExecutionID(testBuyer, testExecutionNonce)
 )
 
 func taskMessage(t *testing.T, pkg *nativev1.QuoteProposalPackageV1, archive []byte, sender string) (Message, Task) {
@@ -140,21 +141,61 @@ func taskMessage(t *testing.T, pkg *nativev1.QuoteProposalPackageV1, archive []b
 		ExecutionNonce: hex.EncodeToString(testExecutionNonce[:]), RequestID: 0, CallLT: 10,
 		CallHash: strings.Repeat("0a", 32),
 	}, Package: raw, Archive: archive}
+	return taskMessageOf(t, task, sender), task
+}
+
+// taskMessageOf frames a task as its buyer sends it: bound to the request
+// hash and actor the task and its Quote derive, in packets naming its
+// Capability and Accepted Quote commitment.
+func taskMessageOf(t *testing.T, task Task, sender string) Message {
+	t.Helper()
 	body, err := EncodeTask(task)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := DecodeTask(body)
-	if err != nil {
-		t.Fatal(err)
+	message := Message{SenderAgentID: sender, Kind: FrameTask, RequestID: task.Header.RequestID, Body: body}
+	pkg := &nativev1.QuoteProposalPackageV1{}
+	if proto.Unmarshal(task.Package, pkg) != nil || pkg.GetProposal() == nil {
+		return message
 	}
-	return Message{SenderAgentID: sender, Kind: FrameTask, RequestID: 0, Body: body}, decoded
+	quoteHash, commitment, err := railwork.QuoteCommitment(testNetwork, pkg.GetProposal())
+	if err != nil {
+		return message
+	}
+	executionID, okID := decodeHex32Test(task.Header.ExecutionID)
+	if !okID {
+		return message
+	}
+	requestHash, err := railwork.RequestHash(quoteHash, executionID, InputDigest(sha256Sum(task.Archive)))
+	if err != nil {
+		return message
+	}
+	message.RequestHash = requestHash
+	copy(message.ActorAccount[:], pkg.GetProposal().GetActor().GetAccountId())
+	message.Packet = PacketFields{CapabilityID: task.Header.CapabilityID, QuoteCommitment: commitment}
+	return message
+}
+
+func decodeHex32Test(text string) ([32]byte, bool) {
+	var out [32]byte
+	raw, err := hex.DecodeString(text)
+	if err != nil || len(raw) != 32 {
+		return out, false
+	}
+	copy(out[:], raw)
+	return out, true
+}
+
+// testRailProvider is a provider configured for the test Capability.
+func testRailProvider() *Provider {
+	return &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, CapabilityID: gfCapability,
+		Version: "1.0.0"}}
 }
 
 func TestTheProviderRefusesATaskBeforeAdmissionUnlessTheQuoteDeliversToIt(t *testing.T) {
-	provider := &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork}}
+	provider := testRailProvider()
 	message, task := taskMessage(t, testPackage(t, nil), fill(100, 1), testBuyer)
-	claim, _, _, err := provider.claimFor(message, task)
+	claim, _, err := provider.claimFor(message)
 	if err != nil {
 		t.Fatalf("a valid task was refused: %v", err)
 	}
@@ -165,12 +206,12 @@ func TestTheProviderRefusesATaskBeforeAdmissionUnlessTheQuoteDeliversToIt(t *tes
 	}
 	wrongSender := message
 	wrongSender.SenderAgentID = "agent_" + strings.Repeat("c3", 32)
-	if _, _, _, err = provider.claimFor(wrongSender, task); err == nil {
+	if _, _, err = provider.claimFor(wrongSender); err == nil {
 		t.Error("a task from another Agent than its buyer was admitted")
 	}
 	otherRequest := message
 	otherRequest.RequestID = 1
-	if _, _, _, err = provider.claimFor(otherRequest, task); err == nil {
+	if _, _, err = provider.claimFor(otherRequest); err == nil {
 		t.Error("frames bound to another request were admitted")
 	}
 	elsewhere, err := nativecore.AgentPacketTransportBinding("agent_"+strings.Repeat("c3", 32), 1<<20)
@@ -178,14 +219,14 @@ func TestTheProviderRefusesATaskBeforeAdmissionUnlessTheQuoteDeliversToIt(t *tes
 		t.Fatal(err)
 	}
 	pkg := testPackage(t, &elsewhere)
-	if m, tk := taskMessage(t, pkg, fill(100, 1), testBuyer); true {
-		if _, _, _, err = provider.claimFor(m, tk); err == nil {
+	if m, _ := taskMessage(t, pkg, fill(100, 1), testBuyer); true {
+		if _, _, err = provider.claimFor(m); err == nil {
 			t.Error("a Quote delivering to another Agent was admitted")
 		}
 	}
 	other := "agent_" + strings.Repeat("c3", 32)
-	if m, tk := taskMessage(t, testPackageFor(t, other, nil), fill(100, 1), testBuyer); true {
-		if _, _, _, err = provider.claimFor(m, tk); err == nil {
+	if m, _ := taskMessage(t, testPackageFor(t, other, nil), fill(100, 1), testBuyer); true {
+		if _, _, err = provider.claimFor(m); err == nil {
 			t.Error("a task under another provider's Quote was admitted")
 		}
 	}
@@ -193,9 +234,29 @@ func TestTheProviderRefusesATaskBeforeAdmissionUnlessTheQuoteDeliversToIt(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m, tk := taskMessage(t, testPackage(t, &small), fill(100, 1), testBuyer); true {
-		if _, _, _, err := provider.claimFor(m, tk); err == nil {
+	if m, _ := taskMessage(t, testPackage(t, &small), fill(100, 1), testBuyer); true {
+		if _, _, err := provider.claimFor(m); err == nil {
 			t.Error("an archive over the quoted bound was admitted")
 		}
 	}
+}
+
+// mustExecutionID is ExecutionIDFor for the fixed, valid test Agents.
+func mustExecutionID(agentID string, nonce [32]byte) [32]byte {
+	id, err := ExecutionIDFor(agentID, nonce)
+	if err != nil {
+		panic(err)
+	}
+	return id
+}
+
+// testPacket is the packet fields a buyer sets for the default test
+// purchase: the test Capability and the Accepted Quote of testPackage.
+func testPacket(t *testing.T) PacketFields {
+	t.Helper()
+	_, commitment, err := railwork.QuoteCommitment(testNetwork, testPackage(t, nil).GetProposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return PacketFields{CapabilityID: gfCapability, QuoteCommitment: commitment}
 }

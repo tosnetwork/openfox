@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ func TestTheProviderTakesAnAcknowledgementOnlyFromTheRequestsBuyerForItsResult(t
 	record := ProviderRecord{
 		State: ProviderDelivering, BuyerAgentID: testBuyer, Actor: key.Actor, RequestID: 3,
 		RequestHash: hex.EncodeToString(testRequest[:]), ResponseHash: hex.EncodeToString(responseHash[:]),
+		CapabilityID: gfCapability, QuoteCommitment: key.QuoteCommitment,
 	}
 	if err := provider.store(key, record, true); err != nil {
 		t.Fatal(err)
@@ -47,7 +49,13 @@ func TestTheProviderTakesAnAcknowledgementOnlyFromTheRequestsBuyerForItsResult(t
 			RequestID:     3,
 			RequestHash:   testRequest,
 			Body:          body,
+			Packet:        PacketFields{CapabilityID: gfCapability, QuoteCommitment: key.QuoteCommitment},
 		}
+	}
+	otherQuote := ack(testBuyer, responseHash)
+	otherQuote.Packet.QuoteCommitment = "tvm-cell-sha256:" + strings.Repeat("ab", 32)
+	if err := provider.HandleAck(context.Background(), otherQuote); !errors.Is(err, ErrPacketFieldsMismatch) {
+		t.Fatalf("an acknowledgement in packets naming another Quote: %v", err)
 	}
 	if err := provider.HandleAck(context.Background(), ack(testSeller, responseHash)); err == nil {
 		t.Fatal("an acknowledgement from another Agent than the buyer was taken")
@@ -77,6 +85,7 @@ func TestTheBuyerTakesAResultOnlyFromThePurchasesProviderForItsRequest(t *testin
 		Phase: PurchaseTaskSent, RequestHash: hex.EncodeToString(testRequest[:]),
 		Actor: "0:" + hex.EncodeToString(testActor[:]), RequestID: &requestID, ProviderAgentID: testSeller,
 		CapabilityID: "cap_" + strings.Repeat("33", 32), CommittedNanoTOS: "1",
+		QuoteCommitment: "tvm-cell-sha256:" + strings.Repeat("aa", 32),
 	}
 	if err := ensurePrivateDirectory(buyer.purchaseDir(record.RequestHash)); err != nil {
 		t.Fatal(err)
@@ -95,9 +104,16 @@ func TestTheBuyerTakesAResultOnlyFromThePurchasesProviderForItsRequest(t *testin
 		RequestID:     3,
 		RequestHash:   testRequest,
 		Body:          body,
+		Packet:        PacketFields{CapabilityID: record.CapabilityID, QuoteCommitment: record.QuoteCommitment},
 	}
 	if err := buyer.HandleResult(context.Background(), message); err == nil {
 		t.Fatal("a result from another Agent than the provider was taken")
+	}
+	otherCapability := message
+	otherCapability.SenderAgentID = testSeller
+	otherCapability.Packet.CapabilityID = "cap_" + strings.Repeat("34", 32)
+	if err := buyer.HandleResult(context.Background(), otherCapability); !errors.Is(err, ErrPacketFieldsMismatch) {
+		t.Fatalf("a result in packets naming another Capability: %v", err)
 	}
 	message.SenderAgentID, message.RequestID = testSeller, 4
 	if err := buyer.HandleResult(context.Background(), message); err == nil {
@@ -245,7 +261,7 @@ func TestDispatchKeepsAFailedMessagePendingUntilTheAttemptCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = inbox.Put(testSeller, frames[0]); err != nil {
+	if _, _, err = inbox.Put(testSeller, testPacket(t), frames[0]); err != nil {
 		t.Fatal(err)
 	}
 	var reports []string
@@ -278,7 +294,7 @@ func TestACorruptAttemptCounterRetiresTheMessageInsteadOfBlockingDispatch(t *tes
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, message, err := inbox.Put(testSeller, frames[0])
+		_, message, err := inbox.Put(testSeller, testPacket(t), frames[0])
 		if err != nil || message == nil {
 			t.Fatal(err)
 		}
@@ -321,7 +337,7 @@ func TestStepFreesTheSlotOfAStaleIncompleteMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = inbox.Put(testBuyer, frames[0]); err != nil {
+	if _, _, err = inbox.Put(testBuyer, testPacket(t), frames[0]); err != nil {
 		t.Fatal(err)
 	}
 	assembly := filepath.Join(directory, assemblyKey(testBuyer, frames[0]))
@@ -338,7 +354,7 @@ func TestStepFreesTheSlotOfAStaleIncompleteMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = inbox.Put(testSeller, next[0]); err != nil {
+	if _, _, err = inbox.Put(testSeller, testPacket(t), next[0]); err != nil {
 		t.Fatalf("the freed slot is not reusable: %v", err)
 	}
 }

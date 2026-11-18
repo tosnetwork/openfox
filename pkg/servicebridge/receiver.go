@@ -138,7 +138,8 @@ func (r *Receiver) acceptPacket(ctx context.Context, raw []byte) (InboxStatus, *
 	if err != nil {
 		return 0, nil, false, err
 	}
-	status, message, err := r.Inbox.Put(packet.SenderAgentID, frame)
+	status, message, err := r.Inbox.Put(packet.SenderAgentID,
+		PacketFields{CapabilityID: packet.CapabilityID, QuoteCommitment: packet.QuoteCommitment}, frame)
 	// A refusal of the frame itself or of the inbox bounds is final for
 	// this packet (the sender's redelivery brings a new one); a failing
 	// write may pass later.

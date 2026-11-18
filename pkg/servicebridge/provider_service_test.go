@@ -867,7 +867,7 @@ func putFixtureTask(t *testing.T, fixture *gateFixture, inbox *Inbox) (InboxStat
 	var status InboxStatus
 	var stored *Message
 	for _, frame := range frames {
-		if status, stored, err = inbox.Put(testBuyer, frame); err != nil {
+		if status, stored, err = inbox.Put(testBuyer, message.Packet, frame); err != nil {
 			t.Fatal(err)
 		}
 	}

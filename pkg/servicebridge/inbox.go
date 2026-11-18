@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tosnetwork/ai/protocol/pkg/railwork"
 )
 
 // Inbox limits.
@@ -23,6 +25,7 @@ const (
 	doneMarker                    = "done"
 	heldMarker                    = "held"
 	senderFile                    = "sender"
+	packetFile                    = "packet"
 )
 
 var assemblyNamePattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -44,6 +47,31 @@ const (
 	InboxDuplicate
 )
 
+// PacketFields are the Agent Packet fields a rail frame arrived with
+// (SERVICE_ACTOR_RAIL_WORK_FRAMES_V1 section 2.1): the purchased
+// Capability and the Accepted Quote commitment. The sender sets them; the
+// handlers compare them with the task's Quote or the stored request.
+type PacketFields struct {
+	CapabilityID    string
+	QuoteCommitment string
+}
+
+var quoteCommitmentPattern = regexp.MustCompile(`^tvm-cell-sha256:[0-9a-f]{64}$`)
+
+func (f PacketFields) valid() bool {
+	return capabilityPattern.MatchString(f.CapabilityID) && quoteCommitmentPattern.MatchString(f.QuoteCommitment)
+}
+
+func (f PacketFields) encode() []byte {
+	return []byte(f.CapabilityID + "\n" + f.QuoteCommitment)
+}
+
+func decodePacketFields(raw []byte) (PacketFields, bool) {
+	capability, quote, found := strings.Cut(string(raw), "\n")
+	fields := PacketFields{CapabilityID: capability, QuoteCommitment: quote}
+	return fields, found && fields.valid()
+}
+
 // Message is a complete, digest-checked rail message from one sender.
 type Message struct {
 	Key           string
@@ -53,6 +81,17 @@ type Message struct {
 	RequestID     uint64
 	RequestHash   [32]byte
 	Body          []byte
+	// Packet holds the packet fields every frame of the message arrived
+	// with; frames whose packets name other values are refused.
+	Packet PacketFields
+}
+
+func (m Message) shared() railwork.Message {
+	return railwork.Message{
+		SenderAgentID: m.SenderAgentID, Kind: railwork.Kind(m.Kind),
+		Binding:       railwork.Binding{ActorAccount: m.ActorAccount, RequestID: m.RequestID, RequestHash: m.RequestHash},
+		MessageDigest: sha256.Sum256(m.Body), Body: m.Body,
+	}
 }
 
 // Inbox durably assembles frames from verified packets. One process owns
@@ -94,10 +133,15 @@ func assemblyKey(sender string, frame Frame) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-// Put stores one frame from a verified sender Agent.
-func (inbox *Inbox) Put(sender string, frame Frame) (InboxStatus, *Message, error) {
+// Put stores one frame from a verified sender Agent with the packet fields
+// it arrived with. Every frame of one message must arrive with the same
+// fields: a frame whose packet names others is refused.
+func (inbox *Inbox) Put(sender string, packet PacketFields, frame Frame) (InboxStatus, *Message, error) {
 	if inbox == nil || !agentIDPattern.MatchString(sender) {
 		return 0, nil, errors.New("servicebridge: invalid inbox write")
+	}
+	if !packet.valid() {
+		return 0, nil, fmt.Errorf("%w: the packet does not name a Capability and an Accepted Quote", ErrInboxRefused)
 	}
 	if err := validateFrame(frame); err != nil {
 		return 0, nil, fmt.Errorf("%w: %w", ErrInboxRefused, err)
@@ -106,6 +150,11 @@ func (inbox *Inbox) Put(sender string, frame Frame) (InboxStatus, *Message, erro
 	defer inbox.mutex.Unlock()
 	key := assemblyKey(sender, frame)
 	directory := filepath.Join(inbox.root, key)
+	if _, err := os.Lstat(directory); err == nil {
+		if err = inbox.matchPacket(directory, packet); err != nil {
+			return 0, nil, err
+		}
+	}
 	if _, err := os.Lstat(filepath.Join(directory, doneMarker)); err == nil {
 		// The frames stay until pruning, so the processed message is handed
 		// back whole: a duplicate is handled again (re-acknowledged,
@@ -123,7 +172,7 @@ func (inbox *Inbox) Put(sender string, frame Frame) (InboxStatus, *Message, erro
 		if err = inbox.admitAssembly(sender); err != nil {
 			return 0, nil, err
 		}
-		if err = inbox.createAssembly(key, sender); err != nil {
+		if err = inbox.createAssembly(key, sender, packet); err != nil {
 			return 0, nil, err
 		}
 	} else if err != nil {
@@ -165,7 +214,7 @@ func (inbox *Inbox) Put(sender string, frame Frame) (InboxStatus, *Message, erro
 // createAssembly makes an assembly directory visible only once its sender is
 // durable: a crash part way leaves a staging directory no listing reads, so
 // it cannot block the other messages.
-func (inbox *Inbox) createAssembly(key, sender string) error {
+func (inbox *Inbox) createAssembly(key, sender string, packet PacketFields) error {
 	staging := filepath.Join(inbox.root, stagingPrefix+key)
 	if err := os.RemoveAll(staging); err != nil {
 		return errors.New("servicebridge: clear assembly staging")
@@ -182,11 +231,37 @@ func (inbox *Inbox) createAssembly(key, sender string) error {
 	if err := writeSynced(filepath.Join(staging, senderFile), []byte(sender)); err != nil {
 		return err
 	}
+	if err := writeSynced(filepath.Join(staging, packetFile), packet.encode()); err != nil {
+		return err
+	}
 	if err := os.Rename(staging, filepath.Join(inbox.root, key)); err != nil {
 		return errors.New("servicebridge: publish assembly")
 	}
 	published = true
 	return syncDirectory(inbox.root)
+}
+
+// matchPacket requires a frame's packet fields to equal the ones the
+// assembly holds. An assembly stored before packet fields were kept takes
+// the fields of the next frame that reaches it.
+func (inbox *Inbox) matchPacket(directory string, packet PacketFields) error {
+	path := filepath.Join(directory, packetFile)
+	raw, err := readPrivateFile(path, 256)
+	if errors.Is(err, os.ErrNotExist) {
+		return writeSynced(path, packet.encode())
+	}
+	if err != nil {
+		return err
+	}
+	stored, ok := decodePacketFields(raw)
+	if !ok {
+		return errors.New("servicebridge: an assembly's packet fields are unreadable")
+	}
+	if stored != packet {
+		return fmt.Errorf("%w: the packet names another Capability or Accepted Quote than the message's other frames",
+			ErrInboxRefused)
+	}
+	return nil
 }
 
 // countOpen counts the assemblies not marked done whose held state equals
@@ -344,7 +419,7 @@ func (inbox *Inbox) assemble(key string) (*Message, bool, error) {
 	var frames []Frame
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == senderFile || name == doneMarker || name == attemptsFile || name == heldMarker {
+		if name == senderFile || name == packetFile || name == doneMarker || name == attemptsFile || name == heldMarker {
 			continue
 		}
 		// A crash between creating and renaming a counter update leaves its
@@ -374,10 +449,23 @@ func (inbox *Inbox) assemble(key string) (*Message, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	// An assembly stored before packet fields were kept has none; its
+	// message then names no Capability or Quote and the handlers refuse it,
+	// and the sender's next delivery records the fields.
+	var packet PacketFields
+	if raw, packetErr := readPrivateFile(filepath.Join(directory, packetFile), 256); packetErr == nil {
+		stored, ok := decodePacketFields(raw)
+		if !ok {
+			return nil, false, errors.New("servicebridge: an assembly's packet fields are unreadable")
+		}
+		packet = stored
+	} else if !errors.Is(packetErr, os.ErrNotExist) {
+		return nil, false, packetErr
+	}
 	first := frames[0]
 	return &Message{
 		Key: key, SenderAgentID: string(sender), Kind: first.Kind, ActorAccount: first.ActorAccount,
-		RequestID: first.RequestID, RequestHash: first.RequestHash, Body: body,
+		RequestID: first.RequestID, RequestHash: first.RequestHash, Body: body, Packet: packet,
 	}, true, nil
 }
 

@@ -653,12 +653,13 @@ def start_sampler() -> None:
 
 # --- Setup ----------------------------------------------------------------------------
 
-def wait_evidence(node: str, peer: str) -> None:
+def wait_evidence(node: str, peer: str, since: float = 0) -> None:
     """The room.invite is a 1:1 copy: the node's daemon must have committed
-    the peer's relay evidence from the imported contact file first."""
+    the peer's relay evidence from the imported contact file first (written
+    after `since`, when given)."""
     path = mdir(node) / "state" / "relay-evidence" / (RUN[peer]["agent"][6:] + ".json")
     require(f"{node.upper()}'s daemon committed {peer.upper()}'s relay evidence from the imported contact file",
-            bool(poll(lambda: path.is_file() or None, 180, 2)))
+            bool(poll(lambda: (path.is_file() and path.stat().st_mtime >= since) or None, 180, 2)))
 
 
 def contacts() -> None:
@@ -970,7 +971,16 @@ def refusals_at_c() -> None:
 
 
 def filler_joins(filler: str, room_epoch: int) -> dict:
-    """A adds a filler joiner, whose owner joins; the Add is one Commit."""
+    """A adds a filler joiner, whose owner joins; the Add is one Commit. A
+    filler is idle until then, so the evidence A holds from its contact file
+    may have expired: its owner hands A a fresh contact file first, as an
+    owner would before inviting a peer it has not heard from."""
+    since = time.time()
+    mr1.export_contact(filler)
+    refreshed = mr1.import_contact("a", filler)
+    require(f"A re-imports filler {filler.upper()}'s fresh contact file",
+            refreshed.get("agent_id") == RUN[filler]["agent"], refreshed)
+    wait_evidence("a", filler, since)
     added = room_op("a", "add", filler)
     wait_room(filler, lambda row: row.get("state") == "invited", 300)
     joined = room_op(filler, "join", "a")

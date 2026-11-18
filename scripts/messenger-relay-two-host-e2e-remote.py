@@ -623,12 +623,25 @@ def start_tunnel(node: str) -> None:
 COUNTER = re.compile(r"counter packets \d+ bytes \d+")
 
 
+# nft tables another service rewrites on its own (MR_NFT_IGNORE_TABLES,
+# "family name" pairs separated by commas, e.g. a ban list's dynamic sets)
+# are left out of the fingerprint and named in the evidence.
+SHARED_HOSTS = set(os.environ.get("MR_SHARED_HOST_NODES", "").split())
+NFT_IGNORE = [t.strip() for t in os.environ.get("MR_NFT_IGNORE_TABLES", "").split(",") if t.strip()]
+
+
 def firewall_state(node: str) -> dict:
     """A remote node's host firewall rules as text: `ufw status verbose`, and
-    `nft list ruleset` with each rule's packet and byte counters blanked
-    (traffic changes them; the rules are what must be identical)."""
-    return {"ufw": on_node(node, "ufw status verbose", check=False).stdout,
-            "nft": COUNTER.sub("counter", on_node(node, "nft list ruleset", check=False).stdout)}
+    every nft table except the ignored ones, with each rule's packet and byte
+    counters blanked (traffic changes them; the rules are what must be
+    identical)."""
+    tables = [line.split(None, 1)[1].strip() for line in
+              on_node(node, "nft list tables", check=False).stdout.splitlines() if line.startswith("table ")]
+    listed = "".join(on_node(node, f"nft list table {table}", check=False).stdout
+                     for table in tables if table not in NFT_IGNORE)
+    if NFT_IGNORE:
+        fd.evidence.setdefault("firewall_fingerprint", {})["nft_tables_ignored"] = NFT_IGNORE
+    return {"ufw": on_node(node, "ufw status verbose", check=False).stdout, "nft": COUNTER.sub("counter", listed)}
 
 
 def node_block(node: str, relay: str) -> None:
@@ -1464,6 +1477,14 @@ def reverse_remote_node(node: str, reversal: dict) -> None:
     if "base_created" in remote.state:
         outside = on_node(node, f"find /root /tmp /var/tmp -xdev -mindepth 1 -maxdepth 2 -newer {base}/started "
                                 "-not -name 'systemd-private-*' -print 2>/dev/null; true", check=False).stdout.split()
+        # On a host other agents also work on (MR_SHARED_HOST_NODES), a file
+        # outside the scratch directory counts against the run only when it
+        # names the run; the others are listed as other activity.
+        if node in SHARED_HOSTS:
+            marks = (WORK.name, "tosmr", "openfox", "messenger", "relay-test")
+            others = [p for p in outside if not any(mark in p for mark in marks)]
+            outside = [p for p in outside if p not in others]
+            reversal[f"{node}_files_changed_by_others_on_shared_host"] = [redact(p) for p in others]
         reversal[f"{node}_files_written_outside_scratch"] = [redact(p) for p in outside]
         removed = on_node(node, f"case {base} in {scratch}/?*) find {base} -depth -delete ;; esac; "
                                 f"test ! -e {base} && echo absent", check=False).stdout.strip()

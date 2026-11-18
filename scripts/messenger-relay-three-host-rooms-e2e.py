@@ -1356,35 +1356,74 @@ def states_counters_sizes_search() -> None:
 @step
 def renewal_among_non_contacts() -> None:
     """Item 16: B and C exchanged room messages across the run; their
-    descriptors (test lifetime MR1_DESCRIPTOR_LIFETIME) expired several times.
-    In steady state each renewed the other's only through kind-3 part 0; a
-    kind-4 pull may occur only for a peer whose evidence went stale while it
-    was offline: inside an offline window of the run or within one re-deposit
-    interval after it ends."""
+    descriptors (test lifetime MR1_DESCRIPTOR_LIFETIME) expired several times
+    and in steady state each renewed the other's through kind-3 part 0. A
+    kind-4 pull between them is allowed in exactly two cases: inside an
+    offline window of B or C or within one re-deposit interval after it, or
+    an evidence-expired pull, when the requester's held copy of the peer's
+    evidence had expired at send time (at most one pull exchange per peer per
+    expiry, and the peer's next kind-3 renews it in band). Every other kind-4
+    frame fails the item."""
     span = RUN["renewal"][-1]["at"] - RUN["renewal"][0]["at"]
 
+    def evidence_frames(sender: str, recipient: str) -> list[tuple[int, int, int]]:
+        """(accepted at, descriptor expiry, kind) of every frame of sender to
+        recipient that carried relay evidence."""
+        out = []
+        for row in seen_frames(sender):
+            if row["packet"]["recipient_agent_id"] != RUN[recipient]["agent"]:
+                continue
+            expiry = row["frame"].get("descriptor_expires_at_unix")
+            at = row["record"].get("accepted_at_unix") or 0
+            if expiry and at:
+                out.append((at, expiry, row["frame"].get("kind")))
+        return sorted(out)
+
     def renewals(sender: str, recipient: str) -> list[int]:
-        return sorted({row["frame"].get("descriptor_expires_at_unix") for row in room_frames(sender)
-                       if row["packet"]["recipient_agent_id"] == RUN[recipient]["agent"] and
-                       row["frame"].get("descriptor_expires_at_unix")})
+        return sorted({expiry for _, expiry, kind in evidence_frames(sender, recipient) if kind == 3})
     c_to_b, b_to_c = renewals("c", "b"), renewals("b", "c")
-    frames = []
+    frames, used = [], {}
     for node, peer in (("b", "c"), ("c", "b")):
         for row in seen_frames(node):
             if row["frame"].get("kind") != 4 or row["packet"]["recipient_agent_id"] != RUN[peer]["agent"]:
                 continue
-            at = row["record"].get("accepted_at_unix") or row["packet"].get("created_at_unix") or 0
-            window = next((w for w in OFFLINE if w["node"] in ("b", "c") and
-                           w["start"] <= at <= (w["end"] if w["end"] is not None else now()) + REDEPOSIT), None)
-            frames.append({"from": node, "to": peer, "at": at, "object": row["frame"].get("evidence_object"),
-                           "window": window and {"node": window["node"], "start": window["start"],
-                                                 "end": window["end"]}})
-    outside = [f for f in frames if not f["window"]]
+            frames.append({"from": node, "to": peer, "object": row["frame"].get("evidence_object"),
+                           "at": row["record"].get("accepted_at_unix") or row["packet"].get("created_at_unix") or 0})
+    frames.sort(key=lambda f: f["at"])
+    for frame in frames:
+        node, peer, at = frame["from"], frame["to"], frame["at"]
+        window = next((w for w in OFFLINE if w["start"] <= at <=
+                       (w["end"] if w["end"] is not None else now()) + REDEPOSIT), None)
+        if window:
+            frame["class"] = "offline-window"
+            frame["window"] = window
+            continue
+        if frame["object"] == "response":
+            # A response answers the peer's request: it is classified with it.
+            request = next((f for f in reversed(frames) if f["from"] == peer and f["to"] == node and
+                            f["object"] == "request" and 0 <= at - f["at"] <= REDEPOSIT and f.get("class")), None)
+            frame["class"] = (request["class"] + " (response)") if request else "unexplained"
+            continue
+        held = [expiry for when, expiry, _ in evidence_frames(peer, node) if when <= at]
+        held_expiry = max(held) if held else 0
+        key = (node, peer, held_expiry)
+        renewed = any(kind == 3 and when > at and expiry > held_expiry
+                      for when, expiry, kind in evidence_frames(peer, node))
+        if held_expiry and held_expiry <= at:
+            first = key not in used or 0 <= at - used[key] <= 60
+            used.setdefault(key, at)
+            frame["relied_on_expiry"] = held_expiry
+            frame["renewed_in_band_after"] = renewed
+            frame["class"] = "evidence-expired" if first and renewed else "unexplained"
+        else:
+            frame["relied_on_expiry"] = held_expiry
+            frame["class"] = "unexplained"
+    unexplained = [f for f in frames if f["class"] == "unexplained"]
     gate("16", f"B and C (no contacts) exchanged room messages over {span} s while C's descriptor (lifetime "
-         f"{mr1.DESCRIPTOR_LIFETIME} s) was renewed {len(c_to_b)} times in its kind-3 part 0 to B (B's to C "
-         f"{len(b_to_c)} times); every exchange applied, and no kind-4 frame passed between them outside an "
-         f"offline window of B or C or the {REDEPOSIT} s after one",
-         len(c_to_b) >= 3 and (not b_to_c or len(b_to_c) >= 3) and not outside and
+         f"{mr1.DESCRIPTOR_LIFETIME} s) was renewed {len(c_to_b)} times in kind-3 part 0 to B (B's to C "
+         f"{len(b_to_c)} times); every exchange applied, and each kind-4 frame between them is an offline-window "
+         "or an evidence-expired pull (one per peer per expiry, renewed in band by the next kind-3)",
+         len(c_to_b) >= 3 and (not b_to_c or len(b_to_c) >= 3) and not unexplained and
          all(r["b->c"]["applied"] and r["c->b"]["applied"] for r in RUN["renewal"]),
          {"c_to_b_descriptor_expiries": c_to_b, "b_to_c_descriptor_expiries": b_to_c,
           "kind4_between_b_and_c": frames, "offline_windows": OFFLINE, "exchanges": RUN["renewal"]})

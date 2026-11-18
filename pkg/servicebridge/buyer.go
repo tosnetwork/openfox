@@ -46,6 +46,14 @@ const (
 
 const purchaseRecordSchema = "tos.openfox.rail-purchase.v1"
 
+// ErrProviderUnreachable reports a purchase refused before anything is paid
+// because the task could not be delivered to the provider: it is not a
+// direct peer, no Messenger is configured, and no verified key card of it
+// is held for the relays (from an offer file or a gateway Quote).
+var ErrProviderUnreachable = errors.New("servicebridge: the provider cannot be reached, so nothing is paid: it is " +
+	"not a direct peer, no Messenger is configured, and no verified key card of it is held (take an offer file, " +
+	"or a Quote from a gateway that serves the provider's card)")
+
 func terminalPurchase(phase string) bool {
 	switch phase {
 	case PurchaseCompleted,
@@ -378,6 +386,11 @@ func (b *Buyer) Buy(ctx context.Context, capabilityID, version string, archive [
 	provider := validated.Proposal.GetProviderAgentId()
 	if offer.ProviderAgentID != provider || offer.TermsHash != hex.EncodeToString(validated.Rail.TermsHash[:]) {
 		return PurchaseRecord{}, errors.New("servicebridge: the Quote differs from the finalized offer")
+	}
+	// Nothing is paid for a task that could not be delivered: the call
+	// would only lead to a refund.
+	if route, known := b.config.Courier.Route(provider); known && route == RouteNone {
+		return PurchaseRecord{}, fmt.Errorf("%w (provider %s)", ErrProviderUnreachable, provider)
 	}
 	costs, err := QuoteCosts(
 		validated.Rail.Price,

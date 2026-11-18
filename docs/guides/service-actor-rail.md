@@ -249,10 +249,11 @@ that a re-run adopts the Agent the configuration names.
    temporary file in the same directory, synced, given mode `0600` and renamed
    into place, so the gateway reads the previous card or the new one, never
    part of one. A card that is not yet valid or already expired is never
-   written. The gateway accepts the file only when it is a regular `0600` file
-   owned by the user the gateway runs as, so run the gateway and the
-   OpenFox node as one user, and point both at an absolute path (a directory
-   that does not exist is created `0700`). The gateway refuses to start while
+   written. **The gateway and the provider node must run as the same user:**
+   the gateway accepts the file only when it is a regular `0600` file whose
+   owner is the gateway's effective uid, so a card written by another user is
+   never served. Point both at the same absolute path (a directory that does
+   not exist is created `0700`). The gateway refuses to start while
    a configured card file is missing or invalid, so run `offer` (or `serve`)
    before starting the gateway. Re-running `offer` without the flag keeps the
    path already recorded.
@@ -462,6 +463,21 @@ treated as paused and its error is logged.
 
    Exactly one Quote source is used: `--offer`, `--quote-package` (a package
    obtained out of band) or, with neither, the configured gateway.
+
+   A gateway may serve the provider's encryption key card next to the Quote
+   (`provider_key_card_packet_json`). With `relay_urls` configured the buyer
+   takes it like an offer-file card: only after it verifies against finalized
+   state (signed by a controller of the provider's finalized, live Agent,
+   valid now) and its Agent is the Capability's **finalized owner, read from
+   chain**, never from the response or the proposal. A card that fails is
+   discarded and reported (`buyer.quote_card`); it does not invalidate the
+   Quote. So a first purchase quoted by a gateway can reach a provider that
+   receives only through a relay.
+
+   Before anything is prepared or paid, the buyer requires a route to the
+   provider: a direct peer, a Messenger, or a verified key card of the
+   provider for the relays. Without one the purchase is refused (the task
+   could not be delivered, so the call would only lead to a refund).
 
    With `--offer` the Quote Proposal package is built locally; it needs no
    provider secret and no signature. The provider Agent is the Capability's

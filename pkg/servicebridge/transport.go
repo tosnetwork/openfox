@@ -180,6 +180,25 @@ func OpenCourier(directory string, signer *PacketSigner, transport PacketTranspo
 	return &Courier{root: directory, signer: signer, transport: transport, now: time.Now}, nil
 }
 
+// packetRouter is a transport that can say which route a recipient's
+// packets take before anything is sent.
+type packetRouter interface {
+	Route(recipient string) string
+}
+
+// Route reports the route the courier's transport would take to recipient,
+// and false when the transport cannot tell in advance.
+func (c *Courier) Route(recipient string) (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	router, ok := c.transport.(packetRouter)
+	if !ok {
+		return "", false
+	}
+	return router.Route(recipient), true
+}
+
 // Envelope addresses one rail message.
 type Envelope struct {
 	RecipientAgentID string

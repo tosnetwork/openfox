@@ -132,6 +132,18 @@ func (buyerSession) GetRefund(context.Context, string, uint64) (*nativecore.Serv
 	return nil, errors.New("not served by the fake")
 }
 
+func (buyerSession) WalletSeqno(context.Context, string) (uint32, error) {
+	return 0, errors.New("not served by the fake")
+}
+
+func (buyerSession) WalletLastTransaction(context.Context, string) (toschain.ActorTxID, error) {
+	return toschain.ActorTxID{}, errors.New("not served by the fake")
+}
+
+func (buyerSession) WalletHistory(context.Context, string, toschain.ActorTxID) (*toschain.WalletHistory, error) {
+	return nil, errors.New("not served by the fake")
+}
+
 func (s offerSessions) BeginBuyerSession(ctx context.Context) (buyersdk.ServiceActorSession, error) {
 	session, err := fakeChain(s).BeginRail(ctx)
 	if err != nil {

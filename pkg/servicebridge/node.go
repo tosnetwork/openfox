@@ -753,7 +753,12 @@ func (n *Node) openBuyer(options NodeOptions, lifecycle LifecycleSender, vaultUR
 		if clientErr != nil {
 			return clientErr
 		}
-		quotes = &PackageQuotes{manifests: n.Manifests, next: GatewayQuotes{Client: client, CallerID: config.CallerID}}
+		// With a relay carrier the provider key card a gateway serves next to
+		// the Quote is learned once it verifies against finalized state, so a
+		// first purchase from a relay-only provider can be delivered.
+		quotes = &PackageQuotes{manifests: n.Manifests, next: GatewayQuotes{
+			Client: client, CallerID: config.CallerID, Cards: n.Cards, Report: options.Report,
+		}}
 	}
 	n.Buyer, err = NewBuyer(BuyerConfig{
 		AgentID:   n.Config.AgentID,

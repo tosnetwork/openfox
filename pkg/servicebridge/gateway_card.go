@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tosnetwork/ai/protocol/pkg/agentpacketseal"
+	"github.com/tosnetwork/ai/protocol/pkg/quoteexchange"
 )
 
 // The gateway card file is the provider's current encryption key card as a
@@ -35,30 +35,21 @@ var errGatewayCardRefused = errors.New("servicebridge: the key card is not publi
 // use it to stop the process at that point; it is nil in production.
 var gatewayCardCommitHook func(temporary string)
 
-// checkGatewayCard requires the exact signed key card packet of agentID, of
-// at most the gateway's bound, whose validity window contains now. A card
-// that is not yet valid or already expired is refused, whatever clock skew
-// a reader would tolerate.
+// checkGatewayCard requires a card the gateway serves now: the gateway's own
+// check (quoteexchange.CheckProviderKeyCard: the bound, a key card packet of
+// agentID, a canonical body valid now). On top of it the card's window must
+// already have started: the gateway tolerates a not_before slightly ahead of
+// its clock, but the node never publishes a card that is not yet valid.
 func checkGatewayCard(agentID string, cardJSON []byte, now time.Time) error {
-	if len(cardJSON) == 0 || len(cardJSON) > maxCardJSON {
-		return fmt.Errorf("%w: the card is outside the 1 to %d byte bound", errGatewayCardRefused, maxCardJSON)
+	if err := quoteexchange.CheckProviderKeyCard(cardJSON, agentID, now); err != nil {
+		return fmt.Errorf("%w: %w", errGatewayCardRefused, err)
 	}
 	card, err := decodeOwnCard(agentID, cardJSON)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errGatewayCardRefused, err)
 	}
-	unix := now.Unix()
-	if unix <= 0 {
-		return fmt.Errorf("%w: the clock is not set", errGatewayCardRefused)
-	}
-	if card.NotBeforeUnix > uint64(unix) {
+	if card.NotBeforeUnix > uint64(now.Unix()) {
 		return fmt.Errorf("%w: the card is not valid before %d", errGatewayCardRefused, card.NotBeforeUnix)
-	}
-	if uint64(unix) >= card.NotAfterUnix {
-		return fmt.Errorf("%w: the card expired at %d", errGatewayCardRefused, card.NotAfterUnix)
-	}
-	if err := agentpacketseal.CheckKeyCardTime(card, now); err != nil {
-		return fmt.Errorf("%w: the card is not valid now", errGatewayCardRefused)
 	}
 	return nil
 }
@@ -129,7 +120,7 @@ func gatewayCardPublished(path string, cardJSON []byte) bool {
 	if owned, ownerErr := ownedByCurrentUser(info); ownerErr != nil || !owned {
 		return false
 	}
-	published, err := readPrivateFile(path, maxCardJSON)
+	published, err := readPrivateFile(path, quoteexchange.MaxProviderKeyCardBytes)
 	return err == nil && bytes.Equal(published, cardJSON)
 }
 

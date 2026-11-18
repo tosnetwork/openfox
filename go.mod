@@ -3,6 +3,7 @@ module github.com/tosnetwork/openfox
 go 1.26.11
 
 require (
+	connectrpc.com/connect v1.19.1
 	fyne.io/systray v1.12.2
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.0
@@ -43,7 +44,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.11.1
 	github.com/tencent-connect/botgo v0.2.1
-	github.com/tosnetwork/ai v0.0.0-20261118015613-588340ee370a
+	github.com/tosnetwork/ai v0.0.0-20261118203459-f05780207f1a
 	github.com/tosnetwork/tosutils-go v1.18.2-0.20260820143526-4d1a10d94bef
 	go.mau.fi/util v0.9.8
 	go.mau.fi/whatsmeow v0.0.0-20260219150138-7ae702b1eed4
@@ -60,7 +61,6 @@ require (
 
 require (
 	aead.dev/minisign v0.2.0 // indirect
-	connectrpc.com/connect v1.19.1 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.7.2 // indirect

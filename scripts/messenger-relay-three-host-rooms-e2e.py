@@ -1073,8 +1073,17 @@ def offline_beyond_ttl() -> None:
          b_room)
     compose("c", "after-gap-c")
     applied = room_applied("b", "after-gap-c", 600)
-    gap = poll(lambda: [g for g in gaps("b") if g.get("sender_agent_id") == RUN["c"]["agent"]] or None,
-               RELAY_TTL + 900, 15)
+    # While B waits for the gap to be declared (up to the own relays' TTL
+    # plus 5 min), B and C keep exchanging room messages every 10 minutes,
+    # as members in steady state do, so each renews the other's evidence in
+    # band (item 16).
+    deadline = now() + RELAY_TTL + 900
+    gap = None
+    while now() < deadline and not gap:
+        gap = poll(lambda: [g for g in gaps("b") if g.get("sender_agent_id") == RUN["c"]["agent"]] or None,
+                   min(600, max(1, deadline - now())), 15)
+        if not gap:
+            renewal_exchange()
     gate("4", "B never received C's message sealed while it was offline (expired at the relays) and gets a "
          "room.gap naming C once C's next message arrived", applied["applied"] and bool(gap) and
          SENT["lost-to-b"]["event_id"] not in inbound_texts("b"), {"gap": gap, "next": applied})
@@ -1252,22 +1261,36 @@ def states_counters_sizes_search() -> None:
     """Items 8, 9, 10 and 11, read from the journals, the counters sampled
     during the run and the relay snapshots."""
     sample_heads()
-    states = {}
+    states, problems = {}, []
+    removed = {RUN[n]["agent"] for n in ("c", "d", "e")}
     for digest, head in HEADS_SEEN.items():
+        collected = not (mdir("a") / "state" / "room-outbox" / f"{digest}.json").exists()
         for member in head.get("members") or []:
-            name = next((n for n in NODES if RUN[n]["agent"] == member.get("agent_id")), "?")
-            states[f"{digest[:12]}->{name} (type {head.get('object_type')}, mls {head.get('mls_epoch')})"] = \
-                {"state": member.get("state"), "once": bool(member.get("once"))}
-    deleted = [d for d in HEADS_SEEN if not (mdir("a") / "state" / "room-outbox" / f"{d}.json").exists()]
+            agent = member.get("agent_id", "")
+            name = next((n for n in NODES if RUN[n]["agent"] == agent), "?")
+            once = bool(member.get("once"))
+            outcomes = sorted({f.get("ack_outcome") for f in acks_for(name, digest)}) if name in NODES else []
+            key = f"{digest[:12]}->{name} (type {head.get('object_type')}, mls {head.get('mls_epoch')})"
+            states[key] = {"last_seen_state": member.get("state"), "once": once, "collected": collected,
+                           "room_acks": outcomes}
+            delivered = bool(set(outcomes) & {"accepted", "duplicate"})
+            if once:
+                ok = member.get("state") in ("carried", "delivered") or collected
+            elif collected:
+                # settled: delivered on a verified ack, or a member removed before it acked
+                ok = delivered or agent in removed
+            else:
+                ok = member.get("state") == "delivered" or agent in removed
+            if not ok:
+                problems.append(key)
     application_acked = [row for node in MEMBERS for row in room_acks(node)
                          if row["frame"].get("room_ack_object_digest") not in HEADS_SEEN]
-    ok_states = all(v["state"] in (("carried", "delivered") if v["once"] else ("delivered",)) for v in states.values()
-                    if v["state"] != "pending" or v["once"])
-    gate("8", "the authority's room outbox heads: each handshake object went pending -> carried -> delivered per "
-         "member on a verified room ack (a removed member's removing Commit ends carried), settled heads are "
-         "collected, and no application object is ever room-acked",
-         bool(states) and ok_states and not application_acked,
-         {"last_seen_states": states, "heads_collected_once_settled": len(deleted)}, required=False)
+    gate("8", "the authority's room outbox heads: every handshake object reached each member and settled as "
+         "delivered on that member's verified room ack (accepted or duplicate) before its head was collected; a "
+         "removed member's removing Commit ends carried and objects in flight to a removed member are not "
+         "acked; no application object is ever room-acked",
+         bool(states) and not problems and not application_acked,
+         {"heads": states, "problems": problems}, required=False)
     room_max = max(COUNTS["max_room"].values() or [0])
     chat_max = max(COUNTS["max_chat"].values() or [0])
     pacing = {}

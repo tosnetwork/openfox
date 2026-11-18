@@ -584,11 +584,19 @@ def setup_nodes() -> None:
     plan = offer.get("preview") or {}
     actor, capability_address = plan.get("actor", ""), plan.get("capability_address", "")
     data = fd.service_data(actor) if actor else {}
+    # A resumed run re-runs the idempotent offer: it must return the actor
+    # an earlier attempt deployed, whose request count equals the purchases
+    # that earlier attempts completed.
+    saved_actor = fd.RUN.get("actor")
+    called = sum(1 for path in MARKERS.glob("sale-*.done.json")
+                 if not path.name.split(".")[1].startswith("failed") and
+                 json.loads(path.read_text()).get("exit") == 0)
     fd.require("provider offer deployed a fresh Service Actor, registered the Capability and set the policy (read "
                "from the chain)", offer.get("confirmed") is True and fd.account_state(actor) == "active" and
                fd.account_state(capability_address) == "active" and data.get("active") == 1 and
                data.get("price") == fd.PRICE_NANO and data.get("storage_fee") == fd.STORAGE_FEE_NANO and
-               data.get("next_request_id") == 0, {"offer": offer, "service_data": data})
+               (saved_actor in (None, "", actor)) and data.get("next_request_id") == called,
+               {"offer": offer, "service_data": data, "saved_actor": saved_actor, "purchases_completed": called})
     code = actor_code_everywhere(actor)
     fd.require("the deployed actor's code hash is the pinned Service Actor release on every endpoint",
                all(value == fd.ACTOR_CODE_HASH for value in code.values()), code)

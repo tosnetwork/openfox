@@ -1210,24 +1210,6 @@ def remove_c_with_authority_crash() -> None:
           "relay_evidence_note": "left to the evidence store's expiry sweep (spec 11.4)"})
 
 
-@step
-def renewal_among_non_contacts() -> None:
-    """Item 16: B and C exchanged room messages across the run; their
-    descriptors (test lifetime MR1_DESCRIPTOR_LIFETIME) expired several times
-    and each renewed the other's only through kind-3 part 0."""
-    span = RUN["renewal"][-1]["at"] - RUN["renewal"][0]["at"]
-    expiries = sorted({row["frame"].get("descriptor_expires_at_unix") for row in room_frames("c")
-                       if row["packet"]["recipient_agent_id"] == RUN["b"]["agent"] and
-                       row["frame"].get("descriptor_expires_at_unix")})
-    kind4 = [row for node, peer in (("b", "c"), ("c", "b")) for row in seen_frames(node)
-             if row["frame"].get("kind") == 4 and row["packet"]["recipient_agent_id"] == RUN[peer]["agent"]]
-    gate("16", f"B and C (no contacts) exchanged room messages over {span} s while C's descriptor (lifetime "
-         f"{mr1.DESCRIPTOR_LIFETIME} s) was renewed {len(expiries)} times in its kind-3 part 0 to B, with no "
-         "kind-4 evidence exchange between them", len(expiries) >= 3 and not kind4 and
-         all(r["b->c"]["applied"] and r["c->b"]["applied"] for r in RUN["renewal"]),
-         {"descriptor_expiries": expiries, "exchanges": RUN["renewal"]})
-
-
 def renewal_exchange() -> None:
     results = exchange(("b", "c"), f"renewal-{len(RUN['renewal'])}")
     RUN["renewal"].append({"at": now(), "b->c": results.get("b->c"), "c->b": results.get("c->b")})
@@ -1314,6 +1296,24 @@ def states_counters_sizes_search() -> None:
          "Endpoint or device id, a roster's chat key id or the invite token", not found and
          bool(RUN.get("snapshots")), {"found": found, "snapshots": sorted(RUN.get("snapshots", {}))})
     fd.evidence["sizes"] = {"kind3_frame_sizes": sorted(set(sizes)), "stored_envelope_sizes": stored}
+
+
+@step
+def renewal_among_non_contacts() -> None:
+    """Item 16: B and C exchanged room messages across the run; their
+    descriptors (test lifetime MR1_DESCRIPTOR_LIFETIME) expired several times
+    and each renewed the other's only through kind-3 part 0."""
+    span = RUN["renewal"][-1]["at"] - RUN["renewal"][0]["at"]
+    expiries = sorted({row["frame"].get("descriptor_expires_at_unix") for row in room_frames("c")
+                       if row["packet"]["recipient_agent_id"] == RUN["b"]["agent"] and
+                       row["frame"].get("descriptor_expires_at_unix")})
+    kind4 = [row for node, peer in (("b", "c"), ("c", "b")) for row in seen_frames(node)
+             if row["frame"].get("kind") == 4 and row["packet"]["recipient_agent_id"] == RUN[peer]["agent"]]
+    gate("16", f"B and C (no contacts) exchanged room messages over {span} s while C's descriptor (lifetime "
+         f"{mr1.DESCRIPTOR_LIFETIME} s) was renewed {len(expiries)} times in its kind-3 part 0 to B, with no "
+         "kind-4 evidence exchange between them", len(expiries) >= 3 and not kind4 and
+         all(r["b->c"]["applied"] and r["c->b"]["applied"] for r in RUN["renewal"]),
+         {"descriptor_expiries": expiries, "exchanges": RUN["renewal"]})
 
 
 @step

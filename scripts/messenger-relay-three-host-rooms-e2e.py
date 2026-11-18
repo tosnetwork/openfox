@@ -505,6 +505,21 @@ def exchange(senders: tuple, label: str, timeout: float = 600) -> dict:
 
 ROOM_MEMBERS: set[str] = set()
 
+# Offline windows of B and C (stopped node or serve, or a paused daemon), for
+# item 16: a kind-4 pull between B and C is allowed only inside one or within
+# one re-deposit interval after it ends.
+OFFLINE: list[dict] = []
+
+
+def offline_window(node: str, edge: str) -> None:
+    if edge == "start":
+        if not any(w["node"] == node and w["end"] is None for w in OFFLINE):
+            OFFLINE.append({"node": node, "start": now(), "end": None})
+        return
+    for window in OFFLINE:
+        if window["node"] == node and window["end"] is None:
+            window["end"] = now()
+
 
 # --- Counters sampled during the run (item 9) -------------------------------------------
 
@@ -625,6 +640,7 @@ def invite_first_contact() -> None:
     committed = poll(lambda: (mdir("a") / "state" / "relay-evidence" / (RUN["c"]["agent"][6:] + ".json")).is_file()
                      or None, 180, 2)
     require("A's daemon verified and committed C's relay evidence from the imported contact file", bool(committed))
+    offline_window("c", "start")
     stop_node("c")
     RUN["c_offline_at"] = now()
     m = (mr1.send("a", "c", "inv1"), mr1.require_sent("inv1"))[1]
@@ -676,6 +692,7 @@ def invite_claimed() -> None:
              row["frame"].get("carries_admission_token") for row in mr1.copy_frames("a", m)),
          {"generations": (second or {}).get("relay_generations"), "generation_1_status": gone})
     start_node("c", "after the invite copy was held")
+    offline_window("c", "end")
     done = mr1.wait_delivered("a", m)
     applied = mr1.apply_once("c", "inv1")
     gate("1", "C, with no allow-list entry for A, admits A's first copy by the invite and its runtime applies it "
@@ -811,6 +828,7 @@ def refusals_at_c() -> None:
             expires = now() + 150
             token = issue_invite("c", "b", expires, "2")
             results["present-expired"] = present_invite("b", "c", token, expires, "expired")
+            offline_window("c", "start")
             stop_node("c")
         before = state_view("c")
         m = (mr1.send("b", "c", f"refused-{label}"), mr1.require_sent(f"refused-{label}"))[1]
@@ -819,6 +837,7 @@ def refusals_at_c() -> None:
         if prepare == "expired":
             poll(lambda: now() > expires + 5 or None, 400, 5)
             start_node("c", "after the second invite expired")
+            offline_window("c", "end")
             before = state_view("c")
         acked = poll(lambda: all(all(e not in listed_ids(relay, RUN["c"]["agent"]) for relay in RELAYS)
                                  for e in envelopes) or None, 300, 3)
@@ -890,6 +909,7 @@ def catch_up_in_order() -> None:
     Commit only after acking the first, applies both in order and opens the
     buffered newer-epoch message."""
     base = room_of("c")
+    offline_window("c", "start")
     stop_node("c")
     stopped_at = now()
     filler_joins("d", base["room_epoch"] + 1)
@@ -904,6 +924,7 @@ def catch_up_in_order() -> None:
         poll(lambda: now() > stopped_at + AUTHORIZATION + 30 or None, AUTHORIZATION + 120, 5)
     offline = now() - stopped_at
     start_node("c", "after the catch-up gap")
+    offline_window("c", "end")
     c_room = joined_at("c", a_room["room_epoch"], 900)
     commits = commits_to("c", base["room_epoch"])
     order = [{"mls_epoch": e, "first_deposit": (deposit_times("a", d, "c") or [0])[0], "acked": ack_time("c", d)}
@@ -982,8 +1003,10 @@ def offline_beyond_ttl() -> None:
     re-deposited Commit (generations and withdrawals recorded) and gets a
     room.gap naming C."""
     base = room_of("b")
+    offline_window("b", "start")
     stop_node("b")
     stopped_at = now()
+    offline_window("c", "start")
     mr1.signal_pattern(mr1.daemon_pattern("c"), "STOP")
     filler_joins("e", base["room_epoch"] + 1)
     # The window opens on the Commit itself: once A's Commit to C is at the
@@ -1000,10 +1023,13 @@ def offline_beyond_ttl() -> None:
     attempts = []
     for attempt in range(4):
         if attempt:
+            offline_window("c", "start")
             mr1.signal_pattern(mr1.daemon_pattern("c"), "STOP")
             start_serve("c", f"crash window attempt {attempt + 1}")
+            offline_window("c", "end")
         before = log_text("serve-c").count(unanswered)
         waiting = poll(lambda: log_text("serve-c").count(unanswered) > before, 480, 2)
+        offline_window("c", "start")
         stop_serve("c", "KILL")
         mr1.signal_pattern(mr1.daemon_pattern("c"), "CONT")
         mr1.continue_wrapper("messengerd-c")
@@ -1016,6 +1042,7 @@ def offline_beyond_ttl() -> None:
          c_room.get("room_epoch") == base["room_epoch"] + 1 and not acks_for("c", commit),
          {"c": c_room, "acks": acks_for("c", commit), "attempts": attempts})
     start_serve("c", "after the crash window")
+    offline_window("c", "end")
     dup = poll(lambda: [f for f in acks_for("c", commit) if f.get("ack_outcome") == "duplicate"], 600, 3)
     gate("15", "restarted, C finds the same envelope, answers it `duplicate` and its room stays usable",
          bool(dup), {"acks": acks_for("c", commit)})
@@ -1040,6 +1067,7 @@ def offline_beyond_ttl() -> None:
                                                             for code in codes.values()),
          {"generations": len(generations), "withdrawn": withdrawn})
     start_node("b", "after the TTL")
+    offline_window("b", "end")
     b_room = joined_at("b", base["room_epoch"] + 1, 900)
     gate("4", "B, restarted, applies the re-deposited Commit", b_room.get("room_epoch") == base["room_epoch"] + 1,
          b_room)
@@ -1067,6 +1095,7 @@ def crafted_objects() -> None:
                                  str(room["mls_epoch"] + 1), "--body-bytes", str(1 << 20), "--contact", contact,
                                  "--out-dir", out], "messenger-relay-e2e-tool room-frames", timeout=60).stdout)
     card = hand_file(card_path("c"), "b", "card-c.json")
+    offline_window("c", "start")
     stop_serve("c")
     envelopes = []
     for index in range(cut["parts"]):
@@ -1085,6 +1114,7 @@ def crafted_objects() -> None:
          {"cut": cut, "envelope_bytes": [e["bytes"] for e in envelopes]})
     before = state_view("c")
     start_serve("c", "after the crafted deposit")
+    offline_window("c", "end")
     acked = poll(lambda: all(e["envelope_id"] not in listed_ids("relay2", RUN["c"]["agent"]) for e in envelopes)
                  or None, 300, 3)
     after_room = room_of("c")
@@ -1114,6 +1144,7 @@ def remove_c_with_authority_crash() -> None:
     removes E then C. A's daemon is killed while its OpenMLS driver runs
     the Remove; after the restart the Remove is published once or the
     decision is made again, and no member forks."""
+    offline_window("c", "start")
     stop_serve("c")
     room_op("a", "remove", "e")
     # What is in flight to C when its Remove is made: every handshake object
@@ -1171,6 +1202,7 @@ def remove_c_with_authority_crash() -> None:
          room_applied("b", "after-remove-a")["applied"] and room_applied("a", "after-remove-b")["applied"],
          addressed)
     start_serve("c", "after the Remove")
+    offline_window("c", "end")
     c_room = wait_room("c", lambda row: row.get("state") != "joined" or
                        row.get("room_epoch", 0) >= removed_epoch, 300)
     attempt = mcall("c", {"op": "outbox.compose", "room_id": ROOM, "conversation_id": CONV, "media_type": TEXT,
@@ -1301,19 +1333,38 @@ def states_counters_sizes_search() -> None:
 @step
 def renewal_among_non_contacts() -> None:
     """Item 16: B and C exchanged room messages across the run; their
-    descriptors (test lifetime MR1_DESCRIPTOR_LIFETIME) expired several times
-    and each renewed the other's only through kind-3 part 0."""
+    descriptors (test lifetime MR1_DESCRIPTOR_LIFETIME) expired several times.
+    In steady state each renewed the other's only through kind-3 part 0; a
+    kind-4 pull may occur only for a peer whose evidence went stale while it
+    was offline: inside an offline window of the run or within one re-deposit
+    interval after it ends."""
     span = RUN["renewal"][-1]["at"] - RUN["renewal"][0]["at"]
-    expiries = sorted({row["frame"].get("descriptor_expires_at_unix") for row in room_frames("c")
-                       if row["packet"]["recipient_agent_id"] == RUN["b"]["agent"] and
+
+    def renewals(sender: str, recipient: str) -> list[int]:
+        return sorted({row["frame"].get("descriptor_expires_at_unix") for row in room_frames(sender)
+                       if row["packet"]["recipient_agent_id"] == RUN[recipient]["agent"] and
                        row["frame"].get("descriptor_expires_at_unix")})
-    kind4 = [row for node, peer in (("b", "c"), ("c", "b")) for row in seen_frames(node)
-             if row["frame"].get("kind") == 4 and row["packet"]["recipient_agent_id"] == RUN[peer]["agent"]]
+    c_to_b, b_to_c = renewals("c", "b"), renewals("b", "c")
+    frames = []
+    for node, peer in (("b", "c"), ("c", "b")):
+        for row in seen_frames(node):
+            if row["frame"].get("kind") != 4 or row["packet"]["recipient_agent_id"] != RUN[peer]["agent"]:
+                continue
+            at = row["record"].get("accepted_at_unix") or row["packet"].get("created_at_unix") or 0
+            window = next((w for w in OFFLINE if w["node"] in ("b", "c") and
+                           w["start"] <= at <= (w["end"] if w["end"] is not None else now()) + REDEPOSIT), None)
+            frames.append({"from": node, "to": peer, "at": at, "object": row["frame"].get("evidence_object"),
+                           "window": window and {"node": window["node"], "start": window["start"],
+                                                 "end": window["end"]}})
+    outside = [f for f in frames if not f["window"]]
     gate("16", f"B and C (no contacts) exchanged room messages over {span} s while C's descriptor (lifetime "
-         f"{mr1.DESCRIPTOR_LIFETIME} s) was renewed {len(expiries)} times in its kind-3 part 0 to B, with no "
-         "kind-4 evidence exchange between them", len(expiries) >= 3 and not kind4 and
+         f"{mr1.DESCRIPTOR_LIFETIME} s) was renewed {len(c_to_b)} times in its kind-3 part 0 to B (B's to C "
+         f"{len(b_to_c)} times); every exchange applied, and no kind-4 frame passed between them outside an "
+         f"offline window of B or C or the {REDEPOSIT} s after one",
+         len(c_to_b) >= 3 and (not b_to_c or len(b_to_c) >= 3) and not outside and
          all(r["b->c"]["applied"] and r["c->b"]["applied"] for r in RUN["renewal"]),
-         {"descriptor_expiries": expiries, "exchanges": RUN["renewal"]})
+         {"c_to_b_descriptor_expiries": c_to_b, "b_to_c_descriptor_expiries": b_to_c,
+          "kind4_between_b_and_c": frames, "offline_windows": OFFLINE, "exchanges": RUN["renewal"]})
 
 
 @step

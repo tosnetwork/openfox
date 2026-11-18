@@ -1607,12 +1607,47 @@ def add_filler_e() -> None:
     filler_joins("e", room_of("a").get("room_epoch", 0) + 1)
 
 
+def pull_state(node: str) -> dict:
+    """A node's relay-pull records and held evidence, by peer label."""
+    labels = {RUN[peer]["agent"][6:]: peer for peer in RUN if RUN[peer].get("agent")}
+    state = {}
+    for path in sorted((mdir(node) / "state" / "relay-pull").glob("*.json")):
+        record = read_json(path)
+        state.setdefault(labels.get(path.stem, path.stem[:12]), {})["pull"] = {
+            key: record.get(key) for key in ("request_outstanding", "request_next_at_unix", "response_pending",
+                                             "updated_at_unix")}
+    for path in sorted((mdir(node) / "state" / "relay-evidence").glob("*.json")):
+        state.setdefault(labels.get(path.stem, path.stem[:12]), {})["evidence_updated_at_unix"] = \
+            read_json(path).get("updated_at_unix")
+    return state
+
+
+def idle_then_add_e() -> None:
+    """Targeted reproduction: the room stays idle past the descriptor
+    lifetime, so A holds no live evidence for its members; A then commits E's
+    Add, which needs every member's evidence and must get it through kind-4
+    pulls. The pull state of A and C is recorded before and after."""
+    idle = mr1.DESCRIPTOR_LIFETIME + int(os.environ.get("MR2_IDLE_EXTRA_SECONDS", "300"))
+    before = {node: pull_state(node) for node in ("a", "c")}
+    started = time.time()
+    time.sleep(idle)
+    expired = {node: pull_state(node) for node in ("a", "c")}
+    try:
+        filler_joins("e", room_of("a").get("room_epoch", 0) + 1)
+    finally:
+        fd.evidence["idle_then_add"] = {
+            "idle_seconds": idle, "descriptor_lifetime_seconds": mr1.DESCRIPTOR_LIFETIME,
+            "idle_started_unix": int(started), "pull_state_before_idle": before,
+            "pull_state_after_idle": expired,
+            "pull_state_after_add": {node: pull_state(node) for node in ("a", "c")}}
+
+
 # A targeted run (MR2_STEPS, comma separated) runs only the named steps, for
 # a quick recheck of items after a fix. It is never an acceptance: the record
 # says so. MR2_TARGETED_C_ALLOWS_A=1 lets C admit A by its allow-list, so the
 # invite steps can be skipped.
 SELECTED = [name for name in os.environ.get("MR2_STEPS", "").split(",") if name]
-EXTRA_STEPS = {"add_filler_e": add_filler_e}
+EXTRA_STEPS = {"add_filler_e": add_filler_e, "idle_then_add_e": idle_then_add_e}
 if os.environ.get("MR2_TARGETED_C_ALLOWS_A") == "1":
     ALLOW["c"] = ["a"]
 

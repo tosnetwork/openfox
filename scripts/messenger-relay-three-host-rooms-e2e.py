@@ -653,13 +653,23 @@ def start_sampler() -> None:
 
 # --- Setup ----------------------------------------------------------------------------
 
-def wait_evidence(node: str, peer: str, since: float = 0) -> None:
+def wait_evidence(node: str, peer: str, fresh: bool = False) -> None:
     """The room.invite is a 1:1 copy: the node's daemon must have committed
-    the peer's relay evidence from the imported contact file first (written
-    after `since`, when given)."""
+    the peer's relay evidence from the imported contact file first. With
+    fresh, the committed evidence must be exactly the one in the contact file
+    just handed over (its digest), not an older, possibly expired one."""
     path = mdir(node) / "state" / "relay-evidence" / (RUN[peer]["agent"][6:] + ".json")
+    expected = None
+    if fresh:
+        contact = read_json(nd(node) / "handed" / f"contact-{peer}.json")["relay_contact"]
+        expected = "sha256:" + hashlib.sha256(base64.b64decode(contact["relay_evidence_base64"])).hexdigest()
+
+    def committed():
+        if not path.is_file():
+            return None
+        return expected is None or read_json(path).get("evidence_digest") == expected or None
     require(f"{node.upper()}'s daemon committed {peer.upper()}'s relay evidence from the imported contact file",
-            bool(poll(lambda: (path.is_file() and path.stat().st_mtime >= since) or None, 180, 2)))
+            bool(poll(committed, 180, 2)), {"expected_evidence_digest": expected})
 
 
 def contacts() -> None:
@@ -975,12 +985,11 @@ def filler_joins(filler: str, room_epoch: int) -> dict:
     filler is idle until then, so the evidence A holds from its contact file
     may have expired: its owner hands A a fresh contact file first, as an
     owner would before inviting a peer it has not heard from."""
-    since = time.time()
     mr1.export_contact(filler)
     refreshed = mr1.import_contact("a", filler)
     require(f"A re-imports filler {filler.upper()}'s fresh contact file",
             refreshed.get("agent_id") == RUN[filler]["agent"], refreshed)
-    wait_evidence("a", filler, since)
+    wait_evidence("a", filler, fresh=True)
     added = room_op("a", "add", filler)
     wait_room(filler, lambda row: row.get("state") == "invited", 300)
     joined = room_op(filler, "join", "a")

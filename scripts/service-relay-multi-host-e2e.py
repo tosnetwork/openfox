@@ -402,6 +402,10 @@ def start_serve(node: str) -> None:
         _start_serve(node)
         return
     serve = RemoteServe()
+    # A resumed run reuses the remote work directory and restarts the
+    # numbering, so an earlier run's pid or exit file would be read as this
+    # serve's and report it gone before it started.
+    on_buyer(["rm", "-f", "--", serve.pid_file, serve.exit_file], timeout=30)
     argv = [remote_path(part) for part in fd.fox_argv("serve", "--rail-config", fd.rail("buyer"))]
     on_buyer([SYSTEM_PYTHON, "-I", str(REMOTE_BASE / "serve-supervisor.py"), str(REMOTE_LOG), serve.pid_file,
               serve.exit_file, *argv], data=buyer_vault(), timeout=60)

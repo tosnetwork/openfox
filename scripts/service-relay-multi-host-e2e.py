@@ -100,8 +100,17 @@ REMOTE_LOG = REMOTE_BASE / "buyer-serve.log"
 # by position) that stays stopped for the whole sale. Otherwise one relay is
 # run as a transient unit this run starts and stops.
 EXTERNAL = os.environ.get("RELAY_EXTERNAL") == "1"
-if EXTERNAL:
+# Observe-only relays (RELAY_OBSERVE_ONLY=1, with RELAY_EXTERNAL=1): the run
+# reaches the installed relays over HTTPS only and never logs in to their
+# hosts, so no unit is read, stopped or started. RELAY_SSHS and
+# RELAY_SSH_KEYS are then not given, and every relay-host command refuses.
+OBSERVE_ONLY = EXTERNAL and os.environ.get("RELAY_OBSERVE_ONLY") == "1"
+if OBSERVE_ONLY:
+    _urls = os.environ["RELAY_URLS"].split()
+    _sshs, _keys = [""] * len(_urls), [""] * len(_urls)
+elif EXTERNAL:
     _urls, _sshs, _keys = (os.environ[name].split() for name in ("RELAY_URLS", "RELAY_SSHS", "RELAY_SSH_KEYS"))
+if EXTERNAL:
     _units = os.environ.get("RELAY_UNITS", "").split() or ["tos-service-packet-relay"] * len(_urls)
     if not 1 <= len(_urls) <= 4 or not len(_urls) == len(_sshs) == len(_keys) == len(_units):
         raise SystemExit("RELAY_URLS, RELAY_SSHS, RELAY_SSH_KEYS and RELAY_UNITS must name 1 to 4 relays each")
@@ -207,7 +216,7 @@ def personal_data(text: str) -> list[str]:
     kinds = _personal(text)
     if EMAIL.search(text):
         kinds.append("e-mail address")
-    if ".ssh/" in text or any(Path(key).name in text for key in (BUYER_KEY, *(relay.key for relay in RELAYS))):
+    if ".ssh/" in text or any(Path(key).name in text for key in (BUYER_KEY, *(relay.key for relay in RELAYS)) if key):
         kinds.append("SSH key path")
     return kinds
 
@@ -274,6 +283,8 @@ def on_buyer(argv: list, *, data: bytes | None = None, check: bool = True, timeo
 
 
 def on_relay(relay: Relay, script: str, *, check: bool = True, timeout: float = 120, keep_stdout: bool = True):
+    if OBSERVE_ONLY:
+        raise RuntimeError(f"{relay.name} is observe-only: this run never logs in to a relay host")
     return logged(ssh_argv(relay.ssh, relay.key) + [script], check=check, timeout=timeout, keep_stdout=keep_stdout)
 
 

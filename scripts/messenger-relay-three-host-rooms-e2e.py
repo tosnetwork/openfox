@@ -203,6 +203,46 @@ def init_nodes() -> None:
           for n, c in configs.items()})
 
 
+SENDS: list[dict] = []
+
+
+def registry_action(node: str, kind: str, *extra: str) -> dict:
+    """The M-R1 registry action, with a guarded resend. A wallet send that
+    reports a timeout may still land, so it is resent only when the first
+    provably did not apply: the wallet shows no new transaction (its seqno
+    did not move) and the Agent's account received nothing. Every attempt is
+    recorded."""
+    nonce = secrets.token_hex(32)
+    message = mr1.tosctl(node, "agent", "native-registry", "action", "--global-config",
+                         str(ROOT / "etc" / "global.json"), "--network-label", fd.NETWORK_LABEL, "--kind", kind,
+                         "--agent", RUN[node]["agent_address"], "--nonce", nonce, *extra,
+                         "--signer", RUN[node]["controller"], "--format", "json")
+    agent, wallet = RUN[node]["agent_address"], RUN[node]["wallet"]
+    before_agent = {row["hash"] for row in fd.transactions(agent)}
+    before_wallet = {row["hash"] for row in fd.transactions(wallet)}
+    attempts, landed = [], []
+    for attempt in range(3):
+        result = fd.run_logged([str(ROOT / "bin" / "tosctl"), "wallet", "send", "--from", node,
+                                "--to", message["destination"], "--amount-nanotos", str(2 * fd.NANO),
+                                "--body-boc", message["body_boc"], "--yes",
+                                "-c", str(nd(node) / "tosctl-config.json")], env=node_env(node), timeout=300,
+                               check=False)
+        landed = poll(lambda: [row for row in fd.transactions(agent) if row["hash"] not in before_agent], 180, 3) or []
+        wallet_moved = [row["hash"] for row in fd.transactions(wallet) if row["hash"] not in before_wallet]
+        attempts.append({"attempt": attempt + 1, "exit": result.returncode,
+                         "stderr": fd.redact(result.stderr)[-200:], "landed": bool(landed),
+                         "wallet_transactions_since_first_send": len(wallet_moved)})
+        if landed or wallet_moved:
+            break
+    SENDS.append({"node": node, "kind": kind, "attempts": attempts})
+    if len(attempts) > 1 or attempts[0]["exit"] != 0:
+        fd.evidence.setdefault("registry_send_retries", []).append(SENDS[-1])
+    return {"kind": kind, "action_hash": message.get("action_hash"), "landed": landed}
+
+
+mr1.registry_action = registry_action
+
+
 def identities() -> None:
     """The M-R1 Messaging Endpoint identities, with a delegation that also
     grants the room event class (room.invite, room.key-package and the room
@@ -217,7 +257,7 @@ def identities() -> None:
                            "--private-dir", nd(node) / "keys", "--public-dir", mdir(node)],
                     "messenger-relay-e2e-tool identity", timeout=60)
         RUN[node]["identity"] = json.loads(out.stdout)
-        action = mr1.registry_action(node, "delegate", "--delegation", RUN[node]["identity"]["delegation_digest_hex"])
+        action = registry_action(node, "delegate", "--delegation", RUN[node]["identity"]["delegation_digest_hex"])
         ok = bool(action["landed"]) and all(row["compute_success"] and not row["aborted"] for row in action["landed"])
         require(f"not OpenFox: {node}'s Messaging Endpoint delegation (relay-only, classes agent.packet, room and "
                 "text, allow-list inbox) is committed by its Agent on chain", ok,

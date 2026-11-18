@@ -243,6 +243,65 @@ type ChatCarrier struct {
 	admissions sync.Mutex
 	// pacer paces kind-3 deposits per relay.
 	pacer *roomPacer
+	// refusals limits refusal reports to one per (stage, kind, sender,
+	// result, code) per refusalReportWindow, guarded by refusalsMutex.
+	refusals      map[string]refusalReport
+	refusalsMutex sync.Mutex
+}
+
+// refusalReportWindow is how often one kind of daemon refusal of one sender
+// is reported; repeats inside it are counted into the next report.
+const refusalReportWindow = time.Hour
+
+// maxRefusalKeys bounds the refusal report table; when it is full, entries
+// whose window has passed are dropped, and if none has, the table restarts.
+const maxRefusalKeys = 1024
+
+// refusalReport is the last report of one refusal key.
+type refusalReport struct {
+	at         time.Time
+	suppressed uint64
+}
+
+// reportRefusal reports a daemon refusal the carrier relay-acknowledges, at
+// most once per key per refusalReportWindow; the next report counts the
+// repeats it held back.
+func (c *ChatCarrier) reportRefusal(stage string, kind uint8, sender string, response carrierapi.Response) {
+	key := fmt.Sprintf("%s|%d|%s|%s|%s", stage, kind, sender, response.Result, response.Code)
+	now := c.now()
+	c.refusalsMutex.Lock()
+	if c.refusals == nil {
+		c.refusals = map[string]refusalReport{}
+	}
+	last, seen := c.refusals[key]
+	if seen && now.Sub(last.at) < refusalReportWindow && !now.Before(last.at) {
+		last.suppressed = saturatingAdd(last.suppressed, 1)
+		c.refusals[key] = last
+		c.refusalsMutex.Unlock()
+		return
+	}
+	if !seen && len(c.refusals) >= maxRefusalKeys {
+		for other, report := range c.refusals {
+			if now.Sub(report.at) >= refusalReportWindow {
+				delete(c.refusals, other)
+			}
+		}
+		if len(c.refusals) >= maxRefusalKeys {
+			c.refusals = map[string]refusalReport{}
+		}
+	}
+	c.refusals[key] = refusalReport{at: now}
+	c.refusalsMutex.Unlock()
+	repeats := ""
+	if last.suppressed > 0 {
+		repeats = fmt.Sprintf(" (%d more since the last report)", last.suppressed)
+	}
+	subject := fmt.Sprintf("a kind-%d frame", kind)
+	if stage == "chat.delivery-ack" {
+		subject = "a delivery ack"
+	}
+	c.report(stage, fmt.Errorf("servicebridge: the daemon answered %s of %s with %s %s; relay-acknowledged%s",
+		subject, sender, response.Result, response.Code, repeats))
 }
 
 // chatNoOwners refuses every Capability owner lookup: chat cards are never
@@ -764,8 +823,7 @@ func (c *ChatCarrier) receive(ctx context.Context, raw []byte) bool {
 		case carrierapi.ResultRefused:
 			// An ignored ack (a repeat for a copy already settled) is
 			// routine; a refused one is reported.
-			c.report("chat.delivery-ack", fmt.Errorf("servicebridge: the daemon answered a delivery ack of %s with "+
-				"%s %s; relay-acknowledged", sender, response.Result, response.Code))
+			c.reportRefusal("chat.delivery-ack", frame.Kind, sender, response)
 		}
 		return true
 	default:
@@ -813,8 +871,7 @@ func (c *ChatCarrier) afterDeliver(ctx context.Context, sender string, nonce [32
 		// The daemon refused or ignored the frame: it is relay-acknowledged
 		// like every final answer, and the reason is reported so a dropped
 		// invite or evidence request names its cause.
-		c.report("chat.deliver", fmt.Errorf("servicebridge: the daemon answered a kind-%d frame of %s with %s %s; "+
-			"relay-acknowledged", frame.Kind, sender, response.Result, response.Code))
+		c.reportRefusal("chat.deliver", frame.Kind, sender, response)
 		return true
 	}
 }

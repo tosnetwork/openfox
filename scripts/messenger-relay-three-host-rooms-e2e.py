@@ -1003,7 +1003,7 @@ def filler_joins(filler: str, room_epoch: int) -> dict:
     require(f"filler {filler.upper()} joins at room epoch {room_epoch} (one Add Commit by A)",
             bool(added.get("ok")) and bool(joined.get("ok")) and row.get("room_epoch") == room_epoch, row)
     after = {node: pull_record("a", node) for node in lacking}
-    repaired = {node: (after[node].get("request_generation", 0) > before[node].get("request_generation", 0)
+    repaired = {node: ((after[node].get("request_generation") or 0) > (before[node].get("request_generation") or 0)
                        and not after[node].get("request_outstanding")
                        and (mdir("a") / "state" / "relay-evidence" / (RUN[node]["agent"][6:] + ".json")).is_file())
                 for node in lacking}

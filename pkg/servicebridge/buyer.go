@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -26,10 +27,14 @@ import (
 
 // Purchase phases. Terminal phases are final.
 const (
-	PurchaseCalled          = "called"
-	PurchaseNotCalled       = "not-called"
-	PurchaseTaskSent        = "task-sent"
-	PurchaseCompleted       = "completed"
+	PurchaseCalled    = "called"
+	PurchaseNotCalled = "not-called"
+	PurchaseTaskSent  = "task-sent"
+	PurchaseCompleted = "completed"
+	// PurchaseReceiptMismatch is no longer entered: a result that fails
+	// acceptance is discarded and the buyer waits for a redelivery
+	// (SERVICE_ACTOR_RAIL_WORK_FRAMES_V1 section 7.2). Records written by
+	// earlier releases may still hold it.
 	PurchaseReceiptMismatch = "receipt-mismatch"
 	PurchaseExpireSent      = "expire-sent"
 	PurchaseClaimSent       = "claim-sent"
@@ -90,8 +95,11 @@ type PurchaseRecord struct {
 	// ResultRequestUnix is when the buyer last asked the provider for the
 	// result of this responded request.
 	ResultRequestUnix int64 `json:"result_request_unix,omitempty"`
-	CreatedUnix       int64 `json:"created_unix"`
-	UpdatedUnix       int64 `json:"updated_unix"`
+	// RejectedResults counts the result deliveries that failed acceptance
+	// and were discarded; Failure says why the last one failed.
+	RejectedResults int   `json:"rejected_results,omitempty"`
+	CreatedUnix     int64 `json:"created_unix"`
+	UpdatedUnix     int64 `json:"updated_unix"`
 }
 
 // QuoteSource fetches a non-canonical Quote Proposal package.
@@ -225,7 +233,11 @@ func drawExecution(agentID string, random func([]byte) error) ([32]byte, [32]byt
 	if err := random(nonce[:]); err != nil || nonce == ([32]byte{}) {
 		return [32]byte{}, [32]byte{}, errors.New("servicebridge: draw execution nonce")
 	}
-	return ExecutionIDFor(agentID, nonce), nonce, nil
+	executionID, err := ExecutionIDFor(agentID, nonce)
+	if err != nil {
+		return [32]byte{}, [32]byte{}, err
+	}
+	return executionID, nonce, nil
 }
 
 // publishPurchase makes a new purchase visible only once its record and both
@@ -542,6 +554,9 @@ func (b *Buyer) HandleResult(ctx context.Context, message Message) error {
 		*record.RequestID != message.RequestID ||
 		record.Actor != "0:"+hex.EncodeToString(message.ActorAccount[:]) {
 		return errors.New("servicebridge: the result is not from this purchase's provider for its request")
+	}
+	if err := checkPacketFields(message, record.CapabilityID, record.QuoteCommitment); err != nil {
+		return err
 	}
 	path := filepath.Join(b.purchaseDir(requestHash), "result")
 	if err := writeSynced(path, message.Body); err != nil && !errors.Is(err, os.ErrExist) {
@@ -907,8 +922,19 @@ func (b *Buyer) complete(ctx context.Context, record PurchaseRecord) error {
 		return err
 	}
 	if err := ValidateResult(result, binding, finalized); err != nil {
-		record.Phase, record.Failure = PurchaseReceiptMismatch, err.Error()
-		return b.savePurchase(record, false)
+		// Only the purchase's authenticated provider can have sent it, but
+		// the respond is final and the price paid: the delivery is
+		// discarded and the buyer keeps accepting redeliveries until one
+		// passes (section 7.2), asking for one when its interval allows.
+		if removeErr := os.Remove(filepath.Join(b.purchaseDir(record.RequestHash), "result")); removeErr != nil &&
+			!errors.Is(removeErr, os.ErrNotExist) {
+			return errors.Join(err, removeErr)
+		}
+		record.Failure = "a delivered result was discarded: " + err.Error()
+		if record.RejectedResults < math.MaxInt32 {
+			record.RejectedResults++
+		}
+		return errors.Join(b.requestResult(ctx, &record), b.savePurchase(record, false))
 	}
 	if err := writeSynced(
 		filepath.Join(b.purchaseDir(record.RequestHash), "artifact.tar"),

@@ -1,6 +1,7 @@
 package servicebridge
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -12,17 +13,16 @@ import (
 // A carrier or anyone who knows the source can copy a paid task, but naming
 // itself as the return Agent must not open the paid execution id.
 func TestAPaidTaskResentUnderAnotherAgentIsRefused(t *testing.T) {
-	provider := &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork}}
+	provider := testRailProvider()
 	message, task := taskMessage(t, testPackage(t, nil), fill(100, 1), testBuyer)
-	if _, _, _, err := provider.claimFor(message, task); err != nil {
+	if _, _, err := provider.claimFor(message); err != nil {
 		t.Fatalf("the buyer's own task was refused: %v", err)
 	}
 	attacker := "agent_" + strings.Repeat("c3", 32)
 	stolen := task
 	stolen.Header.BuyerAgentID = attacker
-	resent := message
-	resent.SenderAgentID = attacker
-	if _, _, _, err := provider.claimFor(resent, stolen); err == nil {
+	resent := taskMessageOf(t, stolen, attacker)
+	if _, _, err := provider.claimFor(resent); err == nil {
 		t.Fatal("a paid task resent under another Agent was admitted")
 	}
 	var forged [32]byte
@@ -30,12 +30,13 @@ func TestAPaidTaskResentUnderAnotherAgentIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	stolen.Header.ExecutionNonce = hex.EncodeToString(forged[:])
-	if _, _, _, err := provider.claimFor(resent, stolen); err == nil {
+	if _, _, err := provider.claimFor(taskMessageOf(t, stolen, attacker)); err == nil {
 		t.Fatal("a fresh nonce opened the paid execution id to another Agent")
 	}
-	unopened := task
-	unopened.Header.ExecutionNonce = ""
-	if _, _, _, err := provider.claimFor(message, unopened); err == nil {
+	unopened := message
+	unopened.Body = bytes.Replace(bytes.Clone(message.Body), []byte(`"execution_nonce":"`+task.Header.ExecutionNonce+`"`),
+		[]byte(`"execution_nonce":""`), 1)
+	if _, _, err := provider.claimFor(unopened); err == nil {
 		t.Fatal("a task without an execution nonce was admitted")
 	}
 }
@@ -45,7 +46,7 @@ func TestTheBuyersDrawnExecutionOpensOnlyToItsOwnAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ExecutionIDFor(testBuyer, nonce) != id || ExecutionIDFor(testSeller, nonce) == id {
+	if mustExecutionID(testBuyer, nonce) != id || mustExecutionID(testSeller, nonce) == id {
 		t.Fatal("the drawn execution id does not commit to the buyer Agent alone")
 	}
 	if _, _, err = drawExecution(testBuyer, func([]byte) error { return nil }); err == nil {

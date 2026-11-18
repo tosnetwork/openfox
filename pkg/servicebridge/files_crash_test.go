@@ -117,7 +117,7 @@ func TestInboxPutCrashChild(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err = inbox.Put(testSeller, frames[0]); err != nil {
+		if _, _, err = inbox.Put(testSeller, testPacket(t), frames[0]); err != nil {
 			t.Fatal(err)
 		}
 	}

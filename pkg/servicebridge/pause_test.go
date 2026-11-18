@@ -79,7 +79,7 @@ func TestAPausedProviderRefusesAdmissionBeforeTheGate(t *testing.T) {
 	state := privateStateDir(t)
 	// No gate is configured: if the pause did not stop the task first, the
 	// admission would fail with the gate's own error instead.
-	provider := &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, StateDir: state}}
+	provider := &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, CapabilityID: gfCapability, Version: "1.0.0", StateDir: state}}
 	message, _ := taskMessage(t, testPackage(t, nil), fill(100, 1), testBuyer)
 	if _, _, err := PauseAdmission(state, "", time.Unix(1_800_000_000, 0)); err != nil {
 		t.Fatal(err)
@@ -100,12 +100,12 @@ func TestDispatchHoldsATaskWhilePausedWithoutSpendingItsAttempts(t *testing.T) {
 	state := privateStateDir(t)
 	inbox, _ := openTestInbox(t, 2, 4)
 	message, _ := taskMessage(t, testPackage(t, nil), fill(100, 1), testBuyer)
-	frames, err := SplitMessage(FrameTask, testActor, 0, testRequest, message.Body)
+	frames, err := SplitMessage(FrameTask, message.ActorAccount, 0, message.RequestHash, message.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, frame := range frames {
-		if _, _, err = inbox.Put(testBuyer, frame); err != nil {
+		if _, _, err = inbox.Put(testBuyer, testPacket(t), frame); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -115,7 +115,7 @@ func TestDispatchHoldsATaskWhilePausedWithoutSpendingItsAttempts(t *testing.T) {
 	var reports []string
 	service := &Service{
 		Inbox:    inbox,
-		Provider: &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, StateDir: state}},
+		Provider: &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, CapabilityID: gfCapability, Version: "1.0.0", StateDir: state}},
 		Report:   func(stage string, _ error) { reports = append(reports, stage) },
 	}
 	for round := 0; round < 2*maxHandlingAttempts; round++ {
@@ -137,17 +137,18 @@ func TestDispatchHoldsATaskWhilePausedWithoutSpendingItsAttempts(t *testing.T) {
 	}
 }
 
-// putTask stores a complete task message whose frames name requestHash, so
-// each call makes a distinct assembly from the same buyer.
-func putTask(t *testing.T, inbox *Inbox, requestHash [32]byte) error {
+// putTask stores a complete task message whose archive is drawn from seed,
+// so each call makes a distinct, correctly framed assembly from the same
+// buyer.
+func putTask(t *testing.T, inbox *Inbox, seed byte) error {
 	t.Helper()
-	message, _ := taskMessage(t, testPackage(t, nil), fill(100, 1), testBuyer)
-	frames, err := SplitMessage(FrameTask, testActor, 0, requestHash, message.Body)
+	message, _ := taskMessage(t, testPackage(t, nil), fill(100, seed), testBuyer)
+	frames, err := SplitMessage(FrameTask, message.ActorAccount, 0, message.RequestHash, message.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, frame := range frames {
-		if _, _, err := inbox.Put(testBuyer, frame); err != nil {
+		if _, _, err := inbox.Put(testBuyer, testPacket(t), frame); err != nil {
 			return err
 		}
 	}
@@ -159,11 +160,11 @@ func TestHeldTasksCannotKeepOutAcknowledgementsOfAdmittedWork(t *testing.T) {
 	const bound = 4
 	inbox, _ := openTestInbox(t, bound, bound)
 	for index := range bound {
-		if err := putTask(t, inbox, [32]byte{byte(index + 1)}); err != nil {
+		if err := putTask(t, inbox, byte(index+1)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := putTask(t, inbox, [32]byte{0xf0}); err == nil {
+	if err := putTask(t, inbox, 0xf0); err == nil {
 		t.Fatal("the fixture did not fill the inbox")
 	}
 	if _, _, err := PauseAdmission(state, "", time.Unix(1_800_000_000, 0)); err != nil {
@@ -172,7 +173,7 @@ func TestHeldTasksCannotKeepOutAcknowledgementsOfAdmittedWork(t *testing.T) {
 	var reported []error
 	service := &Service{
 		Inbox:    inbox,
-		Provider: &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, StateDir: state}},
+		Provider: &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, CapabilityID: gfCapability, Version: "1.0.0", StateDir: state}},
 		Report:   func(_ string, err error) { reported = append(reported, err) },
 	}
 	if err := service.Dispatch(context.Background()); err != nil {
@@ -190,12 +191,12 @@ func TestHeldTasksCannotKeepOutAcknowledgementsOfAdmittedWork(t *testing.T) {
 	}
 	ackSender := "agent_" + strings.Repeat("c3", 32)
 	for _, frame := range frames {
-		if _, _, putErr := inbox.Put(ackSender, frame); putErr != nil {
+		if _, _, putErr := inbox.Put(ackSender, testPacket(t), frame); putErr != nil {
 			t.Fatalf("held tasks kept out an acknowledgement of admitted work: %v", putErr)
 		}
 	}
 	// Held tasks have a bound of their own: one more is retired, not held.
-	if putErr := putTask(t, inbox, [32]byte{0xf1}); putErr != nil {
+	if putErr := putTask(t, inbox, 0xf1); putErr != nil {
 		t.Fatal(putErr)
 	}
 	reported = nil
@@ -223,7 +224,7 @@ func TestHeldTasksCannotKeepOutAcknowledgementsOfAdmittedWork(t *testing.T) {
 func TestServeReportsAnUnreadablePauseMarker(t *testing.T) {
 	state := privateStateDir(t)
 	inbox, _ := openTestInbox(t, 2, 4)
-	if err := putTask(t, inbox, testRequest); err != nil {
+	if err := putTask(t, inbox, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(state, AdmissionPauseFile), []byte("{}"), 0o600); err != nil {
@@ -232,7 +233,7 @@ func TestServeReportsAnUnreadablePauseMarker(t *testing.T) {
 	var reported []error
 	service := &Service{
 		Inbox:    inbox,
-		Provider: &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, StateDir: state}},
+		Provider: &Provider{config: ProviderConfig{AgentID: testSeller, Network: testNetwork, CapabilityID: gfCapability, Version: "1.0.0", StateDir: state}},
 		Report:   func(_ string, err error) { reported = append(reported, err) },
 	}
 	if err := service.Dispatch(context.Background()); err != nil {

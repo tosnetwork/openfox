@@ -198,6 +198,7 @@ func TestAResultRequestFromAnotherAgentOrForAnotherRequestIsRefusedAndMovesNothi
 		return f.provider.HandleResultRequest(context.Background(), Message{
 			SenderAgentID: sender, Kind: FrameResultRequest, ActorAccount: testActor, RequestID: requestID,
 			RequestHash: hash, Body: body,
+			Packet: PacketFields{CapabilityID: relayCapability, QuoteCommitment: f.key.QuoteCommitment},
 		})
 	}
 	for name, err := range map[string]error{
@@ -271,6 +272,7 @@ func TestResultRequestsAreBoundedOnBothSides(t *testing.T) {
 	again := Message{
 		SenderAgentID: testBuyer, Kind: FrameResultRequest, ActorAccount: testActor, RequestID: 3,
 		RequestHash: testRequest, Body: body,
+		Packet: PacketFields{CapabilityID: relayCapability, QuoteCommitment: f.key.QuoteCommitment},
 	}
 	push := func() int64 {
 		pushed := f.record(t)

@@ -1432,3 +1432,40 @@ func TestChatContactExportCarriesTheCurrentCardAndStatusShowsIt(t *testing.T) {
 		t.Fatal("an export with a stale published card succeeded")
 	}
 }
+
+// One kind of refusal of one sender is reported once per window: the
+// repeats inside it are counted into the next report, and a different
+// sender, result or code is reported on its own. The table stays bounded.
+func TestDaemonRefusalReportsAreRateLimitedPerSenderResultAndCode(t *testing.T) {
+	clock := newRelayClock()
+	var lines []string
+	carrier := &ChatCarrier{now: clock.Now, report: func(stage string, err error) {
+		lines = append(lines, stage+": "+err.Error())
+	}}
+	ignored := carrierapi.Response{Result: carrierapi.ResultIgnored}
+	refused := carrierapi.Refusal(carrierapi.CodeNotAdmitted)
+	sender, other := "agent_"+strings.Repeat("1", 64), "agent_"+strings.Repeat("2", 64)
+	for range 3 {
+		carrier.reportRefusal("chat.deliver", relayframe.KindEvidence, sender, ignored)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("three repeats inside the window gave %d reports: %q", len(lines), lines)
+	}
+	carrier.reportRefusal("chat.deliver", relayframe.KindEvidence, other, ignored)
+	carrier.reportRefusal("chat.deliver", relayframe.KindEvidence, sender, refused)
+	carrier.reportRefusal("chat.deliver", relayframe.KindCopy, sender, ignored)
+	if len(lines) != 4 {
+		t.Fatalf("a different sender, result or kind was not reported on its own: %q", lines)
+	}
+	clock.Advance(refusalReportWindow)
+	carrier.reportRefusal("chat.deliver", relayframe.KindEvidence, sender, ignored)
+	if len(lines) != 5 || !strings.Contains(lines[4], "(2 more since the last report)") {
+		t.Fatalf("the report after the window does not count the repeats: %q", lines)
+	}
+	for index := range maxRefusalKeys + 10 {
+		carrier.reportRefusal("chat.deliver", relayframe.KindEvidence, fmt.Sprintf("agent_%064d", index), ignored)
+	}
+	if size := len(carrier.refusals); size > maxRefusalKeys {
+		t.Fatalf("the refusal table grew to %d keys", size)
+	}
+}

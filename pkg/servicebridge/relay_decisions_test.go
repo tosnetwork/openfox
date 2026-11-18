@@ -96,7 +96,7 @@ func resultBuyer(t *testing.T, clock *relayClock, owners ownersMap) (*Buyer, Pur
 	record := PurchaseRecord{
 		Phase: PurchaseTaskSent, RequestHash: hex.EncodeToString(testRequest[:]),
 		Actor: "0:" + hex.EncodeToString(testActor[:]), RequestID: &requestID, ProviderAgentID: testSeller,
-		CapabilityID: relayCapability, CommittedNanoTOS: "1",
+		CapabilityID: relayCapability, CommittedNanoTOS: "1", QuoteCommitment: relayQuoteCommitment,
 	}
 	if err := ensurePrivateDirectory(buyer.purchaseDir(record.RequestHash)); err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func resultMessage(t *testing.T, sender string, card []byte) Message {
 	}
 	return Message{
 		SenderAgentID: sender, Kind: FrameResult, ActorAccount: testActor, RequestID: 3, RequestHash: testRequest,
-		Body: body,
+		Body: body, Packet: PacketFields{CapabilityID: relayCapability, QuoteCommitment: relayQuoteCommitment},
 	}
 }
 
@@ -316,7 +316,7 @@ func ackProvider(t *testing.T, clock *relayClock, cards *PeerCards) (*Provider, 
 		State:           ProviderDelivering,
 		BuyerAgentID:    testBuyer,
 		CapabilityID:    relayCapability,
-		QuoteCommitment: "tvm-cell-sha256:" + strings.Repeat("aa", 32),
+		QuoteCommitment: relayQuoteCommitment,
 		Actor:           "0:" + hex.EncodeToString(testActor[:]),
 		RequestID:       3,
 		RequestHash:     hex.EncodeToString(testRequest[:]),
@@ -337,7 +337,7 @@ func ackFrom(t *testing.T, sender string, responseHash [32]byte, card []byte) Me
 	}
 	return Message{
 		SenderAgentID: sender, Kind: FrameResultAck, ActorAccount: testActor, RequestID: 3, RequestHash: testRequest,
-		Body: body,
+		Body: body, Packet: PacketFields{CapabilityID: relayCapability, QuoteCommitment: relayQuoteCommitment},
 	}
 }
 
@@ -443,3 +443,7 @@ func TestTheBuyersAcknowledgementCarriesItsCurrentCard(t *testing.T) {
 		t.Fatalf("the acknowledgement does not carry the buyer's current card: %v", err)
 	}
 }
+
+// relayQuoteCommitment is the Accepted Quote commitment of the relay test
+// requests.
+var relayQuoteCommitment = "tvm-cell-sha256:" + strings.Repeat("aa", 32)

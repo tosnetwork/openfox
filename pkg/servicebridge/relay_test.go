@@ -608,7 +608,8 @@ func framePacket(t *testing.T, signer, recipient string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	packet, err := testSigner(t, signer).sign(context.Background(), recipient, testEnvelope().CapabilityID, "", payload)
+	packet, err := testSigner(t, signer).sign(context.Background(), recipient, testEnvelope().CapabilityID,
+		testEnvelope().QuoteCommitment, payload)
 	if err != nil {
 		t.Fatal(err)
 	}

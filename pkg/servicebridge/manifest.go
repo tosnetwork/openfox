@@ -4,12 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/tosnetwork/ai/execution/pkg/softwarework"
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
 	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
+	"github.com/tosnetwork/ai/protocol/pkg/railwork"
 )
 
 // ManifestInput names what an OpenFox rail manifest binds.
@@ -109,7 +111,26 @@ func BuildManifest(input ManifestInput) ([]byte, string, nativecore.SoftwareWork
 	if err != nil {
 		return nil, "", none, err
 	}
+	if err = checkOfferManifest(encoded, input.ProviderAgentID); err != nil {
+		return nil, "", none, err
+	}
 	return encoded, digest, manifest, nil
+}
+
+// checkOfferManifest refuses a manifest whose Quotes, delivered as Agent
+// Packets to the provider, could carry a package no rail task holds
+// (SERVICE_ACTOR_RAIL_WORK_FRAMES_V1 section 5.1): such a Capability
+// version must never be published, so no buyer can pay for a task it
+// cannot send.
+func checkOfferManifest(manifestCBOR []byte, providerAgentID string) error {
+	transport, _, err := RailTransport(providerAgentID)
+	if err != nil {
+		return err
+	}
+	if err = railwork.CheckCarriableManifest(manifestCBOR, transport); err != nil {
+		return fmt.Errorf("servicebridge: the offer manifest cannot be quoted over Agent Packets: %w", err)
+	}
+	return nil
 }
 
 // RunnerContract is the tos-ai runner contract for a published manifest.

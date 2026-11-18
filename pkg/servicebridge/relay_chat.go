@@ -761,6 +761,11 @@ func (c *ChatCarrier) receive(ctx context.Context, raw []byte) bool {
 				source = cardRoomRenewed
 			}
 			c.learnFrom(ctx, sender, frame.Card, source)
+		case carrierapi.ResultRefused:
+			// An ignored ack (a repeat for a copy already settled) is
+			// routine; a refused one is reported.
+			c.report("chat.delivery-ack", fmt.Errorf("servicebridge: the daemon answered a delivery ack of %s with "+
+				"%s %s; relay-acknowledged", sender, response.Result, response.Code))
 		}
 		return true
 	default:
@@ -805,6 +810,11 @@ func (c *ChatCarrier) afterDeliver(ctx context.Context, sender string, nonce [32
 		}
 		return true
 	default:
+		// The daemon refused or ignored the frame: it is relay-acknowledged
+		// like every final answer, and the reason is reported so a dropped
+		// invite or evidence request names its cause.
+		c.report("chat.deliver", fmt.Errorf("servicebridge: the daemon answered a kind-%d frame of %s with %s %s; "+
+			"relay-acknowledged", frame.Kind, sender, response.Result, response.Code))
 		return true
 	}
 }

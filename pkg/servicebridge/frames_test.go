@@ -206,24 +206,24 @@ func TestInboxAssemblesDurablyAndReportsDuplicatesAfterDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, index := range []int{2, 0} {
-		status, _, statusErr := inbox.Put(testSeller, frames[index])
+		status, _, statusErr := inbox.Put(testSeller, testPacket(t), frames[index])
 		if statusErr != nil || status != InboxPartial {
 			t.Fatalf("frame %d: %v %v", index, status, statusErr)
 		}
 	}
-	if status, _, statusErr := inbox.Put(testSeller, frames[0]); statusErr != nil || status != InboxPartial {
+	if status, _, statusErr := inbox.Put(testSeller, testPacket(t), frames[0]); statusErr != nil || status != InboxPartial {
 		t.Fatalf("a repeated frame: %v %v", status, statusErr)
 	}
 	stored := frames[0]
 	stored.Data = fill(MaxChunkData, 7)
-	if _, _, err = inbox.Put(testSeller, stored); err == nil {
+	if _, _, err = inbox.Put(testSeller, testPacket(t), stored); err == nil {
 		t.Fatal("a frame conflicting with the stored frame of its index was taken")
 	}
 	conflict := frames[1]
 	conflict.Data = fill(MaxChunkData, 6)
 	// A different body is a different message; a frame claiming the same
 	// digest with other data fails when the set is joined.
-	if _, _, err = inbox.Put(testSeller, conflict); err == nil {
+	if _, _, err = inbox.Put(testSeller, testPacket(t), conflict); err == nil {
 		t.Fatal("a frame inconsistent with its message digest completed the message")
 	}
 	reopened, err := OpenInbox(directory, 2, 4)
@@ -243,11 +243,11 @@ func TestInboxAssemblesDurablyAndReportsDuplicatesAfterDone(t *testing.T) {
 		t.Fatalf("the inconsistent assembly was kept: %v", err)
 	}
 	for _, index := range []int{0, 2} {
-		if _, _, err = reopened.Put(testSeller, frames[index]); err != nil {
+		if _, _, err = reopened.Put(testSeller, testPacket(t), frames[index]); err != nil {
 			t.Fatal(err)
 		}
 	}
-	status, message, err := reopened.Put(testSeller, frames[1])
+	status, message, err := reopened.Put(testSeller, testPacket(t), frames[1])
 	if err != nil || status != InboxComplete || !bytes.Equal(message.Body, body) ||
 		message.SenderAgentID != testSeller {
 		t.Fatalf("complete: %v %v", status, err)
@@ -262,12 +262,12 @@ func TestInboxAssemblesDurablyAndReportsDuplicatesAfterDone(t *testing.T) {
 	if pending, pendingErr := reopened.Pending(); pendingErr != nil || len(pending) != 0 {
 		t.Fatalf("a done message is pending: %d %v", len(pending), pendingErr)
 	}
-	status, duplicate, err := reopened.Put(testSeller, frames[0])
+	status, duplicate, err := reopened.Put(testSeller, testPacket(t), frames[0])
 	if err != nil || status != InboxDuplicate || duplicate == nil || !bytes.Equal(duplicate.Body, body) {
 		t.Fatalf("a frame of a done message must hand back the whole message: %v %v", status, err)
 	}
 	// The same frames from another sender are another message.
-	if status, _, err := reopened.Put(testBuyer, frames[0]); err != nil || status != InboxPartial {
+	if status, _, err := reopened.Put(testBuyer, testPacket(t), frames[0]); err != nil || status != InboxPartial {
 		t.Fatalf("another sender's frame: %v %v", status, err)
 	}
 }
@@ -281,23 +281,23 @@ func TestInboxBoundsOpenMessagesPerSenderAndInTotal(t *testing.T) {
 		}
 		return frames[0]
 	}
-	if _, _, err := inbox.Put(testBuyer, message(1)); err != nil {
+	if _, _, err := inbox.Put(testBuyer, testPacket(t), message(1)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := inbox.Put(testBuyer, message(2)); err == nil {
+	if _, _, err := inbox.Put(testBuyer, testPacket(t), message(2)); err == nil {
 		t.Fatal("a second open message from one sender was admitted")
 	}
-	if _, _, err := inbox.Put(testSeller, message(3)); err != nil {
+	if _, _, err := inbox.Put(testSeller, testPacket(t), message(3)); err != nil {
 		t.Fatal(err)
 	}
 	third := "agent_" + strings.Repeat("c3", 32)
-	if _, _, err := inbox.Put(third, message(4)); err == nil {
+	if _, _, err := inbox.Put(third, testPacket(t), message(4)); err == nil {
 		t.Fatal("an open message beyond the total bound was admitted")
 	}
 	if err := inbox.Prune(time.Now().Add(2*time.Hour), IncompleteRetention, DoneRetention); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := inbox.Put(third, message(4)); err != nil {
+	if _, _, err := inbox.Put(third, testPacket(t), message(4)); err != nil {
 		t.Fatalf("after pruning stale messages: %v", err)
 	}
 }
@@ -319,7 +319,7 @@ func TestInboxRetriesAFailedMessageAndThenGivesUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, message, err := inbox.Put(testSeller, frames[0])
+	_, message, err := inbox.Put(testSeller, testPacket(t), frames[0])
 	if err != nil || message == nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestInboxIgnoresACounterUpdateLeftByAnInterruptedFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, message, err := inbox.Put(testSeller, frames[0])
+	_, message, err := inbox.Put(testSeller, testPacket(t), frames[0])
 	if err != nil || message == nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestAnInterruptedAssemblyDoesNotBlockOtherMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, message, err := inbox.Put(testSeller, frames[0])
+	_, message, err := inbox.Put(testSeller, testPacket(t), frames[0])
 	if err != nil || message == nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestInboxStillRejectsAnUnexpectedDirectoryNamedLikeAnUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, message, err := inbox.Put(testSeller, frames[0])
+	_, message, err := inbox.Put(testSeller, testPacket(t), frames[0])
 	if err != nil || message == nil {
 		t.Fatal(err)
 	}
@@ -433,14 +433,14 @@ func TestInboxPruneKeepsProcessedMessagesLongerThanIncompleteOnes(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = inbox.Put(testBuyer, partial[0]); err != nil {
+	if _, _, err = inbox.Put(testBuyer, testPacket(t), partial[0]); err != nil {
 		t.Fatal(err)
 	}
 	whole, err := SplitMessage(FrameResult, testActor, 2, testRequest, fill(10, 2))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, message, err := inbox.Put(testSeller, whole[0])
+	_, message, err := inbox.Put(testSeller, testPacket(t), whole[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestInboxPruneKeepsProcessedMessagesLongerThanIncompleteOnes(t *testing.T) 
 	) {
 		t.Fatal("a stale incomplete message kept its slot")
 	}
-	if status, _, err := inbox.Put(testSeller, whole[0]); err != nil || status != InboxDuplicate {
+	if status, _, err := inbox.Put(testSeller, testPacket(t), whole[0]); err != nil || status != InboxDuplicate {
 		t.Fatalf("a processed message was forgotten too early: %v %v", status, err)
 	}
 	if err := inbox.Prune(time.Now().Add(DoneRetention+time.Hour), IncompleteRetention, DoneRetention); err != nil {

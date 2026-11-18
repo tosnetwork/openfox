@@ -1,7 +1,6 @@
 package servicebridge
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -18,8 +17,7 @@ import (
 	"github.com/tosnetwork/ai/execution/pkg/railgate"
 	"github.com/tosnetwork/ai/execution/pkg/softwarework"
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
-	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
-	"github.com/tosnetwork/ai/protocol/pkg/quoteexchange"
+	"github.com/tosnetwork/ai/protocol/pkg/railwork"
 	"github.com/tosnetwork/ai/protocol/pkg/toschain"
 	"google.golang.org/protobuf/proto"
 )
@@ -229,67 +227,37 @@ func (p *Provider) store(key railgate.SlotKey, record ProviderRecord, create boo
 }
 
 // claimFor builds the railgate claim of a task and refuses work the quoted
-// transport does not admit, before anything is admitted or executed.
-func (p *Provider) claimFor(
-	message Message,
-	task Task,
-) (railgate.Claim, *nativev1.QuoteProposalPackageV1, nativecore.TransportBindingV1, error) {
-	var none nativecore.TransportBindingV1
-	if message.SenderAgentID != task.Header.BuyerAgentID {
-		return railgate.Claim{}, nil, none, errors.New(
-			"servicebridge: the task comes from another Agent than its buyer",
-		)
-	}
-	if message.RequestID != task.Header.RequestID {
-		return railgate.Claim{}, nil, none, errors.New("servicebridge: the task frames name another request")
-	}
-	pkg := &nativev1.QuoteProposalPackageV1{}
-	if err := proto.Unmarshal(task.Package, pkg); err != nil || pkg.GetProposal() == nil {
-		return railgate.Claim{}, nil, none, errors.New("servicebridge: the task Quote package does not decode")
-	}
-	validated, err := quoteexchange.ValidatePortable(p.config.Network, &nativev1.RequestQuoteProposalRequest{
-		CapabilityId:      task.Header.CapabilityID,
-		CapabilityVersion: task.Header.CapabilityVersion,
-		BuyerAddress:      task.Header.BuyerWallet,
-	}, pkg)
+// transport does not admit, before anything is admitted or executed. It
+// runs the shared admission checks (SERVICE_ACTOR_RAIL_WORK_FRAMES_V1
+// section 7.1 items 1 to 4), then requires the task's packets to name this
+// Capability and the task's Accepted Quote (section 2.1) and its frames to
+// carry the request hash and actor the task and its Quote derive (item 6
+// against the derived request). Both happen before the gate claims a slot,
+// so a task whose packets or frames are bound wrongly never consumes one.
+func (p *Provider) claimFor(message Message) (railgate.Claim, *railwork.Admission, error) {
+	admission, err := railwork.Provider{
+		Network: p.config.Network, AgentID: p.config.AgentID,
+		CapabilityID: p.config.CapabilityID, Version: p.config.Version,
+	}.CheckTask(message.shared())
 	if err != nil {
-		return railgate.Claim{}, nil, none, err
+		return railgate.Claim{}, nil, err
 	}
-	recipient, err := validated.TransportBinding.AgentPacketRecipient()
-	if err != nil || recipient != p.config.AgentID {
-		return railgate.Claim{}, nil, none, errors.New(
-			"servicebridge: the Quote does not deliver work to this Agent as Agent Packets",
+	if err = packetFieldsError(admission.CheckPacketFields(message.Packet.CapabilityID,
+		message.Packet.QuoteCommitment)); err != nil {
+		return railgate.Claim{}, nil, err
+	}
+	if !admission.FrameBindingMatchesQuote() {
+		return railgate.Claim{}, nil, errors.New(
+			"servicebridge: the task frames are bound to another request than the task and its Quote derive",
 		)
 	}
-	if uint64(len(task.Archive)) > uint64(validated.TransportBinding.MaxRequestBytes) ||
-		len(task.Archive) > MaxInlineInputBytes {
-		return railgate.Claim{}, nil, none, errors.New(
-			"servicebridge: the source archive exceeds the quoted inline input bound",
-		)
-	}
-	executionID, err := hex.DecodeString(task.Header.ExecutionID)
-	if err != nil || len(executionID) != 32 {
-		return railgate.Claim{}, nil, none, errors.New("servicebridge: invalid execution id")
-	}
-	// The paid call carries the execution id, so this ties the Agent the
-	// result returns to, which signed the frames, to the paying wallet.
-	var executionNonce [32]byte
-	if err = decodeHex32(task.Header.ExecutionNonce, &executionNonce); err != nil {
-		return railgate.Claim{}, nil, none, errors.New("servicebridge: invalid execution nonce")
-	}
-	committed := ExecutionIDFor(task.Header.BuyerAgentID, executionNonce)
-	if !bytes.Equal(committed[:], executionID) {
-		return railgate.Claim{}, nil, none, errors.New(
-			"servicebridge: the paid execution id does not commit to the task's buyer Agent",
-		)
-	}
-	sourceDigest := sha256.Sum256(task.Archive)
+	header := admission.Task.Header
 	claim := railgate.Claim{
-		Package: pkg, BuyerWallet: task.Header.BuyerWallet, InputDigest: InputDigest(sourceDigest),
-		RequestID: task.Header.RequestID, Call: toschain.ActorTxID{LT: task.Header.CallLT, Hash: task.Header.CallHash},
+		Package: admission.Package, BuyerWallet: header.BuyerWallet, ExecutionID: admission.ExecutionID,
+		InputDigest: admission.InputDigest, RequestID: header.RequestID,
+		Call: toschain.ActorTxID{LT: header.CallLT, Hash: header.CallHash},
 	}
-	copy(claim.ExecutionID[:], executionID)
-	return claim, pkg, validated.TransportBinding, nil
+	return claim, admission, nil
 }
 
 // resultRetentionEnd is when result delivery stops. It runs from the end of
@@ -316,14 +284,12 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 	}
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	task, err := DecodeTask(message.Body)
+	claim, admission, err := p.claimFor(message)
 	if err != nil {
 		return err
 	}
-	claim, pkg, _, err := p.claimFor(message, task)
-	if err != nil {
-		return err
-	}
+	task := Task{Header: admission.Task.Header, Package: admission.Task.Package, Archive: admission.Task.Archive}
+	pkg := admission.Package
 	if pauseErr := p.admissionOpen(); pauseErr != nil {
 		return pauseErr
 	}
@@ -350,9 +316,8 @@ func (p *Provider) HandleTask(ctx context.Context, message Message) error {
 	// cards costs a paid call. A card that is not taken is recorded and a
 	// resend of the task can bring it again.
 	cardErr := p.learnBuyerCard(ctx, message, task)
-	if verified.RequestHash != message.RequestHash ||
-		verified.Actor != "0:"+hex.EncodeToString(message.ActorAccount[:]) {
-		return errors.New("servicebridge: the task frames are bound to another request than the verified one")
+	if err = admission.CheckVerifiedBinding(verified.Actor, verified.RequestHash); err != nil {
+		return err
 	}
 	key := slot.Key()
 	retentionEnd, err := resultRetentionEnd(verified.ResponseDeadline, verified.Manifest.RetentionSeconds)
@@ -482,6 +447,9 @@ func (p *Provider) HandleResultRequest(ctx context.Context, message Message) err
 		if record.BuyerAgentID != message.SenderAgentID {
 			return fmt.Errorf("%w: it is not from this request's buyer", ErrResultRequestRefused)
 		}
+		if err := checkPacketFields(message, record.CapabilityID, record.QuoteCommitment); err != nil {
+			return fmt.Errorf("%w: %w", ErrResultRequestRefused, err)
+		}
 		switch record.State {
 		case ProviderResponding, ProviderDelivering:
 		case ProviderAcked:
@@ -595,6 +563,9 @@ func (p *Provider) HandleAck(ctx context.Context, message Message) error {
 			record.RequestHash == hex.EncodeToString(message.RequestHash[:]) {
 			if record.BuyerAgentID != message.SenderAgentID || record.ResponseHash != ack.ResponseHash {
 				return errors.New("servicebridge: the acknowledgement is not from this request's buyer for its result")
+			}
+			if err := checkPacketFields(message, record.CapabilityID, record.QuoteCommitment); err != nil {
+				return err
 			}
 			// The acknowledgement is tied to this request's buyer and result,
 			// so its card refreshes the buyer's card in band. A card finalized

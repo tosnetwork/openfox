@@ -990,13 +990,42 @@ def filler_joins(filler: str, room_epoch: int) -> dict:
     require(f"A re-imports filler {filler.upper()}'s fresh contact file",
             refreshed.get("agent_id") == RUN[filler]["agent"], refreshed)
     wait_evidence("a", filler, fresh=True)
+    # The members whose evidence A no longer holds (retired while the room
+    # was idle): the Add's roster needs it, so A must pull it (kind 4).
+    lacking = [node for node in NODES if node not in ("a", filler) and isinstance(RUN.get(node), dict)
+               and RUN[node].get("agent") in (room_of("a").get("members") or [])
+               and not (mdir("a") / "state" / "relay-evidence" / (RUN[node]["agent"][6:] + ".json")).is_file()]
+    before = {node: pull_record("a", node) for node in lacking}
     added = room_op("a", "add", filler)
     wait_room(filler, lambda row: row.get("state") == "invited", 300)
     joined = room_op(filler, "join", "a")
     row = joined_at(filler, room_epoch)
     require(f"filler {filler.upper()} joins at room epoch {room_epoch} (one Add Commit by A)",
             bool(added.get("ok")) and bool(joined.get("ok")) and row.get("room_epoch") == room_epoch, row)
+    after = {node: pull_record("a", node) for node in lacking}
+    repaired = {node: (after[node].get("request_generation", 0) > before[node].get("request_generation", 0)
+                       and not after[node].get("request_outstanding")
+                       and (mdir("a") / "state" / "relay-evidence" / (RUN[node]["agent"][6:] + ".json")).is_file())
+                for node in lacking}
+    fd.evidence.setdefault("authority_evidence_pulls", []).append({
+        "filler": filler, "members_lacking_evidence": [node.upper() for node in lacking],
+        "pull_before": {node.upper(): before[node] for node in lacking},
+        "pull_after": {node.upper(): after[node] for node in lacking}})
+    if lacking:
+        require(f"A's Add of {filler.upper()} needed the retired evidence of "
+                f"{', '.join(node.upper() for node in lacking)}: A deposited a kind-4 request to each, each was "
+                "answered and committed, and no request is left outstanding", all(repaired.values()), repaired)
     return row
+
+
+def pull_record(node: str, peer: str) -> dict:
+    """A node's relay-pull record for a peer, without its digests."""
+    path = mdir(node) / "state" / "relay-pull" / (RUN[peer]["agent"][6:] + ".json")
+    if not path.is_file():
+        return {}
+    record = read_json(path)
+    return {key: record.get(key) for key in ("request_outstanding", "request_generation", "request_last_at_unix",
+                                             "request_next_at_unix", "updated_at_unix")}
 
 
 def snapshot_held(name: str) -> None:

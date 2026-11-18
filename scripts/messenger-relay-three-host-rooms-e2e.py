@@ -1006,6 +1006,11 @@ def offline_beyond_ttl() -> None:
     offline_window("b", "start")
     stop_node("b")
     stopped_at = now()
+    # C's mailbox is drained first, so the Commit is the only envelope C's
+    # serve can hand the paused daemon: an envelope cut off in the window is
+    # never relay-acknowledged and would otherwise be handed again first.
+    drained = poll(lambda: not any(listed_ids(relay, RUN["c"]["agent"]) for relay in RELAYS) or None, 300, 3)
+    RUN["c_mailbox_drained_before_window"] = bool(drained)
     offline_window("c", "start")
     mr1.signal_pattern(mr1.daemon_pattern("c"), "STOP")
     filler_joins("e", base["room_epoch"] + 1)
@@ -1040,7 +1045,8 @@ def offline_beyond_ttl() -> None:
     gate("15", "C's serve is killed after handing the Commit to C's paused daemon: the daemon applies it, no room "
          "ack is sent and the envelope stays at the relays", bool(waiting) and
          c_room.get("room_epoch") == base["room_epoch"] + 1 and not acks_for("c", commit),
-         {"c": c_room, "acks": acks_for("c", commit), "attempts": attempts})
+         {"c": c_room, "acks": acks_for("c", commit), "attempts": attempts,
+          "c_mailbox_drained_before_window": RUN.get("c_mailbox_drained_before_window")})
     start_serve("c", "after the crash window")
     offline_window("c", "end")
     dup = poll(lambda: [f for f in acks_for("c", commit) if f.get("ack_outcome") == "duplicate"], 600, 3)

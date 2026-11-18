@@ -1480,9 +1480,14 @@ def reverse_remote_node(node: str, reversal: dict) -> None:
             diff = [line for line in difflib.unified_diff(before["ignored"].splitlines(),
                                                           after.get("ignored", "").splitlines(), lineterm="", n=0)
                     if line[:1] in "+-" and not line.startswith(("+++", "---"))]
-            reversal[f"{node}_firewall"]["ignored_tables"] = {"tables": NFT_IGNORE,
-                                                              "element_diff": [redact(line) for line in diff][:200],
-                                                              "note": "informational: not compared"}
+            # The ban set's elements are other parties' addresses: only how
+            # many changed is recorded, each address replaced.
+            reversal[f"{node}_firewall"]["ignored_tables"] = {
+                "tables": NFT_IGNORE,
+                "removed_lines": sum(line.startswith("-") for line in diff),
+                "added_lines": sum(line.startswith("+") for line in diff),
+                "element_diff": [scrub(line) for line in diff][:200],
+                "note": "informational: not compared; addresses replaced"}
         fd.record(f"{upper}'s host firewall is exactly as before the run: `ufw status verbose` and every nft table "
                   "but the ignored ones are identical (the run's own nft table removed)",
                   all(before[name] == after[name] for name in compared) and

@@ -770,22 +770,26 @@ def unanswered_sales() -> None:
                {k: v for k, v in refunded.items() if k != "cost_disclosure"})
     lapsed = wait_phase(s_hash, ("lapsed", "swept", "refunded"), 600)
     fd.record("sale S: the buyer finds its refund window lapsed and claims nothing",
-              lapsed.get("phase") in ("lapsed", "swept") and lapsed.get("phase") != "refunded",
+              lapsed.get("phase") == "lapsed",
               {k: v for k, v in lapsed.items() if k != "cost_disclosure"})
     request_id = int(lapsed.get("request_id"))
     sweeper_before = fd.balance(fd.RUN["sweeper"])
     outcome = sweep("sweep-sale-s", request_id)
-    swept = wait_phase(s_hash, ("swept",), 900)
+    # A lapsed purchase is terminal for the buyer node, so the sweep is read
+    # from the chain: the actor's own transaction and its request view.
+    fd.poll(lambda: any(row.get("op") == 0x53564305 and not row["aborted"]
+                        for row in fd.transactions(fd.RUN["actor"])), 600, 10)
+    swept = request_state(request_id)
     facts = fd.transactions(fd.RUN["actor"])
     sweeps = [row for row in facts if row.get("op") == 0x53564305 and row["in_source"] == fd.RUN["sweeper"]
               and not row["aborted"]]
     bounty = [out for row in sweeps for out in row["outs"] if out["destination"] == fd.RUN["sweeper"]]
-    fd.require("sale S: swept: the sweeper's sweep_expired_request succeeded on chain, paid the sweeper the "
-               "cleanup bounty, and the buyer reports the purchase swept",
+    fd.require("sale S: swept: the sweeper's sweep_expired_request succeeded on chain and paid the sweeper the "
+               "cleanup bounty; the buyer node's purchase stays lapsed (terminal for it)",
                outcome.get("exit") == 0 and len(sweeps) == 1 and bool(bounty) and
-               any(out["value"] >= BOUNTY_NANO for out in bounty) and swept.get("phase") == "swept",
-               {"sweep": outcome, "transactions": sweeps, "purchase": {k: v for k, v in swept.items()
-                                                                        if k != "cost_disclosure"},
+               any(out["value"] >= BOUNTY_NANO for out in bounty) and
+               fd.purchase_of(s_hash).get("phase") == "lapsed",
+               {"sweep": outcome, "transactions": sweeps, "request_after_sweep": swept,
                 "sweeper_balance_before": sweeper_before})
     fd.evidence.setdefault("sales", {}).update({
         "sale-f": {"request_hash": f_hash, "request_id": refunded.get("request_id"), "outcome": "refunded"},

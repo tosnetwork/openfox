@@ -765,6 +765,40 @@ func TestARefusedStrangersInBandCardIsNeverStored(t *testing.T) {
 	}
 }
 
+// A daemon answer that drops a frame (refused or ignored) is still
+// relay-acknowledged, but never silently: the carrier reports the frame's
+// kind, its sender and the daemon's result and code, so a dropped invite or
+// evidence request names its cause in the node's log.
+func TestADaemonRefusalIsAcknowledgedAndReported(t *testing.T) {
+	clock := newRelayClock()
+	relay := startRealRelay(t, clock)
+	agents := relayAgents()
+	stranger := newChatTestNode(t, clock, relayThird, agents, relay)
+	b := newChatTestNode(t, clock, testBuyer, agents, relay)
+	stranger.importContact(b)
+	b.knowEndpoint(stranger)
+	request := stranger.daemon.frame(relayframe.KindEvidence, []byte{relayframe.EvidenceRequest})
+	key, err := relayframe.EvidenceRequestKey(b.agent, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := stranger.daemon.carrier.Carry(context.Background(), b.agent, key, "",
+		uint64(clock.Now().Add(time.Hour).Unix()), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireResult(t, response, carrierapi.ResultCarried, "")
+	b.pollAll()
+	if len(listedAt(t, relay, b.agent)) != 0 {
+		t.Fatal("the ignored evidence request was not relay-acknowledged")
+	}
+	text := b.reportText()
+	if !strings.Contains(text, "kind-4") || !strings.Contains(text, stranger.agent) ||
+		!strings.Contains(text, string(carrierapi.ResultIgnored)) {
+		t.Fatalf("the ignored evidence request was not reported: %q", text)
+	}
+}
+
 // chatFramePacket is a signed chat packet to recipient carrying a relay frame.
 func chatFramePacket(t *testing.T, sender *chatTestNode, recipient string) []byte {
 	t.Helper()

@@ -2,6 +2,8 @@ package servicebridge
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"strings"
@@ -9,6 +11,7 @@ import (
 
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
+	"github.com/tosnetwork/ai/protocol/pkg/railwork"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -56,15 +59,46 @@ func largestQuotePackage(t *testing.T) []byte {
 	return raw
 }
 
-// The rail work frame spec bounds a task's package_base64 at 8,192 decoded
-// bytes (SERVICE_ACTOR_RAIL_WORK_FRAMES_V1 section 5.1), set from this
-// measurement (2,195 bytes) with headroom. Every package an OpenFox offer
-// produces must stay within it.
+// The rail work frame spec bounds a task's package_base64 at 31,611 decoded
+// bytes (railwork.MaxPackageBytes; SERVICE_ACTOR_RAIL_WORK_FRAMES_V1
+// section 5.1), the most a task header with every other field at its
+// maximum carries. Every package an OpenFox offer produces (2,195 bytes at
+// most) stays within it.
 func TestTheLargestOpenFoxQuotePackageFitsTheRailBound(t *testing.T) {
-	const railPackageBound = 8192
 	raw := largestQuotePackage(t)
 	t.Logf("largest OpenFox Quote package: %d bytes", len(raw))
-	if len(raw) > railPackageBound {
-		t.Fatalf("the largest Quote package is %d bytes, over the %d-byte rail bound", len(raw), railPackageBound)
+	if len(raw) > railwork.MaxPackageBytes {
+		t.Fatalf("the largest Quote package is %d bytes, over the %d-byte rail bound", len(raw), railwork.MaxPackageBytes)
+	}
+}
+
+// The offer path refuses a manifest whose Quotes no rail task could carry.
+// OpenFox's own template always fits; a manifest grown to its field limits
+// is refused before anything is published.
+func TestTheOfferPathRefusesAnUncarriableManifest(t *testing.T) {
+	attestor := "mldsa44:" + strings.Repeat("99", 32)
+	encoded, _, manifest, err := BuildManifest(ManifestInput{
+		ProviderAgentID: testSeller, Actor: "0:" + strings.Repeat("77", 32),
+		ActorCodeHash: "tvm-cell-sha256:" + strings.Repeat("88", 32), Attestor: attestor,
+		Version: strings.Repeat("9", 64), RetentionSeconds: 30 * 24 * 3600,
+	})
+	if err != nil {
+		t.Fatalf("the largest OpenFox manifest was refused: %v", err)
+	}
+	if err = checkOfferManifest(encoded, testSeller); err != nil {
+		t.Fatalf("the OpenFox template is not carriable: %v", err)
+	}
+	manifest.Description = strings.Repeat("d", 2048)
+	manifest.Invocation.Arguments = nil
+	for index := 0; index < 64; index++ {
+		manifest.Invocation.Arguments = append(manifest.Invocation.Arguments,
+			fmt.Sprintf("%02d%s", index, strings.Repeat("a", 510)))
+	}
+	large, _, err := nativecore.CanonicalSoftwareWorkManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = checkOfferManifest(large, testSeller); !errors.Is(err, railwork.ErrQuoteNotCarriable) {
+		t.Fatalf("an uncarriable manifest was accepted for the offer: %v", err)
 	}
 }

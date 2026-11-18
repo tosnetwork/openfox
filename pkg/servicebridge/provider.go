@@ -242,7 +242,8 @@ func (p *Provider) claimFor(message Message) (railgate.Claim, *railwork.Admissio
 	if err != nil {
 		return railgate.Claim{}, nil, err
 	}
-	if err = checkPacketFields(message, p.config.CapabilityID, admission.QuoteCommitment); err != nil {
+	if err = packetFieldsError(admission.CheckPacketFields(message.Packet.CapabilityID,
+		message.Packet.QuoteCommitment)); err != nil {
 		return railgate.Claim{}, nil, err
 	}
 	if !admission.FrameBindingMatchesQuote() {

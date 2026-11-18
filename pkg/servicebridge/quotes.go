@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/ai/protocol/pkg/nativeclient"
@@ -27,11 +28,15 @@ func (g GatewayQuotes) Quote(
 	if g.Client == nil || request == nil || g.CallerID == "" {
 		return nil, errors.New("servicebridge: the gateway quote source is not configured")
 	}
+	deadline := gatewayQuoteDeadline(ctx, time.Now())
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	stamped := &nativev1.RequestQuoteProposalRequest{
 		CapabilityId: request.GetCapabilityId(), CapabilityVersion: request.GetCapabilityVersion(),
 		BuyerAddress: request.GetBuyerAddress(), Context: &nativev1.RequestContext{
-			RequestId: request.GetCapabilityId() + "/" + request.GetCapabilityVersion(),
-			CallerId:  g.CallerID,
+			RequestId:          request.GetCapabilityId() + "/" + request.GetCapabilityVersion(),
+			CallerId:           g.CallerID,
+			DeadlineUnixMillis: deadline.UnixMilli(),
 		},
 	}
 	response, err := g.Client.RequestQuoteProposal(ctx, stamped)
@@ -42,6 +47,22 @@ func (g GatewayQuotes) Quote(
 		return nil, errors.New("servicebridge: the gateway returned no Quote package")
 	}
 	return response.GetPackage(), nil
+}
+
+// GatewayQuoteTimeout bounds one gateway Quote request. A gateway refuses
+// a discovery request whose context carries no future deadline, or one more
+// than 15 minutes ahead.
+const GatewayQuoteTimeout = time.Minute
+
+// gatewayQuoteDeadline is the deadline a gateway Quote request carries: the
+// caller's context deadline when it is sooner, otherwise GatewayQuoteTimeout
+// from now.
+func gatewayQuoteDeadline(ctx context.Context, now time.Time) time.Time {
+	deadline := now.Add(GatewayQuoteTimeout)
+	if own, ok := ctx.Deadline(); ok && own.Before(deadline) {
+		return own
+	}
+	return deadline
 }
 
 // FixedQuote serves one Quote package the owner obtained out of band, for

@@ -596,6 +596,11 @@ def setup_nodes() -> None:
     fd.RUN.update(provider_agent=provider_agent, provider_agent_address=agent_address, actor=actor,
                   capability_address=capability_address, offer_path=offer.get("offer_file", ""),
                   offer_file=offer_file, capability_id=plan.get("capability_id"))
+    # The buyer runs on another host: hand it the provider's public offer
+    # file at a path under its own node root, as the multi-host run does.
+    handed = fd.ROOT / "buyer" / "offer.json"
+    fd.install_node(Path(fd.RUN["offer_path"]), handed, "0644")
+    fd.RUN["offer_path"] = str(handed)
     fd.evidence["objects"] = {"provider_agent_id": provider_agent, "provider_agent_address": agent_address,
                               "actor": actor, "actor_code_hash_per_endpoint": code,
                               "capability_id": plan.get("capability_id"), "capability_address": capability_address,
@@ -648,13 +653,37 @@ def actor_code_everywhere(actor: str) -> dict:
 
 # --- Purchases ------------------------------------------------------------------
 
+def retriable(label: str, previous: dict) -> bool:
+    """A purchase whose `buy` exited non-zero before calling may be tried
+    again only when the chain proves nothing was called: the actor's
+    next_request_id still equals the value read before that attempt. The
+    failed markers are kept under a numbered name; any other state stops
+    the run rather than risk a second call."""
+    if previous.get("exit") == 0 or previous.get("purchase"):
+        return False
+    attempt_path = MARKERS / f"{label}.attempt.json"
+    before = json.loads(attempt_path.read_text()).get("next_request_id_before")
+    now = fd.service_data(fd.RUN["actor"])["next_request_id"]
+    if not isinstance(before, int) or now != before:
+        raise RuntimeError(f"{label}: the earlier buy failed but next_request_id moved from {before} to {now}; "
+                           "not retrying")
+    n = 1
+    while (MARKERS / f"{label}.failed-{n}.done.json").exists():
+        n += 1
+    attempt_path.rename(MARKERS / f"{label}.failed-{n}.attempt.json")
+    (MARKERS / f"{label}.done.json").rename(MARKERS / f"{label}.failed-{n}.done.json")
+    fd.evidence.setdefault("retried_purchases", []).append(
+        {"label": label, "failed_attempt": n, "next_request_id_unchanged": now, "stderr": previous.get("stderr", "")})
+    return True
+
+
 def buy(label: str, use_offer: bool) -> dict:
     """One purchase, once: its marker is written before `buy` runs. With
     use_offer the Quote is built from the provider's offer file (and the
     buyer learns the provider's relay key card); otherwise the gateway
     quotes it."""
     previous = result_of(label)
-    if previous is not None:
+    if previous is not None and not retriable(label, previous):
         return previous["purchase"]
     quiet_window()
     before = fd.service_data(fd.RUN["actor"])["next_request_id"]

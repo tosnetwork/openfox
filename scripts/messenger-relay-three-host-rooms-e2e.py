@@ -1365,14 +1365,21 @@ def states_counters_sizes_search() -> None:
                 ok = member.get("state") == "delivered" or agent in removed
             if not ok:
                 problems.append(key)
-    application_acked = [row for node in MEMBERS for row in room_acks(node)
-                         if row["frame"].get("room_ack_object_digest") not in HEADS_SEEN]
+    # Application objects are the type-3 objects any member sent; a room
+    # ack naming one of them would be a defect. Acks of other objects (a
+    # refused crafted Commit, a head collected between two samples) are not.
+    application_digests = {row["frame"].get("object_digest") for node in MEMBERS for row in room_frames(node)
+                           if row["frame"].get("room_object_type") == 3}
+    application_acked = [row["frame"].get("room_ack_object_digest", "")[:12] for node in MEMBERS
+                         for row in room_acks(node)
+                         if row["frame"].get("room_ack_object_digest") in application_digests]
     gate("8", "the authority's room outbox heads: every handshake object reached each member and settled as "
          "delivered on that member's verified room ack (accepted or duplicate) before its head was collected; a "
          "removed member's removing Commit ends carried and objects in flight to a removed member are not "
          "acked; no application object is ever room-acked",
          bool(states) and not problems and not application_acked,
-         {"heads": states, "problems": problems}, required=False)
+         {"heads": states, "problems": problems, "application_objects_acked": application_acked,
+          "application_objects": len(application_digests)}, required=False)
     room_max = max(COUNTS["max_room"].values() or [0])
     chat_max = max(COUNTS["max_chat"].values() or [0])
     pacing = {}

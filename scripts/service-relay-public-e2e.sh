@@ -36,6 +36,8 @@
 #   THERMAL_GUARD     guard script, given the run's process group (run only)
 # Optional:
 #   BUYER_REMOTE_BASE parent of the buyer's run directory (default /opt/tos-gated-rehearsal)
+#   E2E_GATEWAY_TOSCTL  root-owned copy of TOSCTL for protocol RPC, which refuses a
+#                     tosctl its own user could replace (default TOSCTL)
 #   E2E_GATEWAY_PORT  the gateway TLS port here and on the buyer host (default 18890;
 #                     the next two ports are its HTTP backend and protocol RPC)
 set -euo pipefail

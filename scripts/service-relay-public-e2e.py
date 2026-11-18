@@ -95,6 +95,10 @@ GENESIS_ROOT = os.environ["E2E_GENESIS_ROOT_HASH"]  # sha256:<hex>
 GENESIS_FILE = os.environ["E2E_GENESIS_FILE_HASH"]
 REGISTRY_CODE_HASH = os.environ["E2E_REGISTRY_CODE_HASH"]
 GATEWAY_API = Path(os.environ["E2E_GATEWAY_API"])
+# Protocol RPC runs tosctl only from a root-owned, non-group-writable file
+# (its publisher must not be able to replace the binary): a root-owned copy
+# of the pinned tosctl, byte-identical to TOSCTL.
+GATEWAY_TOSCTL = Path(os.environ.get("E2E_GATEWAY_TOSCTL", os.environ["TOSCTL"]))
 SERVICE_RPC = Path(os.environ["E2E_SERVICE_RPC"])
 GATEWAY_PORT = int(os.environ.get("E2E_GATEWAY_PORT", "18890"))  # TLS terminator, here and on the buyer host
 GATEWAY_BACKEND_PORT = GATEWAY_PORT + 1
@@ -403,7 +407,10 @@ def start_gateway() -> None:
                "registry_code_boc_file": str(GATEWAY_DIR / "registry-code.boc"),
                "service_actor_code_hash": fd.ACTOR_CODE_HASH, "state_directory": str(GATEWAY_DIR / "quote-state")}
     write_private(GATEWAY_DIR / "quote-profile.json", json.dumps(profile, indent=2).encode())
-    tosctl_sha = hashlib.sha256(fd.TOSCTL.read_bytes()).hexdigest()
+    tosctl_sha = hashlib.sha256(GATEWAY_TOSCTL.read_bytes()).hexdigest()
+    fd.require("the gateway's tosctl is a root-owned copy byte-identical to the pinned tosctl",
+               tosctl_sha == hashlib.sha256(fd.TOSCTL.read_bytes()).hexdigest() and GATEWAY_TOSCTL.stat().st_uid == 0,
+               {"sha256": tosctl_sha, "uid": GATEWAY_TOSCTL.stat().st_uid})
     chain_root = base64.b64encode(bytes.fromhex(GENESIS_ROOT.removeprefix("sha256:"))).decode()
     chain_file = base64.b64encode(bytes.fromhex(GENESIS_FILE.removeprefix("sha256:"))).decode()
     gateway_vault = f"file://{PRIVATE / GATEWAY_WALLET}/vault.json?master_key={MASTER[GATEWAY_WALLET]}"
@@ -416,12 +423,12 @@ def start_gateway() -> None:
               "max_funding_per_target_nanotos": 200_000_000, "max_actions_per_wallet": 1,
               "max_funding_per_wallet_nanotos": 200_000_000, "recovery_relay_safety_seconds": 300,
               "state_directory": str(GATEWAY_DIR / "rpc-state"),
-              "sender": {"network": fd.NETWORK_LABEL, "binary": str(fd.TOSCTL),
+              "sender": {"network": fd.NETWORK_LABEL, "binary": str(GATEWAY_TOSCTL),
                          "configPath": str(PRIVATE / GATEWAY_WALLET / "tosctl-config.json"),
                          "vaultUrl": gateway_vault, "rpcUrl": endpoints[0],
                          "genesisRootHash": chain_root, "genesisFileHash": chain_file,
                          "walletName": GATEWAY_WALLET, "payer": fd.RUN["gateway_wallet"]},
-              "signature_helper": {"binary": str(fd.TOSCTL), "sha256": tosctl_sha}}
+              "signature_helper": {"binary": str(GATEWAY_TOSCTL), "sha256": tosctl_sha}}
     fd.register_secret(MASTER[GATEWAY_WALLET])
     write_private(GATEWAY_DIR / "native-v1.json", json.dumps(native, indent=2).encode())
     log = (WORK / "service-rpc.log").open("ab")

@@ -391,7 +391,7 @@ def start_gateway() -> None:
     write_private(GATEWAY_DIR / "read-token", (tokens["read"] + "\n").encode())
     manifest = GATEWAY_DIR / "manifest.cbor"
     write_private(manifest, base64.b64decode(offer["manifest_cbor_base64"]))
-    registry_b64 = fd.REGISTRY_BOC.read_text().strip()
+    registry_b64 = "".join(fd.REGISTRY_BOC.read_text().split())
     write_private(GATEWAY_DIR / "registry-code.boc", (registry_b64 + "\n").encode())
     endpoints = fd.rpc_endpoints()
     profile = {"schema": "tos.service.provider-quote-profile.v2", "provider_agent_id": provider_agent,

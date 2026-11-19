@@ -65,9 +65,13 @@ done
 declare -A address=([a]=$prefix.10 [c]=$prefix.12 [d]=$prefix.13 [e]=$prefix.14 [f]=$prefix.15 [relay1]=${relay_ips[0]}
   [relay2]=${relay_ips[1]})
 read -r -a nodes <<< "${MR_NET_NODES:-a c}"
+# The address table is the one list of names this script can make: a node
+# in MR_NET_NODES must be in it, and down removes every node namespace in it.
 for node in "${nodes[@]}"; do
-  case "$node" in a|c|d|e|f) ;; *) echo "MR_NET_NODES: unknown node $node" >&2; exit 2 ;; esac
+  [[ -n "${address[$node]:-}" && $node != relay1 && $node != relay2 ]] ||
+    { echo "MR_NET_NODES: unknown node $node" >&2; exit 2; }
 done
+mapfile -t all_nodes < <(printf '%s\n' "${!address[@]}" | grep -v '^relay' | sort)
 relays=(relay1 relay2)
 tag=tosmr-remote
 
@@ -95,7 +99,7 @@ rules_snapshot() {
 }
 
 down() {
-  for name in "${nodes[@]}"; do
+  for name in "${all_nodes[@]}"; do
     ns=tosmr-$name
     if ip netns list | grep -qw "$ns"; then
       pids=$(root ip netns pids "$ns" || true)

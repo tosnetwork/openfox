@@ -47,12 +47,15 @@ relay_port=8443
 declare -A address=([a]=$prefix.10 [b]=$prefix.11 [c]=$prefix.12 [d]=$prefix.13 [e]=$prefix.14
   [f]=$prefix.15 [relay1]=$prefix.20 [relay2]=$prefix.21)
 read -r -a nodes <<< "${MR_NET_NODES:-a b c}"
+# The address table is the one list of names this script can make: a node
+# in MR_NET_NODES must be in it, and down removes every one of them,
+# whatever MR_NET_NODES says, so a leftover of another run's node set is
+# removed too.
 for node in "${nodes[@]}"; do
-  case "$node" in a|b|c|d|e|f) ;; *) echo "MR_NET_NODES: unknown node $node" >&2; exit 2 ;; esac
+  [[ -n "${address[$node]:-}" && $node != relay1 && $node != relay2 ]] ||
+    { echo "MR_NET_NODES: unknown node $node" >&2; exit 2; }
 done
-# down removes every namespace this script can make, whatever MR_NET_NODES
-# says, so a leftover of another run's node set is removed too.
-all_names=(a b c d e relay1 relay2)
+mapfile -t all_names < <(printf '%s\n' "${!address[@]}" | sort)
 names=("${nodes[@]}" relay1 relay2)
 relays=(relay1 relay2)
 

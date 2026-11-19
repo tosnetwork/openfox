@@ -1185,6 +1185,13 @@ def offline_beyond_ttl() -> None:
          {"idle_seconds": idle, "members": members, "lacking": lacking, "f_room": pulled})
     refreshed_at = {node: evidence_age_base("a", node) for node in ("b", "c")}
     RUN["f_refreshed_evidence_at"] = refreshed_at
+    # B and C apply F's Add before the window opens, so the base epoch the
+    # Commit of E is judged against is the room's current one.
+    a_epoch = room_of("a").get("room_epoch", 0)
+    for member in ("b", "c"):
+        caught = wait_room(member, lambda row: row.get("room_epoch", 0) >= a_epoch, 600)
+        require(f"{member.upper()} applies F's Add (room epoch {a_epoch}) before B's window opens",
+                caught.get("room_epoch") == a_epoch, caught)
     base = room_of("b")
     offline_window("b", "start")
     stop_node("b")
@@ -1755,7 +1762,7 @@ def keep_failed_state() -> None:
     into <workdir>/failed-state/<node> before the teardown removes it, with
     every file or directory whose name names a secret left out (listed in
     the record), so the failure can be inspected afterwards."""
-    if all(step.get("pass") for step in fd.evidence.get("steps", [])):
+    if all(step.get("pass") for step in fd.steps):
         return
     import shutil
     target = WORK / "failed-state"

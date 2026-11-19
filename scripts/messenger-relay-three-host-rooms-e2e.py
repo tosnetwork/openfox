@@ -1216,6 +1216,13 @@ def offline_beyond_ttl() -> None:
         caught = wait_room(member, lambda row: row.get("room_epoch", 0) >= a_epoch, 600)
         require(f"{member.upper()} applies F's Add (room epoch {a_epoch}) before B's window opens",
                 caught.get("room_epoch") == a_epoch, caught)
+    # The idle also retired B's and C's evidence of each other (they renew it
+    # only in band). C deposits a room message to B only with B's evidence in
+    # hand, so without an exchange first C would hold 'lost-to-b' (and pull
+    # B's evidence) until B is back, and the message would never sit at the
+    # relays to expire there. One steady-state exchange renews both (an
+    # evidence-expired pull each way at most, item 16).
+    renewal_exchange()
     for member in ("b", "c"):
         settled = poll(lambda: not unsettled_heads("a", member) or None, 900, 3)
         require(f"A's room queue to {member.upper()} is settled (F's Commit and roster acknowledged) before B's "
@@ -1288,7 +1295,27 @@ def offline_beyond_ttl() -> None:
     gate("15", "restarted, C finds the same envelope, answers it `duplicate` and its room stays usable",
          bool(dup), {"acks": acks_for("c", commit)})
     lost = compose("c", "lost-to-b")
-    poll(lambda: now() > stopped_at + RELAY_TTL + 120 or None, RELAY_TTL + 400, 10)
+    # The message is lost to B only if C deposited it while B was stopped and
+    # it then expired at every relay before B is started: B's restart waits
+    # for the deposit's own TTL, not only the stop's (the crash window above
+    # may take minutes after the stop).
+    def lost_deposits() -> list[dict]:
+        return [{"envelope_id": row["record"]["envelope_id"], "accepted_at_unix": row["record"]["accepted_at_unix"]}
+                for row in room_frames("c")
+                if row["packet"]["recipient_agent_id"] == RUN["b"]["agent"] and
+                row["frame"].get("room_object_type") == 3 and row["record"].get("envelope_id") and
+                (row["record"].get("accepted_at_unix") or 0) >= lost["sent_at"] - 5]
+    lost_to_b = poll(lambda: lost_deposits() or None, 300, 3) or []
+    require("C deposits 'lost-to-b' to the relays for stopped B (it holds B's evidence)", bool(lost_to_b),
+            {"c_evidence_of_b_committed_at": evidence_age_base("c", "b"), "sent_at": lost["sent_at"]})
+    deposited_at = max((d["accepted_at_unix"] for d in lost_to_b), default=now())
+    poll(lambda: now() > max(stopped_at, deposited_at) + RELAY_TTL + 120 or None, RELAY_TTL + 900, 10)
+    lost_ids = {d["envelope_id"] for d in lost_to_b}
+    expired = poll(lambda: not any(e in lost_ids for relay in RELAYS for e in listed_ids(relay, RUN["b"]["agent"]))
+                   or None, 300, 10)
+    require("'lost-to-b' expired at every relay before B is started", bool(expired),
+            {"deposited_at_unix": deposited_at, "envelopes": [e[:12] for e in lost_ids]})
+    RUN["lost_to_b"] = {"deposited_at_unix": deposited_at, "b_stopped_at_unix": stopped_at}
     # One envelope per generation of part 0, in deposit order; the newest is
     # the one still held, every older one must be withdrawn.
     deposits = {}
@@ -1394,6 +1421,12 @@ def remove_c_with_authority_crash() -> None:
     removes E then C. A's daemon is killed while its OpenMLS driver runs
     the Remove; after the restart the Remove is published once or the
     decision is made again, and no member forks."""
+    # Only a member queue's head is deposited: A's queue to C must be settled
+    # before C's serve stops, so what is in flight to C at the Remove is the
+    # Commit removing E, not an older object it would wait behind.
+    settled = poll(lambda: not unsettled_heads("a", "c") or None, 900, 3)
+    require("A's room queue to C is settled before C's serve stops for the Remove", bool(settled),
+            {"unsettled": unsettled_heads("a", "c")})
     offline_window("c", "start")
     stop_serve("c")
     room_op("a", "remove", "e")

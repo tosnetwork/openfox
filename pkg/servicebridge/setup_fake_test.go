@@ -438,10 +438,15 @@ func (f fakeRunner) Run(_ context.Context, call TOSCTLCall) ([]byte, error) {
 		if behavior == fakeWrongTarget {
 			address = "0:" + strings.Repeat("ee", 32)
 		}
+		// The test-network-only build runs other code.
+		code := fakeCodeHashActor
+		if fakeArgument(call.Args, "--code-profile") == "test" {
+			code = TestProfileActorCodeHash
+		}
 		if err := send(func(w *fakeWorld) {
 			w.Actor = &fakeActor{
 				Address: address, Owner: owner, Attestor: attestor, Terms: fakeTerms(call.Args),
-				Metadata: zeroHash64, Proof: zeroHash64, LastLT: 10, CodeHash: fakeCodeHashActor, PolicyCount: 1,
+				Metadata: zeroHash64, Proof: zeroHash64, LastLT: 10, CodeHash: code, PolicyCount: 1,
 			}
 		}); err != nil {
 			return nil, err

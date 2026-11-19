@@ -157,14 +157,14 @@ func TestSetupCommandsRequireAndUseTheRealPinnedTOSCTL(t *testing.T) {
 		RefundClaimWindow: 3600,
 	}
 	owner := "0:" + strings.Repeat("11", 32)
-	actor, err := ops.actorAddress(ctx, owner, terms, created)
+	actor, err := ops.actorAddress(ctx, owner, terms, created, false)
 	if err != nil {
 		t.Fatalf("the real helper did not derive the actor address: %v", err)
 	}
-	same, _ := ops.actorAddress(ctx, owner, terms, created)
+	same, _ := ops.actorAddress(ctx, owner, terms, created, false)
 	dearer := terms
 	dearer.PriceNano++
-	other, _ := ops.actorAddress(ctx, owner, dearer, created)
+	other, _ := ops.actorAddress(ctx, owner, dearer, created, false)
 	if actor != same || actor == other || !rawAddressPattern.MatchString(actor) {
 		t.Fatalf("actor addresses: %s %s %s", actor, same, other)
 	}

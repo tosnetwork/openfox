@@ -236,8 +236,10 @@ func serviceOfferCommand() *cobra.Command {
 	flags.StringVar(&storageFee, "storage-fee", "", "non-refundable storage fee per call, in TOS (at least 0.1 "+
 		"plus the cleanup bounty)")
 	flags.StringVar(&cleanupBounty, "cleanup-bounty", "", "bounty for sweeping an expired request, in TOS (0.1 to 1)")
-	flags.Uint32Var(&responseSLA, "response-sla", 0, "seconds a call has to be responded to (3600 to 2592000)")
-	flags.Uint32Var(&refundWindow, "refund-claim-window", 0, "seconds a refund stays claimable (3600 to 2592000)")
+	flags.Uint32Var(&responseSLA, "response-sla", 0, "seconds a call has to be responded to (3600 to 2592000; "+
+		"600 to 2592000 with --test-profile-actor)")
+	flags.Uint32Var(&refundWindow, "refund-claim-window", 0, "seconds a refund stays claimable (3600 to 2592000; 600 to "+
+		"2592000 with --test-profile-actor)")
 	flags.StringVar(&in.Version, "version", servicebridge.DefaultOfferVersion, "Capability version")
 	flags.StringVar(&in.AttestorController, "attestor-controller", servicebridge.DefaultAttestorController,
 		"vault controller that attests responses (created if absent)")
@@ -260,6 +262,10 @@ func serviceOfferCommand() *cobra.Command {
 	flags.StringVar(&in.GatewayCardPath, "gateway-card-out", "", "the gateway quote profile's "+
 		"provider_key_card_file: write the current key card there and keep it current while serving (needs "+
 		"relays; default: the path the provider section already names, if any)")
+	flags.BoolVar(&in.TestProfileActor, "test-profile-actor", false, "TEST NETWORKS ONLY: deploy the "+
+		"test-network-only Service Actor build, whose response SLA and refund-claim window may be as short as "+
+		"600 seconds; required when, and refused unless, the rail configuration pins its code hash "+
+		servicebridge.TestProfileActorCodeHash)
 	flags.BoolVar(&in.Yes, "yes", false, "create the controller, sign and send as previewed")
 	for _, name := range []string{
 		"price", "storage-fee", "cleanup-bounty", "response-sla", "refund-claim-window",

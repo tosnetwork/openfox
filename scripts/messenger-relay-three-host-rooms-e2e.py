@@ -449,6 +449,25 @@ def sample_heads() -> None:
         HEADS_SEEN[head.get("object_digest", path.stem)] = head
 
 
+def unsettled_heads(node: str, member: str) -> list[dict]:
+    """The heads of node's room outbox still queued to member (its per-member
+    queue: pending or carried, not a single-deposit Remove copy). A head
+    whose every member settled is deleted, so an absent file is settled."""
+    out = []
+    for path in sorted((mdir(node) / "state" / "room-outbox").glob("*.json")):
+        try:
+            head = read_json(path)
+        except (OSError, ValueError):
+            continue
+        for row in head.get("members") or []:
+            if row.get("agent_id") == RUN[member]["agent"] and not row.get("once") and \
+                    row.get("state") in ("pending", "carried"):
+                out.append({"object_digest": head.get("object_digest", path.stem)[:12],
+                            "object_type": head.get("object_type"), "room_epoch": head.get("room_epoch"),
+                            "state": row.get("state"), "generation": row.get("generation")})
+    return out
+
+
 def room_frames(node: str, kind: int = 3) -> list[dict]:
     return [row for row in seen_frames(node) if row["frame"].get("kind") == kind]
 
@@ -1186,12 +1205,21 @@ def offline_beyond_ttl() -> None:
     refreshed_at = {node: evidence_age_base("a", node) for node in ("b", "c")}
     RUN["f_refreshed_evidence_at"] = refreshed_at
     # B and C apply F's Add before the window opens, so the base epoch the
-    # Commit of E is judged against is the room's current one.
+    # Commit of E is judged against is the room's current one. Applying the
+    # Commit is not the whole Add: the authority's per-member queue holds the
+    # Add's roster object behind it, and only a queue's head is deposited.
+    # B stopped with that roster unacknowledged would leave E's Commit to B
+    # waiting behind it for the whole window, so B's window opens only once
+    # A's queues to B and C are settled.
     a_epoch = room_of("a").get("room_epoch", 0)
     for member in ("b", "c"):
         caught = wait_room(member, lambda row: row.get("room_epoch", 0) >= a_epoch, 600)
         require(f"{member.upper()} applies F's Add (room epoch {a_epoch}) before B's window opens",
                 caught.get("room_epoch") == a_epoch, caught)
+    for member in ("b", "c"):
+        settled = poll(lambda: not unsettled_heads("a", member) or None, 900, 3)
+        require(f"A's room queue to {member.upper()} is settled (F's Commit and roster acknowledged) before B's "
+                "window opens", bool(settled), {"unsettled": unsettled_heads("a", member)})
     base = room_of("b")
     offline_window("b", "start")
     stop_node("b")

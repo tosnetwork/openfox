@@ -1833,6 +1833,14 @@ async def main() -> int:
     fd.evidence["owner_decisions"] = DECISIONS
     fd.evidence["blackouts"] = {"windows_utc": BLACKOUTS, "waits": BLACKOUT_WAITS,
                                 "rule": "no member started, stopped or paused inside a blackout window"}
+    # MR2_KNOWN_CONTEXT_FILE: lines the pre-launch gates passed as known
+    # context (another host's alerts the coordinator ruled do not block the
+    # run), copied verbatim.
+    known = os.environ.get("MR2_KNOWN_CONTEXT_FILE", "")
+    if known:
+        lines = Path(known).read_text().splitlines() if Path(known).is_file() else []
+        fd.evidence["known_context"] = {"source": os.environ.get("MR2_KNOWN_CONTEXT_SOURCE", ""),
+                                        "lines": [fd.redact(line) for line in lines]}
     fd.evidence["host_overlap"] = {
         "note": "samples (every 30 s) when this host's 1-minute load was above 32 or another agent's test, build "
                 "or validator job ran beside the run; the run's own processes are excluded",

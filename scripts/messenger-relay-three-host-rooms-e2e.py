@@ -613,7 +613,49 @@ def offline_window(node: str, edge: str) -> None:
 
 # --- Counters sampled during the run (item 9) -------------------------------------------
 
-COUNTS = {"stop": False, "samples": 0, "max_room": {}, "max_chat": {}, "thread": None}
+COUNTS = {"stop": False, "samples": 0, "max_room": {}, "max_chat": {}, "thread": None,
+          "relay_samples": 0, "held_room": {}, "held_chat": {}, "held_at": {}}
+
+
+def sample_relay_held() -> None:
+    """Item 9's bound is on what a relay holds: per sender, per peer, at any
+    relay, at most 24 chat envelopes of which at most 16 of kind 3 (carriage
+    section 7 item 3). `chat status` counts the sender's journal, which keeps
+    an envelope until its packet expires (the handshake retention) and
+    cannot see the peer's acknowledgement or a relay's shorter TTL, so it
+    over-counts by design; the carrier drops what no relay lists before it
+    refuses. Here every envelope a sender deposited (its current seal and
+    each earlier one still to be withdrawn) is matched against the peer's
+    mailbox listing at each relay."""
+    owned: dict[str, dict[str, tuple[str, int]]] = {}
+    for sender in MEMBERS:
+        for row in seen_frames(sender):
+            peer = row["packet"].get("recipient_agent_id", "")
+            kind = row["frame"].get("kind") or row["record"].get("frame_kind") or 0
+            ids = [row["record"].get("envelope_id")] + [w.get("envelope_id") for w in
+                                                         row["record"].get("withdrawals") or []]
+            for envelope_id in ids:
+                if peer and envelope_id:
+                    owned.setdefault(peer, {})[envelope_id] = (sender, kind)
+    for peer, envelopes in owned.items():
+        for relay in RELAYS:
+            try:
+                listed = set(listed_ids(relay, peer))
+            except Exception:  # noqa: BLE001 - an unreachable listing is sampled later
+                continue
+            held: dict[str, list[int]] = {}
+            for envelope_id, (sender, kind) in envelopes.items():
+                if envelope_id in listed:
+                    counts = held.setdefault(sender, [0, 0])
+                    counts[0] += 1
+                    counts[1] += 1 if kind == 3 else 0
+            for sender, (chat, room) in held.items():
+                key = f"{sender}->{peer[:14]}"
+                if room > COUNTS["held_room"].get(key, 0):
+                    COUNTS["held_at"][key] = {"at": now(), "relay": relay, "kind3": room, "chat": chat}
+                COUNTS["held_room"][key] = max(COUNTS["held_room"].get(key, 0), room)
+                COUNTS["held_chat"][key] = max(COUNTS["held_chat"].get(key, 0), chat)
+    COUNTS["relay_samples"] += 1
 # Other agents' heavy jobs on this host during the run (load average and
 # other processes' test, build and validator jobs), for the record.
 OVERLAP: list[dict] = []
@@ -657,6 +699,10 @@ def sample_counts() -> None:
             COUNTS["samples"] += 1
         for node in NODES:
             seen_frames(node)
+        try:
+            sample_relay_held()
+        except Exception as error:  # noqa: BLE001 - one failed sample must not stop the sampler
+            COUNTS.setdefault("relay_sample_errors", []).append(f"{now()}: {type(error).__name__}")
         sample_heads()
         sample_overlap()
         for _ in range(30):
@@ -1584,11 +1630,20 @@ def states_counters_sizes_search() -> None:
                 j += 1
             worst = max(worst, j - i)
         pacing[node] = {"kind3_deposits": len(times), "most_in_any_60_s": worst}
-    gate("9", "no peer held more than 16 kind-3 or 24 chat envelopes (sampled every 30 s from `chat status`), and "
-         "no node deposited more kind-3 envelopes in any 60 s than the 30-per-minute, burst-16 bucket allows (46)",
-         COUNTS["samples"] > 0 and room_max <= 16 and chat_max <= 24 and
-         all(v["most_in_any_60_s"] <= 46 for v in pacing.values()),
-         {"samples": COUNTS["samples"], "max_kind3": room_max, "max_chat": chat_max, "pacing": pacing})
+    # The bound is on what a relay holds for a peer from one sender (carriage
+    # section 7 item 3); the journal counts of `chat status` are recorded
+    # beside it, as an upper bound that may exceed it by design.
+    held_room = max(COUNTS["held_room"].values() or [0])
+    held_chat = max(COUNTS["held_chat"].values() or [0])
+    gate("9", "no relay held more than 16 kind-3 or 24 chat envelopes of one sender for one peer (each sender's "
+         "envelopes matched against the peer's mailbox listing at each relay every 30 s), and no node deposited "
+         "more kind-3 envelopes in any 60 s than the 30-per-minute, burst-16 bucket allows (46)",
+         COUNTS["relay_samples"] > 0 and held_room <= 16 and held_chat <= 24 and
+         not COUNTS.get("relay_sample_errors") and all(v["most_in_any_60_s"] <= 46 for v in pacing.values()),
+         {"relay_samples": COUNTS["relay_samples"], "max_kind3_held": held_room, "max_chat_held": held_chat,
+          "worst_kind3_held": COUNTS["held_at"], "relay_sample_errors": COUNTS.get("relay_sample_errors", []),
+          "pacing": pacing, "journal_samples": COUNTS["samples"], "journal_max_kind3": room_max,
+          "journal_max_chat": chat_max})
     sizes, envelope_ok, nonfinal = [], [], []
     for node in NODES:
         for row in room_frames(node):
@@ -1999,8 +2054,13 @@ async def main() -> int:
         "note": "samples (every 30 s) when this host's 1-minute load was above 32 or another agent's test, build "
                 "or validator job ran beside the run; the run's own processes are excluded",
         "samples": OVERLAP[-200:], "sampled_overlaps": len(OVERLAP)}
-    fd.evidence["peer_counters"] = {"samples": COUNTS["samples"], "max_kind3_per_peer": COUNTS["max_room"],
-                                    "max_chat_per_peer": COUNTS["max_chat"]}
+    fd.evidence["peer_counters"] = {
+        "note": "held_*: envelopes of one sender for one peer listed at one relay (the bound); journal_*: the "
+                "sender's `chat status` journal counts, kept until packet expiry, an upper bound",
+        "relay_samples": COUNTS["relay_samples"], "held_max_kind3_per_peer": COUNTS["held_room"],
+        "held_max_chat_per_peer": COUNTS["held_chat"], "held_worst_kind3": COUNTS["held_at"],
+        "journal_samples": COUNTS["samples"], "journal_max_kind3_per_peer": COUNTS["max_room"],
+        "journal_max_chat_per_peer": COUNTS["max_chat"]}
     fd.evidence["gate_items"] = GATE
     fd.evidence["not_verified"] = NOT_VERIFIED
     fd.evidence["hold_at"] = mr1.HOLD_AT or None

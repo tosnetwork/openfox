@@ -332,22 +332,7 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err
 	}
-	sealBody, receiptDescriptor, err := guarantor.NewClaimDecisionAdmissionReceiptSealBodyV1(decisionAdmission,
-		position.Terms, now)
-	if err != nil {
-		return GuarantorClaimTransitionResult{}, err
-	}
-	sealDigest, err := guarantor.Digest(guarantor.ClaimDecisionAdmissionReceiptSealDomainV1, sealBody)
-	if err != nil {
-		return GuarantorClaimTransitionResult{}, err
-	}
-	sealAuthorization, err := coordinator.ActionAuthoritySigner.SignObject("claim-decision-admission-receipt-seal",
-		sealDigest, "tos.service.agent-guarantor-claim-decision-admission-receipt-seal-signature.v1", now)
-	if err != nil {
-		return GuarantorClaimTransitionResult{}, err
-	}
-	decisionProof, err := guarantor.BuildClaimDecisionAdmissionReceiptProofV1(decisionAdmission, position.Terms,
-		receiptDescriptor, sealBody, sealAuthorization)
+	decisionProof, err := coordinator.sealDecisionAdmissionProof(decisionAdmission, position.Terms, now)
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err
 	}

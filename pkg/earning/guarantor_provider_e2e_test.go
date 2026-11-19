@@ -253,6 +253,20 @@ func testHex(key ed25519.PublicKey) string {
 }
 
 func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.T) {
+	runGuarantorProviderLifecycle(t, false)
+}
+
+// TestGuarantorInitialFallbackIsPortableChallengeableAndApplied lets the
+// review deadline pass with no Decision Authority action. The
+// Agreement-granted fallback must then be admitted, verify as a portable
+// receipt within every size bound, and be closed and applied through its
+// compact proof. The fallback authority set differs from the Decision
+// Authority set, so a proof verified against the wrong set is refused.
+func TestGuarantorInitialFallbackIsPortableChallengeableAndApplied(t *testing.T) {
+	runGuarantorProviderLifecycle(t, true)
+}
+
+func runGuarantorProviderLifecycle(t *testing.T, initialFallback bool) {
 	now := time.Now().UTC().Truncate(time.Second)
 	guarantorPublic, guarantorKey, _ := ed25519.GenerateKey(rand.Reader)
 	coveredPublic, coveredKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -261,7 +275,11 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 		return commerce.ProfileRefV1{ProfileURI: "tos.test." + name + ".v1", ProfileVersion: 1, ProfileDigest: digest(ch)}
 	}
 	asset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nano"}
-	fallback, err := guarantor.NewDenyZeroTerminalFallbackV1(ref("e", "fallback"), []string{"agent:guarantor"}, "all",
+	fallbackSubject := "agent:guarantor"
+	if initialFallback {
+		fallbackSubject = "agent:fallback-authority"
+	}
+	fallback, err := guarantor.NewDenyZeroTerminalFallbackV1(ref("e", "fallback"), []string{fallbackSubject}, "all",
 		map[string]string{"deny_zero": "fallback-deny", "no_eligible_benefit": "fallback-no-benefit",
 			"aggregate_exhausted": "fallback-cap-exhausted", "aggregate_limited": "fallback-cap-limited", "full_benefit": "fallback-full"})
 	if err != nil {
@@ -1022,6 +1040,61 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 		t.Fatal("stale claim revision was accepted after the lineage advanced")
 	}
 	claim = revisedClaim
+	if initialFallback {
+		admittedAt := time.Unix(int64(revisionResult.AdmissionReceipt.Body.AdmittedAtUnix), 0).UTC()
+		fallbackAt := admittedAt.Add(time.Duration(terms.ReviewDeadlineSeconds+1) * time.Second)
+		authority.now = func() time.Time { return fallbackAt }
+		fallbackAdmission, err := coordinator.AdmitInitialFallbackDecision(context.Background(),
+			GuarantorAdmitInitialFallbackInput{AgreementDigest: agreementDigest, ClaimID: claimID}, fence)
+		if err != nil || fallbackAdmission.Resolution.State != commerce.ActionTerminal ||
+			fallbackAdmission.Receipt.Body.AdmittedClaimState != "denied" ||
+			fallbackAdmission.Receipt.Body.DecisionPath != "initial_terminal_fallback" {
+			t.Fatalf("admit initial fallback: resolution=%#v err=%v", fallbackAdmission.Resolution, err)
+		}
+		receipt := fallbackAdmission.Receipt
+		if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(receipt, terms, coordinator.AgreementVerifier,
+			coordinator.Resolver, authority, fallbackAt); err != nil {
+			t.Fatalf("the admitted fallback receipt is not portable: %v", err)
+		}
+		wire, err := guarantor.Canonical(receipt)
+		request := receipt.StageActionAdmissionEvidence.CanonicalRequest
+		if err != nil || len(wire) > guarantor.MaxCanonicalObjectBytes || len(request) > guarantor.MaximumStageRequestBytesV1 {
+			t.Fatalf("fallback receipt exceeds its bounds: receipt=%d request=%d err=%v", len(wire), len(request), err)
+		}
+		t.Logf("portable Guarantor fallback admission=%d bytes, request=%d bytes", len(wire), len(request))
+		closeAt := fallbackAt.Add(time.Duration(terms.ChallengeWindowSeconds+1) * time.Second)
+		authority.now = func() time.Time { return closeAt }
+		closed, err := coordinator.TransitionClaimDecision(context.Background(), GuarantorTransitionClaimInput{
+			AgreementDigest: agreementDigest, DecisionAdmissionReceipt: receipt, TransitionKind: "challenge_close"}, fence)
+		if err != nil || closed.Resolution.State != commerce.ActionTerminal ||
+			closed.Receipt.Body.ResultingClaimState != "final_denied" {
+			t.Fatalf("close fallback challenge window: result=%#v err=%v", closed.Resolution, err)
+		}
+		if err := guarantor.VerifyClaimDecisionAdmissionReceiptProofV1(closed.Receipt.DecisionAdmissionProof, terms,
+			coordinator.Resolver, closeAt); err != nil {
+			t.Fatalf("the fallback decision's compact proof does not verify: %v", err)
+		}
+		applied, err := coordinator.ApplyClaimDecision(context.Background(), GuarantorApplyDecisionInput{
+			AgreementDigest: agreementDigest, DecisionAdmissionReceipt: receipt, TerminalTransitionReceipt: closed.Receipt}, fence)
+		if err != nil || applied.Resolution.State != commerce.ActionTerminal || len(applied.Payouts.Obligations) != 0 {
+			t.Fatalf("apply fallback denial: result=%#v err=%v", applied.Resolution, err)
+		}
+		// Closing the coverage puts the fallback decision into the terminal
+		// claim set, whose verifier checks it against the fallback authority set.
+		closeCoverageAt := now.Add(45 * time.Minute)
+		authority.now = func() time.Time { return closeCoverageAt }
+		closedCoverage, err := coordinator.CloseCoverage(context.Background(), GuarantorCloseCoverageInput{Offer: offer,
+			ActivationEvidence: activation}, fence)
+		if err != nil || closedCoverage.CoverageResolution.Body.TerminalState != "closed" ||
+			closedCoverage.ExposureRelease.Body.RealizedLoss.AmountAtomic != "0" {
+			t.Fatalf("close coverage after a fallback denial: err=%v", err)
+		}
+		if err := guarantor.VerifyTerminalClaimSetV1(closedCoverage.TerminalClaimSet, offer, coordinator.AgreementVerifier,
+			coordinator.Resolver, authority, coordinator.PaymentVerifier, closeCoverageAt); err != nil {
+			t.Fatalf("the terminal claim set holding a fallback decision does not verify: %v", err)
+		}
+		return
+	}
 	claimEnvelopeDigest, _ := guarantor.ClaimEnvelopeDigest(claim)
 	decisionEvidence := guarantor.CanonicalGuarantorEvidenceSetV1{SchemaVersion: 1, Purpose: "claim-decision-evidence",
 		ContextDigest: claimEnvelopeDigest, Items: []guarantor.CanonicalGuarantorEvidenceItemV1{{

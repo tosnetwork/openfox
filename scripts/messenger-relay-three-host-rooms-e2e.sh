@@ -81,7 +81,7 @@ repo=$(dirname "$here")
 : "${THERMAL_GUARD:?}" "${E2E_AI_SOURCE:?}"
 export E2E_BASE_PORT=${E2E_BASE_PORT:-49800}
 export E2E_RPC_PORTS=${E2E_RPC_PORTS:-49880,49881,49882}
-export MR_NET_NODES="a b c d e"
+export MR_NET_NODES="a b c d e f"
 openfox_source=${E2E_OPENFOX_SOURCE:-$repo}
 export E2E_OPENFOX_SOURCE=$openfox_source
 remote=${MR2_REMOTE:-0}
@@ -99,7 +99,7 @@ if [ "$remote" = 1 ]; then
   fi
   export MR1_REDEPOSIT_SECONDS=${MR1_REDEPOSIT_SECONDS:-600}
   export MR1_DESCRIPTOR_LIFETIME=${MR1_DESCRIPTOR_LIFETIME:-1800}
-  export MR_NET_NODES="a d e"
+  export MR_NET_NODES="a d e f"
 fi
 roomtest=${MR2_ROOMTEST:-0}
 if [ "$roomtest" != 1 ]; then
@@ -389,7 +389,7 @@ bash "$netsh" up "$work"
 
 export E2E_EXECUTOR_SOCKET=unused-no-sale
 if [ "$remote" = 1 ]; then
-  change "this host: namespaces tosmr-a, tosmr-d, tosmr-e, bridge tosmr-br0 and the tagged forwarding rules added; reversal: net script down"
+  change "this host: namespaces tosmr-a, tosmr-d, tosmr-e, tosmr-f, bridge tosmr-br0 and the tagged forwarding rules added; reversal: net script down"
   export E2E_REPO="$repo" E2E_ROOT_BASE="$remote_run" E2E_RELAY_CA_FILE="$work/tls/ca.pem"
   export MR1_NETSH="$netsh" MR1_B_TABLE="$remote_table" MR1_C_TABLE="$remote_table"
   export C_SHARES_RELAY=${C_SHARES_RELAY:-}

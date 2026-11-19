@@ -49,12 +49,12 @@ _spec.loader.exec_module(mr1)
 fd = mr1.fd
 
 WORK, PRIVATE, ROOT, BIN = mr1.WORK, mr1.PRIVATE, mr1.ROOT, mr1.BIN
-NODES = ("a", "b", "c", "d", "e")
+NODES = ("a", "b", "c", "d", "e", "f")
 MEMBERS = ("a", "b", "c")
-FILLERS = ("d", "e")
+FILLERS = ("d", "e", "f")
 mr1.NODES = NODES
-mr1.ADDRESS.update({"d": "10.231.78.13", "e": "10.231.78.14"})
-mr1.NAMESPACE.update({name: f"tosmr-{name}" for name in ("d", "e")})
+mr1.ADDRESS.update({"d": "10.231.78.13", "e": "10.231.78.14", "f": "10.231.78.15"})
+mr1.NAMESPACE.update({name: f"tosmr-{name}" for name in ("d", "e", "f")})
 mr1.HIDE = {node: [PRIVATE, *(ROOT / other for other in NODES if other != node), *(WORK / r for r in mr1.RELAYS)]
             for node in NODES}
 mr1.HIDE.update({relay: [PRIVATE, ROOT.parent, *(WORK / r for r in mr1.RELAYS if r != relay)]
@@ -107,7 +107,7 @@ mr1.gate = mr1_gate
 
 # --- Configuration ------------------------------------------------------------------
 
-ALLOW = {"a": ["b", "c", "d", "e"], "b": ["a"], "c": [], "d": ["a"], "e": ["a"]}
+ALLOW = {"a": ["b", "c", "d", "e", "f"], "b": ["a"], "c": [], "d": ["a"], "e": ["a"], "f": ["a"]}
 
 
 def relay_argv(relay: str) -> list[str]:
@@ -679,11 +679,11 @@ def contacts() -> None:
     other only from rosters."""
     for node in NODES:
         mr1.export_contact(node)
-    peers = ("b", "d", "e") + (("c",) if os.environ.get("MR2_TARGETED_C_ALLOWS_A") == "1" else ())
+    peers = ("b", "d", "e", "f") + (("c",) if os.environ.get("MR2_TARGETED_C_ALLOWS_A") == "1" else ())
     imported = {f"a<-{peer}": mr1.import_contact("a", peer) for peer in peers}
-    require("A imports B's, D's and E's contact files; B, C, D and E import nothing yet",
+    require("A imports B's, D's, E's and F's contact files; B, C, D, E and F import nothing yet",
             all(v.get("agent_id") == RUN[k[-1]]["agent"] for k, v in imported.items()) and
-            all(not list((mdir(n) / "contacts").iterdir()) for n in ("b", "c", "d", "e")), imported)
+            all(not list((mdir(n) / "contacts").iterdir()) for n in ("b", "c", "d", "e", "f")), imported)
     fd.evidence["contact_exchange"] = {"imports": imported, "handed": ["b -> a", "d -> a", "e -> a",
                                                                       "c -> a with C's invite (item 1)"],
                                        "not_handed": "nothing to B, C, D or E: they learn A in band"}
@@ -1018,6 +1018,19 @@ def filler_joins(filler: str, room_epoch: int) -> dict:
     return row
 
 
+def evidence_age_base(node: str, peer: str) -> int:
+    """When a node last committed a peer's relay evidence (0 if it holds none)."""
+    path = mdir(node) / "state" / "relay-evidence" / (RUN[peer]["agent"][6:] + ".json")
+    return int(read_json(path).get("updated_at_unix") or 0) if path.is_file() else 0
+
+
+def idle_seconds() -> int:
+    """Seconds since the last room traffic A deposited or received (its newest
+    room frame), the room's idle time."""
+    times = [row["record"].get("accepted_at_unix", 0) for row in room_frames("a")]
+    return now() - max(times) if times else 0
+
+
 def pull_record(node: str, peer: str) -> dict:
     """A node's relay-pull record for a peer, without its digests."""
     path = mdir(node) / "state" / "relay-pull" / (RUN[peer]["agent"][6:] + ".json")
@@ -1149,6 +1162,29 @@ def offline_beyond_ttl() -> None:
     envelope `duplicate`. B, restarted after the TTL, applies the
     re-deposited Commit (generations and withdrawals recorded) and gets a
     room.gap naming C."""
+    # The idle-pull Add (#74's path): the hold for B's window keeps the room
+    # idle past the descriptor lifetime, so A's stored evidence of its
+    # members is retired. With every member online A adds filler F; its
+    # roster demands each member's evidence through a kind-4 pull, answered
+    # and committed. E's Add below, with B stopped and C paused, then runs on
+    # the evidence F's Add refreshed.
+    # The room stays idle at least the descriptor lifetime plus the evidence
+    # sweep's slack, and F's Add plus B's whole window must then fit before
+    # the next blackout.
+    poll(lambda: idle_seconds() > mr1.DESCRIPTOR_LIFETIME + 300 or None, 2 * mr1.DESCRIPTOR_LIFETIME + 600, 15)
+    wait_outside_blackout("b", WINDOW_LENGTH["b"] + 900)
+    idle = idle_seconds()
+    pulled = filler_joins("f", room_of("a").get("room_epoch", 0) + 1)
+    pulls = fd.evidence.get("authority_evidence_pulls", [])[-1] if fd.evidence.get("authority_evidence_pulls") else {}
+    lacking = pulls.get("members_lacking_evidence", []) if pulls.get("filler") == "f" else []
+    members = [node.upper() for node in NODES if node not in ("a", "f") and isinstance(RUN.get(node), dict)
+               and RUN[node].get("agent") in (room_of("a").get("members") or [])]
+    gate("4", f"after an idle of {idle} s (descriptor lifetime {mr1.DESCRIPTOR_LIFETIME} s) A's Add of F needed the "
+         "retired evidence of every member and pulled each (kind 4: requested, answered, committed)",
+         idle > mr1.DESCRIPTOR_LIFETIME and sorted(lacking) == sorted(members) and bool(members),
+         {"idle_seconds": idle, "members": members, "lacking": lacking, "f_room": pulled})
+    refreshed_at = {node: evidence_age_base("a", node) for node in ("b", "c")}
+    RUN["f_refreshed_evidence_at"] = refreshed_at
     base = room_of("b")
     offline_window("b", "start")
     stop_node("b")
@@ -1160,7 +1196,16 @@ def offline_beyond_ttl() -> None:
     RUN["c_mailbox_drained_before_window"] = bool(drained)
     offline_window("c", "start")
     mr1.signal_pattern(mr1.daemon_pattern("c"), "STOP")
+    e_added_at = now()
     filler_joins("e", base["room_epoch"] + 1)
+    fresh = {node: {"committed_at_unix": RUN["f_refreshed_evidence_at"].get(node),
+                    "age_at_e_add_seconds": (e_added_at - RUN["f_refreshed_evidence_at"][node])
+                    if RUN["f_refreshed_evidence_at"].get(node) else None}
+             for node in ("b", "c")}
+    gate("4", "E's Add, with B stopped and C paused, ran on the member evidence F's Add refreshed: each commitment "
+         f"was younger than the descriptor lifetime ({mr1.DESCRIPTOR_LIFETIME} s) when E was added",
+         all(v["age_at_e_add_seconds"] is not None and v["age_at_e_add_seconds"] < mr1.DESCRIPTOR_LIFETIME
+             for v in fresh.values()), fresh)
     # The window opens on the Commit itself: once A's Commit to C is at the
     # relays, C's serve hands it to the paused daemon (its call is logged
     # unanswered). Earlier unanswered calls belong to other envelopes.
@@ -1700,8 +1745,49 @@ def scenario() -> None:
 
 # --- Run ------------------------------------------------------------------------------
 
+# Names never copied out of a node's state: keys, seeds, private prekeys,
+# vaults, salts and tokens.
+SECRET_PARTS = ("key", "seed", "private", "secret", "vault", "salt", "token", "signer", "ack_secret")
+
+
+def keep_failed_state() -> None:
+    """On a failed run, every node's Messenger and OpenFox state is copied
+    into <workdir>/failed-state/<node> before the teardown removes it, with
+    every file or directory whose name names a secret left out (listed in
+    the record), so the failure can be inspected afterwards."""
+    if all(step.get("pass") for step in fd.evidence.get("steps", [])):
+        return
+    import shutil
+    target = WORK / "failed-state"
+    skipped, copied = [], 0
+    for node in NODES:
+        for label, root in (("messenger", mdir(node) / "state"), ("openfox", nd(node) / "state")):
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("*")):
+                relative = path.relative_to(root)
+                if any(part in piece.lower() for piece in relative.parts for part in SECRET_PARTS):
+                    if path.is_file():
+                        skipped.append(f"{node}/{label}/{relative}")
+                    continue
+                if path.is_file() and not path.is_symlink():
+                    destination = target / node / label / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    try:
+                        shutil.copyfile(path, destination)
+                        copied += 1
+                    except OSError:
+                        skipped.append(f"{node}/{label}/{relative} (unreadable)")
+    fd.evidence["failed_state_copy"] = {"dir": "<workdir>/failed-state", "files_copied": copied,
+                                        "secret_files_left_out": len(skipped), "left_out": skipped[:200]}
+
+
 def finish() -> None:
     COUNTS["stop"] = True
+    try:
+        keep_failed_state()
+    except Exception as error:  # noqa: BLE001 - the copy must never stop the teardown
+        fd.evidence["failed_state_copy"] = {"error": repr(error)}
     fd.evidence.setdefault("room_settings", {})["daemon_startup_lines"] = {
         node: sorted({line for line in log_text(f"messengerd-{node}").splitlines() if line.startswith("room_settings")})
         for node in NODES}
@@ -1759,7 +1845,7 @@ async def main() -> int:
             "namespaces": {mr1.NAMESPACE[name]: mr1.ADDRESS[name] for name in mr1.ADDRESS},
             "roles": {"a": "node A, the room's authority", "b": "node B, a member", "c": "node C, a member that "
                       "refuses unknown senders without an invite", "d": "filler joiner D (A adds and removes it "
-                      "only to make Commits; it never posts)", "e": "filler joiner E (likewise)"},
+                      "only to make Commits; it never posts)", "e": "filler joiner E (likewise)", "f": "filler joiner F (likewise; its Add after the idle pulls the members' retired evidence)"},
             "chain": f"three validators in the host namespace on 127.0.0.1, JSON-RPC ports {fd.RPC_PORTS}",
             "firewall": "node namespaces: outgoing only to the relays' port %d and 10.231.78.1 JSON-RPC ports, no "
                         "incoming connection; relay namespaces: incoming only to port %d, no outgoing connection; "

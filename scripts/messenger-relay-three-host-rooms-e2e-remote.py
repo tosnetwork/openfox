@@ -73,7 +73,7 @@ HERE = Path(__file__).resolve().parent
 # The remote mode's node sets; the M-R1 remote module reads them when it is
 # loaded.
 os.environ["MR_REMOTE_NODES"] = "b c"
-os.environ["MR_LOCAL_NODES"] = "a d e"
+os.environ["MR_LOCAL_NODES"] = "a d e f"
 
 
 def _load(name: str, path: Path):
@@ -91,7 +91,7 @@ remote = _load("mr1_remote", HERE / "messenger-relay-two-host-e2e-remote.py")
 fd = mr1.fd
 
 WORK, ROOT = mr1.WORK, mr1.ROOT
-REMOTE_NODES, LOCAL_NODES = ("b", "c"), ("a", "d", "e")
+REMOTE_NODES, LOCAL_NODES = ("b", "c"), ("a", "d", "e", "f")
 RELAY_TTL = 3600
 SCRATCH_ROOT = "/opt/tos-relay-test"
 record, require, poll = fd.record, fd.require, fd.poll
@@ -469,7 +469,7 @@ def acceptance() -> None:
                                   for node, relay in shares.items()},
         "topology": {
             "a_d_e_and_chain_host": "node A, the room's authority (tosmr-a, 10.231.78.10), and the filler joiners D "
-                                    "(tosmr-d, 10.231.78.13) and E (tosmr-e, 10.231.78.14) in network namespaces on "
+                                    "(tosmr-d, 10.231.78.13) E (tosmr-e, 10.231.78.14) and F (tosmr-f, 10.231.78.15) in network namespaces on "
                                     "bridge tosmr-br0 (host end 10.231.78.1); each routes through the host, which "
                                     "forwards and masquerades only TCP to the two relays' TLS port (tagged iptables "
                                     "rules, removed at the end); the three validators listen on 127.0.0.1, JSON-RPC "

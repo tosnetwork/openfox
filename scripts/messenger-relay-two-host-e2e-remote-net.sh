@@ -16,7 +16,7 @@
 #
 # up: a private bridge tosmr-br0 (10.231.78.1/24, the host end) and one
 # namespace per node joined to it by one veth each: tosmr-a (10.231.78.10),
-# tosmr-c (10.231.78.12), tosmr-d (.13), tosmr-e (.14). Each namespace routes
+# tosmr-c (10.231.78.12), tosmr-d (.13), tosmr-e (.14), tosmr-f (.15). Each namespace routes
 # through the host end, and
 # the host forwards and masquerades (through its uplink) only TCP to the two
 # relays' TLS port: three iptables rules per relay, each tagged with the
@@ -62,11 +62,11 @@ fi
 for ip in "${relay_ips[@]}"; do
   [[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "relay address $ip is not IPv4" >&2; exit 2; }
 done
-declare -A address=([a]=$prefix.10 [c]=$prefix.12 [d]=$prefix.13 [e]=$prefix.14 [relay1]=${relay_ips[0]}
+declare -A address=([a]=$prefix.10 [c]=$prefix.12 [d]=$prefix.13 [e]=$prefix.14 [f]=$prefix.15 [relay1]=${relay_ips[0]}
   [relay2]=${relay_ips[1]})
 read -r -a nodes <<< "${MR_NET_NODES:-a c}"
 for node in "${nodes[@]}"; do
-  case "$node" in a|c|d|e) ;; *) echo "MR_NET_NODES: unknown node $node" >&2; exit 2 ;; esac
+  case "$node" in a|c|d|e|f) ;; *) echo "MR_NET_NODES: unknown node $node" >&2; exit 2 ;; esac
 done
 relays=(relay1 relay2)
 tag=tosmr-remote

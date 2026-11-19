@@ -46,7 +46,12 @@ type OfferInput struct {
 	// there and `serve` keeps it current. Empty keeps the path the provider
 	// section already names, if any.
 	GatewayCardPath string `json:"gateway_card_path,omitempty"`
-	Yes             bool   `json:"yes"`
+	// TestProfileActor deploys the TEST-NETWORK-ONLY Service Actor build,
+	// whose response SLA and refund-claim window may be as short as
+	// MinTestProfileWindowSecs. It is accepted only when the rail
+	// configuration pins TestProfileActorCodeHash, and that pin requires it.
+	TestProfileActor bool `json:"test_profile_actor,omitempty"`
+	Yes              bool `json:"yes"`
 }
 
 // Offer defaults.
@@ -151,6 +156,16 @@ const OfferResultSchema = "tos.openfox.rail-offer-setup.v1"
 const offerPreviewNote = "tosctl signs each message with keys in its custody. The deploy funding stays in the " +
 	"actor as its operating reserve. Fees are paid from the owner wallet on top of the attached values."
 
+// offerNote is the preview note; a test-profile offer says so in plain words.
+func offerNote(testProfile bool) string {
+	if !testProfile {
+		return offerPreviewNote
+	}
+	return offerPreviewNote + " TEST NETWORKS ONLY: this deploys the test-network-only Service Actor build, whose " +
+		"response SLA and refund-claim window may be as short as 600 seconds; buyers that pin the release code " +
+		"refuse it."
+}
+
 func validVersion(version string) bool {
 	if version == "" || len(version) > 128 || strings.HasPrefix(version, "-") {
 		return false
@@ -202,10 +217,30 @@ func (in *OfferInput) subprocess() bool {
 	return in.ExecutorBinary != "" || in.ExecutorSHA256 != "" || in.ContainerdSocket != "" || in.FIFODir != ""
 }
 
+// ErrActorProfile reports a --test-profile-actor choice that contradicts the
+// Service Actor code the rail configuration pins.
+var ErrActorProfile = errors.New("servicebridge: the Service Actor build does not match the pinned code")
+
+// checkActorProfile ties --test-profile-actor to the pinned code: the
+// test-network-only build is deployed exactly when the rail configuration
+// pins its code hash, so neither a flag alone nor a pin alone selects it.
+func checkActorProfile(testProfile bool, pinned string) error {
+	switch {
+	case testProfile && pinned != TestProfileActorCodeHash:
+		return fmt.Errorf("%w: --test-profile-actor deploys the test-network-only Service Actor %s, but the rail "+
+			"configuration pins %s; a production configuration never deploys the test build",
+			ErrActorProfile, TestProfileActorCodeHash, pinned)
+	case !testProfile && pinned == TestProfileActorCodeHash:
+		return fmt.Errorf("%w: the rail configuration pins the test-network-only Service Actor %s; pass "+
+			"--test-profile-actor to confirm this is a test network", ErrActorProfile, pinned)
+	}
+	return nil
+}
+
 // validate applies every bound before tosctl or the chain is touched.
 func (in *OfferInput) validate() error {
 	var problems []string
-	if err := in.Terms.Validate(); err != nil {
+	if err := in.Terms.ValidateFor(in.TestProfileActor); err != nil {
 		problems = append(problems, strings.TrimPrefix(err.Error(), "servicebridge: "))
 	}
 	if !validVersion(in.Version) {
@@ -466,7 +501,7 @@ func offerPreviewBeforeKey(config NodeConfig, in OfferInput, agentAddress string
 		Version: in.Version, ProofSchemeHash: hex.EncodeToString(proof[:]),
 		DeployFundingNano: fmt.Sprint(in.DeployFundingNano), RegistryValueNano: fmt.Sprint(RegistryMessageValueNano),
 		PolicyValueNano: fmt.Sprint(PolicyMessageValueNano), TotalAttachedNano: fmt.Sprint(total),
-		BuyerAttachesNano: fmt.Sprint(perCall), Note: offerPreviewNote,
+		BuyerAttachesNano: fmt.Sprint(perCall), Note: offerNote(in.TestProfileActor),
 		ToBeCreated: []string{
 			fmt.Sprintf("attestor controller %q: a new ML-DSA-44 key in the tosctl vault", in.AttestorController),
 			"a Service Actor at an address derived from the owner wallet, these terms and that key",
@@ -535,6 +570,9 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		in.GatewayCardPath = config.Provider.GatewayCardFile
 	}
 	if err = in.validate(); err != nil {
+		return result, err
+	}
+	if err = checkActorProfile(in.TestProfileActor, config.ActorCodeHash); err != nil {
 		return result, err
 	}
 	if err = (&ProviderNode{GatewayCardFile: in.GatewayCardPath}).checkGatewayCardConfig(config.RelayURLs); err != nil {
@@ -645,7 +683,7 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 
 	// Everything that determines an identity is derived and durable before
 	// anything is signed.
-	actor, err := ops.actorAddress(ctx, config.WalletAddress, in.Terms, attestor)
+	actor, err := ops.actorAddress(ctx, config.WalletAddress, in.Terms, attestor, in.TestProfileActor)
 	if err != nil {
 		return result, fmt.Errorf("servicebridge: derive the Service Actor address: %w", err)
 	}
@@ -712,7 +750,7 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 		ProofSchemeHash:   hex.EncodeToString(proof[:]),
 		DeployFundingNano: fmt.Sprint(state.DeployFundingNano), RegistryValueNano: fmt.Sprint(RegistryMessageValueNano),
 		PolicyValueNano: fmt.Sprint(PolicyMessageValueNano), TotalAttachedNano: fmt.Sprint(total),
-		BuyerAttachesNano: fmt.Sprint(perCall), Note: offerPreviewNote,
+		BuyerAttachesNano: fmt.Sprint(perCall), Note: offerNote(in.TestProfileActor),
 	}
 	reportOfferPreview(env, result.Preview)
 
@@ -736,7 +774,7 @@ func RunOffer(ctx context.Context, in OfferInput, env SetupEnv) (*OfferResult, e
 				return notSent(fundErr)
 			}
 			deployed, deployErr := ops.deployActor(ctx, config.WalletName, config.WalletAddress,
-				"openfox-"+actor[2:10], in.Terms, in.AttestorController, state.DeployFundingNano)
+				"openfox-"+actor[2:10], in.Terms, in.AttestorController, state.DeployFundingNano, in.TestProfileActor)
 			if deployErr != nil {
 				return deployErr
 			}

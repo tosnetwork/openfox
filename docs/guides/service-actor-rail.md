@@ -193,7 +193,19 @@ that a re-run adopts the Agent the configuration names.
    contract's bounds are applied before anything is sent: the price is
    positive; the cleanup bounty is 0.1 to 1 TOS; the storage fee is at least
    0.1 TOS plus the cleanup bounty; the response SLA and the refund-claim
-   window are 3600 to 2592000 seconds. Optional: `--version` (default
+   window are 3600 to 2592000 seconds.
+
+   On a test network only, `--test-profile-actor` deploys the test-network-only
+   Service Actor build. In that build the response SLA and the refund-claim
+   window may be as short as 600 seconds, so a timeout refund completes in
+   about ten minutes. `init` must have pinned that build's code hash
+   (`--actor-code-hash
+   tvm-cell-sha256:79a566f5f4281f7abe59cd1c16a7bc3b2d990e840f42b00d55cb0ae4b0545960`),
+   and the flag is required with that pin and refused without it. Buyers must
+   pin the same hash, because a buyer pinning the release refuses the actor.
+   The flag needs a tosctl that knows `agent service deploy --code-profile`.
+
+   Optional: `--version` (default
    `1.0.0`), `--attestor-controller` (default `service-attestor`, created if
    absent), `--deploy-funding` (default and minimum 1.2 TOS),
    `--retention-seconds`, `--respond-budget-seconds`, `--offer-out`,

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
+	"github.com/tosnetwork/ai/protocol/pkg/nativecore"
 	"github.com/tosnetwork/tosutils-go/address"
 )
 
@@ -42,7 +43,17 @@ const (
 	MinStorageFeeBaseNano uint64 = 100_000_000
 	MinPolicyWindowSecs   uint32 = 3_600
 	MaxPolicyWindowSecs   uint32 = 2_592_000
+	// MinTestProfileWindowSecs is the window lower bound of the
+	// TEST-NETWORK-ONLY Service Actor build.
+	MinTestProfileWindowSecs uint32 = nativecore.ServiceActorTestProfileMinimumWindowSeconds
 )
+
+// TestProfileActorCodeHash is the code hash of the TEST-NETWORK-ONLY
+// Service Actor build, whose minimum response SLA and refund-claim window are
+// 600 seconds. `offer --test-profile-actor` deploys it, and only when the
+// rail configuration pins this hash; a production configuration pins the
+// release hash and never deploys it.
+var TestProfileActorCodeHash = "tvm-cell-sha256:" + hex.EncodeToString(nativecore.ServiceActorTestProfileCodeHash[:])
 
 const zeroHash64 = "0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -407,9 +418,20 @@ type ActorTerms struct {
 	RefundClaimWindow uint32 `json:"refund_claim_window_seconds"`
 }
 
-// Validate applies the contract's own bounds, so nothing the contract
-// would refuse is ever signed.
+// Validate applies the release contract's own bounds, so nothing the
+// contract would refuse is ever signed.
 func (t ActorTerms) Validate() error {
+	return t.ValidateFor(false)
+}
+
+// ValidateFor applies the bounds of the Service Actor build that will run
+// these terms: the release, or with testProfile the test-network-only build
+// whose window lower bound is MinTestProfileWindowSecs.
+func (t ActorTerms) ValidateFor(testProfile bool) error {
+	minWindow := MinPolicyWindowSecs
+	if testProfile {
+		minWindow = MinTestProfileWindowSecs
+	}
 	if t.PriceNano == 0 {
 		return errors.New("servicebridge: the price must be greater than zero")
 	}
@@ -425,13 +447,13 @@ func (t ActorTerms) Validate() error {
 		return fmt.Errorf("servicebridge: the storage fee must be at least %s TOS (%s TOS plus the cleanup bounty)",
 			FormatTOSAmount(floor), FormatTOSAmount(MinStorageFeeBaseNano))
 	}
-	if t.ResponseSLA < MinPolicyWindowSecs || t.ResponseSLA > MaxPolicyWindowSecs {
-		return fmt.Errorf("servicebridge: the response SLA must be between %d and %d seconds", MinPolicyWindowSecs,
+	if t.ResponseSLA < minWindow || t.ResponseSLA > MaxPolicyWindowSecs {
+		return fmt.Errorf("servicebridge: the response SLA must be between %d and %d seconds", minWindow,
 			MaxPolicyWindowSecs)
 	}
-	if t.RefundClaimWindow < MinPolicyWindowSecs || t.RefundClaimWindow > MaxPolicyWindowSecs {
+	if t.RefundClaimWindow < minWindow || t.RefundClaimWindow > MaxPolicyWindowSecs {
 		return fmt.Errorf("servicebridge: the refund-claim window must be between %d and %d seconds",
-			MinPolicyWindowSecs, MaxPolicyWindowSecs)
+			minWindow, MaxPolicyWindowSecs)
 	}
 	for name, value := range map[string]uint64{
 		"the price": t.PriceNano, "the storage fee": t.StorageFeeNano,
@@ -457,6 +479,16 @@ func (t ActorTerms) flags() []string {
 	}
 }
 
+// codeProfileFlags selects tosctl's TEST-NETWORK-ONLY Service Actor build.
+// The release build takes no flag, so a release deployment runs the same
+// tosctl command as before.
+func codeProfileFlags(testProfile bool) []string {
+	if testProfile {
+		return []string{"--code-profile", "test"}
+	}
+	return nil
+}
+
 // actorAddress computes the address a deployment with these terms, owner
 // and attestor creates, with `agent service build-state`. It signs nothing
 // and reads neither the vault nor the chain.
@@ -465,6 +497,7 @@ func (o tosctlOps) actorAddress(
 	owner string,
 	terms ActorTerms,
 	attestor ControllerKey,
+	testProfile bool,
 ) (string, error) {
 	if !rawAddressPattern.MatchString(owner) || len(attestor.PublicKey) != mldsa44.PublicKeySize {
 		return "", errors.New("servicebridge: invalid Service Actor identity")
@@ -475,6 +508,7 @@ func (o tosctlOps) actorAddress(
 	args := append([]string{"agent", "service", "build-state", "--owner", owner, "--open-access"}, terms.flags()...)
 	args = append(args, "--metadata-hash", zeroHash64, "--proof-scheme-hash", zeroHash64,
 		"--attestor-pubkey", hex.EncodeToString(attestor.PublicKey), "--workchain", "0", "--format", "json")
+	args = append(args, codeProfileFlags(testProfile)...)
 	if err := runTOSCTLJSON(ctx, o.runner, TOSCTLCall{Label: "agent service build-state", Args: args}, false,
 		&answer); err != nil {
 		return "", err
@@ -493,6 +527,7 @@ func (o tosctlOps) deployActor(
 	terms ActorTerms,
 	attestorController string,
 	fundingNano uint64,
+	testProfile bool,
 ) (string, error) {
 	funding, err := tosctlAmount(fundingNano, "the deploy funding", false)
 	if err != nil {
@@ -514,6 +549,7 @@ func (o tosctlOps) deployActor(
 	args = append(args, "--metadata-hash", zeroHash64, "--proof-scheme-hash", zeroHash64,
 		"--attestor-controller", attestorController, "--from", wallet, "--amount", funding, "--workchain", "0",
 		"--yes", "--format", "json")
+	args = append(args, codeProfileFlags(testProfile)...)
 	// tosctl prints its progress before the one-line JSON result.
 	if err := runTOSCTLJSON(ctx, o.runner, TOSCTLCall{Label: "agent service deploy", Args: args}, true,
 		&answer); err != nil {

@@ -263,6 +263,11 @@ def shared_host_check() -> None:
 RELAY_SERVER_EXPLAINED = {
     "protocol/pkg/agentpacketrelay/client.go": "client-side code paths only (the relay client the nodes use); "
                                                "the server handlers in the same package are unchanged",
+    "protocol/gen/tos/service/v1/native.pb.go": "one optional field (provider_key_card_packet_json) on the gateway "
+                                                "message RequestQuoteProposalResponse, from ai 039c5410; no package "
+                                                "the relay links references that message or field; the run's relay "
+                                                "binary is built from the deployed commit and its byte-identity "
+                                                "proof against the deployed relays stands",
 }
 RELAY_MODULE = "github.com/tosnetwork/ai/"
 
@@ -286,7 +291,11 @@ def relay_server_proof() -> None:
     ai_commit = mr1.git(ai_tree, "rev-parse", "HEAD")
     packages = sorted(set(relay_packages(relay_tree)) | set(relay_packages(ai_tree)))
     stat = mr1.git(ai_tree, "diff", "--stat", relay_commit, ai_commit, "--", *packages)
-    changed = mr1.git(ai_tree, "diff", "--name-only", relay_commit, ai_commit, "--", *packages).splitlines()
+    # A package is its directory's own files: a pathspec also matches its
+    # subdirectories, which are other packages and only count if linked.
+    linked = set(packages)
+    changed = [f for f in mr1.git(ai_tree, "diff", "--name-only", relay_commit, ai_commit, "--", *packages).splitlines()
+               if str(Path(f).parent) in linked]
     cmd_stat = mr1.git(ai_tree, "diff", "--stat", relay_commit, ai_commit, "--", "protocol/cmd/tos-service-packet-relay")
     unexplained = [f for f in changed if not f.endswith("_test.go") and f not in RELAY_SERVER_EXPLAINED]
     fd.evidence["relay_build"] = {

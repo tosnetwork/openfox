@@ -36,18 +36,33 @@ hit.
 
 Addresses, SSH targets and key paths are replaced by labels in the transcript
 and in the evidence; no key file is read for its contents.
+
+The set of remote nodes is configurable, for harnesses that reuse this one:
+MR_REMOTE_NODES (default "b") names the nodes that run on other hosts, each
+configured by <X>_SSH, <X>_SSH_KEY, optional <X>_REMOTE_BASE (default
+/opt/tos-relay-test), MR1_<X>_TABLE and <X>_SHARES_RELAY (the relay whose
+host it shares, reached only through that relay's public TLS URL), with X
+the node's name in capitals; MR_LOCAL_NODES (default "a c") names the nodes
+in namespaces on this host. Every remote node gets its own SSH target,
+scratch directory, nft table name, state mirror, supervised processes and
+labels (<x-ssh>, <x-host>). A caller that loaded the phase-1 harness itself
+registers it as sys.modules["mr1"] before importing this module, which then
+patches that instance instead of loading its own.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import importlib.util
 import io
 import ipaddress
+import itertools
 import json
 import os
 import re
 import shlex
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -57,27 +72,74 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-_spec = importlib.util.spec_from_file_location("mr1", HERE / "messenger-relay-two-host-e2e.py")
-mr1 = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(mr1)
+mr1 = sys.modules.get("mr1")
+if mr1 is None:
+    _spec = importlib.util.spec_from_file_location("mr1", HERE / "messenger-relay-two-host-e2e.py")
+    mr1 = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(mr1)
 fd = mr1.fd
 
 WORK, ROOT = mr1.WORK, mr1.ROOT
-B_SSH, B_KEY = os.environ["B_SSH"], os.environ["B_SSH_KEY"]
 CA = Path(os.environ["E2E_RELAY_CA_FILE"])
-SCRATCH_BASE = Path(os.environ.get("B_REMOTE_BASE", "/opt/tos-relay-test"))
-# The node files of the run sit at the same absolute path on this host and
-# on B: <base>/<run>/<run>. B_BASE holds B's logs, pid files and supervisor.
-B_BASE, B_ROOT = ROOT.parent, ROOT
 DRYRUN = os.environ.get("MR1_DRYRUN") == "1"
-B_TABLE = os.environ.get("MR1_B_TABLE") or "tosmr_" + re.sub(r"[^A-Za-z0-9_]", "_", WORK.name)
 if os.environ.get("MR1_NETSH"):
     mr1.NETSH = Path(os.environ["MR1_NETSH"])
 SYSTEM_PYTHON = "/usr/bin/python3"
 CONTROL = Path(tempfile.mkdtemp(prefix="mr1r-"))
 TLS_CONTEXT = mr1.ssl.create_default_context(cafile=str(CA))
-LOCAL_NODES = ("a", "c")
+LOCAL_NODES = tuple(os.environ.get("MR_LOCAL_NODES", "a c").split())
+REMOTE_NODES = tuple(os.environ.get("MR_REMOTE_NODES", "b").split())
 CHANGES = WORK / "host-changes.log"
+# Probing a remote node's cut-off creates the run's nft table on its host; a
+# harness whose scenario never cuts a remote node off turns the probe off.
+CUT_PROBE = True
+# Run after the phase-1 staging, before the node files are copied to the
+# remote hosts (a harness that adds files to the staged tree).
+STAGE_HOOKS: list = []
+
+
+class Remote:
+    """One node that runs on another host over SSH. Its node files sit at the
+    same absolute path there as here: <base>/<run>/<run>. Its base holds its
+    logs, pid files and supervisor."""
+
+    def __init__(self, node: str) -> None:
+        upper = node.upper()
+        self.node, self.upper = node, upper
+        self.ssh, self.key = os.environ[f"{upper}_SSH"], os.environ[f"{upper}_SSH_KEY"]
+        self.scratch_base = Path(os.environ.get(f"{upper}_REMOTE_BASE", "/opt/tos-relay-test"))
+        self.base, self.root = ROOT.parent, ROOT
+        self.table = os.environ.get(f"MR1_{upper}_TABLE") or "tosmr_" + re.sub(r"[^A-Za-z0-9_]", "_", WORK.name)
+        self.shares_relay = os.environ.get(f"{upper}_SHARES_RELAY", "")
+        self.host = self.ssh.rsplit("@", 1)[-1]
+        self.mirror = {"stop": False, "thread": None, "syncs": 0, "failures": 0}
+        self.lock = threading.RLock()
+        self.state: dict = {}
+
+
+REMOTES = {node: Remote(node) for node in REMOTE_NODES}
+
+
+def per_node(name: str, node: str) -> str:
+    """An evidence key or file name of one remote node: unchanged with a
+    single remote node, suffixed with the node's name with several."""
+    return name if len(REMOTES) == 1 else f"{name}_{node}"
+
+
+def remote_of_key(key: str) -> str | None:
+    """The remote node a process key (`messengerd-b`) belongs to, if any."""
+    node = key.rsplit("-", 1)[-1] if "-" in key else ""
+    return node if node in REMOTES else None
+
+
+def names(nodes) -> str:
+    """'A and C', 'A, D and E'."""
+    upper = [node.upper() for node in nodes]
+    return upper[0] if len(upper) == 1 else ", ".join(upper[:-1]) + " and " + upper[-1]
+
+
+LOCAL_LABEL = "/".join(node.upper() for node in LOCAL_NODES)
+LOCAL_KEY = "_".join(LOCAL_NODES)
 
 
 def change(text: str) -> None:
@@ -120,10 +182,14 @@ RELAYS = [Relay(f"relay{index + 1}", *spec) for index, spec in enumerate(zip(_ur
 # The run's relay names map to the real URLs, so the phase-1 code's relay keys
 # ("relay1", "relay2") address the external units.
 RELAY_BY_NAME = {relay.name: relay for relay in RELAYS}
+for _remote in REMOTES.values():
+    if _remote.shares_relay and _remote.shares_relay not in RELAY_BY_NAME:
+        raise SystemExit(f"{_remote.upper}_SHARES_RELAY must name relay1 or relay2")
 
-label(B_SSH, "<b-ssh>")
-label(B_KEY, "<ssh-key>")
-label(B_SSH.rsplit("@", 1)[-1], "<b-host>")
+for _remote in REMOTES.values():
+    label(_remote.ssh, f"<{_remote.node}-ssh>")
+    label(_remote.key, "<ssh-key>")
+    label(_remote.host, f"<{_remote.node}-host>")
 for _relay in RELAYS:
     label(_relay.ssh, f"<{_relay.name}-ssh>")
     label(_relay.key, "<ssh-key>")
@@ -154,7 +220,8 @@ def personal_data(text: str) -> list[str]:
     kinds = _personal(text)
     if EMAIL.search(text):
         kinds.append("e-mail address")
-    if ".ssh/" in text or any(Path(key).name in text for key in (B_KEY, *(relay.key for relay in RELAYS))):
+    if ".ssh/" in text or any(Path(key).name in text for key in (*(remote.key for remote in REMOTES.values()),
+                                                                   *(relay.key for relay in RELAYS))):
         kinds.append("SSH key path")
     if any(raw in text for raw in LABELS):
         kinds.append("host address or SSH target")
@@ -257,18 +324,22 @@ def logged(argv: list[str], *, data: bytes | None = None, check: bool = True, ti
     return text
 
 
-def on_b(script: str, *, data: bytes | None = None, check: bool = True, timeout: float = 240,
-         keep_stdout: bool = True) -> subprocess.CompletedProcess:
-    return logged(ssh_argv(B_SSH, B_KEY) + [script], data=data, check=check, timeout=timeout, keep_stdout=keep_stdout)
+def on_node(node: str, script: str, *, data: bytes | None = None, check: bool = True, timeout: float = 240,
+            keep_stdout: bool = True) -> subprocess.CompletedProcess:
+    remote = REMOTES[node]
+    return logged(ssh_argv(remote.ssh, remote.key) + [script], data=data, check=check, timeout=timeout,
+                  keep_stdout=keep_stdout)
 
 
 def on_relay(relay: Relay, script: str, *, check: bool = True, timeout: float = 120, keep_stdout: bool = True):
     return logged(ssh_argv(relay.ssh, relay.key) + [script], check=check, timeout=timeout, keep_stdout=keep_stdout)
 
 
-def rsync_ssh() -> str:
-    """The SSH command rsync uses for B (the same connection options)."""
-    return shlex.join(ssh_argv(B_SSH, B_KEY)[:-2])
+def rsync_ssh(node: str) -> str:
+    """The SSH command rsync uses for a remote node (the same connection
+    options)."""
+    remote = REMOTES[node]
+    return shlex.join(ssh_argv(remote.ssh, remote.key)[:-2])
 
 
 # --- External relay control, with a marker so only stopped units restart ----------
@@ -380,6 +451,9 @@ def start_relay_unit(relay: str, label_: str) -> None:
 
 # --- Host facts, the direct-path probe, the tunnel --------------------------------
 
+NUMBER = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
+
+
 def host_facts(run) -> dict:
     script = ("printf '%s\\n' \"$(sha256sum /etc/machine-id | cut -c1-16)\" \"$(nproc)\" \"$(uname -r)\" "
               "\"$(. /etc/os-release; echo $PRETTY_NAME)\"")
@@ -388,15 +462,25 @@ def host_facts(run) -> dict:
 
 
 def machines() -> None:
-    facts = {"a_c_and_chain_host": host_facts(lambda s: subprocess.run(["sh", "-c", s], capture_output=True,
-                                                                       text=True)),
-             "b_host": host_facts(lambda s: logged(ssh_argv(B_SSH, B_KEY) + [s]))}
+    facts = {f"{LOCAL_KEY}_and_chain_host": host_facts(lambda s: subprocess.run(["sh", "-c", s], capture_output=True,
+                                                                                text=True))}
+    for node in REMOTES:
+        facts[f"{node}_host"] = host_facts(lambda s, node=node: on_node(node, s))
     for relay in RELAYS:
         facts[f"{relay.name}_host"] = host_facts(lambda s, relay=relay: on_relay(relay, s))
     fd.evidence["machines"] = facts
-    ids = {item.get("machine_id_sha256_prefix") for item in facts.values()}
-    fd.require("four different machines: the A/C and chain host, B's host and the two relay hosts have distinct "
-               "machine ids", len(ids) == len(facts) == 4 and all(ids), facts)
+    # A remote node that shares a relay's host has that relay's machine id.
+    shared = {f"{node}_host": f"{remote.shares_relay}_host" for node, remote in REMOTES.items() if remote.shares_relay}
+    distinct = {key: item for key, item in facts.items() if key not in shared}
+    ids = {item.get("machine_id_sha256_prefix") for item in distinct.values()}
+    same = all(facts[node].get("machine_id_sha256_prefix") == facts[relay].get("machine_id_sha256_prefix")
+               for node, relay in shared.items())
+    hosts = ", ".join(f"{node.upper()}'s host" for node in REMOTES)
+    sharing = "".join(f", except that {remote.upper}'s host is {remote.shares_relay}'s host (the same machine id)"
+                      for remote in REMOTES.values() if remote.shares_relay)
+    fd.require(f"{NUMBER.get(len(distinct), len(distinct))} different machines: the {LOCAL_LABEL} and chain host, "
+               f"{hosts} and the two relay hosts have distinct machine ids{sharing}",
+               len(ids) == len(distinct) == len(facts) - len(shared) and all(ids) and same, facts)
 
 
 def _parse_connect(text):
@@ -408,17 +492,19 @@ CONNECT = ("import socket,sys\nhost=sys.argv[1]\nfor port in sys.argv[2:]:\n    
            "    except OSError as e:\n        print(port, 'refused or unreachable: ' + type(e).__name__)\n")
 
 
-def b_connect(host: str, ports: list) -> dict:
-    return _parse_connect(on_b(f"{SYSTEM_PYTHON} -I -c {shlex.quote(CONNECT)} {shlex.quote(host)} "
-                               f"{' '.join(map(str, ports))}").stdout)
+def node_connect(node: str, host: str, ports: list) -> dict:
+    return _parse_connect(on_node(node, f"{SYSTEM_PYTHON} -I -c {shlex.quote(CONNECT)} {shlex.quote(host)} "
+                                        f"{' '.join(map(str, ports))}").stdout)
 
 
-def seen_address() -> str:
-    """This host's public address as B sees it (SSH_CLIENT)."""
-    seen = logged(ssh_argv(B_SSH, B_KEY) + ['printf "%s\\n" "${SSH_CLIENT%% *}"'],
+def seen_address(node: str) -> str:
+    """This host's public address as a remote node's host sees it
+    (SSH_CLIENT)."""
+    remote = REMOTES[node]
+    seen = logged(ssh_argv(remote.ssh, remote.key) + ['printf "%s\\n" "${SSH_CLIENT%% *}"'],
                   keep_stdout=False).raw.decode().strip()
     ipaddress.ip_address(seen)
-    label(seen, "<a-c-host-public-address>")
+    label(seen, f"<{LOCAL_KEY.replace('_', '-')}-host-public-address>")
     return seen
 
 
@@ -430,184 +516,307 @@ def direct_path() -> None:
     and to this host's public address on the ports a node would use (the relay
     TLS port, the chain RPC ports and the probe port) must all fail; and A, in
     its namespace, cannot reach B's public address on those ports, nor B's
-    open SSH port. Both this host and B still reach both relays' TLS port."""
-    seen = seen_address()
+    open SSH port. Both this host and B still reach both relays' TLS port.
+    With several remote nodes each is probed so, and each remote node's
+    host is probed from the others on the node ports. A remote node that
+    shares a relay's host is not probed on that relay's TLS port, which is
+    the relay's."""
     local_addresses = subprocess.run(["ip", "-o", "addr", "show"], capture_output=True, text=True).stdout
-    behind_nat = re.search(rf"inet {re.escape(seen)}/", local_addresses) is None
-    b_host = B_SSH.rsplit("@", 1)[-1]
     node_ports = ["8443", *map(str, fd.RPC_PORTS), "47000"]
-    b_to_a = b_connect(mr1.ADDRESS["a"], node_ports)
-    b_to_host = b_connect(seen, node_ports)
-    a_to_b = _parse_connect(mr1.in_ns("a", [SYSTEM_PYTHON, "-I", "-c", CONNECT, b_host, *node_ports, "22"],
-                                      "connection probe", timeout=90).stdout)
-    b_ssh_open = b_connect("127.0.0.1", ["22"])
+    probe: dict = {}
+    ports_of: dict = {}
+    behind_nat = True
+    results: dict = {}
+    for node, remote in REMOTES.items():
+        seen = seen_address(node)
+        behind_nat = behind_nat and re.search(rf"inet {re.escape(seen)}/", local_addresses) is None
+        skip = {str(RELAY_BY_NAME[remote.shares_relay].port)} if remote.shares_relay else set()
+        ports = [port for port in node_ports if port not in skip]
+        ports_of[node] = ports
+        to_a = node_connect(node, mr1.ADDRESS["a"], node_ports)
+        to_host = node_connect(node, seen, node_ports)
+        a_to = _parse_connect(mr1.in_ns("a", [SYSTEM_PYTHON, "-I", "-c", CONNECT, remote.host, *ports, "22"],
+                                        "connection probe", timeout=90).stdout)
+        ssh_open = node_connect(node, "127.0.0.1", ["22"])
+        results[node] = (to_a, to_host, a_to, ssh_open)
+        probe[f"{node}_to_a_namespace"] = to_a
+        probe[f"{node}_to_{LOCAL_KEY}_host_node_ports"] = to_host
+        probe[f"a_to_{node}_host_node_ports_and_ssh"] = a_to
+        probe[f"{node}_ssh_port_open_on_{node}_itself"] = ssh_open
+        if skip:
+            probe[f"a_to_{node}_host_ports_not_probed"] = {port: f"the TLS port of {remote.shares_relay}, which "
+                                                                 f"shares {remote.upper}'s host"
+                                                           for port in sorted(skip)}
+    probe[f"{LOCAL_KEY}_host_behind_nat"] = behind_nat
+    between = {}
+    for node, other in itertools.permutations(REMOTES, 2):
+        between[f"{node} to {other}"] = node_connect(node, REMOTES[other].host, ports_of[other])
+        probe[f"{node}_to_{other}_host_node_ports"] = between[f"{node} to {other}"]
     to_relay, from_here = {}, {}
     for relay in RELAYS:
-        to_relay[relay.name] = b_connect(relay.host, [relay.port])
+        for node in REMOTES:
+            to_relay.setdefault(node, {})[relay.name] = node_connect(node, relay.host, [relay.port])
         from_here[relay.name] = _parse_connect(subprocess.run([SYSTEM_PYTHON, "-I", "-c", CONNECT, relay.host,
                                                                str(relay.port)], capture_output=True, text=True).stdout)
-    fd.evidence["direct_path_probe"] = {"b_to_a_namespace": b_to_a, "b_to_a_c_host_node_ports": b_to_host,
-                                        "a_to_b_host_node_ports_and_ssh": a_to_b,
-                                        "b_ssh_port_open_on_b_itself": b_ssh_open,
-                                        "a_c_host_behind_nat": behind_nat,
-                                        "b_to_relay": to_relay, "a_c_host_to_relay": from_here}
-    refused = all(v.startswith("refused") for v in (*b_to_a.values(), *b_to_host.values(), *a_to_b.values()))
-    mr1.gate("1", "no direct path between the nodes: from B no connection opens to A's namespace address or to this "
-             "host's public address on any node port, and from A's namespace no connection opens to B's public "
-             "address on any node port, nor to B's SSH port, which is open on B",
-             refused and len(b_to_a) == len(b_to_host) == len(node_ports) and len(a_to_b) == len(node_ports) + 1 and
-             b_ssh_open.get("22") == "connected", fd.evidence["direct_path_probe"])
+    for node in REMOTES:
+        probe[f"{node}_to_relay"] = to_relay[node]
+    probe[f"{LOCAL_KEY}_host_to_relay"] = from_here
+    fd.evidence["direct_path_probe"] = probe
+    for node, (to_a, to_host, a_to, ssh_open) in results.items():
+        upper = node.upper()
+        refused = all(v.startswith("refused") for v in (*to_a.values(), *to_host.values(), *a_to.values()))
+        mr1.gate("1", f"no direct path between the nodes: from {upper} no connection opens to A's namespace address "
+                 "or to this host's public address on any node port, and from A's namespace no connection opens to "
+                 f"{upper}'s public address on any node port, nor to {upper}'s SSH port, which is open on {upper}",
+                 refused and len(to_a) == len(to_host) == len(node_ports) and len(a_to) == len(ports_of[node]) + 1 and
+                 ssh_open.get("22") == "connected", fd.evidence["direct_path_probe"])
     mr1.gate("1", "A is on a host behind NAT with no inbound port: the address B sees for it is none of its own "
-             "addresses", behind_nat, {"behind_nat": behind_nat})
-    fd.require("both nodes' hosts reach both relays' TLS port over the internet",
-               all(to_relay[relay.name].get(str(relay.port)) == "connected" and
-                   from_here[relay.name].get(str(relay.port)) == "connected" for relay in RELAYS),
-               {"b": to_relay, "a_c": from_here})
+             "addresses" if len(REMOTES) == 1 else "A is on a host behind NAT with no inbound port: the address "
+             f"{names(REMOTES)} see for it is none of its own addresses", behind_nat, {"behind_nat": behind_nat})
+    if between:
+        mr1.gate("1", f"no direct path between {names(REMOTES)}: from each remote node's host no connection opens "
+                 "to another's public address on any node port",
+                 all(v.startswith("refused") for item in between.values() for v in item.values()) and
+                 all(len(item) == len(ports_of[key.split(" to ")[1]]) for key, item in between.items()), between)
+    fd.require("both nodes' hosts reach both relays' TLS port over the internet" if len(REMOTES) == 1 else
+               "every node's host reaches both relays' TLS port at their public addresses",
+               all(to_relay[node][relay.name].get(str(relay.port)) == "connected" and
+                   from_here[relay.name].get(str(relay.port)) == "connected" for relay in RELAYS for node in REMOTES),
+               {**{node: to_relay[node] for node in REMOTES}, LOCAL_KEY: from_here})
 
 
-def start_tunnel() -> None:
-    """The chain's JSON-RPC reaches B only through an SSH reverse tunnel to
-    B's 127.0.0.1."""
-    listening = on_b("ss -ltnH").stdout
+def start_tunnel(node: str) -> None:
+    """The chain's JSON-RPC reaches a remote node only through an SSH reverse
+    tunnel to its host's 127.0.0.1."""
+    remote, upper = REMOTES[node], node.upper()
+    listening = on_node(node, "ss -ltnH").stdout
     taken = [port for port in fd.RPC_PORTS if re.search(rf":{port}\s", listening)]
-    fd.require("the RPC ports are free on B's host", not taken, taken)
+    fd.require(f"the RPC ports are free on {upper}'s host", not taken, taken)
     forwards = [arg for port in fd.RPC_PORTS for arg in ("-R", f"127.0.0.1:{port}:127.0.0.1:{port}")]
     argv = ["ssh", "-N", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o",
             "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=20", "-o",
-            "ControlMaster=no", "-o", "ControlPath=none", "-i", B_KEY, *forwards, B_SSH]
-    log = (WORK / "tunnel.log").open("ab")
-    mr1.PROCESSES["tunnel"] = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
-    fd.evidence["chain_tunnel"] = {"argv": [redact(part) for part in argv]}
+            "ControlMaster=no", "-o", "ControlPath=none", "-i", remote.key, *forwards, remote.ssh]
+    key, evidence = per_node("tunnel", node), per_node("chain_tunnel", node)
+    log = (WORK / f"{key}.log").open("ab")
+    mr1.PROCESSES[key] = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+    fd.evidence[evidence] = {"argv": [redact(part) for part in argv]}
     probe = ("import json,sys,urllib.request\nfor port in sys.argv[1:]:\n    body=json.dumps({'jsonrpc':'2.0','id':1,"
              "'method':'getMasterchainInfo','params':{}}).encode()\n    r=urllib.request.Request("
              "f'http://127.0.0.1:{port}/jsonRPC',data=body,headers={'Content-Type':'application/json'})\n"
              "    print(port, 'result' in json.loads(urllib.request.urlopen(r,timeout=10).read()))\n")
 
     def answered():
-        result = on_b(f"{SYSTEM_PYTHON} -I -c {shlex.quote(probe)} {' '.join(map(str, fd.RPC_PORTS))}", check=False)
+        result = on_node(node, f"{SYSTEM_PYTHON} -I -c {shlex.quote(probe)} {' '.join(map(str, fd.RPC_PORTS))}",
+                         check=False)
         return result.returncode == 0 and result.stdout.count("True") == len(fd.RPC_PORTS)
     ok = fd.poll(answered, 60, 3)
-    bound = [line.split()[3] for line in on_b("ss -ltnH").stdout.splitlines()
+    bound = [line.split()[3] for line in on_node(node, "ss -ltnH").stdout.splitlines()
              if any(line.split()[3].endswith(f":{port}") for port in fd.RPC_PORTS)]
-    fd.evidence["chain_tunnel"]["listening_on_b_host"] = bound
-    fd.require("the chain's JSON-RPC reaches B's host only through the SSH reverse tunnel, bound to its 127.0.0.1",
-               bool(ok) and mr1.PROCESSES["tunnel"].poll() is None and bool(bound) and
-               all(address.startswith("127.0.0.1:") for address in bound), fd.evidence["chain_tunnel"])
+    fd.evidence[evidence][f"listening_on_{node}_host"] = bound
+    fd.require(f"the chain's JSON-RPC reaches {upper}'s host only through the SSH reverse tunnel, bound to its "
+               "127.0.0.1", bool(ok) and mr1.PROCESSES[key].poll() is None and bool(bound) and
+               all(address.startswith("127.0.0.1:") for address in bound), fd.evidence[evidence])
 
 
-# --- B's firewall: an nft table of the run's own, removed on every exit path -------
+# --- A remote node's firewall: an nft table of the run's own, removed on every exit -
 
 COUNTER = re.compile(r"counter packets \d+ bytes \d+")
 
 
-def b_firewall_state() -> dict:
-    """B's firewall rules as text: `ufw status verbose`, and `nft list
-    ruleset` with each rule's packet and byte counters blanked (traffic
-    changes them; the rules are what must be identical)."""
-    return {"ufw": on_b("ufw status verbose", check=False).stdout,
-            "nft": COUNTER.sub("counter", on_b("nft list ruleset", check=False).stdout)}
+# nft tables another service rewrites on its own (MR_NFT_IGNORE_TABLES,
+# "family name" pairs separated by commas, e.g. a ban list's dynamic sets)
+# are left out of the fingerprint and named in the evidence.
+SHARED_HOSTS = set(os.environ.get("MR_SHARED_HOST_NODES", "").split())
+NFT_IGNORE = [t.strip() for t in os.environ.get("MR_NFT_IGNORE_TABLES", "").split(",") if t.strip()]
 
 
-def b_block(relay: str) -> None:
-    unit = RELAY_BY_NAME[relay]
-    table = shlex.quote(B_TABLE)
+def firewall_state(node: str) -> dict:
+    """A remote node's host firewall rules as text: `ufw status verbose`, and
+    every nft table except the ignored ones, with each rule's packet and byte
+    counters blanked (traffic changes them; the rules are what must be
+    identical)."""
+    tables = [line.split(None, 1)[1].strip() for line in
+              on_node(node, "nft list tables", check=False).stdout.splitlines() if line.startswith("table ")]
+    listed = "".join(on_node(node, f"nft list table {table}", check=False).stdout
+                     for table in tables if table not in NFT_IGNORE)
+    state = {"ufw": on_node(node, "ufw status verbose", check=False).stdout, "nft": COUNTER.sub("counter", listed)}
+    if NFT_IGNORE:
+        # Kept beside the compared rules, never compared: its change is
+        # recorded as information.
+        state["ignored"] = COUNTER.sub("counter", "".join(on_node(node, f"nft list table {table}", check=False).stdout
+                                                          for table in tables if table in NFT_IGNORE))
+    return state
+
+
+def node_block(node: str, relay: str) -> None:
+    unit, remote = RELAY_BY_NAME[relay], REMOTES[node]
+    table = shlex.quote(remote.table)
     script = (f"nft list table inet {table} > /dev/null 2>&1 || {{ nft add table inet {table} && "
               f"nft add chain inet {table} output '{{ type filter hook output priority 0; policy accept; }}'; }} && "
               f"nft insert rule inet {table} output ip daddr {shlex.quote(unit.host)} tcp dport {unit.port} "
               f"reject with tcp reset comment '\"block-{relay}\"'")
-    on_b(script)
-    change(f"B host: nft table inet {B_TABLE}: reject B's TCP to {relay}'s TLS port; reversal: delete the rule, "
-           "and the table at the end")
+    on_node(node, script)
+    change(f"{remote.upper} host: nft table inet {remote.table}: reject {remote.upper}'s TCP to {relay}'s TLS port; "
+           "reversal: delete the rule, and the table at the end")
 
 
-def b_unblock(relay: str) -> None:
-    table = shlex.quote(B_TABLE)
+def node_unblock(node: str, relay: str) -> None:
+    remote = REMOTES[node]
+    table = shlex.quote(remote.table)
     script = (f"for h in $(nft -a list chain inet {table} output | grep -F 'comment \"block-{relay}\"' | "
               f"grep -o 'handle [0-9]*' | cut -d' ' -f2); do nft delete rule inet {table} output handle $h; done")
-    on_b(script)
-    change(f"B host: nft table inet {B_TABLE}: removed the rule rejecting B's TCP to {relay}")
+    on_node(node, script)
+    change(f"{remote.upper} host: nft table inet {remote.table}: removed the rule rejecting {remote.upper}'s TCP to "
+           f"{relay}")
 
 
-def b_remove_table() -> bool:
-    out = on_b(f"if nft list table inet {shlex.quote(B_TABLE)} > /dev/null 2>&1; then "
-               f"nft delete table inet {shlex.quote(B_TABLE)} && echo removed; fi", check=False).stdout
+def remove_table(node: str) -> bool:
+    remote = REMOTES[node]
+    out = on_node(node, f"if nft list table inet {shlex.quote(remote.table)} > /dev/null 2>&1; then "
+                        f"nft delete table inet {shlex.quote(remote.table)} && echo removed; fi", check=False).stdout
     if "removed" in out:
-        change(f"B host: deleted nft table inet {B_TABLE}")
+        change(f"{remote.upper} host: deleted nft table inet {remote.table}")
     return "removed" in out
 
 
-def b_cut_probe() -> None:
-    """Cutting B off from the relays (its own nft table on B's host) refuses
-    its connections to both relays, and reconnecting restores them."""
+def cut_probe(node: str) -> None:
+    """Cutting a remote node off from the relays (its own nft table on its
+    host) refuses its connections to both relays, and reconnecting restores
+    them."""
+    upper = node.upper()
     for relay in mr1.RELAYS:
-        b_block(relay)
-    cut = {relay.name: b_connect(relay.host, [relay.port]) for relay in RELAYS}
+        node_block(node, relay)
+    cut = {relay.name: node_connect(node, relay.host, [relay.port]) for relay in RELAYS}
     for relay in mr1.RELAYS:
-        b_unblock(relay)
-    back = {relay.name: b_connect(relay.host, [relay.port]) for relay in RELAYS}
+        node_unblock(node, relay)
+    back = {relay.name: node_connect(node, relay.host, [relay.port]) for relay in RELAYS}
     detail = {"cut": cut, "reconnected": back}
-    fd.evidence["b_cut_probe"] = detail
-    fd.require("cutting B off (a reject rule in the run's own nft table on B's host) refuses B's connections to both "
-               "relays, and reconnecting restores them",
+    fd.evidence[f"{node}_cut_probe"] = detail
+    fd.require(f"cutting {upper} off (a reject rule in the run's own nft table on {upper}'s host) refuses {upper}'s "
+               "connections to both relays, and reconnecting restores them",
                all(v.startswith("refused") for item in cut.values() for v in item.values()) and
                all(v == "connected" for item in back.values() for v in item.values()), detail)
 
 
-# --- Node B over SSH: exec, supervised processes, a read-only state mirror --------
+# --- Remote nodes over SSH: exec, supervised processes, a read-only state mirror ---
 
-def b_env() -> list[str]:
-    """B's commands keep every file they write inside the scratch directory."""
-    return ["env", f"HOME={B_BASE}/home", f"TMPDIR={B_BASE}/tmp", f"XDG_CONFIG_HOME={B_BASE}/home/.config",
-            f"XDG_CACHE_HOME={B_BASE}/home/.cache", f"XDG_DATA_HOME={B_BASE}/home/.local/share",
-            f"XDG_STATE_HOME={B_BASE}/home/.local/state"]
+def node_env_argv(node: str) -> list[str]:
+    """A remote node's commands keep every file they write inside the scratch
+    directory."""
+    base = REMOTES[node].base
+    return ["env", f"HOME={base}/home", f"TMPDIR={base}/tmp", f"XDG_CONFIG_HOME={base}/home/.config",
+            f"XDG_CACHE_HOME={base}/home/.cache", f"XDG_DATA_HOME={base}/home/.local/share",
+            f"XDG_STATE_HOME={base}/home/.local/state"]
 
 
-def b_exec(argv: list, *, data: str | None = None, vault: str | None = None, check: bool = True,
-           timeout: float = 240):
-    """Run one B command on its host. A vault URL, when needed, is read from
-    standard input and never put on a command line; a command that also needs
-    standard input (the tool's `call`) never needs a vault."""
-    remote = shlex.join(b_env() + [str(part) for part in argv])
+def node_exec(node: str, argv: list, *, data: str | None = None, vault: str | None = None, check: bool = True,
+              timeout: float = 240):
+    """Run one command of a remote node on its host. A vault URL, when
+    needed, is read from standard input and never put on a command line; a
+    command that also needs standard input (the tool's `call`) never needs a
+    vault."""
+    remote = shlex.join(node_env_argv(node) + [str(part) for part in argv])
     if vault:
         script = "IFS= read -r VAULT_URL && export VAULT_URL && exec " + remote + " < /dev/null"
-        result = on_b(script, data=(vault + "\n").encode(), check=check, timeout=timeout)
+        result = on_node(node, script, data=(vault + "\n").encode(), check=check, timeout=timeout)
     elif data is not None:
-        result = on_b(f"exec {remote}", data=data.encode(), check=check, timeout=timeout)
+        result = on_node(node, f"exec {remote}", data=data.encode(), check=check, timeout=timeout)
     else:
-        result = on_b(f"exec {remote} < /dev/null", check=check, timeout=timeout)
-    sync_b()
+        result = on_node(node, f"exec {remote} < /dev/null", check=check, timeout=timeout)
+    sync_node(node)
     return result
 
 
-def b_vault() -> str:
-    return f"file://{B_ROOT}/b/vault.json?master_key={fd.MASTER_KEYS['b']}"
+def node_vault(node: str) -> str:
+    return f"file://{REMOTES[node].root}/{node}/vault.json?master_key={fd.MASTER_KEYS[node]}"
+
+
+# Nodes whose long-running processes run contained on their host
+# (MR_CONTAIN_NODES, e.g. on a host shared with a validator): each process in
+# its own transient scope (Nice 10, idle I/O class) under one transient slice
+# per node holding MemoryMax and CPUQuota for all of them. The scopes end
+# with their processes and the slice when it is empty.
+CONTAIN = set(os.environ.get("MR_CONTAIN_NODES", "").split())
+CONTAIN_MEMORY = os.environ.get("MR_CONTAIN_MEMORY_MAX", "1G")
+CONTAIN_CPU = os.environ.get("MR_CONTAIN_CPU_QUOTA", "100%")
+
+
+def contain_slice(node: str) -> str:
+    return "tosmr" + re.sub(r"[^A-Za-z0-9]", "", WORK.name) + node + ".slice"
+
+
+def contained(node: str, argv: list) -> list:
+    if node not in CONTAIN:
+        return list(argv)
+    # A scope runs no exec of its own, so niceness and the idle I/O class are
+    # set by nice and ionice, which exec the process in place (its pid stays).
+    return ["systemd-run", "--scope", "--quiet", "--collect", f"--slice={contain_slice(node)}", "--",
+            "nice", "-n", "10", "ionice", "-c", "3", *map(str, argv)]
+
+
+def limit_slice(node: str) -> None:
+    """The slice's limits, set once it exists (its first scope started)."""
+    if node not in CONTAIN:
+        return
+    unit = contain_slice(node)
+    on_node(node, f"systemctl set-property --runtime {shlex.quote(unit)} MemoryMax={shlex.quote(CONTAIN_MEMORY)} "
+                  f"CPUQuota={shlex.quote(CONTAIN_CPU)}", timeout=60)
+    shown = on_node(node, f"systemctl show -p MemoryMax,CPUQuotaPerSecUSec {shlex.quote(unit)}", check=False).stdout
+    entry = f"{node.upper()} host: transient slice {unit} (MemoryMax {CONTAIN_MEMORY}, CPUQuota {CONTAIN_CPU}, runtime " \
+            "drop-in) with one scope per process (nice 10, idle I/O); reversal: the scopes end with their processes, " \
+            "the slice when empty, and systemctl revert removes the runtime drop-in at the end"
+    if entry not in CONTAINED_LOGGED:
+        CONTAINED_LOGGED.append(entry)
+        change(entry)
+    fd.evidence.setdefault("containment", {})[node] = {"slice": unit, "properties": shown.strip().splitlines()}
+
+
+CONTAINED_LOGGED: list[str] = []
+
+
+def revert_slices() -> None:
+    """Remove the runtime limits drop-in of every slice this run made."""
+    for node in sorted(CONTAIN):
+        if node not in REMOTES:
+            continue
+        unit = contain_slice(node)
+        result = on_node(node, f"systemctl stop {shlex.quote(unit)} 2>/dev/null; systemctl revert {shlex.quote(unit)}",
+                         check=False, timeout=60)
+        left = on_node(node, f"ls -d /run/systemd/system.control/{shlex.quote(unit)}.d 2>/dev/null | wc -l",
+                       check=False).stdout.strip()
+        change(f"{node.upper()} host: stopped and reverted {unit} (runtime drop-in left: {left})")
+        fd.evidence.setdefault("containment", {}).setdefault(node, {})["reverted"] = left == "0" and result.returncode == 0
 
 
 class RemoteProcess:
-    """A supervised long-running process on B, with the Popen methods the
-    phase-1 harness uses."""
+    """A supervised long-running process of a remote node on its host, with
+    the Popen methods the phase-1 harness uses."""
 
-    def __init__(self, key: str, argv: list, vault: str | None) -> None:
-        self.key, self.returncode = key, None
-        self.pid_file = f"{B_BASE}/{key}.pid"
-        self.exit_file = f"{B_BASE}/{key}.exit"
-        command = shlex.join(b_env() + [SYSTEM_PYTHON, "-I", f"{B_BASE}/supervisor.py", f"{B_BASE}/{key}.log",
-                                        self.pid_file, self.exit_file, *map(str, argv)])
+    def __init__(self, node: str, key: str, argv: list, vault: str | None) -> None:
+        base = REMOTES[node].base
+        argv = contained(node, argv)
+        self.node, self.key, self.returncode = node, key, None
+        self.pid_file = f"{base}/{key}.pid"
+        self.exit_file = f"{base}/{key}.exit"
+        command = shlex.join(node_env_argv(node) + [SYSTEM_PYTHON, "-I", f"{base}/supervisor.py", f"{base}/{key}.log",
+                                                    self.pid_file, self.exit_file, *map(str, argv)])
         clear = f"rm -f {shlex.quote(self.pid_file)} {shlex.quote(self.exit_file)}"
         if vault:
-            on_b(f"{clear} && IFS= read -r VAULT_URL && export VAULT_URL && exec {command} < /dev/null",
-                 data=(vault + "\n").encode(), timeout=60)
+            on_node(node, f"{clear} && IFS= read -r VAULT_URL && export VAULT_URL && exec {command} < /dev/null",
+                    data=(vault + "\n").encode(), timeout=60)
         else:
-            on_b(f"{clear} && exec {command} < /dev/null", timeout=60)
-        self.pid = fd.poll(lambda: on_b(f"cat {self.pid_file} 2>/dev/null", check=False).stdout.strip() or None, 30, 0.5)
+            on_node(node, f"{clear} && exec {command} < /dev/null", timeout=60)
+        self.pid = fd.poll(lambda: on_node(node, f"cat {self.pid_file} 2>/dev/null", check=False).stdout.strip() or None,
+                           30, 0.5)
         if not self.pid:
-            raise RuntimeError(f"{key} did not start on B's host")
+            raise RuntimeError(f"{key} did not start on {node.upper()}'s host")
+        limit_slice(node)
 
     def poll(self):
         if self.returncode is not None:
             return self.returncode
-        answer = on_b(f'if [ -e {self.exit_file} ]; then cat {self.exit_file}; elif kill -0 {self.pid} 2>/dev/null; '
-                      'then echo running; else echo gone; fi', check=False).stdout.strip()
+        answer = on_node(self.node, f'if [ -e {self.exit_file} ]; then cat {self.exit_file}; elif kill -0 {self.pid} '
+                                    '2>/dev/null; then echo running; else echo gone; fi', check=False).stdout.strip()
         if re.fullmatch(r"-?\d+", answer):
             self.returncode = int(answer)
             return self.returncode
@@ -627,9 +836,9 @@ class RemoteProcess:
         has reused for another process is left alone."""
         if self.pid and str(self.pid).isdigit() and re.fullmatch(r"[A-Z]+", name):
             pid = int(self.pid)
-            on_b(f"if [ -r /proc/{pid}/cmdline ] && tr '\\0' ' ' < /proc/{pid}/cmdline | "
-                 f"grep -qF -- {shlex.quote(str(B_BASE) + '/')}; then kill -{name} {pid} 2>/dev/null; fi; true",
-                 check=False)
+            on_node(self.node, f"if [ -r /proc/{pid}/cmdline ] && tr '\\0' ' ' < /proc/{pid}/cmdline | "
+                               f"grep -qF -- {shlex.quote(str(REMOTES[self.node].base) + '/')}; then "
+                               f"kill -{name} {pid} 2>/dev/null; fi; true", check=False)
 
 
 SUPERVISOR = '''import os, subprocess, sys
@@ -651,86 +860,100 @@ with open(exit_file + ".part", "w") as f:
 os.rename(exit_file + ".part", exit_file)
 '''
 
-MIRROR = {"stop": False, "thread": None, "syncs": 0, "failures": 0}
-MIRROR_LOCK = threading.Lock()
 
-
-def sync_b() -> None:
-    """Copy B's node directory and B's process logs to the same paths here
-    (read-only use): the phase-1 reads of B's journals, cards and logs read
-    B's state. Sockets and the Endpoint key are not copied."""
-    if not MIRROR["thread"]:
+def sync_node(node: str) -> None:
+    """Copy a remote node's directory and its process logs to the same paths
+    here (read-only use): the phase-1 reads of its journals, cards and logs
+    read its state. Sockets and the Endpoint key are not copied."""
+    remote = REMOTES[node]
+    if not remote.mirror["thread"]:
         return
-    with MIRROR_LOCK:
-        state = subprocess.run(["rsync", "-a", "--delete", "--exclude=/s/", "--exclude=/keys/", "-e", rsync_ssh(),
-                                f"{B_SSH}:{B_ROOT}/b/", str(ROOT / "b") + "/"], capture_output=True)
-        logs = subprocess.run(["rsync", "-a", "-e", rsync_ssh(), f"{B_SSH}:{B_BASE}/*.log", str(WORK) + "/"],
-                              capture_output=True)
-        MIRROR["syncs"] += 1
+    with remote.lock:
+        state = subprocess.run(["rsync", "-a", "--delete", "--exclude=/s/", "--exclude=/keys/", "-e", rsync_ssh(node),
+                                f"{remote.ssh}:{remote.root}/{node}/", str(ROOT / node) + "/"], capture_output=True)
+        logs = subprocess.run(["rsync", "-a", "-e", rsync_ssh(node), f"{remote.ssh}:{remote.base}/*.log",
+                               str(WORK) + "/"], capture_output=True)
+        remote.mirror["syncs"] += 1
         if state.returncode != 0 or logs.returncode not in (0, 23):
-            MIRROR["failures"] += 1
+            remote.mirror["failures"] += 1
 
 
-def mirror_loop() -> None:
-    while not MIRROR["stop"]:
-        sync_b()
+def sync_all() -> None:
+    for node in REMOTES:
+        sync_node(node)
+
+
+def mirror_loop(node: str) -> None:
+    while not REMOTES[node].mirror["stop"]:
+        sync_node(node)
         time.sleep(2)
 
 
-def b_socket(name: str) -> str:
-    return str(mr1.sock("b", name))
+def node_socket(node: str, name: str) -> str:
+    return str(mr1.sock(node, name))
 
 
-def push_to_b(*paths: Path) -> None:
-    """Copy files or directories of this host to the same path on B."""
+def push_to(node: str, *paths: Path) -> None:
+    """Copy files or directories of this host to the same path on a remote
+    node's host."""
     for path in paths:
-        subprocess.run(["rsync", "-a", "--no-owner", "--no-group", "-e", rsync_ssh(), str(path),
-                        f"{B_SSH}:{path.parent}/"], check=True, capture_output=True, timeout=600)
+        subprocess.run(["rsync", "-a", "--no-owner", "--no-group", "-e", rsync_ssh(node), str(path),
+                        f"{REMOTES[node].ssh}:{path.parent}/"], check=True, capture_output=True, timeout=600)
+
+
+def write_on(node: str, path: Path, data: bytes) -> None:
+    """A file the run hands to a remote node: written to the copy here
+    (owner-only) and to the same path on the node's host, with the mirror
+    held so it cannot remove the copy in between."""
+    with REMOTES[node].lock:
+        path.write_bytes(data)
+        path.chmod(0o600)
+        push_to(node, path)
 
 
 def tree_digests(lines: str) -> dict:
     return {line.split(None, 1)[1].strip(): line.split(None, 1)[0] for line in lines.splitlines() if line.strip()}
 
 
-B_STATE: dict = {}
-
-
-def stage_on_b() -> None:
-    """Node B's binaries and files at the same paths on B's host, owner-only
-    (root, 0700 directories), every file byte-identical to this host's copy."""
-    base = shlex.quote(str(SCRATCH_BASE))
-    out = on_b(f"test ! -e {shlex.quote(str(B_BASE))} || {{ echo exists; exit 3; }}; "
-               f"if [ -d {base} ]; then echo base-existed; else mkdir -m 0700 {base} && echo base-created; fi; "
-               f"install -d -m 0700 {shlex.quote(str(B_BASE))} {shlex.quote(str(B_ROOT))} "
-               f"{shlex.quote(str(B_BASE))}/home {shlex.quote(str(B_BASE))}/tmp && "
-               f"touch {shlex.quote(str(B_BASE))}/started").stdout
-    B_STATE["base_created"] = "base-created" in out
-    if B_STATE["base_created"]:
-        change(f"B host: created {SCRATCH_BASE} (0700); reversal: rmdir at the end")
-    change(f"B host: created {B_BASE} (0700, the run's scratch directory); reversal: remove at the end")
-    (B_BASE / "supervisor.py").write_text(SUPERVISOR)
-    (B_BASE / "supervisor.py").chmod(0o600)
-    push_to_b(B_BASE / "supervisor.py", ROOT / "bin", ROOT / "etc", ROOT / "b")
-    find = "find bin etc b -type f -exec sha256sum {} + | sort -k2"
+def stage_on(node: str) -> None:
+    """A remote node's binaries and files at the same paths on its host,
+    owner-only (root, 0700 directories), every file byte-identical to this
+    host's copy."""
+    remote, upper = REMOTES[node], node.upper()
+    base_dir, run_dir, root_dir = shlex.quote(str(remote.scratch_base)), shlex.quote(str(remote.base)), \
+        shlex.quote(str(remote.root))
+    out = on_node(node, f"test ! -e {run_dir} || {{ echo exists; exit 3; }}; "
+                        f"if [ -d {base_dir} ]; then echo base-existed; else mkdir -m 0700 {base_dir} && "
+                        f"echo base-created; fi; install -d -m 0700 {run_dir} {root_dir} {run_dir}/home {run_dir}/tmp "
+                        f"&& touch {run_dir}/started").stdout
+    remote.state["base_created"] = "base-created" in out
+    if remote.state["base_created"]:
+        change(f"{upper} host: created {remote.scratch_base} (0700); reversal: rmdir at the end")
+    change(f"{upper} host: created {remote.base} (0700, the run's scratch directory); reversal: remove at the end")
+    (remote.base / "supervisor.py").write_text(SUPERVISOR)
+    (remote.base / "supervisor.py").chmod(0o600)
+    push_to(node, remote.base / "supervisor.py", ROOT / "bin", ROOT / "etc", ROOT / node)
+    find = "find bin etc " + node + " -type f -exec sha256sum {} + | sort -k2"
     local = tree_digests(subprocess.run(["sh", "-c", find], cwd=ROOT, capture_output=True, text=True).stdout)
-    remote = tree_digests(on_b(f"cd {shlex.quote(str(B_ROOT))} && {find}").stdout)
-    modes = on_b(f"stat -c '%u %a %n' {shlex.quote(str(B_BASE))} {shlex.quote(str(B_ROOT))} "
-                 f"{shlex.quote(str(B_ROOT / 'b'))} {shlex.quote(str(B_ROOT / 'b' / 'vault.json'))}").stdout.split("\n")
-    version = on_b(f"{shlex.quote(str(B_ROOT / 'bin' / 'tosctl'))} --version | head -n 2", check=False)
-    tosctl_ok = version.returncode == 0 and fd.evidence["binaries"]["tosctl"]["sha256"] == remote.get("bin/tosctl")
-    detail = {"files": len(remote), "identical": local == remote, "modes": [redact(m) for m in modes if m],
-              "tosctl_runs_on_b": tosctl_ok, "binaries": {k: v for k, v in remote.items() if k.startswith("bin/")}}
-    fd.evidence["b_staging"] = detail
-    fd.require("b: node B's binaries and files are staged on B's host at the same paths, owner-only (root, 0700 "
-               "directories) inside the run's scratch directory, every file byte-identical (sha256) to this host's "
-               "copy, and the pinned tosctl runs there",
-               local == remote and bool(remote) and tosctl_ok and
+    on_host = tree_digests(on_node(node, f"cd {root_dir} && {find}").stdout)
+    modes = on_node(node, f"stat -c '%u %a %n' {run_dir} {root_dir} {shlex.quote(str(remote.root / node))} "
+                          f"{shlex.quote(str(remote.root / node / 'vault.json'))}").stdout.split("\n")
+    version = on_node(node, f"{shlex.quote(str(remote.root / 'bin' / 'tosctl'))} --version | head -n 2", check=False)
+    tosctl_ok = version.returncode == 0 and fd.evidence["binaries"]["tosctl"]["sha256"] == on_host.get("bin/tosctl")
+    detail = {"files": len(on_host), "identical": local == on_host, "modes": [redact(m) for m in modes if m],
+              f"tosctl_runs_on_{node}": tosctl_ok,
+              "binaries": {k: v for k, v in on_host.items() if k.startswith("bin/")}}
+    fd.evidence[f"{node}_staging"] = detail
+    fd.require(f"{node}: node {upper}'s binaries and files are staged on {upper}'s host at the same paths, owner-only "
+               "(root, 0700 directories) inside the run's scratch directory, every file byte-identical (sha256) to "
+               "this host's copy, and the pinned tosctl runs there",
+               local == on_host and bool(on_host) and tosctl_ok and
                all(m.split()[0] == "0" and m.split()[1] in ("700", "600") for m in modes if m), detail)
-    MIRROR["thread"] = threading.Thread(target=mirror_loop, daemon=True)
-    MIRROR["thread"].start()
+    remote.mirror["thread"] = threading.Thread(target=mirror_loop, args=(node,), daemon=True)
+    remote.mirror["thread"].start()
 
 
-# --- The phase-1 overrides for node B, the relays and the remote topology ---------
+# --- The phase-1 overrides for the remote nodes, the relays and the topology -------
 
 def install_overrides() -> None:
     _in_ns, _fox = mr1.in_ns, mr1.fox
@@ -739,20 +962,21 @@ def install_overrides() -> None:
     _signal_pattern, _cut_off, _reconnect = mr1.signal_pattern, mr1.cut_off, mr1.reconnect
     _stage, _finish, _relay_search, _relay_sizes = mr1.stage, mr1.finish, mr1.relay_search_and_sizes, \
         mr1.relay_envelope_sizes
+    _hand_file, _hand_contact = mr1.hand_file, mr1.hand_contact
 
     def in_ns(name, argv, label, *, check=True, timeout=240, env=None, data=None):
-        if name != "b":
+        if name not in REMOTES:
             return _in_ns(name, argv, label, check=check, timeout=timeout, env=env, data=data)
         vault = (env or {}).get("VAULT_URL") if env else None
-        result = b_exec(argv, data=data, vault=vault, check=check, timeout=timeout)
+        result = node_exec(name, argv, data=data, vault=vault, check=check, timeout=timeout)
         return subprocess.CompletedProcess(argv, result.returncode, result.stdout, result.stderr)
 
     def fox(node, *args, check=True, timeout=900):
-        if node != "b":
+        if node not in REMOTES:
             return _fox(node, *args, check=check, timeout=timeout)
         argv = mr1.fox_argv(*args)
         for attempt in range(8):
-            result = b_exec(argv, vault=b_vault(), check=False, timeout=timeout)
+            result = node_exec(node, argv, vault=node_vault(node), check=False, timeout=timeout)
             if result.returncode == 0 or not fd.TRANSIENT.search(result.stderr):
                 break
             fd.evidence.setdefault("repeated_after_unavailable_chain_read", []).append(
@@ -760,7 +984,7 @@ def install_overrides() -> None:
                  "stderr": redact(result.stderr)[-400:]})
             time.sleep(15)
         if check and result.returncode != 0:
-            raise RuntimeError(f"openfox earning {' '.join(args[:2])} on b failed ({result.returncode}): "
+            raise RuntimeError(f"openfox earning {' '.join(args[:2])} on {node} failed ({result.returncode}): "
                                f"{redact(result.stderr)[-2500:]}")
         return subprocess.CompletedProcess(argv, result.returncode, result.stdout, result.stderr)
 
@@ -768,53 +992,56 @@ def install_overrides() -> None:
         return json.loads(fox(node, *a, **k).stdout)
 
     def start_signer(node):
-        if node != "b":
+        if node not in REMOTES:
             return _start_signer(node)
-        mr1.PROCESSES["signer-b"] = RemoteProcess("signer-b", mr1.signer_argv("b"), None)
-        fd.require("b: the test Endpoint signer serves its socket on B's host",
-                   fd.poll(lambda: on_b(f"test -S {shlex.quote(b_socket('signer.sock'))} && echo yes",
-                                        check=False).stdout.strip() == "yes", 30, 1) is not None,
-                   mr1.log_text("signer-b")[-300:])
+        key = f"signer-{node}"
+        mr1.PROCESSES[key] = RemoteProcess(node, key, mr1.signer_argv(node), None)
+        fd.require(f"{node}: the test Endpoint signer serves its socket on {node.upper()}'s host",
+                   fd.poll(lambda: on_node(node, f"test -S {shlex.quote(node_socket(node, 'signer.sock'))} && echo yes",
+                                           check=False).stdout.strip() == "yes", 30, 1) is not None,
+                   mr1.log_text(key)[-300:])
 
     def start_daemon(node, label="start"):
-        if node != "b":
+        if node not in REMOTES:
             return _start_daemon(node, label)
-        mr1.PROCESSES["messengerd-b"] = RemoteProcess("messengerd-b", mr1.daemon_argv("b"), None)
-        up = fd.poll(lambda: on_b(f"test -S {shlex.quote(b_socket('carrier.sock'))} && test -S "
-                                  f"{shlex.quote(b_socket('runtime.sock'))} && test -f "
-                                  f"{shlex.quote(str(mr1.mdir('b') / 'export' / 'relay-contact.json'))} && echo y",
-                                  check=False).stdout.strip() == "y", 120, 1)
-        sync_b()
-        mr1.require(f"b ({label}): tos-messengerd on B's host verified its finalized delegation, serves its sockets "
-                    "and exported its relay evidence", bool(up) and mr1.PROCESSES["messengerd-b"].poll() is None,
-                    mr1.log_text("messengerd-b")[-1500:])
+        key = f"messengerd-{node}"
+        mr1.PROCESSES[key] = RemoteProcess(node, key, mr1.daemon_argv(node), None)
+        up = fd.poll(lambda: on_node(node, f"test -S {shlex.quote(node_socket(node, 'carrier.sock'))} && test -S "
+                                           f"{shlex.quote(node_socket(node, 'runtime.sock'))} && test -f "
+                                           f"{shlex.quote(str(mr1.mdir(node) / 'export' / 'relay-contact.json'))} && "
+                                           "echo y", check=False).stdout.strip() == "y", 120, 1)
+        sync_node(node)
+        mr1.require(f"{node} ({label}): tos-messengerd on {node.upper()}'s host verified its finalized delegation, "
+                    "serves its sockets and exported its relay evidence", bool(up) and mr1.PROCESSES[key].poll() is None,
+                    mr1.log_text(key)[-1500:])
 
     def stop_daemon(node, sig="TERM"):
-        if node != "b":
+        if node not in REMOTES:
             return _stop_daemon(node, sig)
-        process = mr1.PROCESSES.pop("messengerd-b", None)
+        process = mr1.PROCESSES.pop(f"messengerd-{node}", None)
         if process is None:
             return None
         process.signal("KILL" if sig == "KILL" else "TERM")
         code = process.wait(60)
-        sync_b()
+        sync_node(node)
         return code
 
     def start_serve(node, label="start"):
-        if node != "b":
+        if node not in REMOTES:
             return _start_serve(node, label)
-        mr1.PROCESSES["serve-b"] = RemoteProcess("serve-b", mr1.fox_argv("service", "serve", "--rail-config",
-                                                                        mr1.rail("b")), b_vault())
-        up = fd.poll(lambda: on_b(f"test -S {shlex.quote(b_socket('chat-carrier.sock'))} && echo y",
-                                  check=False).stdout.strip() == "y" and mr1.PROCESSES["serve-b"].poll() is None, 120, 1)
-        sync_b()
-        mr1.require(f"b ({label}): `openfox earning service serve` runs on B's host and serves carrier.carry",
-                    bool(up) and mr1.PROCESSES["serve-b"].poll() is None, mr1.log_text("serve-b")[-1500:])
+        key = f"serve-{node}"
+        mr1.PROCESSES[key] = RemoteProcess(node, key, mr1.fox_argv("service", "serve", "--rail-config", mr1.rail(node)),
+                                           node_vault(node))
+        up = fd.poll(lambda: on_node(node, f"test -S {shlex.quote(node_socket(node, 'chat-carrier.sock'))} && echo y",
+                                     check=False).stdout.strip() == "y" and mr1.PROCESSES[key].poll() is None, 120, 1)
+        sync_node(node)
+        mr1.require(f"{node} ({label}): `openfox earning service serve` runs on {node.upper()}'s host and serves "
+                    "carrier.carry", bool(up) and mr1.PROCESSES[key].poll() is None, mr1.log_text(key)[-1500:])
 
     def stop_serve(node, sig="TERM"):
-        if node != "b":
+        if node not in REMOTES:
             return _stop_serve(node, sig)
-        process = mr1.PROCESSES.pop("serve-b", None)
+        process = mr1.PROCESSES.pop(f"serve-{node}", None)
         if process is None:
             return None
         process.signal("KILL" if sig == "KILL" else "TERM")
@@ -825,29 +1052,31 @@ def install_overrides() -> None:
             time.sleep(3)
             process.signal("KILL")
             code = process.wait(30)
-        sync_b()
+        sync_node(node)
         return code
 
     def mcall(node, request, socket="runtime.sock"):
-        if node != "b":
+        if node not in REMOTES:
             return _mcall(node, request, socket)
-        argv = [ROOT / "bin" / "messenger-relay-e2e-tool", "call", "--socket", mr1.sock("b", socket)]
-        result = b_exec(argv, data=json.dumps(request), check=False, timeout=90)
+        argv = [ROOT / "bin" / "messenger-relay-e2e-tool", "call", "--socket", mr1.sock(node, socket)]
+        result = node_exec(node, argv, data=json.dumps(request), check=False, timeout=90)
         if result.returncode != 0:
             return {"ok": False, "call_error": redact(result.stderr)[-600:]}
         return json.loads(result.stdout)
 
     def signal_pattern(pattern, sig):
-        """B's processes are signalled on B's host through their handles. The
-        relay daemons are not paused: phase 1's relay pause (STOP/CONT) is a
-        silent drop (hold/release) of A's packets to that relay."""
-        for key, own in (("messengerd-b", mr1.daemon_pattern("b")), ("serve-b", mr1.serve_pattern("b"))):
-            if pattern == own:
-                process = mr1.PROCESSES.get(key)
-                if process is None:
-                    return []
-                process.signal(sig)
-                return [int(process.pid)]
+        """A remote node's processes are signalled on its host through their
+        handles. The relay daemons are not paused: phase 1's relay pause
+        (STOP/CONT) is a silent drop (hold/release) of A's packets to that
+        relay."""
+        for node in REMOTES:
+            for key, own in ((f"messengerd-{node}", mr1.daemon_pattern(node)), (f"serve-{node}", mr1.serve_pattern(node))):
+                if pattern == own:
+                    process = mr1.PROCESSES.get(key)
+                    if process is None:
+                        return []
+                    process.signal(sig)
+                    return [int(process.pid)]
         for relay in mr1.RELAYS:
             if pattern == mr1.relay_pattern(relay):
                 if sig == "STOP":
@@ -860,26 +1089,42 @@ def install_overrides() -> None:
         return _signal_pattern(pattern, sig)
 
     def cut_off(node):
-        if node != "b":
+        if node not in REMOTES:
             return _cut_off(node)
         for relay in mr1.RELAYS:
-            b_block(relay)
+            node_block(node, relay)
 
     def reconnect(node):
-        if node != "b":
+        if node not in REMOTES:
             return _reconnect(node)
         for relay in mr1.RELAYS:
-            b_unblock(relay)
+            node_unblock(node, relay)
+
+    def hand_file(source, node, name):
+        """A file handed to a remote node reaches its host too."""
+        if node not in REMOTES:
+            return _hand_file(source, node, name)
+        target = mr1.nd(node) / "handed" / name
+        write_on(node, target, Path(source).read_bytes())
+        return target
+
+    def hand_contact(source, target):
+        if target not in REMOTES:
+            return _hand_contact(source, target)
+        return hand_file(mr1.nd(source) / "contact.json", target, f"contact-{source}.json")
 
     def stage():
         _stage()
-        # Both nodes pin the relays' CA from the node files, at the same path
-        # on both hosts.
+        for hook in STAGE_HOOKS:
+            hook()
+        # Every node pins the relays' CA from the node files, at the same
+        # path on every host.
         target = ROOT / "etc" / "relay-ca.pem"
         target.write_bytes(CA.read_bytes())
         target.chmod(0o600)
         mr1.CA = target
-        stage_on_b()
+        for node in REMOTES:
+            stage_on(node)
 
     def relay_envelope_sizes(snapshot_dir: Path) -> list[int]:
         """This run's stored envelopes in one relay's snapshot: an envelope
@@ -890,13 +1135,7 @@ def install_overrides() -> None:
                 path.relative_to(snapshot_dir).as_posix() not in relay.preexisting]
 
     def relay_search_and_sizes():
-        # The live relay state at the end (a last copy) and each relay's log
-        # since the run started are searched along with the earlier copies.
-        fd.evidence["relay_final_state"] = relay_snapshot("final")
-        for relay in RELAYS:
-            journal = on_relay(relay, f"journalctl -u {shlex.quote(relay.unit)} --since @{relay.since} -o short-iso "
-                                      "--no-pager", check=False, keep_stdout=False).raw.decode(errors="replace")
-            (WORK / f"{relay.name}.log").write_text(scrub(journal))
+        final_relay_reads()
         return _relay_search()
 
     def finish():
@@ -910,6 +1149,7 @@ def install_overrides() -> None:
     mr1.start_signer, mr1.start_daemon, mr1.stop_daemon = start_signer, start_daemon, stop_daemon
     mr1.start_serve, mr1.stop_serve = start_serve, stop_serve
     mr1.signal_pattern, mr1.cut_off, mr1.reconnect = signal_pattern, cut_off, reconnect
+    mr1.hand_file, mr1.hand_contact = hand_file, hand_contact
     mr1.stage, mr1.finish = stage, finish
     mr1.relay_envelope_sizes, mr1.relay_search_and_sizes = relay_envelope_sizes, relay_search_and_sizes
     mr1.write_configs, mr1.start_forwarders = write_configs, start_forwarders
@@ -925,20 +1165,22 @@ def install_overrides() -> None:
     for node in LOCAL_NODES:
         mr1.HIDE[node] = [mr1.PRIVATE, *(ROOT / other for other in mr1.NODES if other != node)]
     _continue = mr1.continue_wrapper
-    mr1.continue_wrapper = lambda key: None if key.endswith("-b") else _continue(key)
-    # A read of B's log, and any check after a relay listing (which may show
-    # what B just did), first brings the copy of B's files up to date, so a
-    # check never reads B's state older than what it observed at a relay.
+    mr1.continue_wrapper = lambda key: None if remote_of_key(key) else _continue(key)
+    # A read of a remote node's log, and any check after a relay listing
+    # (which may show what a remote node just did), first brings the copy of
+    # its files up to date, so a check never reads its state older than what
+    # it observed at a relay.
     _log_text, _listed_ids = mr1.log_text, mr1.listed_ids
 
     def log_text(key):
-        if key.endswith("-b"):
-            sync_b()
+        node = remote_of_key(key)
+        if node:
+            sync_node(node)
         return _log_text(key)
 
     def listed_ids(relay, agent):
         ids = _listed_ids(relay, agent)
-        sync_b()
+        sync_all()
         return ids
     mr1.log_text, mr1.listed_ids = log_text, listed_ids
 
@@ -967,11 +1209,22 @@ def relay_snapshot(name: str) -> dict:
     return result
 
 
+def final_relay_reads() -> None:
+    """The live relay state at the end (a last copy) and each relay's log
+    since the run started, for the plaintext search along with the earlier
+    copies."""
+    fd.evidence["relay_final_state"] = relay_snapshot("final")
+    for relay in RELAYS:
+        journal = on_relay(relay, f"journalctl -u {shlex.quote(relay.unit)} --since @{relay.since} -o short-iso "
+                                  "--no-pager", check=False, keep_stdout=False).raw.decode(errors="replace")
+        (WORK / f"{relay.name}.log").write_text(scrub(journal))
+
+
 # --- Remote setup steps replacing the phase-1 namespace ones -----------------------
 
 def start_forwarders() -> None:
-    """The chain RPC for A and C (forwarders through the bridge, as in phase
-    1), and for B the reverse tunnel."""
+    """The chain RPC for the local nodes (forwarders through the bridge, as
+    in phase 1), and for each remote node the reverse tunnel."""
     ports = [str(port) for port in fd.RPC_PORTS]
     log = (WORK / "forward-host.log").open("ab")
     mr1.PROCESSES["forward-host"] = subprocess.Popen([SYSTEM_PYTHON, "-I", str(mr1.FORWARD), mr1.HOST_IP, "127.0.0.1",
@@ -981,41 +1234,43 @@ def start_forwarders() -> None:
         mr1.spawn(node, f"forward-{node}", [SYSTEM_PYTHON, "-I", mr1.FORWARD, "127.0.0.1", mr1.HOST_IP, *ports],
                   "the chain RPC forwarder")
         ok = mr1.wait_line(f"forward-{node}", "ready") and ok
-    fd.require("the chain RPC is forwarded for A and C: host 10.231.78.1 to the validators on 127.0.0.1, and in each "
-               "of their namespaces 127.0.0.1 to 10.231.78.1, for the JSON-RPC ports only", ok,
+    fd.require(f"the chain RPC is forwarded for {names(LOCAL_NODES)}: host 10.231.78.1 to the validators on 127.0.0.1, "
+               "and in each of their namespaces 127.0.0.1 to 10.231.78.1, for the JSON-RPC ports only", ok,
                {key: mr1.log_text(key)[-200:] for key in ("forward-host", *(f"forward-{n}" for n in LOCAL_NODES))})
-    start_tunnel()
+    for node in REMOTES:
+        start_tunnel(node)
 
 
 def isolation() -> None:
-    """A and C on this host: no path between their namespaces, none to the
-    host's services or the internet; then the cross-host probe."""
+    """The local nodes on this host: no path between their namespaces, none
+    to the host's services or the internet; then the cross-host probe."""
     for node in LOCAL_NODES:
         mr1.spawn(node, f"probe-listener-{node}", [SYSTEM_PYTHON, "-I", "-c", mr1.LISTEN, mr1.ADDRESS[node], 47000],
                   "probe listener")
     listening = all(mr1.wait_line(f"probe-listener-{node}", "listening") for node in LOCAL_NODES)
-    pairs = [("a", "c"), ("c", "a")]
+    pairs = list(itertools.permutations(LOCAL_NODES, 2))
     before = {f"{x} to {y}": mr1.probe(x, mr1.ADDRESS[y], 47000) for x, y in pairs}
     mr1.netsh("firewall")
     after = {f"{x} to {y}": mr1.probe(x, mr1.ADDRESS[y], 47000) for x, y in pairs}
     after["a to its own listener"] = mr1.probe("a", mr1.ADDRESS["a"], 47000)
-    b_host = B_SSH.rsplit("@", 1)[-1]
-    others = {"a to host ssh 10.231.78.1:22": mr1.probe("a", mr1.HOST_IP, 22),
-              "c to host ssh 10.231.78.1:22": mr1.probe("c", mr1.HOST_IP, 22),
-              "a to an internet address 1.1.1.1:443": mr1.probe("a", "1.1.1.1", 443),
-              "c to an internet address 1.1.1.1:443": mr1.probe("c", "1.1.1.1", 443),
-              "c to B's SSH port": mr1.probe("c", b_host, 22)}
+    others = {f"{node} to host ssh 10.231.78.1:22": mr1.probe(node, mr1.HOST_IP, 22) for node in LOCAL_NODES}
+    others.update({f"{node} to an internet address 1.1.1.1:443": mr1.probe(node, "1.1.1.1", 443)
+                   for node in LOCAL_NODES})
+    others.update({f"{LOCAL_NODES[-1]} to {node.upper()}'s SSH port": mr1.probe(LOCAL_NODES[-1], remote.host, 22)
+                   for node, remote in REMOTES.items()})
     for node in LOCAL_NODES:
         mr1.PROCESSES.pop(f"probe-listener-{node}").terminate()
     mr1.signal_pattern("^" + SYSTEM_PYTHON + " -I -c import socket,sys", "TERM")
     evidence = {"before_rules": before, "after_rules": after, "other_paths": others, "listeners_started": listening}
     fd.evidence["isolation_probe"] = evidence
-    mr1.gate("1", "no direct path on this host: before the rules A and C reach a listener in each other's namespace; "
+    local = names(LOCAL_NODES)
+    mr1.gate("1", f"no direct path on this host: before the rules {local} reach a listener in each other's namespace; "
              "after them every connection between them is dropped both ways, while A still reaches its own listener",
              listening and all(v == "connected" for v in before.values()) and
              all(after[f"{x} to {y}"].startswith("refused") for x, y in pairs) and
              after["a to its own listener"] == "connected", evidence)
-    mr1.gate("1", "A and C reach neither this host's services, nor the internet, nor B's host except through the "
+    hosts = "'s or ".join(node.upper() for node in REMOTES) + "'s host"
+    mr1.gate("1", f"{local} reach neither this host's services, nor the internet, nor {hosts} except through the "
              "relays", all(value.startswith("refused") for value in others.values()), others)
     direct_path()
 
@@ -1027,8 +1282,15 @@ def hidden_files() -> None:
         seen[name] = mr1.in_ns(name, [SYSTEM_PYTHON, "-I", "-c", mr1.LIST_HIDDEN, *paths], "file visibility probe",
                                timeout=30).stdout.strip().splitlines()
     fd.evidence["file_isolation"] = seen
-    mr1.gate("1", "no shared file or socket: A and C each see the other nodes' directories (B's included, a copy of "
-             "B's host's files) and the run's private files as empty; B is another machine",
+    if len(REMOTES) == 1:
+        upper = next(iter(REMOTES)).upper()
+        remote_text = f"{upper}'s included, a copy of {upper}'s host's files"
+        remote_tail = f"{upper} is another machine"
+    else:
+        remote_text = "'s and ".join(node.upper() for node in REMOTES) + "'s included, copies of their hosts' files"
+        remote_tail = f"{names(REMOTES)} are other machines"
+    mr1.gate("1", f"no shared file or socket: {names(LOCAL_NODES)} each see the other nodes' directories "
+             f"({remote_text}) and the run's private files as empty; {remote_tail}",
              all(line.endswith(": []") for lines in seen.values() for line in lines) and
              all(len(seen[name]) == len(mr1.HIDE[name]) for name in seen), seen)
 
@@ -1036,25 +1298,32 @@ def hidden_files() -> None:
 def relay_reachability() -> None:
     reached = {f"{node} to {relay.name}": mr1.probe(node, relay.host, relay.port)
                for node in LOCAL_NODES for relay in RELAYS}
-    for relay in RELAYS:
-        reached[f"b to {relay.name}"] = b_connect(relay.host, [relay.port]).get(str(relay.port), "")
+    for node in REMOTES:
+        for relay in RELAYS:
+            reached[f"{node} to {relay.name}"] = node_connect(node, relay.host, [relay.port]).get(str(relay.port), "")
     fd.evidence["isolation_probe"]["relay_reachability"] = reached
-    fd.require("each node reaches both relays' TLS port (A and C through this host's NAT, B from its own host)",
-               all(v == "connected" for v in reached.values()), reached)
-    b_cut_probe()
+    own = "its own host" if len(REMOTES) == 1 else "their own hosts"
+    fd.require(f"each node reaches both relays' TLS port ({names(LOCAL_NODES)} through this host's NAT, "
+               f"{names(REMOTES)} from {own})", all(v == "connected" for v in reached.values()), reached)
+    if CUT_PROBE:
+        for node in REMOTES:
+            cut_probe(node)
 
 
 def write_configs() -> None:
-    """As phase 1; B's two files are written here and copied to B's host
-    before its daemon checks them."""
-    with MIRROR_LOCK:
+    """As phase 1; a remote node's two files are written here and copied to
+    its host before its daemon checks them."""
+    with contextlib.ExitStack() as held:
+        for remote in REMOTES.values():
+            held.enter_context(remote.lock)
         for node in mr1.NODES:
             for name, body in (("config.json", mr1.daemon_config(node)),
                                ("publication.json", mr1.publication_config(node))):
                 path = mr1.mdir(node) / name
                 path.write_text(json.dumps(body, indent=2) + "\n")
                 path.chmod(0o600)
-        push_to_b(mr1.mdir("b") / "config.json", mr1.mdir("b") / "publication.json")
+        for node in REMOTES:
+            push_to(node, mr1.mdir(node) / "config.json", mr1.mdir(node) / "publication.json")
     for node in mr1.NODES:
         check = mr1.in_ns(node, [ROOT / "bin" / "tos-messengerd", "-config", mr1.mdir(node) / "config.json",
                                  "-publication-operator-config", mr1.mdir(node) / "publication.json", "-check"],
@@ -1071,14 +1340,21 @@ def write_configs() -> None:
                 "the descriptor lifetime is short so the evidence pull and the descriptor-expired retry run live"}
 
 
-def setup() -> None:
-    B_STATE["firewall_before"] = b_firewall_state()
-    (WORK / "net").mkdir(exist_ok=True)
-    for name, text in B_STATE["firewall_before"].items():
-        (WORK / "net" / f"b-{name}-before.txt").write_text(redact(text))
+def prepare_hosts() -> None:
+    """Every remote node's host firewall recorded before anything else, the
+    machines and the relay units."""
+    for node, remote in REMOTES.items():
+        remote.state["firewall_before"] = firewall_state(node)
+        (WORK / "net").mkdir(exist_ok=True)
+        for name, text in remote.state["firewall_before"].items():
+            (WORK / "net" / f"{node}-{name}-before.txt").write_text(redact(text))
     machines()
     for relay in RELAYS:
         prepare_relay(relay)
+
+
+def setup() -> None:
+    prepare_hosts()
     mr1.stage()
     mr1.start_forwarders()
     mr1.isolation()
@@ -1141,30 +1417,33 @@ def acceptance() -> None:
 # --- The end of the run: every remote change reversed and verified ---------------
 
 def remote_finish_before() -> None:
-    """B's processes are stopped on B's host before the phase-1 teardown,
-    which handles only this host's processes."""
-    for key in ("serve-b", "messengerd-b", "signer-b"):
-        process = mr1.PROCESSES.pop(key, None)
-        if process is None or not isinstance(process, RemoteProcess):
-            continue
-        try:
-            if process.poll() is None:
-                process.signal("CONT")
-                process.signal("TERM")
-                process.wait(60)
-        except (subprocess.TimeoutExpired, RuntimeError):
-            process.signal("KILL")
+    """The remote nodes' processes are stopped on their hosts before the
+    phase-1 teardown, which handles only this host's processes."""
+    for node in REMOTES:
+        for key in (f"serve-{node}", f"messengerd-{node}", f"signer-{node}"):
+            process = mr1.PROCESSES.pop(key, None)
+            if process is None or not isinstance(process, RemoteProcess):
+                continue
             try:
-                process.wait(30)
-            except (subprocess.TimeoutExpired, RuntimeError) as error:
-                fd.record(f"teardown: {key} stopped on B's host", False, redact(str(error))[-300:])
-    try:
-        sync_b()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    MIRROR["stop"] = True
-    if MIRROR["thread"]:
-        MIRROR["thread"].join(timeout=30)
+                if process.poll() is None:
+                    process.signal("CONT")
+                    process.signal("TERM")
+                    process.wait(60)
+            except (subprocess.TimeoutExpired, RuntimeError):
+                process.signal("KILL")
+                try:
+                    process.wait(30)
+                except (subprocess.TimeoutExpired, RuntimeError) as error:
+                    fd.record(f"teardown: {key} stopped on {node.upper()}'s host", False, redact(str(error))[-300:])
+    for node, remote in REMOTES.items():
+        try:
+            sync_node(node)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        remote.mirror["stop"] = True
+    for remote in REMOTES.values():
+        if remote.mirror["thread"]:
+            remote.mirror["thread"].join(timeout=30)
 
 
 def remote_finish_after() -> None:
@@ -1175,45 +1454,79 @@ def remote_finish_after() -> None:
     scrub_work_files()
 
 
+def reverse_remote_node(node: str, reversal: dict) -> None:
+    """A remote node's host: nothing of the run left running, its firewall
+    exactly as before, no file written outside the scratch directory, the
+    scratch directory gone."""
+    remote, upper = REMOTES[node], node.upper()
+    base, scratch = shlex.quote(str(remote.base)), shlex.quote(str(remote.scratch_base))
+    if remote.state.get("firewall_before"):
+        left = on_node(node, f"pgrep -f -- {shlex.quote('^(' + SYSTEM_PYTHON + ' -I )?' + str(remote.base))} || true",
+                       check=False).stdout.split()
+        if left:
+            on_node(node, f"kill -KILL {' '.join(left)} 2>/dev/null; true", check=False)
+        reversal[f"{node}_processes_left_and_killed"] = len(left)
+        reversal[f"{node}_table_removed_at_end"] = remove_table(node)
+        after = firewall_state(node)
+        for name, text in after.items():
+            (WORK / "net" / f"{node}-{name}-after.txt").write_text(redact(text))
+        before = remote.state["firewall_before"]
+        compared = [name for name in before if name != "ignored"]
+        reversal[f"{node}_firewall"] = {name: {"before_sha256": hashlib.sha256(before[name].encode()).hexdigest(),
+                                               "after_sha256": hashlib.sha256(after[name].encode()).hexdigest()}
+                                        for name in compared}
+        if "ignored" in before:
+            import difflib
+            diff = [line for line in difflib.unified_diff(before["ignored"].splitlines(),
+                                                          after.get("ignored", "").splitlines(), lineterm="", n=0)
+                    if line[:1] in "+-" and not line.startswith(("+++", "---"))]
+            # The ban set's elements are other parties' addresses: only how
+            # many changed is recorded, each address replaced.
+            reversal[f"{node}_firewall"]["ignored_tables"] = {
+                "tables": NFT_IGNORE,
+                "removed_lines": sum(line.startswith("-") for line in diff),
+                "added_lines": sum(line.startswith("+") for line in diff),
+                "element_diff": [scrub(line) for line in diff][:200],
+                "note": "informational: not compared; addresses replaced"}
+        fd.record(f"{upper}'s host firewall is exactly as before the run: `ufw status verbose` and every nft table "
+                  "but the ignored ones are identical (the run's own nft table removed)",
+                  all(before[name] == after[name] for name in compared) and
+                  remote.table not in after["nft"], reversal[f"{node}_firewall"])
+    if "base_created" in remote.state:
+        outside = on_node(node, f"find /root /tmp /var/tmp -xdev -mindepth 1 -maxdepth 2 -newer {base}/started "
+                                "-not -name 'systemd-private-*' -print 2>/dev/null; true", check=False).stdout.split()
+        # On a host other agents also work on (MR_SHARED_HOST_NODES), a file
+        # outside the scratch directory counts against the run only when it
+        # names the run; the others are listed as other activity.
+        if node in SHARED_HOSTS:
+            marks = (WORK.name, "tosmr", "openfox", "messenger", "relay-test")
+            others = [p for p in outside if not any(mark in p for mark in marks)]
+            outside = [p for p in outside if p not in others]
+            reversal[f"{node}_files_changed_by_others_on_shared_host"] = [redact(p) for p in others]
+        reversal[f"{node}_files_written_outside_scratch"] = [redact(p) for p in outside]
+        removed = on_node(node, f"case {base} in {scratch}/?*) find {base} -depth -delete ;; esac; "
+                                f"test ! -e {base} && echo absent", check=False).stdout.strip()
+        if removed.endswith("absent"):
+            change(f"{upper} host: removed {remote.base} (reversed)")
+        if remote.state["base_created"]:
+            on_node(node, f"rmdir {scratch} 2>/dev/null; true", check=False)
+            change(f"{upper} host: removed {remote.scratch_base} (reversed)")
+        reversal[f"{node}_scratch_absent"] = removed.endswith("absent")
+        fd.record(f"{upper}'s host: the run's scratch directory is removed and verified absent, nothing of the run is "
+                  "left running, and no file under /root, /tmp or /var/tmp changed during the run",
+                  removed.endswith("absent") and not outside, {k: reversal.get(k) for k in (
+                      f"{node}_scratch_absent", f"{node}_processes_left_and_killed",
+                      f"{node}_files_written_outside_scratch")})
+
+
 def reverse_remote_changes() -> None:
     reversal: dict = {}
-    # B: nothing of the run left running, its firewall exactly as before, no
-    # file written outside the scratch directory, the scratch directory gone.
-    if B_STATE.get("firewall_before"):
-        left = on_b(f"pgrep -f -- {shlex.quote('^(' + SYSTEM_PYTHON + ' -I )?' + str(B_BASE))} || true",
-                    check=False).stdout.split()
-        if left:
-            on_b(f"kill -KILL {' '.join(left)} 2>/dev/null; true", check=False)
-        reversal["b_processes_left_and_killed"] = len(left)
-        reversal["b_table_removed_at_end"] = b_remove_table()
-        after = b_firewall_state()
-        for name, text in after.items():
-            (WORK / "net" / f"b-{name}-after.txt").write_text(redact(text))
-        before = B_STATE["firewall_before"]
-        reversal["b_firewall"] = {name: {"before_sha256": hashlib.sha256(before[name].encode()).hexdigest(),
-                                         "after_sha256": hashlib.sha256(after[name].encode()).hexdigest()}
-                                  for name in before}
-        fd.record("B's host firewall is exactly as before the run: `ufw status verbose` and `nft list ruleset` are "
-                  "identical (the run's own nft table removed)",
-                  all(before[name] == after[name] for name in before) and
-                  B_TABLE not in after["nft"], reversal["b_firewall"])
-    if "base_created" in B_STATE:
-        outside = on_b(f"find /root /tmp /var/tmp -xdev -mindepth 1 -maxdepth 2 -newer {shlex.quote(str(B_BASE))}/started "
-                       "-not -name 'systemd-private-*' -print 2>/dev/null; true", check=False).stdout.split()
-        reversal["b_files_written_outside_scratch"] = [redact(p) for p in outside]
-        removed = on_b(f"case {shlex.quote(str(B_BASE))} in {shlex.quote(str(SCRATCH_BASE))}/?*) "
-                       f"find {shlex.quote(str(B_BASE))} -depth -delete ;; esac; "
-                       f"test ! -e {shlex.quote(str(B_BASE))} && echo absent", check=False).stdout.strip()
-        if removed.endswith("absent"):
-            change(f"B host: removed {B_BASE} (reversed)")
-        if B_STATE["base_created"]:
-            on_b(f"rmdir {shlex.quote(str(SCRATCH_BASE))} 2>/dev/null; true", check=False)
-            change(f"B host: removed {SCRATCH_BASE} (reversed)")
-        reversal["b_scratch_absent"] = removed.endswith("absent")
-        fd.record("B's host: the run's scratch directory is removed and verified absent, nothing of the run is left "
-                  "running, and no file under /root, /tmp or /var/tmp changed during the run",
-                  removed.endswith("absent") and not outside, {k: reversal.get(k) for k in (
-                      "b_scratch_absent", "b_processes_left_and_killed", "b_files_written_outside_scratch")})
+    try:
+        revert_slices()
+    except (RuntimeError, OSError) as error:
+        fd.record("the containment slices are reverted", False, redact(str(error))[-300:])
+    for node in REMOTES:
+        reverse_remote_node(node, reversal)
     # Relays: a unit this run stopped and did not start again (a failure
     # during the outage) is started here; then both must be active.
     marked = STOPPED_MARKER.read_text().split() if STOPPED_MARKER.exists() else []
@@ -1245,7 +1558,8 @@ def reverse_remote_changes() -> None:
         reversal["this_host_iptables_identical"] = same
         fd.record("this host's iptables rules are exactly as before the run (the tagged forwarding rules removed)",
                   same, {"identical": same})
-    reversal["mirror"] = {"syncs": MIRROR["syncs"], "failed_syncs": MIRROR["failures"]}
+    for node, remote in REMOTES.items():
+        reversal[per_node("mirror", node)] = {"syncs": remote.mirror["syncs"], "failed_syncs": remote.mirror["failures"]}
     reversal["crash_window_holds"] = HELD
     fd.evidence["remote_reversal"] = reversal
     fd.evidence["host_changes"] = CHANGES.read_text().splitlines() if CHANGES.exists() else []
@@ -1263,12 +1577,17 @@ def dry_run() -> None:
     machines()
     for relay in RELAYS:
         prepare_relay(relay)
-    seen_address()
-    fd.evidence["b_firewall_sha256"] = {name: hashlib.sha256(text.encode()).hexdigest()
-                                        for name, text in b_firewall_state().items()}
-    fd.evidence["b_reaches_relays"] = {relay.name: b_connect(relay.host, [relay.port]) for relay in RELAYS}
-    present = on_b(f"test -e {shlex.quote(str(B_BASE))} && echo present || echo absent", check=False).stdout.strip()
-    fd.require("B's scratch directory for this run does not exist after the dry run", present == "absent", present)
+    for node in REMOTES:
+        seen_address(node)
+    for node in REMOTES:
+        fd.evidence[f"{node}_firewall_sha256"] = {name: hashlib.sha256(text.encode()).hexdigest()
+                                                  for name, text in firewall_state(node).items()}
+        fd.evidence[f"{node}_reaches_relays"] = {relay.name: node_connect(node, relay.host, [relay.port])
+                                                 for relay in RELAYS}
+        present = on_node(node, f"test -e {shlex.quote(str(REMOTES[node].base))} && echo present || echo absent",
+                          check=False).stdout.strip()
+        fd.require(f"{node.upper()}'s scratch directory for this run does not exist after the dry run",
+                   present == "absent", present)
     for relay in RELAYS:
         fd.evidence["relay_units"][relay.name]["metrics_after"] = metrics(relay)
     fd.evidence["finished_utc"] = mr1.datetime.datetime.now(mr1.datetime.timezone.utc).isoformat()
@@ -1290,8 +1609,9 @@ def main() -> int:
         mr1.PRIVATE.mkdir(mode=0o700, exist_ok=True)
         dry_run()
         return 0 if fd.steps and all(step["pass"] for step in fd.steps) else 1
-    if B_BASE.parent != SCRATCH_BASE:
-        raise SystemExit("the node files must sit at <B_REMOTE_BASE>/<run>/<run> (E2E_ROOT_BASE)")
+    for remote in REMOTES.values():
+        if remote.base.parent != remote.scratch_base:
+            raise SystemExit(f"the node files must sit at <{remote.upper}_REMOTE_BASE>/<run>/<run> (E2E_ROOT_BASE)")
     install_overrides()
     return asyncio.run(mr1.main())
 

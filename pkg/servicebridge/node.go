@@ -481,8 +481,13 @@ func (n *Node) openRelay(signer *PacketSigner, agents FinalizedAgents, options N
 			}
 			daemon = client
 		}
+		lifetime, lifetimeErr := n.Config.Chat.cardLifetime()
+		if lifetimeErr != nil {
+			return lifetimeErr
+		}
 		chat = &chatLaneConfig{
 			Relays: relays, CardPath: n.Config.Chat.CardPath, Signer: signer, Daemon: daemon, Timeout: timeout,
+			CardLifetime: lifetime,
 		}
 	}
 	carrier, err := OpenRelayCarrier(RelayCarrierConfig{

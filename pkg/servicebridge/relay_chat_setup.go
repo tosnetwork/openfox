@@ -98,6 +98,11 @@ func ChatRepublish(ctx context.Context, configPath string, env SetupEnv) (*ChatC
 	if err != nil {
 		return nil, err
 	}
+	lifetime, err := config.Chat.cardLifetime()
+	if err != nil {
+		return nil, err
+	}
+	keys.SetCardLifetime(lifetime)
 	if _, err = keys.Maintain(ctx); err != nil {
 		return nil, err
 	}

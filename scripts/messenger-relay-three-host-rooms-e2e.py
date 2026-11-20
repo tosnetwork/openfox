@@ -2125,6 +2125,37 @@ def application_member_state(sender: str, event_id: str, member: str) -> dict:
     return {}
 
 
+def card_exchange() -> dict:
+    """One round of the card-renewal scenario: A, B and C each post once and
+    every other member applies it. A posts too, so its renewed cards reach B
+    and C in band as theirs reach it: a member that sends nothing to a peer
+    for longer than half a card lifetime leaves that peer holding only its
+    expired card, and the peer's copies then wait for a fresh one (section
+    4), as rc1 showed for A."""
+    results = exchange(("a", "b", "c"), f"card-{len(RUN['renewal'])}", 300)
+    entry = {"at": now(), "pairs": results, "b->c": results.get("b->c"), "c->b": results.get("c->b")}
+    RUN["renewal"].append(entry)
+    return entry
+
+
+STALE_MARGIN = 450
+
+
+def stale_window(c_at_b: dict | None, b_at_c: dict | None, c_newest_card: str) -> tuple[bool, str]:
+    """Whether C can be stopped now for the stale-card check: B holds C's
+    newest card (C did not renew since), and that card expires at least
+    STALE_MARGIN seconds before the card of B that C holds, so that when C is
+    back after it expired (and B's message to C was seen waiting) C can still
+    reach B with its fresh card."""
+    if not c_at_b or not b_at_c:
+        return False, "a held card is missing"
+    if c_at_b["card"] != c_newest_card:
+        return False, "C renewed its card after the exchange: B holds an older card of C than C's newest"
+    if c_at_b["not_after"] + STALE_MARGIN >= b_at_c["not_after"]:
+        return False, f"the card of C that B holds expires less than {STALE_MARGIN} s before the card of B that C holds"
+    return True, "ok"
+
+
 def card_renewal() -> None:
     """Item 16, the card half (11.2, 11.8): every chat card lasts the test card
     lifetime L. While B and C (no contacts) keep exchanging room messages,
@@ -2150,12 +2181,10 @@ def card_renewal() -> None:
     RUN["card_renewal"] = {"lifetime_seconds": lifetime, "first_cards": first, "phase1_until_unix": deadline}
     exchanges = []
     while now() < deadline:
-        renewal_exchange()
-        exchanges.append(RUN["renewal"][-1])
+        exchanges.append(card_exchange())
         sample()
         until(min(deadline, now() + 120))
-    renewal_exchange()
-    exchanges.append(RUN["renewal"][-1])
+    exchanges.append(card_exchange())
     sample()
     chains = {}
     for node in ("a", "b", "c"):
@@ -2178,10 +2207,11 @@ def card_renewal() -> None:
                "b_renewed": [card for card, row in seen["b"].items() if row["not_before"] > first["b"]["card"]["not_before"]]}
     after_expiry = [e for e in exchanges if e["at"] > min(first[n]["card"]["not_after"] for n in ("b", "c"))]
     gate("16", "B and C (no contacts) learned each other's renewed card in band (kind-3 part 0) and kept "
-         "exchanging room messages past the older cards' expiry, every exchange applied",
+         "exchanging room messages past the older cards' expiry, every message of every round (A, B and C) applied",
          bool(set(learned["c_renewed"]) & set(learned["b_holds_c"])) and
          bool(set(learned["b_renewed"]) & set(learned["c_holds_b"])) and bool(after_expiry) and
-         all(e["b->c"] and e["b->c"]["applied"] and e["c->b"] and e["c->b"]["applied"] for e in exchanges),
+         all(r["applied"] for e in exchanges for r in e["pairs"].values()) and
+         all(e["b->c"] and e["c->b"] for e in exchanges),
          {"learned": learned, "exchanges": len(exchanges), "after_first_expiry": len(after_expiry)})
     members = {node: {"first": first[node]["member_card"], "now": member_card(node)} for node in ("b", "c")}
     gate("16", "the authority's member card of B and of C was refreshed to a renewed card from their own frames "
@@ -2192,25 +2222,29 @@ def card_renewal() -> None:
     # stays away until that card of C expired.
     def c_newest() -> dict:
         return max(own_cards("c"), key=lambda row: row["not_before"])
-    for _ in range(3):
+    attempts = []
+    c_at_b = b_at_c = None
+    for _ in range(4):
         current = c_newest()
         renew_at = current["not_before"] + lifetime // 2
-        if renew_at - now() < 150:
+        if renew_at - now() < 240:
             poll(lambda: (c_newest()["card"] != current["card"]) or None, renew_at - now() + 240, 5)
             continue
-        until(renew_at - 90)
-        renewal_exchange()
-        if c_newest()["card"] == current["card"] and now() < renew_at - 20:
+        until(renew_at - 180)
+        card_exchange()
+        by_digest = {card: row for card, row in seen["c"].items()} | {r["card"]: r for r in own_cards("c")}
+        c_at_b = max((by_digest[d] for d in held_cards("b", "c") if d in by_digest),
+                     key=lambda row: row["not_after"], default=None)
+        b_by_digest = {card: row for card, row in seen["b"].items()} | {r["card"]: r for r in own_cards("b")}
+        b_at_c = max((b_by_digest[d] for d in held_cards("c", "b") if d in b_by_digest),
+                     key=lambda row: row["not_after"], default=None)
+        ok, reason = stale_window(c_at_b, b_at_c, c_newest()["card"])
+        attempts.append({"at": now(), "ok": ok, "reason": reason, "c_at_b": c_at_b, "b_at_c": b_at_c})
+        if ok:
             break
-    by_digest = {card: row for card, row in seen["c"].items()} | {r["card"]: r for r in own_cards("c")}
-    c_at_b = max((by_digest[d] for d in held_cards("b", "c") if d in by_digest), key=lambda row: row["not_after"],
-                 default=None)
-    b_by_digest = {card: row for card, row in seen["b"].items()} | {r["card"]: r for r in own_cards("b")}
-    b_at_c = max((b_by_digest[d] for d in held_cards("c", "b") if d in b_by_digest), key=lambda row: row["not_after"],
-                 default=None)
-    require("before C's window, the card of C that B holds expires well before the card of B that C holds",
-            bool(c_at_b) and bool(b_at_c) and c_at_b["not_after"] + 300 < b_at_c["not_after"] and
-            c_newest()["card"] == c_at_b["card"], {"c_at_b": c_at_b, "b_at_c": b_at_c})
+    RUN["card_renewal"]["stale_window_attempts"] = attempts
+    require("before C's window, B holds C's newest card and it expires well before the card of B that C holds",
+            bool(attempts) and attempts[-1]["ok"], {"attempts": attempts})
     offline_window("c", "start")
     stop_node("c")
     until(c_at_b["not_after"] + 30)

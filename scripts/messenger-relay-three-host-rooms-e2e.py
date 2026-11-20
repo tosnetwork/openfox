@@ -80,6 +80,13 @@ ROOMTEST = os.environ.get("MR2_ROOMTEST") == "1"
 PART_BYTES = int(os.environ.get("MR2_ROOM_PART_BYTES", "0"))
 RETENTION = int(os.environ.get("MR2_HANDSHAKE_RETENTION", "0"))
 AUTHORIZATION = int(os.environ.get("MR2_AUTHORIZATION_SECONDS", "0"))
+# The room-end scenario (item 19, D18): only the steps that build the
+# three-member room run, then room_end. A room ends at its authority's leaf
+# credential expiry, which is A's Endpoint delegation expiry when that comes
+# first, so A's delegation is test-shortened to MR2_A_DELEGATION_SECONDS.
+ROOM_END = os.environ.get("MR2_ROOM_END") == "1"
+A_DELEGATION = int(os.environ.get("MR2_A_DELEGATION_SECONDS", str(2 * 86400)))
+MAX_CLOCK_SKEW = 300
 ROOM = "room_" + secrets.token_hex(32)
 CONV = "conv_" + secrets.token_hex(32)
 GATE: dict[str, list[str]] = {}
@@ -147,7 +154,7 @@ def daemon_config(node: str) -> dict:
         "owner_public_key": identity["owner_public_key"],
         "admission": {"rule": "allow-list", "unknown": "require-admission",
                       "known_agent_ids": sorted(RUN[p]["agent"] for p in ALLOW[node]),
-                      "max_content_bytes": 128 << 10, "max_clock_skew_seconds": 300},
+                      "max_content_bytes": 128 << 10, "max_clock_skew_seconds": MAX_CLOCK_SKEW},
         "firewall": {"unattended_ceiling": "message", "own_initiative_ceiling": "message"},
         "transport": "agent-packet-relay",
         "relay_carriage": {"carry_socket_path": str(sock(node, "chat-carrier.sock")),
@@ -252,7 +259,8 @@ def identities() -> None:
                            "--network-id", RUN["domain"]["network_id"], "--genesis-root", RUN["domain"]["genesis_root"],
                            "--genesis-file", RUN["domain"]["genesis_file"], "--rule", "allow-list",
                            "--unknown", "require-admission", "--descriptor-lifetime", str(mr1.DESCRIPTOR_LIFETIME),
-                           "--delegation-lifetime", str(2 * 86400), "--session-lifetime", str(86400),
+                           "--delegation-lifetime", str(A_DELEGATION if node == "a" else 2 * 86400),
+                           "--session-lifetime", str(min(86400, A_DELEGATION) if node == "a" else 86400),
                            "--classes", "agent.packet,room,text",
                            "--private-dir", nd(node) / "keys", "--public-dir", mdir(node)],
                     "messenger-relay-e2e-tool identity", timeout=60)
@@ -1844,13 +1852,205 @@ def idle_then_add_e() -> None:
 # a quick recheck of items after a fix. It is never an acceptance: the record
 # says so. MR2_TARGETED_C_ALLOWS_A=1 lets C admit A by its allow-list, so the
 # invite steps can be skipped.
+def room_files(node: str) -> list[str]:
+    """Every file of a node's Messenger state whose name or content names the
+    room, relative to the state directory (the room's stores)."""
+    base = mdir(node) / "state"
+    hexid, out = ROOM[5:], []
+    for path in sorted(base.rglob("*")) if base.is_dir() else []:
+        if not path.is_file():
+            continue
+        relative = str(path.relative_to(base))
+        if hexid in relative:
+            out.append(relative)
+            continue
+        try:
+            if path.stat().st_size <= 1 << 20 and (ROOM.encode() in path.read_bytes() or
+                                                   hexid.encode() in path.read_bytes()):
+                out.append(relative)
+        except OSError:
+            continue
+    return out
+
+
+def until(moment: int) -> None:
+    """Waits until the Unix time moment."""
+    poll(lambda: now() >= moment or None, max(1, moment - now() + 60), 5)
+
+
+def refused_room_ended(answer: dict) -> bool:
+    return not answer.get("ok") and "room-ended" in json.dumps(answer)
+
+
+def craft_after_end(sender: str, receiver: str, kind: int, label: str) -> dict:
+    """A room object of the given type from sender to receiver, deposited at
+    relay-1 after the room's end: a header-less Commit or application object,
+    or a Welcome or roster valid up to its prefix (the receiver judges the end
+    from the prefix of part 0 before anything else of it)."""
+    room = room_of(receiver)
+    out = nd(sender) / "handed" / f"ended-{label}"
+    contact = hand_file(mdir(sender) / "export" / "relay-contact.json", sender, f"own-relay-contact-{label}.json")
+    argv = [ROOT / "bin" / "messenger-relay-e2e-tool", "room-frames", "--room", ROOM,
+            "--room-epoch", str(room.get("room_epoch", 1)), "--mls-epoch", str(room.get("mls_epoch", 1)),
+            "--body-bytes", "512", "--contact", contact, "--out-dir", out]
+    argv += ["--type", str(kind)] if kind in (1, 3) else ["--type", "1", "--prefix-type", str(kind)]
+    cut = json.loads(in_ns(sender, argv, "messenger-relay-e2e-tool room-frames", timeout=60).stdout)
+    card = hand_file(card_path(receiver), sender, f"card-{receiver}-{label}.json")
+    crafted = craft(sender, receiver, card, f"ended-{label}", payload=out / "part-0.bin")
+    status = deposit("relay1", RUN[receiver]["agent"], crafted["envelope_id"], crafted["path"].read_bytes())
+    return {"kind": kind, "object_digest": cut["object_digest"], "envelope_id": crafted["envelope_id"],
+            "deposit": status, "prefix_only": bool(cut.get("prefix_only"))}
+
+
+ROOM_ENDED_NOTICE = "the private room has ended"
+
+
+def room_end() -> None:
+    """Item 19 (D18), live: the room ends at A's leaf-credential expiry (A's
+    test-shortened delegation). In the last re-deposit interval before end
+    minus skew A makes no handshake; from end minus skew no member seals; A
+    deposits nothing after it. C, offline across the end, finds B's message
+    sealed before the end only after end plus skew: a room-ended gap of B,
+    the envelope relay-acknowledged, nothing listed. After end plus skew B
+    and C refuse a Commit, a Welcome, a roster and an application object
+    with room-ended, with one owner notice each; after the handshake
+    retention the room's stores are gone at every member."""
+    record = read_json(mdir("a") / "state" / "room-mls" / (ROOM[5:] + ".json"))
+    end = int(record.get("room_ends_at_unix") or 0)
+    delegation = read_json(mdir("a") / "delegation.json")
+    a_expires = int(delegation.get("expires_at_unix") or delegation.get("ExpiresAtUnix") or 0)
+    ends = {}
+    for node in ("b", "c"):
+        ends[node] = int(read_json(mdir(node) / "state" / "room-mls" / (ROOM[5:] + ".json")).get("room_ends_at_unix")
+                         or 0)
+    retention = RETENTION or 7 * 86400
+    stop_add, stop_send = end - MAX_CLOCK_SKEW - REDEPOSIT, end - MAX_CLOCK_SKEW
+    RUN["room_end"] = {"ends_at_unix": end, "a_delegation_expires_at_unix": a_expires, "skew_seconds": MAX_CLOCK_SKEW,
+                       "redeposit_interval_seconds": REDEPOSIT, "handshake_retention_seconds": retention,
+                       "handshakes_stop_at_unix": stop_add, "sealing_stops_at_unix": stop_send,
+                       "refused_from_unix": end + MAX_CLOCK_SKEW,
+                       "retired_from_unix": end + retention + MAX_CLOCK_SKEW, "reached_at_unix": now()}
+    gate("19", "the room ends at A's leaf-credential expiry: every member's fused record holds the same end, A's "
+         "test-shortened Endpoint delegation expiry", end > now() and end == a_expires and
+         all(value == end for value in ends.values()), {"end": end, "a_delegation": a_expires, "members": ends})
+    require("the room's three members are joined and the end leaves time for the D18 window",
+            now() < stop_add and all(joined_at(node, 1, 60).get("state") == "joined" for node in ("a", "b", "c")),
+            RUN["room_end"])
+    # The last re-deposit interval before end - skew: no new handshake.
+    until(stop_add + 20)
+    try:
+        add = room_op("a", "add", "d")
+    except RuntimeError as error:
+        add = {"ok": False, "error": str(error)[-600:]}
+    gate("19", f"in the last re-deposit interval ({REDEPOSIT} s) before end - skew A makes no handshake: its "
+         "owner's rooms.add is refused room-ended", refused_room_ended(add), add)
+    # B seals a message before the end while C's serve is stopped; C finds it
+    # only after end + skew.
+    offline_window("c", "start")
+    stop_serve("c")
+    until(stop_send - 90)
+    sealed = compose("b", "sealed-before-end")
+    deposited = poll(lambda: [row["record"]["envelope_id"] for row in room_frames("b")
+                              if row["packet"]["recipient_agent_id"] == RUN["c"]["agent"] and
+                              row["record"].get("envelope_id") and
+                              (row["record"].get("accepted_at_unix") or 0) >= sealed["sent_at"] - 5] or None, 80, 2) or []
+    require("B's message sealed before the end is deposited for C before end - skew",
+            bool(deposited) and now() < stop_send, {"envelopes": [e[:12] for e in deposited]})
+    # From end - skew: no member seals; A deposits nothing more.
+    until(stop_send + 5)
+    attempts = {}
+    for node in ("a", "b", "c"):
+        attempts[node] = mcall(node, {"op": "outbox.compose", "room_id": ROOM, "conversation_id": CONV,
+                                      "media_type": TEXT, "body": mr1.marker(f"after-stop-{node}"),
+                                      "idempotency_key": idem(), "membership_epoch": room_of(node).get("room_epoch", 0),
+                                      "expires_at_unix": now() + 3600})
+    gate("19", "from end - skew every member's room messages are refused room-ended (A, B and C)",
+         all(refused_room_ended(answer) for answer in attempts.values()), attempts)
+    until(end + MAX_CLOCK_SKEW + 10)
+    late_a = [row["record"].get("accepted_at_unix") for row in room_frames("a")
+              if (row["record"].get("accepted_at_unix") or 0) >= stop_send]
+    gate("19", "A stops its queues at end - skew: no room frame of A is deposited from then on",
+         not late_a, {"deposits_after_stop": late_a})
+    start_serve("c", "after the room's end")
+    offline_window("c", "end")
+    b_agent = RUN["b"]["agent"]
+    gap = poll(lambda: [g for g in gaps("c") if g.get("sender_agent_id") == b_agent and
+                        g.get("reason") == "room-ended"] or None, 300, 5)
+    acked = poll(lambda: all(all(e not in listed_ids(relay, RUN["c"]["agent"]) for relay in RELAYS)
+                             for e in deposited) or None, 300, 5)
+    gate("19", "an application object sealed before the end and arriving after end + skew is a room-ended gap of "
+         "its sender at C: relay-acknowledged, never listed, with the owner notice",
+         bool(gap) and bool(acked) and sealed["event_id"] not in inbound_texts("c") and
+         ROOM_ENDED_NOTICE in log_text("messengerd-c"), {"gap": gap, "relay_acknowledged": bool(acked)})
+    # After end + skew B and C refuse every object type of the room.
+    crafted, answers = {}, {}
+    names = {1: "Commit", 2: "Welcome", 4: "roster", 3: "application"}
+    for sender, receiver in (("b", "c"), ("c", "b")):
+        for kind in (1, 2, 4, 3):
+            label = f"{sender}{receiver}-{kind}"
+            crafted[label] = craft_after_end(sender, receiver, kind, label)
+    for label, item in crafted.items():
+        receiver, sender = label[1], label[0]
+        if item["kind"] == 3:
+            ok = poll(lambda: (all(item["envelope_id"] not in listed_ids(relay, RUN[receiver]["agent"])
+                                   for relay in RELAYS) and
+                               [g for g in gaps(receiver) if g.get("sender_agent_id") == RUN[sender]["agent"] and
+                                g.get("reason") == "room-ended"]) or None, 300, 5)
+            answers[label] = {"relay_acknowledged_with_room_ended_gap": bool(ok)}
+        else:
+            ok = poll(lambda: [(f.get("ack_outcome"), f.get("ack_code")) for f in acks_for(receiver, item["object_digest"])]
+                      or None, 300, 3) or []
+            answers[label] = {"room_acks": ok}
+    for receiver in ("c", "b"):
+        sender = "b" if receiver == "c" else "c"
+        rows = {names[item["kind"]]: answers[label] for label, item in crafted.items() if label[1] == receiver}
+        handshake_ok = all(answers[label].get("room_acks") == [("rejected", "room-ended")]
+                           for label, item in crafted.items() if label[1] == receiver and item["kind"] != 3)
+        app_ok = all(answers[label].get("relay_acknowledged_with_room_ended_gap")
+                     for label, item in crafted.items() if label[1] == receiver and item["kind"] == 3)
+        notices = log_text(f"messengerd-{receiver}").count(ROOM_ENDED_NOTICE)
+        gate("19", f"after end + skew {receiver.upper()} refuses {sender.upper()}'s Commit, Welcome and roster with a "
+             "rejected room ack room-ended and its application object as a room-ended gap (relay-acknowledged), "
+             "with one owner notice", handshake_ok and app_ok and notices == 1,
+             {"answers": rows, "owner_notices": notices,
+              "crafted": {label: {k: v for k, v in item.items() if k != "envelope_id"} for label, item in crafted.items()
+                          if label[1] == receiver}})
+    RUN["room_end"]["crafted"] = {label: {"kind": names[item["kind"]], "deposit": item["deposit"],
+                                          "prefix_only": item["prefix_only"]} for label, item in crafted.items()}
+    # After the handshake retention every member's room stores are retired.
+    until(end + retention + MAX_CLOCK_SKEW + 30)
+    retired = {}
+    for node in ("a", "b", "c"):
+        gone = poll(lambda: (not room_files(node) and not room_of(node)) or None, 600, 10)
+        retired[node] = {"retired": bool(gone), "files_left": room_files(node)[:20], "listed": bool(room_of(node))}
+    gate("19", "after end + handshake retention + skew the room is retired at A, B and C: rooms.list no longer "
+         "names it and no file of their Messenger state names the room", all(v["retired"] for v in retired.values()),
+         retired)
+    fd.evidence["room_end"] = RUN["room_end"] | {"retired": retired}
+
+
+def room_end_scenario() -> None:
+    """Item 19 only: the steps that build the three-member room (A founds it
+    and adds B; C, admitted by its invite, is added), then room_end."""
+    fd.evidence["scenario"] = "room-end: item 19 (D18) only; the item 1, 2 and 18 steps run only to build the room"
+    fd.evidence["room_end_settings"] = {"a_delegation_seconds": A_DELEGATION, "max_clock_skew_seconds": MAX_CLOCK_SKEW,
+                                        "redeposit_interval_seconds": REDEPOSIT,
+                                        "handshake_retention_seconds": RETENTION or 7 * 86400}
+    for function in (invite_first_contact, create_and_add_b, invite_claimed, add_c, room_end):
+        function()
+        mr1.hold(function.__name__)
+
+
 SELECTED = [name for name in os.environ.get("MR2_STEPS", "").split(",") if name]
-EXTRA_STEPS = {"add_filler_e": add_filler_e, "idle_then_add_e": idle_then_add_e}
+EXTRA_STEPS = {"add_filler_e": add_filler_e, "idle_then_add_e": idle_then_add_e, "room_end": room_end}
 if os.environ.get("MR2_TARGETED_C_ALLOWS_A") == "1":
     ALLOW["c"] = ["a"]
 
 
 def scenario() -> None:
+    if ROOM_END:
+        room_end_scenario()
+        return
     if SELECTED:
         known = {function.__name__: function for function in STEPS} | EXTRA_STEPS
         unknown = [name for name in SELECTED if name not in known]

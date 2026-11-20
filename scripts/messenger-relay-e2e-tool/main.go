@@ -813,6 +813,9 @@ func roomFramesCommand(args []string) error {
 	partBytes := flags.Int("part-bytes", 0, "test part size P; 0 is the production cut")
 	contactFile := flags.String("contact", "", "the sender's exported relay contact (card and evidence)")
 	outDir := flags.String("out-dir", "", "a new directory the frames are written to")
+	prefixType := flags.Uint("prefix-type", 0, "2 Welcome or 4 roster: a one-part object whose prefix names "+
+		"that type over a header-less body (valid up to its prefix only, for a receiver that judges the "+
+		"room's end from the prefix before it decodes the object)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -821,6 +824,12 @@ func roomFramesCommand(args []string) error {
 	}
 	if *objectType != uint(relayframe.RoomCommit) && *objectType != uint(relayframe.RoomApplication) {
 		return errors.New("room-frames: only a Commit or an application object has an empty header")
+	}
+	if *prefixType != 0 {
+		if *prefixType != uint(relayframe.RoomWelcome) && *prefixType != uint(relayframe.RoomRoster) {
+			return errors.New("room-frames: --prefix-type is 2 (Welcome) or 4 (roster)")
+		}
+		return prefixOnlyFrame(uint8(*prefixType), *roomID, *roomEpoch, *mlsEpoch, *bodyBytes, *contactFile, *outDir)
 	}
 	raw, err := os.ReadFile(*contactFile)
 	if err != nil {
@@ -858,5 +867,54 @@ func roomFramesCommand(args []string) error {
 	return printJSON(map[string]any{
 		"object_digest": hex.EncodeToString(digest[:]), "object_bytes": len(object), "parts": len(frames),
 		"frame_bytes": sizes,
+	})
+}
+
+// prefixOnlyFrame writes one kind-3 frame (<out-dir>/part-0.bin) whose room
+// object prefix names a Welcome or a roster: a header-less Commit with a
+// random body, its type byte replaced. Only the prefix is valid; the object
+// does not decode as a Welcome or roster. It serves a receiver whose first
+// judgement of part 0 is the room's end, read from the prefix.
+func prefixOnlyFrame(objectType uint8, roomID string, roomEpoch, mlsEpoch uint64, bodyBytes int,
+	contactFile, outDir string,
+) error {
+	raw, err := os.ReadFile(contactFile)
+	if err != nil {
+		return err
+	}
+	contact, err := relayframe.DecodeContactJSON(raw)
+	if err != nil {
+		return err
+	}
+	body := make([]byte, bodyBytes)
+	if _, err := rand.Read(body); err != nil {
+		return err
+	}
+	object, err := relayframe.EncodeRoomObject(relayframe.RoomObject{
+		Type: relayframe.RoomCommit, RoomID: roomID, RoomEpoch: roomEpoch, MLSEpoch: mlsEpoch, Body: body,
+	})
+	if err != nil {
+		return err
+	}
+	typeAt := len("tos.messaging.relay-room-object.v1\x00")
+	if len(object) <= typeAt || object[typeAt] != relayframe.RoomCommit {
+		return errors.New("room-frames: the room object prefix is not where it is expected")
+	}
+	object[typeAt] = objectType
+	frame, err := relayframe.Encode(relayframe.Frame{Kind: relayframe.KindRoom, PartIndex: 0, PartCount: 1,
+		Part: object, Card: contact.Card, Evidence: contact.Evidence})
+	if err != nil {
+		return err
+	}
+	if err := os.Mkdir(outDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "part-0.bin"), frame, 0o600); err != nil {
+		return err
+	}
+	digest := relayframe.ObjectDigest(object)
+	return printJSON(map[string]any{
+		"object_digest": hex.EncodeToString(digest[:]), "object_bytes": len(object), "parts": 1,
+		"frame_bytes": []int{len(frame)}, "prefix_only": true, "prefix_type": objectType,
 	})
 }

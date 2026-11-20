@@ -31,6 +31,11 @@
 #                       may MR2_ROOM_PART_BYTES, MR2_HANDSHAKE_RETENTION and
 #                       MR2_AUTHORIZATION_SECONDS set the daemons' room test
 #                       settings (a production build refuses them)
+#   MR2_ROOM_END=1      the room-end scenario (item 19 only): the steps that
+#                       build the three-member room, then the room's end
+#   MR2_A_DELEGATION_SECONDS  A's Endpoint delegation lifetime (default 2 days);
+#                       the room ends at A's leaf credential expiry, which is
+#                       this delegation's expiry when it comes first
 #   MR1_HOLD_AT         a development hold (voids the acceptance)
 #
 # Remote mode (MR2_REMOTE=1) runs B and C on two other hosts over SSH and uses

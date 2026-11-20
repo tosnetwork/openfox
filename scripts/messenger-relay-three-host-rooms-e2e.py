@@ -2178,6 +2178,27 @@ def stale_window(c_at_b: dict | None, b_at_c: dict | None, c_newest_card: str) -
     return True, "ok"
 
 
+CARD_HOLD_MARGIN = 300
+
+
+def held_card_of(holder: str, peer: str, seen_cards: dict) -> dict | None:
+    """The newest card of peer that holder's OpenFox stores, with its window
+    (from the peer's own key records), or None."""
+    by_digest = dict(seen_cards) | {row["card"]: row for row in own_cards(peer)}
+    rows = [by_digest[digest] for digest in held_cards(holder, peer) if digest in by_digest]
+    return max(rows, key=lambda row: row["not_after"], default=None)
+
+
+def card_outlives(card: dict | None, moment: int, margin: int = CARD_HOLD_MARGIN) -> tuple[bool, str]:
+    """Whether a held card is still valid at least margin seconds after
+    moment, so a copy sealed to it in that time does not wait."""
+    if not card:
+        return False, "no card is held"
+    if card["not_after"] < moment + margin:
+        return False, f"the held card expires at {card['not_after']}, less than {margin} s after {moment}"
+    return True, "ok"
+
+
 def card_renewal() -> None:
     """Item 16, the card half (11.2, 11.8): every chat card lasts the test card
     lifetime L. While B and C (no contacts) keep exchanging room messages,
@@ -2270,6 +2291,17 @@ def card_renewal() -> None:
     offline_window("c", "start")
     stop_node("c")
     until(c_at_b["not_after"] + 30)
+    # B's message also goes to A, whose card B holds may have expired while C
+    # was away (A posts only in rounds): A posts first and B applies it, so B
+    # holds a fresh card of A that outlives the pending check.
+    refresh = compose("a", f"card-refresh-a-{len(RUN['renewal'])}")
+    refreshed_at_b = room_applied("b", f"card-refresh-a-{len(RUN['renewal'])}", 300)
+    a_at_b = held_card_of("b", "a", seen["a"])
+    a_ok, a_reason = card_outlives(a_at_b, now() + 150)
+    RUN["card_renewal"]["a_card_at_b_before_stale_message"] = {"card": a_at_b, "ok": a_ok, "reason": a_reason,
+                                                               "refresh_applied": refreshed_at_b["applied"]}
+    require("before B's message, B applied A's refresh and holds a card of A that outlives the pending check",
+            refreshed_at_b["applied"] and a_ok, RUN["card_renewal"]["a_card_at_b_before_stale_message"])
     held = compose("b", "to-stale-c")
     until(now() + 150)
     pending = application_member_state("b", held["event_id"], "c")
@@ -2282,6 +2314,12 @@ def card_renewal() -> None:
          pending.get("state") == "pending" and not pending.get("deposited_at_unix") and not no_deposit and
          to_a.get("state") == "carried",
          {"c": pending, "a": to_a, "deposits_to_c": no_deposit, "c_card_at_b_expired_at": c_at_b["not_after"]})
+    # C, back, reaches B only while the card of B that C holds is valid.
+    b_at_c_now = held_card_of("c", "b", seen["b"])
+    b_ok, b_reason = card_outlives(b_at_c_now, now())
+    RUN["card_renewal"]["b_card_at_c_before_return"] = {"card": b_at_c_now, "ok": b_ok, "reason": b_reason}
+    require("before C is back, the card of B that C holds is valid for at least 300 s more",
+            b_ok, RUN["card_renewal"]["b_card_at_c_before_return"])
     start_node("c", "after its card held by B expired")
     offline_window("c", "end")
     restarted = now()
@@ -2296,6 +2334,9 @@ def card_renewal() -> None:
          bool(fresh) and applied_back["applied"] and delivered["applied"] and not delivered["listed_again_after"] and
          after.get("state") == "carried" and (after.get("deposited_at_unix") or 0) >= restarted,
          {"fresh": fresh, "back": applied_back, "delivered": delivered, "b_state_for_c": after})
+    # Not relied on by any gate, recorded: the A-C cards after C's return.
+    RUN["card_renewal"]["a_c_cards_after_return"] = {"a_at_c": held_card_of("c", "a", seen["a"]),
+                                                     "c_at_a": held_card_of("a", "c", seen["c"])}
     fd.evidence["card_renewal"] = RUN["card_renewal"] | {"chains": chains, "members": members}
 
 

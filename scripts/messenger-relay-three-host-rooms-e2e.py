@@ -222,6 +222,28 @@ def init_nodes() -> None:
     fd.evidence["objects"] = {node: {"agent_id": RUN[node]["agent"], "agent_address": RUN[node]["agent_address"]}
                               for node in NODES}
     require(f"{len(NODES)} distinct Agents", len(set(agents.values())) == len(NODES), agents)
+    if CARD_LIFETIME:
+        card_lifetime_preflight()
+
+
+def card_lifetime_preflight() -> None:
+    """Before the room is built: every node's chat.test_card_lifetime_seconds,
+    read from its rail configuration on its own host (B and C over SSH in
+    remote mode), is the intended value, and the chat card its chat init
+    issued has exactly that window."""
+    found = {}
+    for node in NODES:
+        raw = in_ns(node, ["cat", rail(node)], f"read {node}'s rail configuration on its host", timeout=60).stdout
+        value = (json.loads(raw).get("chat") or {}).get("test_card_lifetime_seconds")
+        cards = poll(lambda: own_cards(node) or None, 120, 3) or []
+        newest = max(cards, key=lambda row: row["not_before"]) if cards else {}
+        found[node] = {"intended": card_lifetime_of(node), "configured_on_host": value,
+                       "issued_card_window": (newest.get("not_after", 0) - newest.get("not_before", 0)) if newest else None}
+    fd.evidence["card_lifetime_preflight"] = found
+    require("each node's chat test card lifetime, read from its configuration on its own host, is the intended one "
+            "and its issued chat card has exactly that window (B twice the others)",
+            all(v["configured_on_host"] == v["intended"] and v["issued_card_window"] == v["intended"]
+                for v in found.values()), found)
     configs = {node: read_json(rail(node)) for node in NODES}
     ca = mr1.CA.read_bytes()
     gate("relay-only", "every node names both relays for rail and chat, pins the run's CA and names no direct peer "

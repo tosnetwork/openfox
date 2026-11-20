@@ -158,7 +158,7 @@ def set_chat_card_lifetime(node: str) -> None:
     with remote.REMOTES[node].lock:
         remote.sync_node(node)
         config = read_json(rail(node))
-        config["chat"]["test_card_lifetime_seconds"] = mr2.CARD_LIFETIME
+        config["chat"]["test_card_lifetime_seconds"] = mr2.card_lifetime_of(node)
         remote.write_on(node, rail(node), (json.dumps(config, indent=2) + "\n").encode())
 
 

@@ -27,7 +27,6 @@ const (
 	EffectMessage       Effect = "message"
 	EffectToolCall      Effect = "tool-call"
 	EffectPhysicalIO    Effect = "physical-io"
-	EffectSpend         Effect = "spend"
 	EffectKeyUse        Effect = "key-use"
 	EffectConfiguration Effect = "configuration"
 )
@@ -35,7 +34,7 @@ const (
 func (e Effect) Known() bool {
 	switch e {
 	case EffectNone, EffectLocalRead, EffectLocalWrite, EffectMessage,
-		EffectToolCall, EffectPhysicalIO, EffectSpend, EffectKeyUse, EffectConfiguration:
+		EffectToolCall, EffectPhysicalIO, EffectKeyUse, EffectConfiguration:
 		return true
 	default:
 		return false
@@ -52,40 +51,14 @@ type Origin struct {
 	ReceivedAtUnix uint64 `json:"received_at_unix"`
 }
 
-type AssetIdentity struct {
-	NetworkID       string `json:"network_id"`
-	GenesisRootHash string `json:"genesis_root_hash"`
-	GenesisFileHash string `json:"genesis_file_hash"`
-	Workchain       int32  `json:"workchain"`
-	AccountID       string `json:"master_account_id"`
-	MasterCodeHash  string `json:"master_code_hash"`
-	WalletCodeHash  string `json:"wallet_code_hash"`
-	Decimals        uint32 `json:"decimals"`
-}
-
-// PurchaseTerms is the complete canonical quote surface committed by a spend
-// approval. No display ticker or floating-point amount is accepted here.
-type PurchaseTerms struct {
-	CapabilityID           string        `json:"capability_id"`
-	CapabilityVersion      string        `json:"capability_version"`
-	CapabilityClass        string        `json:"capability_class"`
-	ProviderAgentID        string        `json:"provider_agent_id"`
-	ManifestDigest         string        `json:"manifest_digest"`
-	TransportBindingDigest string        `json:"transport_binding_digest"`
-	Asset                  AssetIdentity `json:"asset"`
-	PriceAtomic            string        `json:"price_atomic"`
-	EscrowTermsDigest      string        `json:"escrow_terms_digest"`
-	DisputePolicyDigest    string        `json:"dispute_policy_digest"`
-	NotAfterUnix           uint64        `json:"not_after_unix"`
-}
-
+// Action is one proposed side effect. It carries no spending terms or
+// mandate: spending is not authorised through this seam, and Messenger
+// refuses a spend effect, purchase terms and mandate references.
 type Action struct {
 	Effect         Effect             `json:"effect"`
 	Summary        string             `json:"summary"`
 	IdempotencyKey string             `json:"idempotency_key,omitempty"`
 	DerivedFrom    []Origin           `json:"derived_from,omitempty"`
-	MandateID      string             `json:"mandate_id,omitempty"`
-	Terms          *PurchaseTerms     `json:"terms,omitempty"`
 	Physical       *PhysicalOperation `json:"physical,omitempty"`
 }
 

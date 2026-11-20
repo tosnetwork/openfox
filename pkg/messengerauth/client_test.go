@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -173,44 +174,17 @@ func TestClientSurfacesOwnerHoldWithoutClaiming(t *testing.T) {
 	}
 }
 
-func TestClientCarriesExactSpendTermsAndMandate(t *testing.T) {
-	wantMandate := "mdt_" + repeat("9", 64)
-	wantPrice := "184467440737095516160"
-	server := newFakeServer(t, func(raw []byte) []byte {
-		var req request
-		if err := json.Unmarshal(raw, &req); err != nil {
-			t.Fatal(err)
-		}
-		if req.Op == "actions.request" {
-			if req.MandateID != wantMandate || req.Action == nil || req.Action.Terms == nil ||
-				req.Action.Terms.PriceAtomic != wantPrice {
-				t.Fatalf("request = %+v", req)
-			}
-			return encodeResponse(t, response{OK: true, ActionID: "act_" + repeat("a", 64), State: "granted"})
-		}
-		return encodeResponse(t, response{OK: true, Authorized: true, State: "spent"})
-	})
-	client, err := NewClient(server, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = client.Authorize(context.Background(), actionauth.Action{
-		Effect: actionauth.EffectSpend, Summary: "fund accepted quote", MandateID: wantMandate,
-		Terms: &actionauth.PurchaseTerms{PriceAtomic: wantPrice},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestClientRefusesMalformedSpendBeforeConnecting(t *testing.T) {
+// TestClientRefusesTheRetiredSpendEffectBeforeConnecting: Messenger no longer
+// authorises spending, so a spend effect is unknown to the client and never
+// reaches the socket.
+func TestClientRefusesTheRetiredSpendEffectBeforeConnecting(t *testing.T) {
 	client, err := NewClient(filepath.Join(t.TempDir(), "absent.sock"), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := client.Authorize(context.Background(), actionauth.Action{
-		Effect: actionauth.EffectSpend, Summary: "fund",
-	}); !errors.Is(err, ErrRefused) {
+		Effect: actionauth.Effect("spend"), Summary: "fund accepted quote",
+	}); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "malformed OpenFox action") {
 		t.Fatalf("error = %v", err)
 	}
 }

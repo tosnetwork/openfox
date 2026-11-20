@@ -26,8 +26,10 @@ import (
 // runtime approve its own requests.
 
 // ChatOwnerDecisionSchema is the daemon's owner decision envelope, so a
-// decision openfox prepares is signed by the daemon's own owner tool.
-const ChatOwnerDecisionSchema = "tos.messaging.owner-decision.v1"
+// decision openfox prepares is signed by the daemon's own owner tool. v2
+// matches the request layout without mandate fields; the owner tool refuses
+// a v1 envelope rather than sign it against a different preimage.
+const ChatOwnerDecisionSchema = "tos.messaging.owner-decision.v2"
 
 // maxChatOwnerDecisionBytes bounds a decision file read back.
 const maxChatOwnerDecisionBytes = 64 << 10

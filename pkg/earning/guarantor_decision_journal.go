@@ -268,8 +268,13 @@ func (journal *GuarantorJournal) CommitDecisionAdmission(agreementDigest string,
 	if err != nil {
 		return guarantor.ClaimRecord{}, err
 	}
-	if body.PriorClaimState != "admitted" || body.AdmittedClaimState != stringLowerClaimStatus(target) ||
-		body.AdmittedClaimStateRevision != record.ClaimStateRevision+1 || body.AdmittedCoverageRevision != position.Record.CoverageRevision+1 {
+	// The admission starts from the claim's current state and round counts,
+	// whatever head it replaces: admitted for an initial decision, the
+	// nonterminal or reviewing state for a successor or fallback.
+	if body.PriorClaimState != stringLowerClaimStatus(record.ClaimStatus) || body.AdmittedClaimState != stringLowerClaimStatus(target) ||
+		body.AdmittedClaimStateRevision != record.ClaimStateRevision+1 || body.AdmittedCoverageRevision != position.Record.CoverageRevision+1 ||
+		body.ChallengeRoundsUsedBefore != position.ChallengeRoundsUsed[body.ClaimID] ||
+		body.NonterminalRoundsUsedBefore != position.NonterminalRoundsUsed[body.ClaimID] {
 		return guarantor.ClaimRecord{}, errors.New("Guarantor decision admission state projection differs")
 	}
 	pendingBase := position.AggregatePendingDecisionReserveAtomic
@@ -297,6 +302,8 @@ func (journal *GuarantorJournal) CommitDecisionAdmission(agreementDigest string,
 	position.Claims[body.ClaimID] = record
 	position.Decisions[body.ClaimID] = receipt.AuthorizedClaimDecision
 	position.DecisionAdmissionReceipts[body.ClaimID] = receipt
+	position.ChallengeRoundsUsed[body.ClaimID] = body.ChallengeRoundsUsedAfter
+	position.NonterminalRoundsUsed[body.ClaimID] = body.NonterminalRoundsUsedAfter
 	delete(position.ClaimStateTransitionReceipts, body.ClaimID)
 	if body.ResultingApplicationToken != nil {
 		position.DecisionApplicationTokens[body.ClaimID] = *body.ResultingApplicationToken

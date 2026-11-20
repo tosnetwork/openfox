@@ -1,6 +1,8 @@
 // Package messengerauth implements OpenFox action authorization over the TOS
 // Messenger runtime socket. It intentionally duplicates only the bounded wire
-// envelope; Messenger remains the policy, mandate, budget, and grant authority.
+// envelope; Messenger remains the policy and grant authority. Spending is not
+// authorised here: Messenger refuses a spend effect, purchase terms and
+// mandate references, so this client never sends them.
 package messengerauth
 
 import (
@@ -49,11 +51,10 @@ func NewClient(socket string, timeout time.Duration) (*Client, error) {
 }
 
 type request struct {
-	Schema    string          `json:"schema"`
-	Op        string          `json:"op"`
-	Action    *proposedAction `json:"action,omitempty"`
-	ActionID  string          `json:"action_id,omitempty"`
-	MandateID string          `json:"mandate_id,omitempty"`
+	Schema   string          `json:"schema"`
+	Op       string          `json:"op"`
+	Action   *proposedAction `json:"action,omitempty"`
+	ActionID string          `json:"action_id,omitempty"`
 }
 
 type proposedAction struct {
@@ -61,7 +62,6 @@ type proposedAction struct {
 	Summary        string                        `json:"summary"`
 	IdempotencyKey string                        `json:"idempotency_key,omitempty"`
 	Derived        []actionauth.Origin           `json:"derived_from,omitempty"`
-	Terms          *actionauth.PurchaseTerms     `json:"terms,omitempty"`
 	Physical       *actionauth.PhysicalOperation `json:"physical,omitempty"`
 }
 
@@ -91,17 +91,11 @@ func (c *Client) Authorize(ctx context.Context, action actionauth.Action) error 
 	if action.Effect != actionauth.EffectPhysicalIO && action.Physical != nil {
 		return fmt.Errorf("%w: only physical I/O carries a physical operation", ErrRefused)
 	}
-	if action.Effect == actionauth.EffectSpend && (action.Terms == nil || action.MandateID == "") {
-		return fmt.Errorf("%w: spend has no exact terms or mandate", ErrRefused)
-	}
-	if action.Effect != actionauth.EffectSpend && (action.Terms != nil || action.MandateID != "") {
-		return fmt.Errorf("%w: only a spend carries terms and a mandate", ErrRefused)
-	}
 	asked, err := c.call(ctx, request{Op: "actions.request", Action: &proposedAction{
 		Effect: string(action.Effect), Summary: action.Summary,
-		IdempotencyKey: action.IdempotencyKey, Derived: action.DerivedFrom, Terms: action.Terms,
+		IdempotencyKey: action.IdempotencyKey, Derived: action.DerivedFrom,
 		Physical: action.Physical,
-	}, MandateID: action.MandateID})
+	}})
 	if err != nil {
 		return err
 	}
@@ -110,7 +104,6 @@ func (c *Client) Authorize(ctx context.Context, action actionauth.Action) error 
 	}
 	if asked.Authorized {
 		if action.Effect == actionauth.EffectToolCall || action.Effect == actionauth.EffectPhysicalIO ||
-			action.Effect == actionauth.EffectSpend ||
 			action.Effect == actionauth.EffectKeyUse ||
 			action.Effect == actionauth.EffectConfiguration {
 			return fmt.Errorf("%w: Messenger returned an inline authorization for a one-shot effect", ErrRefused)

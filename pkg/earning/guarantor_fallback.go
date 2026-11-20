@@ -178,15 +178,32 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
-	cut, err := coordinator.Journal.ClaimRevisionAdmissionCut(input.AgreementDigest, input.ClaimID, uint64(now.Unix()))
-	if err != nil {
-		return GuarantorDecisionAdmissionResult{}, err
+	// A head that left revision ingress frozen (a nonterminal decision with no
+	// transition after it, or the challenge of a late-recovery candidate) has
+	// no open epoch to freeze: the fallback reuses that decision's frozen epoch
+	// and its exact cut. Every other head is frozen here, open to frozen.
+	reuseFrozenEpoch := currentDecision != nil && (currentTransition == nil ||
+		currentDecision.AuthorizedClaimDecision.Body.DecisionPath == "late_recovery_terminal_fallback")
+	var cut guarantor.ClaimIngressAdmissionCutProofV1
+	var epoch guarantor.ClaimRevisionEpochExpectationV1
+	if reuseFrozenEpoch {
+		cut = currentDecision.ClaimRevisionIngressCutProof
+		epoch = guarantor.ClaimRevisionEpochExpectationV1{SchemaVersion: 1,
+			CoverageAgreementBodyDigest: input.AgreementDigest, CoverageObligationID: position.Record.CoverageObligationID,
+			ClaimID: input.ClaimID, RevisionEpoch: currentDecision.Body.FrozenRevisionEpoch, RevisionIngressLogID: cut.ClaimIngressLogID,
+			ExpectedEpochState: "frozen", ExpectedEpochStateRevision: currentDecision.Body.FrozenRevisionEpochStateRevision,
+			ExpectedClaimRevision: claim.Body.ClaimRevision}
+	} else {
+		cut, err = coordinator.Journal.ClaimRevisionAdmissionCut(input.AgreementDigest, input.ClaimID, uint64(now.Unix()))
+		if err != nil {
+			return GuarantorDecisionAdmissionResult{}, err
+		}
+		epoch = guarantor.ClaimRevisionEpochExpectationV1{SchemaVersion: 1,
+			CoverageAgreementBodyDigest: input.AgreementDigest, CoverageObligationID: position.Record.CoverageObligationID,
+			ClaimID: input.ClaimID, RevisionEpoch: claim.Body.ClaimRevision, RevisionIngressLogID: cut.ClaimIngressLogID,
+			ExpectedEpochState: "open", ExpectedEpochStateRevision: cut.PriorEpochStateRevision,
+			ExpectedClaimRevision: claim.Body.ClaimRevision}
 	}
-	epoch := guarantor.ClaimRevisionEpochExpectationV1{SchemaVersion: 1,
-		CoverageAgreementBodyDigest: input.AgreementDigest, CoverageObligationID: position.Record.CoverageObligationID,
-		ClaimID: input.ClaimID, RevisionEpoch: claim.Body.ClaimRevision, RevisionIngressLogID: cut.ClaimIngressLogID,
-		ExpectedEpochState: "open", ExpectedEpochStateRevision: cut.PriorEpochStateRevision,
-		ExpectedClaimRevision: claim.Body.ClaimRevision}
 	fallbackDigest, _ := guarantor.DeterministicClaimTerminalFallbackDigestV1(fallback)
 	// The request names its source head by reference. The receipt carries the
 	// claim admission and transition receipts once and, from a nonterminal
@@ -293,7 +310,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		ClaimID: input.ClaimID, AuthorizedClaimDecisionDigest: decisionDigest, AdmissionMode: "deterministic_fallback",
 		FallbackTriggerCutoffUnix: cutoff, AuthorizedClaimAdmissionReceiptDigest: claimAdmissionDigest,
 		ClaimRevisionIngressCutProofDigest: cutDigest, FrozenRevisionEpoch: epoch.RevisionEpoch,
-		PriorRevisionEpochStateRevision: epoch.ExpectedEpochStateRevision, FrozenRevisionEpochStateRevision: cut.FrozenEpochStateRevision,
+		PriorRevisionEpochStateRevision: cut.PriorEpochStateRevision, FrozenRevisionEpochStateRevision: cut.FrozenEpochStateRevision,
 		FrozenClaimRevisionIngressHighWater: cut.AdmissionHighWater, FrozenClaimRevisionIngressLogRoot: cut.AdmissionLogRoot,
 		DecisionSequence: decisionSequence, DecisionRevision: 1, DecisionPath: decisionPath,
 		PriorCoverageRevision: position.Record.CoverageRevision, AdmittedCoverageRevision: position.Record.CoverageRevision + 1,
@@ -311,6 +328,15 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		AuthorityAdmissionEligibilityProofSetDigest: eligibilityDigest}
 	if lateRecovery {
 		body.LateFilingCloseReceiptDigest = variant.LateFilingCloseReceiptDescriptor.ContentDigest
+	}
+	// A fallback from evidence_required or disputed consumes the nonterminal
+	// round it closes; every other head's round was consumed by its transition.
+	if record.ClaimStatus == guarantor.ClaimEvidenceRequired || record.ClaimStatus == guarantor.ClaimDisputed {
+		next, fits := safeAddUnix(body.NonterminalRoundsUsedBefore, 1)
+		if !fits || next > position.Terms.ClaimClosureCapacity.MaximumNonterminalRoundsPerClaim {
+			return GuarantorDecisionAdmissionResult{Resolution: resolution}, errors.New("Guarantor fallback exceeds its reserved nonterminal rounds")
+		}
+		body.NonterminalRoundsUsedAfter = next
 	}
 	body.PredecessorDecisionAdmissionReceiptDigest = variant.CurrentDecisionAdmissionReceiptDigest
 	body.PredecessorClaimStateTransitionReceiptDigest = variant.CurrentClaimStateTransitionReceiptDigest

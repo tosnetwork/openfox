@@ -252,8 +252,30 @@ func testHex(key ed25519.PublicKey) string {
 	return "ed25519:" + string(encoded)
 }
 
+// guarantorFallbackScenario selects how the provider lifecycle closes its
+// claim: through ordinary decisions, or through a deterministic fallback.
+type guarantorFallbackScenario int
+
+const (
+	guarantorNoFallback guarantorFallbackScenario = iota
+	// guarantorInitialFallback lets the review deadline pass.
+	guarantorInitialFallback
+	// guarantorNonterminalFallback admits a disputed decision and lets its
+	// resolution deadline pass with no response.
+	guarantorNonterminalFallback
+)
+
 func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.T) {
-	runGuarantorProviderLifecycle(t, false)
+	runGuarantorProviderLifecycle(t, guarantorNoFallback)
+}
+
+// TestGuarantorDisputedFallbackReusesTheFrozenEpochAndCloses admits a
+// disputed decision, which freezes the claim's revision epoch, and lets its
+// resolution deadline pass with no response. The fallback must reuse that
+// frozen epoch and cut, consume the nonterminal round, verify as a portable
+// receipt, and be closed, applied and settled into the terminal claim set.
+func TestGuarantorDisputedFallbackReusesTheFrozenEpochAndCloses(t *testing.T) {
+	runGuarantorProviderLifecycle(t, guarantorNonterminalFallback)
 }
 
 // TestGuarantorInitialFallbackIsPortableChallengeableAndApplied lets the
@@ -263,10 +285,10 @@ func TestGuarantorProviderIssuesReservedOfferAndLinearizesAcceptance(t *testing.
 // compact proof. The fallback authority set differs from the Decision
 // Authority set, so a proof verified against the wrong set is refused.
 func TestGuarantorInitialFallbackIsPortableChallengeableAndApplied(t *testing.T) {
-	runGuarantorProviderLifecycle(t, true)
+	runGuarantorProviderLifecycle(t, guarantorInitialFallback)
 }
 
-func runGuarantorProviderLifecycle(t *testing.T, initialFallback bool) {
+func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScenario) {
 	now := time.Now().UTC().Truncate(time.Second)
 	guarantorPublic, guarantorKey, _ := ed25519.GenerateKey(rand.Reader)
 	coveredPublic, coveredKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -276,7 +298,7 @@ func runGuarantorProviderLifecycle(t *testing.T, initialFallback bool) {
 	}
 	asset := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nano"}
 	fallbackSubject := "agent:guarantor"
-	if initialFallback {
+	if scenario != guarantorNoFallback {
 		fallbackSubject = "agent:fallback-authority"
 	}
 	fallback, err := guarantor.NewDenyZeroTerminalFallbackV1(ref("e", "fallback"), []string{fallbackSubject}, "all",
@@ -1040,16 +1062,17 @@ func runGuarantorProviderLifecycle(t *testing.T, initialFallback bool) {
 		t.Fatal("stale claim revision was accepted after the lineage advanced")
 	}
 	claim = revisedClaim
-	if initialFallback {
-		admittedAt := time.Unix(int64(revisionResult.AdmissionReceipt.Body.AdmittedAtUnix), 0).UTC()
-		fallbackAt := admittedAt.Add(time.Duration(terms.ReviewDeadlineSeconds+1) * time.Second)
+	// exerciseFallback admits the deterministic fallback at fallbackAt and
+	// carries it through portable verification, challenge close, application
+	// and coverage closure.
+	exerciseFallback := func(fallbackAt time.Time, wantPath string) guarantor.AuthorizedClaimDecisionAdmissionReceiptV1 {
 		authority.now = func() time.Time { return fallbackAt }
 		fallbackAdmission, err := coordinator.AdmitInitialFallbackDecision(context.Background(),
 			GuarantorAdmitInitialFallbackInput{AgreementDigest: agreementDigest, ClaimID: claimID}, fence)
 		if err != nil || fallbackAdmission.Resolution.State != commerce.ActionTerminal ||
 			fallbackAdmission.Receipt.Body.AdmittedClaimState != "denied" ||
-			fallbackAdmission.Receipt.Body.DecisionPath != "initial_terminal_fallback" {
-			t.Fatalf("admit initial fallback: resolution=%#v err=%v", fallbackAdmission.Resolution, err)
+			fallbackAdmission.Receipt.Body.DecisionPath != wantPath {
+			t.Fatalf("admit %s: resolution=%#v err=%v", wantPath, fallbackAdmission.Resolution, err)
 		}
 		receipt := fallbackAdmission.Receipt
 		if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(receipt, terms, coordinator.AgreementVerifier,
@@ -1093,6 +1116,11 @@ func runGuarantorProviderLifecycle(t *testing.T, initialFallback bool) {
 			coordinator.Resolver, authority, coordinator.PaymentVerifier, closeCoverageAt); err != nil {
 			t.Fatalf("the terminal claim set holding a fallback decision does not verify: %v", err)
 		}
+		return receipt
+	}
+	if scenario == guarantorInitialFallback {
+		admittedAt := time.Unix(int64(revisionResult.AdmissionReceipt.Body.AdmittedAtUnix), 0).UTC()
+		exerciseFallback(admittedAt.Add(time.Duration(terms.ReviewDeadlineSeconds+1)*time.Second), "initial_terminal_fallback")
 		return
 	}
 	claimEnvelopeDigest, _ := guarantor.ClaimEnvelopeDigest(claim)
@@ -1110,9 +1138,13 @@ func runGuarantorProviderLifecycle(t *testing.T, initialFallback bool) {
 		ApplicablePolicyClauseIDs: []string{"clause:service-default"}, PolicyInputProjection: []byte("fixed-benefit:400"),
 		FullEligibleBenefitAmount: commerce.AtomicAmountV1{Asset: asset, AmountAtomic: "400"}}
 	policyApplicationDigest, _ := guarantor.ClaimDecisionPolicyApplicationDigestV1(policyApplication)
+	disputed := scenario == guarantorNonterminalFallback
 	decisionReason := guarantor.ClaimDecisionReasonV1{SchemaVersion: 1, DecisionProfile: decisionProfile,
 		Result: guarantor.DecisionApproved, ReasonCode: "verified_failure",
 		ApplicablePolicyClauseIDs: []string{"clause:service-default"}, EvidencePredicateIDs: []string{"evidence:failure"}}
+	if disputed {
+		decisionReason.Result = guarantor.DecisionDisputed
+	}
 	decisionReasonDigest, _ := guarantor.ClaimDecisionReasonDigestV1(decisionReason)
 	decisionBody := guarantor.ClaimDecisionBodyV1{SchemaVersion: 1, ClaimID: claimID,
 		CoverageAgreementBodyDigest: agreementDigest, CoverageObligationID: "obligation:coverage",
@@ -1127,6 +1159,15 @@ func runGuarantorProviderLifecycle(t *testing.T, initialFallback bool) {
 			NotBeforeAfterTerminalCloseSeconds: 0, DueAfterTerminalCloseSeconds: 30,
 			ExpiresAfterTerminalCloseSeconds: 90}}, ChallengeWindowSeconds: 60,
 		DecidedAtUnix: uint64(now.Add(3 * time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix())}
+	if disputed {
+		// A nonterminal result carries no amount, payout or challenge window
+		// and opens the Agreement's nonterminal resolution window instead.
+		decisionBody.Result = guarantor.DecisionDisputed
+		decisionBody.ApprovedAmount = commerce.AtomicAmountV1{Asset: asset, AmountAtomic: "0"}
+		decisionBody.PayoutLines = nil
+		decisionBody.ChallengeWindowSeconds = 0
+		decisionBody.ResolutionWindowSeconds = terms.NonterminalResolutionWindowSeconds
+	}
 	decisionBodyDigest, _ := guarantor.ClaimDecisionBodyDigestV1(decisionBody, terms)
 	decisionAuthorization, err := guarantor.SignObjectAuthorization(
 		context.Background(),
@@ -1154,9 +1195,28 @@ func runGuarantorProviderLifecycle(t *testing.T, initialFallback bool) {
 		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{decisionAuthorization}}
 	decisionAdmission, err := coordinator.AdmitClaimDecision(context.Background(), GuarantorAdmitDecisionInput{
 		AgreementDigest: agreementDigest, Decision: decision}, fence)
+	wantAdmittedState := "approved"
+	if disputed {
+		wantAdmittedState = "disputed"
+	}
 	if err != nil || decisionAdmission.Resolution.State != commerce.ActionTerminal ||
-		decisionAdmission.Receipt.Body.AdmittedClaimState != "approved" {
-		t.Fatalf("admit claim decision: result=%#v err=%v", decisionAdmission, err)
+		decisionAdmission.Receipt.Body.AdmittedClaimState != wantAdmittedState {
+		t.Fatalf("admit claim decision: result=%#v err=%v", decisionAdmission.Resolution, err)
+	}
+	if disputed {
+		head := decisionAdmission.Receipt.Body
+		if head.ResolutionDueAtUnix == 0 {
+			t.Fatal("disputed decision opened no resolution window")
+		}
+		fallbackReceipt := exerciseFallback(time.Unix(int64(head.ResolutionDueAtUnix)+1, 0).UTC(), "terminal_fallback")
+		epoch := fallbackReceipt.Body
+		if epoch.FrozenRevisionEpoch != head.FrozenRevisionEpoch ||
+			epoch.FrozenRevisionEpochStateRevision != head.FrozenRevisionEpochStateRevision ||
+			epoch.ClaimRevisionIngressCutProofDigest != head.ClaimRevisionIngressCutProofDigest ||
+			epoch.NonterminalRoundsUsedAfter != head.NonterminalRoundsUsedAfter+1 {
+			t.Fatalf("disputed fallback did not reuse the frozen epoch or consume its round: head=%#v fallback=%#v", head, epoch)
+		}
+		return
 	}
 	authority.now = func() time.Time { return now.Add(5 * time.Minute) }
 	terminalTransition, err := coordinator.TransitionClaimDecision(context.Background(), GuarantorTransitionClaimInput{

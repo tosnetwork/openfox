@@ -87,6 +87,19 @@ AUTHORIZATION = int(os.environ.get("MR2_AUTHORIZATION_SECONDS", "0"))
 ROOM_END = os.environ.get("MR2_ROOM_END") == "1"
 A_DELEGATION = int(os.environ.get("MR2_A_DELEGATION_SECONDS", str(2 * 86400)))
 MAX_CLOCK_SKEW = 300
+# The card-renewal scenario (the card half of item 16): only the steps that
+# build the three-member room run, then card_renewal. Every node's chat card
+# lasts MR2_CARD_LIFETIME_SECONDS (OpenFox's chat.test_card_lifetime_seconds,
+# accepted only by a roomtest build) and is replaced at half its life.
+CARD_RENEWAL = os.environ.get("MR2_CARD_RENEWAL") == "1"
+CARD_LIFETIME = int(os.environ.get("MR2_CARD_LIFETIME_SECONDS", "0"))
+
+
+def card_lifetime_of(node: str) -> int:
+    """A node's chat test card lifetime: B's is twice the others', so B's card
+    that C holds always outlives C's card that B holds by at least half of
+    C's lifetime, and C can be cut off by an expired card on one side only."""
+    return 2 * CARD_LIFETIME if node == "b" else CARD_LIFETIME
 ROOM = "room_" + secrets.token_hex(32)
 CONV = "conv_" + secrets.token_hex(32)
 GATE: dict[str, list[str]] = {}
@@ -179,6 +192,15 @@ def daemon_config(node: str) -> dict:
 mr1.daemon_config = daemon_config
 
 
+def set_chat_card_lifetime(node: str) -> None:
+    """The node's rail configuration names the chat test card lifetime
+    before its chat key is issued, so every card it hands out has it."""
+    config = read_json(rail(node))
+    config["chat"]["test_card_lifetime_seconds"] = card_lifetime_of(node)
+    rail(node).write_text(json.dumps(config, indent=2) + "\n")
+    rail(node).chmod(0o600)
+
+
 def init_nodes() -> None:
     """The M-R1 node initialisation for every node of this run."""
     for node in NODES:
@@ -190,6 +212,8 @@ def init_nodes() -> None:
         config = read_json(rail(node))
         RUN[node] = {"agent": agent, "agent_address": address, "controller": config["packet_controller"],
                      "key_id": config["packet_key_id"], "wallet": config["wallet_address"]}
+        if CARD_LIFETIME:
+            set_chat_card_lifetime(node)
         chat = mr1.fox_json(node, "chat", "init", "--rail-config", str(rail(node)))
         RUN[node]["chat_key"] = chat.get("key_id")
         require(f"{node}: `openfox earning chat init` issued the chat key and published a card naming both relays",
@@ -2041,6 +2065,198 @@ def room_end_scenario() -> None:
         mr1.hold(function.__name__)
 
 
+def card_digest(card_base64: str) -> str:
+    return hashlib.sha256(card_base64.encode()).hexdigest()[:16]
+
+
+def own_cards(node: str) -> list[dict]:
+    """The node's chat cards, from its OpenFox chat key records (only the
+    key id, the window and the card's digest are read out), oldest first."""
+    out = []
+    for path in sorted((nd(node) / "state" / "relay" / "chat-keys").glob("*.json")):
+        try:
+            record = read_json(path)
+        except (OSError, ValueError):
+            continue
+        out.append({"key_id": str(record.get("key_id", ""))[:16], "not_before": int(record.get("not_before_unix") or 0),
+                    "not_after": int(record.get("not_after_unix") or 0),
+                    "card": card_digest(record.get("card_packet_base64", ""))})
+    return sorted(out, key=lambda row: row["not_before"])
+
+
+def held_cards(holder: str, peer: str) -> set[str]:
+    """Digests of the peer's chat cards the holder's OpenFox stores."""
+    out = set()
+    for path in (nd(holder) / "state" / "relay" / "chat-peers").glob("*.json"):
+        try:
+            record = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if record.get("agent_id") == RUN[peer]["agent"]:
+            out.add(card_digest(record.get("card_packet_base64", "")))
+    return out
+
+
+def member_card(member: str) -> str:
+    """Digest of the member's chat card the authority's daemon keeps for the
+    room's rosters (11.8, Member cards)."""
+    for path in (mdir("a") / "state" / "room-member-cards").glob("*.json"):
+        try:
+            record = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if record.get("agent_id") == RUN[member]["agent"] and record.get("room_id") == ROOM:
+            return card_digest(record.get("card_base64", ""))
+    return ""
+
+
+def application_member_state(sender: str, event_id: str, member: str) -> dict:
+    """The sender daemon's delivery state of a room message to one member."""
+    for path in (mdir(sender) / "state" / "room-application-outbox").glob(ROOM[5:] + "-*.json"):
+        try:
+            record = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if record.get("event_id") != event_id:
+            continue
+        for row in record.get("members") or []:
+            if row.get("agent_id") == RUN[member]["agent"]:
+                return {"state": row.get("state"), "deposited_at_unix": row.get("deposited_at_unix")}
+    return {}
+
+
+def card_renewal() -> None:
+    """Item 16, the card half (11.2, 11.8): every chat card lasts the test card
+    lifetime L. While B and C (no contacts) keep exchanging room messages,
+    each member's card is renewed at half its life, the peer learns the
+    renewed card in band (kind-3 part 0) and the exchange goes on past the
+    older card's expiry; the authority's member cards follow. Then C is
+    stopped until the card of C that B holds has expired: B's message to C
+    waits (no deposit) for a fresh card, and C, back with a new card that
+    its first room message carries, gets it once."""
+    lifetime = CARD_LIFETIME
+    require("the card-renewal scenario has a test card lifetime", lifetime >= 600, {"lifetime": lifetime})
+    WINDOW_LENGTH["c"] = max(WINDOW_LENGTH["c"], lifetime // 2 + 900)
+    seen = {node: {} for node in ("a", "b", "c")}
+
+    def sample() -> None:
+        for node in ("a", "b", "c"):
+            for card in own_cards(node):
+                seen[node].setdefault(card["card"], card)
+    sample()
+    first = {node: {"card": card, "member_card": member_card(node) if node != "a" else None}
+             for node in ("a", "b", "c") for card in [max(own_cards(node), key=lambda row: row["not_after"])]}
+    deadline = max(item["card"]["not_after"] for item in first.values()) + 120
+    RUN["card_renewal"] = {"lifetime_seconds": lifetime, "first_cards": first, "phase1_until_unix": deadline}
+    exchanges = []
+    while now() < deadline:
+        renewal_exchange()
+        exchanges.append(RUN["renewal"][-1])
+        sample()
+        until(min(deadline, now() + 120))
+    renewal_exchange()
+    exchanges.append(RUN["renewal"][-1])
+    sample()
+    chains = {}
+    for node in ("a", "b", "c"):
+        cards = sorted(seen[node].values(), key=lambda row: row["not_before"])
+        steps = [{"previous_not_after": p["not_after"], "successor_not_before": q["not_before"],
+                  "at_half_life": p["not_after"] - card_lifetime_of(node) // 2 - 180 <= q["not_before"] < p["not_after"]}
+                 for p, q in zip(cards, cards[1:])]
+        chains[node] = {"cards": [{k: row[k] for k in ("key_id", "not_before", "not_after")} for row in cards],
+                        "lifetime_seconds": card_lifetime_of(node),
+                        "lifetimes_ok": all(row["not_after"] - row["not_before"] == card_lifetime_of(node)
+                                            for row in cards),
+                        "renewals": steps}
+    gate("16", f"every member's chat card lasts its test card lifetime (A and C {lifetime} s, B {2 * lifetime} s) and "
+         "is renewed at half its life, before it expires (A, B and C, at least once each)",
+         all(len(c["renewals"]) >= 1 and c["lifetimes_ok"] and all(r["at_half_life"] for r in c["renewals"])
+             for c in chains.values()), chains)
+    newest = {node: max(seen[node].values(), key=lambda row: row["not_before"]) for node in ("b", "c")}
+    learned = {"b_holds_c": sorted(held_cards("b", "c")), "c_holds_b": sorted(held_cards("c", "b")),
+               "c_renewed": [card for card, row in seen["c"].items() if row["not_before"] > first["c"]["card"]["not_before"]],
+               "b_renewed": [card for card, row in seen["b"].items() if row["not_before"] > first["b"]["card"]["not_before"]]}
+    after_expiry = [e for e in exchanges if e["at"] > min(first[n]["card"]["not_after"] for n in ("b", "c"))]
+    gate("16", "B and C (no contacts) learned each other's renewed card in band (kind-3 part 0) and kept "
+         "exchanging room messages past the older cards' expiry, every exchange applied",
+         bool(set(learned["c_renewed"]) & set(learned["b_holds_c"])) and
+         bool(set(learned["b_renewed"]) & set(learned["c_holds_b"])) and bool(after_expiry) and
+         all(e["b->c"] and e["b->c"]["applied"] and e["c->b"] and e["c->b"]["applied"] for e in exchanges),
+         {"learned": learned, "exchanges": len(exchanges), "after_first_expiry": len(after_expiry)})
+    members = {node: {"first": first[node]["member_card"], "now": member_card(node)} for node in ("b", "c")}
+    gate("16", "the authority's member card of B and of C was refreshed to a renewed card from their own frames "
+         "(11.8, Member cards)", all(v["now"] and v["now"] != v["first"] and v["now"] in seen[n]
+                                      for n, v in members.items()), members)
+    # The stale card: C is stopped just before its own renewal, right after an
+    # exchange, so B holds C's older card while C holds B's longer one; C
+    # stays away until that card of C expired.
+    def c_newest() -> dict:
+        return max(own_cards("c"), key=lambda row: row["not_before"])
+    for _ in range(3):
+        current = c_newest()
+        renew_at = current["not_before"] + lifetime // 2
+        if renew_at - now() < 150:
+            poll(lambda: (c_newest()["card"] != current["card"]) or None, renew_at - now() + 240, 5)
+            continue
+        until(renew_at - 90)
+        renewal_exchange()
+        if c_newest()["card"] == current["card"] and now() < renew_at - 20:
+            break
+    by_digest = {card: row for card, row in seen["c"].items()} | {r["card"]: r for r in own_cards("c")}
+    c_at_b = max((by_digest[d] for d in held_cards("b", "c") if d in by_digest), key=lambda row: row["not_after"],
+                 default=None)
+    b_by_digest = {card: row for card, row in seen["b"].items()} | {r["card"]: r for r in own_cards("b")}
+    b_at_c = max((b_by_digest[d] for d in held_cards("c", "b") if d in b_by_digest), key=lambda row: row["not_after"],
+                 default=None)
+    require("before C's window, the card of C that B holds expires well before the card of B that C holds",
+            bool(c_at_b) and bool(b_at_c) and c_at_b["not_after"] + 300 < b_at_c["not_after"] and
+            c_newest()["card"] == c_at_b["card"], {"c_at_b": c_at_b, "b_at_c": b_at_c})
+    offline_window("c", "start")
+    stop_node("c")
+    until(c_at_b["not_after"] + 30)
+    held = compose("b", "to-stale-c")
+    until(now() + 150)
+    pending = application_member_state("b", held["event_id"], "c")
+    to_a = application_member_state("b", held["event_id"], "a")
+    no_deposit = [row["record"].get("envelope_id", "")[:12] for row in room_frames("b")
+                  if row["packet"]["recipient_agent_id"] == RUN["c"]["agent"] and
+                  (row["record"].get("accepted_at_unix") or 0) >= held["sent_at"] - 5]
+    gate("16", "with the card of C that B holds expired (C offline), B's room message to C waits for a fresh card: "
+         "nothing is deposited to C, while A's copy is carried",
+         pending.get("state") == "pending" and not pending.get("deposited_at_unix") and not no_deposit and
+         to_a.get("state") == "carried",
+         {"c": pending, "a": to_a, "deposits_to_c": no_deposit, "c_card_at_b_expired_at": c_at_b["not_after"]})
+    start_node("c", "after its card held by B expired")
+    offline_window("c", "end")
+    restarted = now()
+    back = compose("c", "back-c")
+    fresh = poll(lambda: [r for r in own_cards("c") if r["not_before"] >= restarted - 60 and r["card"] in held_cards("b", "c")]
+                 or None, 600, 5)
+    applied_back = room_applied("b", "back-c", 600)
+    delivered = room_applied("c", "to-stale-c", REDEPOSIT + 300)
+    after = application_member_state("b", held["event_id"], "c")
+    gate("16", "C, back with a fresh card that its room message carries, is reached again: B learns the card in band, "
+         "deposits the waiting message and C applies it once",
+         bool(fresh) and applied_back["applied"] and delivered["applied"] and not delivered["listed_again_after"] and
+         after.get("state") == "carried" and (after.get("deposited_at_unix") or 0) >= restarted,
+         {"fresh": fresh, "back": applied_back, "delivered": delivered, "b_state_for_c": after})
+    fd.evidence["card_renewal"] = RUN["card_renewal"] | {"chains": chains, "members": members}
+
+
+def card_renewal_scenario() -> None:
+    """The card half of item 16 only: the steps that build the three-member
+    room, then card_renewal."""
+    fd.evidence["scenario"] = ("card-renewal: the card half of item 16 only; the item 1, 2 and 18 steps run only to "
+                               "build the room")
+    fd.evidence["card_renewal_settings"] = {"card_lifetime_seconds": {n: card_lifetime_of(n) for n in NODES},
+                                            "descriptor_lifetime_seconds": mr1.DESCRIPTOR_LIFETIME,
+                                            "redeposit_interval_seconds": REDEPOSIT}
+    RUN.setdefault("renewal", [])
+    for function in (invite_first_contact, create_and_add_b, invite_claimed, add_c, card_renewal):
+        function()
+        mr1.hold(function.__name__)
+
+
 SELECTED = [name for name in os.environ.get("MR2_STEPS", "").split(",") if name]
 EXTRA_STEPS = {"add_filler_e": add_filler_e, "idle_then_add_e": idle_then_add_e, "room_end": room_end}
 if os.environ.get("MR2_TARGETED_C_ALLOWS_A") == "1":
@@ -2050,6 +2266,9 @@ if os.environ.get("MR2_TARGETED_C_ALLOWS_A") == "1":
 def scenario() -> None:
     if ROOM_END:
         room_end_scenario()
+        return
+    if CARD_RENEWAL:
+        card_renewal_scenario()
         return
     if SELECTED:
         known = {function.__name__: function for function in STEPS} | EXTRA_STEPS
@@ -2154,7 +2373,8 @@ async def main() -> int:
         "openfox_tree_dirty": bool(openfox_tree), "tos_commit": git(fd.SOURCE, "rev-parse", "HEAD"),
         "ai_commit": git(ai_source, "rev-parse", "HEAD"), "ai_tree_status": ai_tree,
         "room_id": ROOM,
-        "builds": {"openfox": "GOWORK=off CGO_ENABLED=0 go build -trimpath -tags goolm,stdjson ./cmd/openfox",
+        "builds": {"openfox": "GOWORK=off CGO_ENABLED=0 go build -trimpath -tags goolm,stdjson" +
+                   (",roomtest" if CARD_LIFETIME else "") + " ./cmd/openfox",
                    "ai": f"GOWORK=off CGO_ENABLED=0 go build -trimpath {tags}./messenger/cmd/tos-messengerd; "
                          "go build -trimpath ./messenger/cmd/tos-messenger-owner ./protocol/cmd/tos-service-packet-relay",
                    "mls_driver": "cargo build --locked --release --manifest-path "

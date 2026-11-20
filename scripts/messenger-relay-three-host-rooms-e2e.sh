@@ -33,6 +33,11 @@
 #                       settings (a production build refuses them)
 #   MR2_ROOM_END=1      the room-end scenario (item 19 only): the steps that
 #                       build the three-member room, then the room's end
+#   MR2_CARD_RENEWAL=1  the card-renewal scenario (the card half of item 16):
+#                       the steps that build the room, then card renewal
+#   MR2_CARD_LIFETIME_SECONDS  every node's chat card lifetime (openfox's
+#                       chat.test_card_lifetime_seconds; needs MR2_ROOMTEST=1,
+#                       which then also builds openfox with the roomtest tag)
 #   MR2_A_DELEGATION_SECONDS  A's Endpoint delegation lifetime (default 2 days);
 #                       the room ends at A's leaf credential expiry, which is
 #                       this delegation's expiry when it comes first
@@ -227,7 +232,16 @@ change() {
 }
 tags=()
 [ "$roomtest" = 1 ] && tags=(-tags roomtest)
-(cd "$openfox_source" && GOWORK=off GOFLAGS=-trimpath CGO_ENABLED=0 go build -tags goolm,stdjson -o "$E2E_BIN/openfox" ./cmd/openfox)
+# The chat test card lifetime is accepted only by an openfox roomtest build.
+oftags=goolm,stdjson
+if [ "${MR2_CARD_LIFETIME_SECONDS:-0}" != 0 ]; then
+  if [ "$roomtest" != 1 ]; then
+    echo "MR2_CARD_LIFETIME_SECONDS needs MR2_ROOMTEST=1: a production openfox build refuses the test card lifetime" >&2
+    exit 2
+  fi
+  oftags=goolm,stdjson,roomtest
+fi
+(cd "$openfox_source" && GOWORK=off GOFLAGS=-trimpath CGO_ENABLED=0 go build -tags "$oftags" -o "$E2E_BIN/openfox" ./cmd/openfox)
 (cd "$repo" && GOWORK=off GOFLAGS=-trimpath CGO_ENABLED=0 go build -o "$E2E_BIN/messenger-relay-e2e-tool" \
   ./scripts/messenger-relay-e2e-tool)
 (cd "$E2E_AI_SOURCE" && GOWORK=off GOFLAGS=-trimpath CGO_ENABLED=0 go build "${tags[@]}" -o "$E2E_BIN/" \

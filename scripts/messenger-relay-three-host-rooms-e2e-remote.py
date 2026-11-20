@@ -149,6 +149,19 @@ def issue_invite(issuer: str, holder: str, expires_at: int, name: str) -> Path:
     return handed
 
 
+def set_chat_card_lifetime(node: str) -> None:
+    """As M-R2; a remote node's rail configuration is edited from a fresh
+    copy and written back to its host, with its mirror held."""
+    if node not in remote.REMOTES:
+        _set_chat_card_lifetime(node)
+        return
+    with remote.REMOTES[node].lock:
+        remote.sync_node(node)
+        config = read_json(rail(node))
+        config["chat"]["test_card_lifetime_seconds"] = mr2.CARD_LIFETIME
+        remote.write_on(node, rail(node), (json.dumps(config, indent=2) + "\n").encode())
+
+
 def chat_owner_socket() -> None:
     """As M-R2; a remote node's rail configuration is edited from a fresh
     copy and written back to its host, with its mirror held."""
@@ -518,6 +531,7 @@ MR2_ALIASES = ("in_ns", "node_env", "now", "mcall", "idem", "frames_of", "inboun
                "stop_node", "start_node", "stop_daemon", "start_daemon", "stop_serve", "start_serve", "listed_ids",
                "deposit", "craft", "hand_file", "snapshot", "log_text")
 _decision_path, _issue_invite, _state_view = mr2.decision_path, mr2.issue_invite, mr2.state_view
+_set_chat_card_lifetime = mr2.set_chat_card_lifetime
 _room_settings_check, _finish = mr2.room_settings_check, mr2.finish
 
 
@@ -531,6 +545,7 @@ def install() -> None:
         setattr(mr2, name, getattr(mr1, name))
     mr2.decision_path, mr2.issue_invite, mr2.state_view = decision_path, issue_invite, state_view
     mr2.chat_owner_socket, mr2.room_settings_check = chat_owner_socket, room_settings_check
+    mr2.set_chat_card_lifetime = set_chat_card_lifetime
     mr2.setup, mr2.acceptance, mr2.finish = setup, acceptance, finish
     if GUARD_NODES:
         fd.poll = mr1.poll = mr2.poll = guarded_poll

@@ -174,7 +174,10 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		return GuarantorDecisionAdmissionResult{}, err
 	}
 	decisionDigest, _ := guarantor.ClaimDecisionDigestV1(decision)
-	claimAdmissionDigest, _ := guarantor.ClaimAdmissionReceiptDigestV1(claimAdmission)
+	claimAdmissionDigest, err := guarantor.ClaimAdmissionReceiptDigestV1(claimAdmission)
+	if err != nil {
+		return GuarantorDecisionAdmissionResult{}, err
+	}
 	cut, err := coordinator.Journal.ClaimRevisionAdmissionCut(input.AgreementDigest, input.ClaimID, uint64(now.Unix()))
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
@@ -185,15 +188,48 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		ExpectedEpochState: "open", ExpectedEpochStateRevision: cut.PriorEpochStateRevision,
 		ExpectedClaimRevision: claim.Body.ClaimRevision}
 	fallbackDigest, _ := guarantor.DeterministicClaimTerminalFallbackDigestV1(fallback)
+	// The request names its source head by reference. The receipt carries the
+	// claim admission and transition receipts once and, from a nonterminal
+	// head, the current decision as its compact proof; the late filing-close
+	// receipt is only named by its immutable descriptor.
 	variant := guarantor.DeterministicFallbackAdmissionVariantV1{CoverageAgreementBodyDigest: input.AgreementDigest,
 		CoverageObligationID: position.Record.CoverageObligationID, ClaimID: input.ClaimID,
-		AuthorizedClaimAdmissionReceipt: claimAdmission, ClaimRevisionEpochExpectation: epoch,
+		AuthorizedClaimAdmissionReceiptDigest: claimAdmissionDigest, ClaimRevisionEpochExpectation: epoch,
 		FallbackProfileDigest: fallbackDigest, SourceClaimRevision: claim.Body.ClaimRevision,
-		CurrentDecisionAdmissionReceipt: currentDecision, CurrentClaimStateTransitionReceipt: currentTransition,
-		LateFilingCloseReceipt:   input.LateFilingReceipt,
 		SourceClaimStateRevision: record.ClaimStateRevision, SourceClaimState: sourceState,
 		ExpectedChallengeRoundsUsed:   position.ChallengeRoundsUsed[input.ClaimID],
 		ExpectedNonterminalRoundsUsed: position.NonterminalRoundsUsed[input.ClaimID], TriggerCutoffUnix: cutoff, DecisionSequence: decisionSequence}
+	var currentDecisionProof *guarantor.ClaimDecisionAdmissionReceiptProofV1
+	if currentDecision != nil {
+		currentDigest, digestErr := guarantor.ClaimDecisionAdmissionReceiptDigestV1(*currentDecision)
+		if digestErr != nil {
+			return GuarantorDecisionAdmissionResult{}, digestErr
+		}
+		variant.CurrentDecisionAdmissionReceiptDigest = currentDigest
+		if currentTransition == nil {
+			proof, proofErr := coordinator.sealDecisionAdmissionProof(*currentDecision, position.Terms, now)
+			if proofErr != nil {
+				return GuarantorDecisionAdmissionResult{}, proofErr
+			}
+			currentDecisionProof = &proof
+		} else if currentTransition.DecisionAdmissionProof.ReceiptEnvelopeDigest != currentDigest {
+			return GuarantorDecisionAdmissionResult{}, errors.New("Guarantor reviewing fallback transition does not carry the current decision")
+		}
+	}
+	if currentTransition != nil {
+		transitionDigest, digestErr := guarantor.ClaimStateTransitionReceiptDigestV1(*currentTransition)
+		if digestErr != nil {
+			return GuarantorDecisionAdmissionResult{}, digestErr
+		}
+		variant.CurrentClaimStateTransitionReceiptDigest = transitionDigest
+	}
+	if lateRecovery {
+		descriptor, descriptorErr := lateFilingCloseDescriptor(*input.LateFilingReceipt, position.Terms)
+		if descriptorErr != nil {
+			return GuarantorDecisionAdmissionResult{}, descriptorErr
+		}
+		variant.LateFilingCloseReceiptDescriptor = &descriptor
+	}
 	actionBody := guarantor.ClaimDecisionAdmissionActionBodyV1{SchemaVersion: 1, AdmissionMode: "deterministic_fallback",
 		DeterministicFallbackVariant: &variant}
 	request, err := guarantor.Canonical(actionBody)
@@ -274,14 +310,10 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		WriterGeneration: action.WriterGeneration, WriterFenceDigest: action.WriterFenceDigest, AdmittedAtUnix: uint64(now.Unix()),
 		AuthorityAdmissionEligibilityProofSetDigest: eligibilityDigest}
 	if lateRecovery {
-		body.LateFilingCloseReceiptDigest, _ = guarantor.ClaimFilingCloseReceiptDigestV1(*input.LateFilingReceipt)
+		body.LateFilingCloseReceiptDigest = variant.LateFilingCloseReceiptDescriptor.ContentDigest
 	}
-	if currentDecision != nil {
-		body.PredecessorDecisionAdmissionReceiptDigest, _ = guarantor.ClaimDecisionAdmissionReceiptDigestV1(*currentDecision)
-	}
-	if currentTransition != nil {
-		body.PredecessorClaimStateTransitionReceiptDigest, _ = guarantor.ClaimStateTransitionReceiptDigestV1(*currentTransition)
-	}
+	body.PredecessorDecisionAdmissionReceiptDigest = variant.CurrentDecisionAdmissionReceiptDigest
+	body.PredecessorClaimStateTransitionReceiptDigest = variant.CurrentClaimStateTransitionReceiptDigest
 	if priorToken != nil {
 		body.PriorApplicationTokenDigest, _ = guarantor.DecisionApplicationTokenDigestV1(*priorToken)
 		body.PriorApplicationTokenTerminalState = "replaced"
@@ -310,10 +342,11 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 	receipt := guarantor.AuthorizedClaimDecisionAdmissionReceiptV1{Body: body, StageActionAdmissionEvidence: stage,
 		AuthorizedClaimDecision: decision, AuthorizedClaimAdmissionReceipt: claimAdmission,
 		ClaimRevisionIngressCutProof: cut, CoverageEndCommitment: endCommitment,
-		LateFilingCloseReceipt:                input.LateFilingReceipt,
-		PriorPendingApplicationToken:          priorToken,
-		AuthorityAdmissionEligibilityProofSet: eligibility,
-		Authorizations:                        []guarantor.ProfileQualifiedObjectAuthorizationV1{receiptAuthorization}}
+		PriorPendingApplicationToken:           priorToken,
+		PredecessorClaimStateTransitionReceipt: currentTransition,
+		CurrentDecisionAdmissionProof:          currentDecisionProof,
+		AuthorityAdmissionEligibilityProofSet:  eligibility,
+		Authorizations:                         []guarantor.ProfileQualifiedObjectAuthorizationV1{receiptAuthorization}}
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(receipt, position.Terms, coordinator.AgreementVerifier,
 		coordinator.Resolver, coordinator.Authority, now); err != nil {
 		return GuarantorDecisionAdmissionResult{Receipt: receipt, Resolution: resolution}, fmt.Errorf("verify Guarantor fallback: %w", err)
@@ -322,6 +355,48 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		return GuarantorDecisionAdmissionResult{Receipt: receipt, Resolution: resolution}, err
 	}
 	return GuarantorDecisionAdmissionResult{Receipt: receipt, Resolution: resolution}, nil
+}
+
+// sealDecisionAdmissionProof projects an admitted decision receipt into the
+// compact proof its successors carry, sealed by the stage Action Authority.
+func (coordinator *GuarantorProviderCoordinator) sealDecisionAdmissionProof(
+	receipt guarantor.AuthorizedClaimDecisionAdmissionReceiptV1, terms guarantor.CoverageTermsV1,
+	now time.Time) (guarantor.ClaimDecisionAdmissionReceiptProofV1, error) {
+	if coordinator.ActionAuthoritySigner == nil {
+		return guarantor.ClaimDecisionAdmissionReceiptProofV1{}, errors.New("Guarantor decision proof has no Action Authority signer")
+	}
+	sealBody, descriptor, err := guarantor.NewClaimDecisionAdmissionReceiptSealBodyV1(receipt, terms, now)
+	if err != nil {
+		return guarantor.ClaimDecisionAdmissionReceiptProofV1{}, err
+	}
+	sealDigest, err := guarantor.Digest(guarantor.ClaimDecisionAdmissionReceiptSealDomainV1, sealBody)
+	if err != nil {
+		return guarantor.ClaimDecisionAdmissionReceiptProofV1{}, err
+	}
+	sealAuthorization, err := coordinator.ActionAuthoritySigner.SignObject("claim-decision-admission-receipt-seal",
+		sealDigest, "tos.service.agent-guarantor-claim-decision-admission-receipt-seal-signature.v1", now)
+	if err != nil {
+		return guarantor.ClaimDecisionAdmissionReceiptProofV1{}, err
+	}
+	return guarantor.BuildClaimDecisionAdmissionReceiptProofV1(receipt, terms, descriptor, sealBody, sealAuthorization)
+}
+
+// lateFilingCloseDescriptor is the immutable reference a late-recovery
+// fallback request names; the verifier resolves it and never receives the
+// receipt inline.
+func lateFilingCloseDescriptor(filing guarantor.AuthorizedClaimFilingCloseReceiptV1,
+	terms guarantor.CoverageTermsV1) (guarantor.ImmutableEvidenceDescriptorV1, error) {
+	wire, err := guarantor.Canonical(filing)
+	if err != nil {
+		return guarantor.ImmutableEvidenceDescriptorV1{}, err
+	}
+	digest, err := guarantor.ClaimFilingCloseReceiptDigestV1(filing)
+	if err != nil {
+		return guarantor.ImmutableEvidenceDescriptorV1{}, err
+	}
+	return guarantor.ImmutableEvidenceDescriptorV1{ContentType: guarantor.ClaimFilingCloseReceiptMediaTypeV1,
+		ContentDigest: digest, ContentSize: uint64(len(wire)),
+		RetrievalPolicyDigest: terms.ClaimAdmissionProfile.ProfileDigest}, nil
 }
 
 func fallbackDecisionEvidenceSet(claim guarantor.AuthorizedCoverageClaimV1, claimDigest string) guarantor.CanonicalGuarantorEvidenceSetV1 {

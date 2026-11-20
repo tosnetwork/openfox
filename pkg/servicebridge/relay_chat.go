@@ -94,6 +94,12 @@ type ChatConfig struct {
 	// carries owner decisions only as signed envelopes: openfox never holds
 	// the owner's signing key.
 	OwnerSocket string `json:"owner_socket,omitempty"`
+	// TestCardLifetimeSeconds shortens the chat card lifetime for a live
+	// test of in-band card renewal: each chat card lasts this long, 600 s to
+	// 30 days, and is replaced once less than half of it is left. Only a
+	// build with the roomtest tag accepts it; a production build refuses a
+	// configuration that names it. Unset is the production rotation.
+	TestCardLifetimeSeconds uint64 `json:"test_card_lifetime_seconds,omitempty"`
 }
 
 // Bounds of the carrier operation timeout.
@@ -188,6 +194,9 @@ func validateChatConfig(config NodeConfig) error {
 	if _, err := chat.timeout(); err != nil {
 		problems = append(problems, err)
 	}
+	if _, err := chat.cardLifetime(); err != nil {
+		problems = append(problems, err)
+	}
 	if len(problems) > 0 {
 		return fmt.Errorf("servicebridge: chat configuration: %w", errors.Join(problems...))
 	}
@@ -209,6 +218,9 @@ type chatLaneConfig struct {
 	Daemon   chatDaemon
 	// Timeout bounds one carrier.carry the server handles; zero is 30 s.
 	Timeout time.Duration
+	// CardLifetime is the chat test card lifetime; zero is the production
+	// rotation.
+	CardLifetime time.Duration
 }
 
 // ChatCarrier carries Messenger relay frames: it serves carrier.carry,
@@ -343,6 +355,7 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 	if err != nil {
 		return nil, err
 	}
+	keys.SetCardLifetime(lane.CardLifetime)
 	cards, err := OpenPeerCards(filepath.Join(root, relayChatPeersDir), verifier, agents, chatNoOwners{}, now)
 	if err != nil {
 		return nil, err

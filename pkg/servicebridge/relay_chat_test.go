@@ -381,6 +381,10 @@ func (c *countingAgents) reset() {
 
 // chatTestNode is one OpenFox node with a chat lane, its stand-in daemon and
 // both carrier sockets.
+// chatTestCardLifetime is the chat test card lifetime of the nodes a test
+// opens; zero is the production rotation. A test that sets it resets it.
+var chatTestCardLifetime time.Duration
+
 type chatTestNode struct {
 	t        *testing.T
 	agent    string
@@ -477,7 +481,8 @@ func openChatTestNodeIn(t *testing.T, dir, sockets string, clock *relayClock, ag
 			node.reports = append(node.reports, stage+": "+err.Error())
 			node.mutex.Unlock()
 		},
-		Chat: &chatLaneConfig{Relays: relays, CardPath: node.daemon.cardPath, Signer: signer, Daemon: client},
+		Chat: &chatLaneConfig{Relays: relays, CardPath: node.daemon.cardPath, Signer: signer, Daemon: client,
+			CardLifetime: chatTestCardLifetime},
 	})
 	if err != nil {
 		t.Fatal(err)

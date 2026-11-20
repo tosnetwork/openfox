@@ -95,8 +95,23 @@ type RelayKeys struct {
 	now       func() time.Time
 	// schema is the purpose of every key file here; empty is the rail's.
 	schema string
-	mutex  sync.Mutex
-	keys   []OwnRelayKey
+	// lifetime, when set, is the fixed card lifetime of the chat test
+	// setting: see SetCardLifetime.
+	lifetime time.Duration
+	mutex    sync.Mutex
+	keys     []OwnRelayKey
+}
+
+// SetCardLifetime makes every card of this set last d from its issue and be
+// replaced once less than half of it is left, whatever cover a caller asks
+// for; a held card with a longer window is not handed out. It is the chat
+// test card lifetime (ChatConfig.TestCardLifetimeSeconds); zero keeps the
+// production rotation. Keys are still kept for RelayKeyRetention after their
+// card expired, so at most maxRelayKeys cards are issued in that time.
+func (k *RelayKeys) SetCardLifetime(d time.Duration) {
+	k.mutex.Lock()
+	defer k.mutex.Unlock()
+	k.lifetime = d
 }
 
 // keySchema is the key file schema of this set's purpose.
@@ -392,6 +407,9 @@ func (k *RelayKeys) Current(ctx context.Context, coverUntil uint64) (OwnRelayKey
 const relayLongCoverFloor = agentpacketseal.MaxKeyCardLifetime / 2
 
 func (k *RelayKeys) currentLocked(ctx context.Context, now, coverUntil uint64) (OwnRelayKey, bool, error) {
+	if k.lifetime > 0 {
+		return k.fixedLifetimeLocked(ctx, now)
+	}
 	longest := saturatingAdd(now, uint64(agentpacketseal.MaxKeyCardLifetime/time.Second))
 	target := coverUntil
 	if target > longest {
@@ -422,6 +440,30 @@ func (k *RelayKeys) currentLocked(ctx context.Context, now, coverUntil uint64) (
 		notAfter = target
 	}
 	key, err := k.issueLocked(ctx, now, notAfter)
+	return key, err == nil, err
+}
+
+// fixedLifetimeLocked is currentLocked under the fixed card lifetime: the
+// newest valid card of this lifetime or shorter is handed out while at least
+// half of the lifetime is left on it; otherwise a card of exactly the
+// lifetime is issued.
+func (k *RelayKeys) fixedLifetimeLocked(ctx context.Context, now uint64) (OwnRelayKey, bool, error) {
+	seconds := uint64(k.lifetime / time.Second)
+	var latest *OwnRelayKey
+	for index := range k.keys {
+		key := &k.keys[index]
+		if key.NotBeforeUnix > now || now >= key.NotAfterUnix || !slices.Equal(key.Relays, k.relays) ||
+			key.NotAfterUnix-key.NotBeforeUnix > seconds {
+			continue
+		}
+		if latest == nil || key.NotAfterUnix > latest.NotAfterUnix {
+			latest = key
+		}
+	}
+	if latest != nil && latest.NotAfterUnix >= saturatingAdd(now, seconds/2) {
+		return *latest, false, nil
+	}
+	key, err := k.issueLocked(ctx, now, saturatingAdd(now, seconds))
 	return key, err == nil, err
 }
 

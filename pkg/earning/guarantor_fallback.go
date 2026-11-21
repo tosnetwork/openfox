@@ -178,31 +178,14 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
-	// A head that left revision ingress frozen (a nonterminal decision with no
-	// transition after it, or the challenge of a late-recovery candidate) has
-	// no open epoch to freeze: the fallback reuses that decision's frozen epoch
-	// and its exact cut. Every other head is frozen here, open to frozen.
-	reuseFrozenEpoch := currentDecision != nil && (currentTransition == nil ||
-		currentDecision.AuthorizedClaimDecision.Body.DecisionPath == "late_recovery_terminal_fallback")
-	var cut guarantor.ClaimIngressAdmissionCutProofV1
-	var epoch guarantor.ClaimRevisionEpochExpectationV1
-	if reuseFrozenEpoch {
-		cut = currentDecision.ClaimRevisionIngressCutProof
-		epoch = guarantor.ClaimRevisionEpochExpectationV1{SchemaVersion: 1,
-			CoverageAgreementBodyDigest: input.AgreementDigest, CoverageObligationID: position.Record.CoverageObligationID,
-			ClaimID: input.ClaimID, RevisionEpoch: currentDecision.Body.FrozenRevisionEpoch, RevisionIngressLogID: cut.ClaimIngressLogID,
-			ExpectedEpochState: "frozen", ExpectedEpochStateRevision: currentDecision.Body.FrozenRevisionEpochStateRevision,
-			ExpectedClaimRevision: claim.Body.ClaimRevision}
-	} else {
-		cut, err = coordinator.Journal.ClaimRevisionAdmissionCut(input.AgreementDigest, input.ClaimID, uint64(now.Unix()))
-		if err != nil {
-			return GuarantorDecisionAdmissionResult{}, err
-		}
-		epoch = guarantor.ClaimRevisionEpochExpectationV1{SchemaVersion: 1,
-			CoverageAgreementBodyDigest: input.AgreementDigest, CoverageObligationID: position.Record.CoverageObligationID,
-			ClaimID: input.ClaimID, RevisionEpoch: claim.Body.ClaimRevision, RevisionIngressLogID: cut.ClaimIngressLogID,
-			ExpectedEpochState: "open", ExpectedEpochStateRevision: cut.PriorEpochStateRevision,
-			ExpectedClaimRevision: claim.Body.ClaimRevision}
+	// The journal's epoch state decides: a head that left revision ingress
+	// frozen (a nonterminal decision with no transition after it, or the
+	// challenge of a late-recovery candidate) is reused with the cut that
+	// froze it; every other head is frozen here, open to frozen.
+	epoch, cut, err := coordinator.revisionEpochExpectationAndCut(input.AgreementDigest,
+		position.Record.CoverageObligationID, input.ClaimID, claim.Body.ClaimRevision, uint64(now.Unix()))
+	if err != nil {
+		return GuarantorDecisionAdmissionResult{}, err
 	}
 	fallbackDigest, _ := guarantor.DeterministicClaimTerminalFallbackDigestV1(fallback)
 	// The request names its source head by reference. The receipt carries the
@@ -328,6 +311,10 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		AuthorityAdmissionEligibilityProofSetDigest: eligibilityDigest}
 	if lateRecovery {
 		body.LateFilingCloseReceiptDigest = variant.LateFilingCloseReceiptDescriptor.ContentDigest
+	} else {
+		// In place of a late-recovery candidate's successor the fallback carries
+		// the candidate's digest: the one-challenge-round marker.
+		body.LateFilingCloseReceiptDigest = lateRecoveryCandidateMarker(currentTransition)
 	}
 	// A fallback from evidence_required or disputed consumes the nonterminal
 	// round it closes; every other head's round was consumed by its transition.
@@ -374,7 +361,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		AuthorityAdmissionEligibilityProofSet:  eligibility,
 		Authorizations:                         []guarantor.ProfileQualifiedObjectAuthorizationV1{receiptAuthorization}}
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(receipt, position.Terms, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, now); err != nil {
+		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
 		return GuarantorDecisionAdmissionResult{Receipt: receipt, Resolution: resolution}, fmt.Errorf("verify Guarantor fallback: %w", err)
 	}
 	if _, err := coordinator.Journal.CommitDecisionAdmission(input.AgreementDigest, receipt); err != nil {

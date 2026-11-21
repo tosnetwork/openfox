@@ -811,7 +811,7 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	admission := input.DecisionAdmissionReceipt
 	transition := input.TerminalTransitionReceipt
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(admission, coverage.Terms, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, now); err != nil {
+		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
 		return GuarantorDecisionApplicationResult{}, err
 	}
 	admissionEnvelopeDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(admission)
@@ -819,7 +819,7 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 		return GuarantorDecisionApplicationResult{}, err
 	}
 	if err := guarantor.VerifyClaimStateTransitionReceiptV1(transition, coverage.Terms, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, now); err != nil || transition.Body.TransitionKind != "challenge_close" ||
+		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil || transition.Body.TransitionKind != "challenge_close" ||
 		transition.DecisionAdmissionProof.ReceiptEnvelopeDigest != admissionEnvelopeDigest {
 		return GuarantorDecisionApplicationResult{}, errors.New("Guarantor decision application lacks the exact terminal challenge close")
 	}
@@ -839,7 +839,8 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	}
 	payouts, err := guarantor.MaterializeClaimPayout(coordinator.OwnerID, coordinator.AgentID, coordinator.MandateDigest,
 		coverage.Terms.PayoutTemplate.AgreementObligationID, coverage.Terms, decision,
-		transitionDigest, transition.Body.TransitionedAtUnix, coverage.NextPayoutSequence)
+		transitionDigest, transition.Body.TransitionedAtUnix, coverage.NextPayoutSequence,
+		guarantor.OnLateRecoveryPathV1(admission.Body))
 	if err != nil {
 		return GuarantorDecisionApplicationResult{}, err
 	}
@@ -892,7 +893,7 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	fields := guarantor.ClaimDecisionApplicationSemanticFieldsV1(bound, requestBody, decision, claimDigest)
 	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.claim.decide", fields,
 		canonicalRequest, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", record.LastEvidenceDigest,
-		coverage.Terms.TerminalResolutionDeadlineUnix)
+		guarantorClosureActionDeadline(coverage))
 	if err != nil {
 		return GuarantorDecisionApplicationResult{}, err
 	}
@@ -962,7 +963,7 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 		DecisionApplicationToken: token, MaterializedPayoutObligationSet: payouts,
 		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
 	if err := guarantor.VerifyClaimDecisionApplicationReceiptV1(receipt, coverage.Terms, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, now); err != nil {
+		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
 		return GuarantorDecisionApplicationResult{Payouts: payouts, Receipt: receipt, Resolution: resolution}, err
 	}
 	if _, err := coordinator.Journal.CommitDecisionApplication(input.AgreementDigest, receipt); err != nil {

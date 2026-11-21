@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"os"
@@ -21,8 +22,12 @@ import (
 )
 
 const (
-	guarantorJournalSchema = "tos.openfox.agent-guarantor-journal.v1"
-	guarantorJournalFile   = "agent-guarantor-journal.json"
+	// guarantorJournalSchema v2 tracks each claim's revision epoch and keeps
+	// the immutable receipts it serves; a v1 journal has neither and is
+	// refused rather than read with guessed epochs.
+	guarantorJournalSchema        = "tos.openfox.agent-guarantor-journal.v2"
+	retiredGuarantorJournalSchema = "tos.openfox.agent-guarantor-journal.v1"
+	guarantorJournalFile          = "agent-guarantor-journal.json"
 )
 
 type GuarantorOfferPosition struct {
@@ -65,34 +70,39 @@ type GuarantorFirmOfferIssuancePlan struct {
 }
 
 type GuarantorCoveragePosition struct {
-	Terms                                 guarantor.CoverageTermsV1                                         `json:"terms"`
-	AcceptanceReceipt                     *guarantor.AuthorizedCoverageAcceptanceReceiptV1                  `json:"acceptance_receipt,omitempty"`
-	ActivationEvidence                    *guarantor.AuthorizedCoverageActivationEvidenceV1                 `json:"activation_evidence,omitempty"`
-	NonActivationEvidence                 *guarantor.AuthorizedCoverageNonActivationEvidenceV1              `json:"non_activation_evidence,omitempty"`
-	NonActivationReleaseReceipt           *guarantor.AuthorizedNonActivationExposureReleaseReceiptV1        `json:"non_activation_release_receipt,omitempty"`
-	CancellationReceipt                   *guarantor.AuthorizedCoverageCancellationReceiptV1                `json:"cancellation_receipt,omitempty"`
-	FilingCloseReceipt                    *guarantor.AuthorizedClaimFilingCloseReceiptV1                    `json:"filing_close_receipt,omitempty"`
-	TerminalClaimSet                      *guarantor.AuthorizedTerminalClaimSetEvidenceV1                   `json:"terminal_claim_set,omitempty"`
-	ExposureReleaseReceipt                *guarantor.AuthorizedExposureReleaseReceiptV1                     `json:"exposure_release_receipt,omitempty"`
-	CoverageResolution                    *guarantor.AuthorizedCoverageResolutionV1                         `json:"coverage_resolution,omitempty"`
-	ExposureReleasePlan                   *GuarantorExposureReleasePlan                                     `json:"exposure_release_plan,omitempty"`
-	CoverageResolutionPlan                *GuarantorCoverageResolutionPlan                                  `json:"coverage_resolution_plan,omitempty"`
-	Record                                guarantor.CoverageRecord                                          `json:"record"`
-	Claims                                map[string]guarantor.ClaimRecord                                  `json:"claims"`
-	ClaimEnvelopes                        map[string]guarantor.AuthorizedCoverageClaimV1                    `json:"claim_envelopes"`
-	ClaimIngressReceipts                  map[string]guarantor.AuthorizedClaimSubmissionIngressReceiptV1    `json:"claim_ingress_receipts"`
-	ClaimAdmissionReceipts                map[string]guarantor.AuthorizedClaimAdmissionReceiptV1            `json:"claim_admission_receipts"`
-	Decisions                             map[string]guarantor.AuthorizedClaimDecisionV1                    `json:"decisions"`
-	DecisionAdmissionReceipts             map[string]guarantor.AuthorizedClaimDecisionAdmissionReceiptV1    `json:"decision_admission_receipts"`
-	ClaimStateTransitionReceipts          map[string]guarantor.AuthorizedClaimStateTransitionReceiptV1      `json:"claim_state_transition_receipts"`
-	DecisionApplicationReceipts           map[string]guarantor.AuthorizedClaimDecisionApplicationReceiptV1  `json:"decision_application_receipts"`
-	DecisionApplicationTokens             map[string]guarantor.DecisionApplicationTokenV1                   `json:"decision_application_tokens"`
-	ChallengeRoundsUsed                   map[string]uint64                                                 `json:"challenge_rounds_used"`
-	NonterminalRoundsUsed                 map[string]uint64                                                 `json:"nonterminal_rounds_used"`
-	ClaimAdmissionSequence                map[string]uint64                                                 `json:"claim_admission_sequence"`
-	ClaimAdmissionLogRoot                 string                                                            `json:"claim_admission_log_root"`
-	ClaimRevisionSequence                 map[string]uint64                                                 `json:"claim_revision_sequence"`
-	ClaimRevisionLogRoot                  map[string]string                                                 `json:"claim_revision_log_root"`
+	Terms                        guarantor.CoverageTermsV1                                        `json:"terms"`
+	AcceptanceReceipt            *guarantor.AuthorizedCoverageAcceptanceReceiptV1                 `json:"acceptance_receipt,omitempty"`
+	ActivationEvidence           *guarantor.AuthorizedCoverageActivationEvidenceV1                `json:"activation_evidence,omitempty"`
+	NonActivationEvidence        *guarantor.AuthorizedCoverageNonActivationEvidenceV1             `json:"non_activation_evidence,omitempty"`
+	NonActivationReleaseReceipt  *guarantor.AuthorizedNonActivationExposureReleaseReceiptV1       `json:"non_activation_release_receipt,omitempty"`
+	CancellationReceipt          *guarantor.AuthorizedCoverageCancellationReceiptV1               `json:"cancellation_receipt,omitempty"`
+	FilingCloseReceipt           *guarantor.AuthorizedClaimFilingCloseReceiptV1                   `json:"filing_close_receipt,omitempty"`
+	TerminalClaimSet             *guarantor.AuthorizedTerminalClaimSetEvidenceV1                  `json:"terminal_claim_set,omitempty"`
+	ExposureReleaseReceipt       *guarantor.AuthorizedExposureReleaseReceiptV1                    `json:"exposure_release_receipt,omitempty"`
+	CoverageResolution           *guarantor.AuthorizedCoverageResolutionV1                        `json:"coverage_resolution,omitempty"`
+	ExposureReleasePlan          *GuarantorExposureReleasePlan                                    `json:"exposure_release_plan,omitempty"`
+	CoverageResolutionPlan       *GuarantorCoverageResolutionPlan                                 `json:"coverage_resolution_plan,omitempty"`
+	Record                       guarantor.CoverageRecord                                         `json:"record"`
+	Claims                       map[string]guarantor.ClaimRecord                                 `json:"claims"`
+	ClaimEnvelopes               map[string]guarantor.AuthorizedCoverageClaimV1                   `json:"claim_envelopes"`
+	ClaimIngressReceipts         map[string]guarantor.AuthorizedClaimSubmissionIngressReceiptV1   `json:"claim_ingress_receipts"`
+	ClaimAdmissionReceipts       map[string]guarantor.AuthorizedClaimAdmissionReceiptV1           `json:"claim_admission_receipts"`
+	Decisions                    map[string]guarantor.AuthorizedClaimDecisionV1                   `json:"decisions"`
+	DecisionAdmissionReceipts    map[string]guarantor.AuthorizedClaimDecisionAdmissionReceiptV1   `json:"decision_admission_receipts"`
+	ClaimStateTransitionReceipts map[string]guarantor.AuthorizedClaimStateTransitionReceiptV1     `json:"claim_state_transition_receipts"`
+	DecisionApplicationReceipts  map[string]guarantor.AuthorizedClaimDecisionApplicationReceiptV1 `json:"decision_application_receipts"`
+	DecisionApplicationTokens    map[string]guarantor.DecisionApplicationTokenV1                  `json:"decision_application_tokens"`
+	ChallengeRoundsUsed          map[string]uint64                                                `json:"challenge_rounds_used"`
+	NonterminalRoundsUsed        map[string]uint64                                                `json:"nonterminal_rounds_used"`
+	ClaimAdmissionSequence       map[string]uint64                                                `json:"claim_admission_sequence"`
+	ClaimAdmissionLogRoot        string                                                           `json:"claim_admission_log_root"`
+	ClaimRevisionSequence        map[string]uint64                                                `json:"claim_revision_sequence"`
+	ClaimRevisionLogRoot         map[string]string                                                `json:"claim_revision_log_root"`
+	RevisionEpochs               map[string]GuarantorRevisionEpochState                           `json:"revision_epochs"`
+	// ImmutableEvidence holds every receipt a compact proof or descriptor may
+	// name, keyed by its envelope digest, so it can be served after the
+	// position has moved past it.
+	ImmutableEvidence                     map[string]GuarantorStoredEvidence                                `json:"immutable_evidence"`
 	MaterializedPayouts                   map[string]guarantor.MaterializedPayoutObligationSetV1            `json:"materialized_payouts"`
 	PayoutEvidence                        map[string]commerce.AgreementPaymentEvidence                      `json:"payout_evidence"`
 	PayoutRequests                        map[string]commerce.AgreementPaymentRequest                       `json:"payout_requests"`
@@ -239,9 +249,12 @@ func OpenGuarantorJournal(directory, ownerID, agentID string) (*GuarantorJournal
 			_ = journal.Close()
 			return nil, err
 		}
-	} else if err != nil || journal.load(ownerID, agentID) != nil {
+	} else if err != nil {
 		_ = journal.Close()
-		return nil, errors.New("load Guarantor journal")
+		return nil, fmt.Errorf("load Guarantor journal: %w", err)
+	} else if loadErr := journal.load(ownerID, agentID); loadErr != nil {
+		_ = journal.Close()
+		return nil, fmt.Errorf("load Guarantor journal: %w", loadErr)
 	}
 	return journal, nil
 }
@@ -603,6 +616,8 @@ func (journal *GuarantorJournal) AcceptOffer(offerID, agreementDigest string, te
 	position.DecisionApplicationTokens = map[string]guarantor.DecisionApplicationTokenV1{}
 	position.ChallengeRoundsUsed = map[string]uint64{}
 	position.NonterminalRoundsUsed = map[string]uint64{}
+	position.RevisionEpochs = map[string]GuarantorRevisionEpochState{}
+	position.ImmutableEvidence = map[string]GuarantorStoredEvidence{}
 	position.AggregatePendingDecisionReserveAtomic = "0"
 	position.CumulativeAppliedApprovedAtomic = "0"
 	position.NextPayoutSequence = 1
@@ -940,6 +955,17 @@ func (journal *GuarantorJournal) CommitClaimAdmission(agreementDigest string,
 		return guarantor.ClaimRecord{}, errors.New("Guarantor claim admission identity conflicts")
 	}
 	record := position.Claims[claim.Body.ClaimID]
+	if position.RevisionEpochs == nil {
+		position.RevisionEpochs = map[string]GuarantorRevisionEpochState{}
+	}
+	if preview.Initial {
+		position.RevisionEpochs[claim.Body.ClaimID] = GuarantorRevisionEpochState{Epoch: 1, State: revisionEpochOpen, StateRevision: 1}
+	} else if revisionEpochOf(position, claim.Body.ClaimID).State != revisionEpochOpen {
+		return guarantor.ClaimRecord{}, errors.New("Guarantor claim revision refused: its revision epoch is frozen")
+	}
+	if err := storeImmutableEvidence(&position, guarantorClaimAdmissionMediaType, receiptDigest, receipt); err != nil {
+		return guarantor.ClaimRecord{}, err
+	}
 	if preview.Initial {
 		claimBodyDigest, bodyErr := guarantor.ClaimBodyDigest(claim.Body)
 		if bodyErr != nil {
@@ -1183,6 +1209,9 @@ func (journal *GuarantorJournal) CommitClaimFilingCloseReceipt(agreementDigest s
 			return GuarantorCoveragePosition{}, errors.New("Guarantor filing-close receipt differs from the journal CAS")
 		}
 		position.Record = updated
+	}
+	if err := storeImmutableEvidence(&position, guarantorClaimFilingCloseMediaType, digest, receipt); err != nil {
+		return GuarantorCoveragePosition{}, err
 	}
 	position.FilingCloseReceipt = &receipt
 	next := cloneGuarantorDocument(journal.doc)
@@ -1667,6 +1696,13 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var doc guarantorJournalDocument
+	if err := decoder.Decode(&doc); err == nil && doc.Schema == retiredGuarantorJournalSchema {
+		return errors.New("Guarantor journal uses the retired v1 schema, which has no revision epochs; " +
+			"it cannot be read safely and must be recreated")
+	}
+	decoder = json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	doc = guarantorJournalDocument{}
 	if err := decoder.Decode(&doc); err != nil || decoder.Decode(&struct{}{}) != io.EOF || doc.Schema != guarantorJournalSchema || doc.OwnerID != ownerID || doc.AgentID != agentID ||
 		doc.Revision == 0 || doc.Offers == nil || doc.Coverages == nil || doc.ClaimToCoverage == nil || doc.AdmissionLogs == nil {
 		return errors.New("Guarantor journal document is invalid")
@@ -1728,6 +1764,21 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 		}
 		if coverage.NonterminalRoundsUsed == nil {
 			coverage.NonterminalRoundsUsed = map[string]uint64{}
+		}
+		if coverage.RevisionEpochs == nil {
+			coverage.RevisionEpochs = map[string]GuarantorRevisionEpochState{}
+		}
+		// Every admitted claim's epoch is recorded from its first admission;
+		// a missing record is refused rather than read as a guessed epoch.
+		for claimID := range coverage.Claims {
+			state, found := coverage.RevisionEpochs[claimID]
+			if !found || (state.State != revisionEpochOpen && state.State != revisionEpochFrozen) ||
+				(state.State == revisionEpochFrozen) != (state.FrozenCut != nil) {
+				return fmt.Errorf("Guarantor journal claim %s has no valid revision epoch record", claimID)
+			}
+		}
+		if coverage.ImmutableEvidence == nil {
+			coverage.ImmutableEvidence = map[string]GuarantorStoredEvidence{}
 		}
 		if coverage.AggregatePendingDecisionReserveAtomic == "" {
 			coverage.AggregatePendingDecisionReserveAtomic = "0"

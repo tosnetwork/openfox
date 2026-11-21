@@ -27,11 +27,11 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 	}
 	now := coordinator.Authority.AuthorityNow().UTC()
 	terminalSet := *position.TerminalClaimSet
+	agreementDigest := terminalSet.Body.CoverageAgreementBodyDigest
 	if err := guarantor.VerifyTerminalClaimSetV1(terminalSet, input.Offer, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, coordinator.PaymentVerifier, now); err != nil {
+		coordinator.resolverFor(agreementDigest), coordinator.Authority, coordinator.PaymentVerifier, now); err != nil {
 		return GuarantorCloseCoverageResult{}, fmt.Errorf("verify persisted terminal claim set: %w", err)
 	}
-	agreementDigest := terminalSet.Body.CoverageAgreementBodyDigest
 	terminalDigest, _ := guarantor.TerminalClaimSetDigestV1(terminalSet)
 	disposition, err := guarantor.ComputeExposureDispositionV1(input.Offer.ExposureAdmissionReceipt, terminalSet.Body)
 	if err != nil {
@@ -47,7 +47,7 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 	if position.ExposureReleaseReceipt != nil {
 		releaseReceipt = *position.ExposureReleaseReceipt
 		if err := guarantor.VerifyExposureReleaseReceiptV1(releaseReceipt, input.Offer, coordinator.AgreementVerifier,
-			coordinator.Resolver, coordinator.Authority, coordinator.PaymentVerifier, now); err != nil {
+			coordinator.resolverFor(agreementDigest), coordinator.Authority, coordinator.PaymentVerifier, now); err != nil {
 			return GuarantorCloseCoverageResult{}, fmt.Errorf("verify persisted exposure release: %w", err)
 		}
 	} else {
@@ -66,7 +66,7 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 				"target_revision": commerce.U64(portfolioRevision + 1), "terminal_evidence_set_digest": commerce.Digest32(terminalDigest)}
 			action, buildErr := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "portfolio.release",
 				fields, request, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", terminalDigest,
-				minUint64(position.Terms.TerminalResolutionDeadlineUnix, fence.Body.ExpiresAtUnix))
+				minUint64(guarantorClosureActionDeadline(position), fence.Body.ExpiresAtUnix))
 			if buildErr == nil {
 				action, buildErr = coordinator.Authority.SignAction(action, fence)
 			}
@@ -165,7 +165,7 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 			"evidence_set_digest": commerce.Digest32(releaseDigest)}
 		action, buildErr := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.obligation.transition",
 			fields, request, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", releaseDigest,
-			minUint64(position.Terms.TerminalResolutionDeadlineUnix, fence.Body.ExpiresAtUnix))
+			minUint64(guarantorClosureActionDeadline(position), fence.Body.ExpiresAtUnix))
 		if buildErr == nil {
 			action, buildErr = coordinator.Authority.SignAction(action, fence)
 		}

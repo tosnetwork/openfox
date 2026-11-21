@@ -127,6 +127,12 @@ func (journal *GuarantorJournal) ClaimRevisionAdmissionCut(agreementDigest, clai
 	if !found || !claimFound || record.ClaimRevision == 0 {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor claim revision cut has no admitted claim")
 	}
+	// A fresh cut freezes the open epoch; a frozen epoch is reused with the
+	// cut that froze it and cannot be cut again.
+	epoch := revisionEpochOf(position, claimID)
+	if epoch.State != revisionEpochOpen {
+		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor claim revision epoch is frozen: reuse its cut")
+	}
 	logID, err := guarantor.ClaimIngressLogIDV1(agreementDigest, position.Record.CoverageObligationID, claimID)
 	if err != nil {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, err
@@ -174,8 +180,8 @@ func (journal *GuarantorJournal) ClaimRevisionAdmissionCut(agreementDigest, clai
 	}
 	proof := guarantor.ClaimIngressAdmissionCutProofV1{SchemaVersion: 1,
 		CoverageAgreementBodyDigest: agreementDigest, CoverageObligationID: position.Record.CoverageObligationID,
-		CutKind: "claim_revisions", ClaimID: claimID, RevisionEpoch: record.ClaimRevision,
-		PriorEpochStateRevision: 1, FrozenEpochStateRevision: 2, ClaimIngressLogID: logID,
+		CutKind: "claim_revisions", ClaimID: claimID, RevisionEpoch: epoch.Epoch,
+		PriorEpochStateRevision: epoch.StateRevision, FrozenEpochStateRevision: epoch.StateRevision + 1, ClaimIngressLogID: logID,
 		IngressCutoffUnix: cutoffUnix, AdmissionHighWater: uint64(len(proofEntries)), AdmissionLogRoot: root,
 		Entries: proofEntries, AdmittedClaimCount: uint64(len(proofEntries))}
 	if err := guarantor.ValidateClaimIngressAdmissionCutProofV1(proof); err != nil {
@@ -243,24 +249,33 @@ func (journal *GuarantorJournal) CommitDecisionAdmission(agreementDigest string,
 		}
 		transition, transitioned := position.ClaimStateTransitionReceipts[body.ClaimID]
 		transitionDigest, _ := guarantor.ClaimStateTransitionReceiptDigestV1(transition)
+		// A head is replaced by its successor or by a fallback: at the
+		// successor or resolution deadline, or a late-recovery fallback, which
+		// the protocol admits from a reviewing or nonterminal head (once per
+		// claim, never from a head already on the late path).
+		fallback := body.DecisionPath == "terminal_fallback" || body.DecisionPath == "late_recovery_terminal_fallback"
 		reviewingSuccessor := transitioned && body.PriorClaimState == "reviewing" &&
-			(body.DecisionPath == "successor" || body.DecisionPath == "terminal_fallback") &&
+			(body.DecisionPath == "successor" || fallback) &&
 			body.PredecessorClaimStateTransitionReceiptDigest == transitionDigest &&
-			(body.DecisionPath == "terminal_fallback" || receipt.PredecessorClaimStateTransitionReceipt != nil &&
+			(fallback || receipt.PredecessorClaimStateTransitionReceipt != nil &&
 				sameJSON(*receipt.PredecessorClaimStateTransitionReceipt, transition))
-		nonterminalFallback := !transitioned && body.DecisionPath == "terminal_fallback" &&
+		nonterminalFallback := !transitioned && fallback &&
 			(body.PriorClaimState == "evidence_required" || body.PriorClaimState == "disputed") &&
 			body.PredecessorClaimStateTransitionReceiptDigest == ""
 		if body.PredecessorDecisionAdmissionReceiptDigest != existingDigest || (!reviewingSuccessor && !nonterminalFallback) {
 			return guarantor.ClaimRecord{}, errors.New("Guarantor claim already has a conflicting decision head")
 		}
 	}
+	// A late-recovery fallback starts from whichever head the claim has: the
+	// admitted claim, or a nonterminal or reviewing head.
+	lateRecovery := body.DecisionPath == "late_recovery_terminal_fallback"
 	initial := record.DecisionSequence == 0 && record.ClaimStatus == guarantor.ClaimAdmitted &&
-		(body.DecisionPath == "initial" || body.DecisionPath == "initial_terminal_fallback")
+		(body.DecisionPath == "initial" || body.DecisionPath == "initial_terminal_fallback" || lateRecovery)
 	successorState := record.ClaimStatus == guarantor.ClaimReviewing || record.ClaimStatus == guarantor.ClaimEvidenceRequired ||
 		record.ClaimStatus == guarantor.ClaimDisputed
 	successor := record.DecisionSequence > 0 && successorState &&
-		(body.DecisionPath == "successor" && record.ClaimStatus == guarantor.ClaimReviewing || body.DecisionPath == "terminal_fallback")
+		(body.DecisionPath == "successor" && record.ClaimStatus == guarantor.ClaimReviewing ||
+			body.DecisionPath == "terminal_fallback" || lateRecovery)
 	if body.DecisionSequence != record.DecisionSequence+1 || (!initial && !successor) {
 		return guarantor.ClaimRecord{}, errors.New("Guarantor decision lineage is invalid")
 	}
@@ -288,13 +303,24 @@ func (journal *GuarantorJournal) CommitDecisionAdmission(agreementDigest string,
 	if err != nil || pendingAfter != body.AggregatePendingDecisionReserveAfter.AmountAtomic {
 		return guarantor.ClaimRecord{}, errors.New("Guarantor decision reserve arithmetic differs")
 	}
-	record.ClaimStatus = target
-	record.ClaimStateRevision++
-	record.DecisionSequence = body.DecisionSequence
+	epoch, err := applyDecisionRevisionEpochCAS(revisionEpochOf(position, body.ClaimID), receipt)
+	if err != nil {
+		return guarantor.ClaimRecord{}, err
+	}
 	receiptDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(receipt)
 	if err != nil {
 		return guarantor.ClaimRecord{}, err
 	}
+	if err := storeImmutableEvidence(&position, guarantorDecisionAdmissionMediaType, receiptDigest, receipt); err != nil {
+		return guarantor.ClaimRecord{}, err
+	}
+	if position.RevisionEpochs == nil {
+		position.RevisionEpochs = map[string]GuarantorRevisionEpochState{}
+	}
+	position.RevisionEpochs[body.ClaimID] = epoch
+	record.ClaimStatus = target
+	record.ClaimStateRevision++
+	record.DecisionSequence = body.DecisionSequence
 	record.LastEvidenceDigest = receiptDigest
 	position.Record.CoverageRevision++
 	position.Record.LastEvidenceDigest = receiptDigest
@@ -369,6 +395,14 @@ func (journal *GuarantorJournal) CommitClaimStateTransition(agreementDigest stri
 	if err != nil {
 		return guarantor.ClaimRecord{}, err
 	}
+	epoch, err := reopenRevisionEpochAfter(revisionEpochOf(position, body.ClaimID), receipt)
+	if err != nil {
+		return guarantor.ClaimRecord{}, err
+	}
+	if position.RevisionEpochs == nil {
+		position.RevisionEpochs = map[string]GuarantorRevisionEpochState{}
+	}
+	position.RevisionEpochs[body.ClaimID] = epoch
 	record.ClaimStatus = target
 	record.ClaimStateRevision++
 	record.LastEvidenceDigest = receiptDigest
@@ -431,6 +465,9 @@ func (journal *GuarantorJournal) CommitDecisionApplication(agreementDigest strin
 	}
 	applicationDigest, err := guarantor.ClaimDecisionApplicationReceiptDigestV1(receipt)
 	if err != nil {
+		return guarantor.ClaimRecord{}, err
+	}
+	if err := storeImmutableEvidence(&position, guarantorDecisionApplicationMediaType, applicationDigest, receipt); err != nil {
 		return guarantor.ClaimRecord{}, err
 	}
 	token.TokenRevision++

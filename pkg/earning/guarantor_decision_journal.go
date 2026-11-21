@@ -21,7 +21,13 @@ func (journal *GuarantorJournal) InitialClaimIngressAdmissionCut(agreementDigest
 	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(agreementDigest) || cutoffUnix == 0 {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor initial claim ingress cut input is invalid")
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	// The proof is built from a private copy, so it shares no memory with the
+	// journal.
+	doc, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return guarantor.ClaimIngressAdmissionCutProofV1{}, copyErr
+	}
+	position, found := doc.Coverages[agreementDigest]
 	if !found {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor initial claim ingress cut has no coverage")
 	}
@@ -29,7 +35,7 @@ func (journal *GuarantorJournal) InitialClaimIngressAdmissionCut(agreementDigest
 	if err != nil {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, err
 	}
-	log, logFound := journal.doc.AdmissionLogs[logID]
+	log, logFound := doc.AdmissionLogs[logID]
 	if !logFound {
 		root, rootErr := guarantor.InitialClaimLogRootV1(guarantor.ClaimIngressLogRootDomainV1, logID)
 		if rootErr != nil {
@@ -122,7 +128,13 @@ func (journal *GuarantorJournal) ClaimRevisionAdmissionCut(agreementDigest, clai
 		!canonicalSHA256(claimID) || cutoffUnix == 0 {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor claim revision cut input is invalid")
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	// The proof is built from a private copy, so it shares no memory with the
+	// journal.
+	doc, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return guarantor.ClaimIngressAdmissionCutProofV1{}, copyErr
+	}
+	position, found := doc.Coverages[agreementDigest]
 	record, claimFound := position.Claims[claimID]
 	if !found || !claimFound || record.ClaimRevision == 0 {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor claim revision cut has no admitted claim")
@@ -233,7 +245,11 @@ func (journal *GuarantorJournal) CommitDecisionAdmission(agreementDigest string,
 		return guarantor.ClaimRecord{}, errors.New("Guarantor decision admission commit is invalid")
 	}
 	body := receipt.Body
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return guarantor.ClaimRecord{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	record, claimFound := position.Claims[body.ClaimID]
 	if !found || !claimFound || body.CoverageAgreementBodyDigest != agreementDigest ||
 		position.Record.CoverageRevision != body.PriorCoverageRevision || record.ClaimStateRevision != body.PriorClaimStateRevision ||
@@ -334,7 +350,6 @@ func (journal *GuarantorJournal) CommitDecisionAdmission(agreementDigest string,
 	if body.ResultingApplicationToken != nil {
 		position.DecisionApplicationTokens[body.ClaimID] = *body.ResultingApplicationToken
 	}
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -366,7 +381,11 @@ func (journal *GuarantorJournal) CommitClaimStateTransition(agreementDigest stri
 		return guarantor.ClaimRecord{}, errors.New("Guarantor claim transition commit is invalid")
 	}
 	body := receipt.Body
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return guarantor.ClaimRecord{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	record, claimFound := position.Claims[body.ClaimID]
 	currentDecision, decisionFound := position.DecisionAdmissionReceipts[body.ClaimID]
 	currentDecisionDigest, _ := guarantor.ClaimDecisionAdmissionReceiptDigestV1(currentDecision)
@@ -410,7 +429,6 @@ func (journal *GuarantorJournal) CommitClaimStateTransition(agreementDigest stri
 	position.ClaimStateTransitionReceipts[body.ClaimID] = receipt
 	position.ChallengeRoundsUsed[body.ClaimID] = body.ChallengeRoundsUsedAfter
 	position.NonterminalRoundsUsed[body.ClaimID] = body.NonterminalRoundsUsedAfter
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -427,7 +445,11 @@ func (journal *GuarantorJournal) CommitDecisionApplication(agreementDigest strin
 		return guarantor.ClaimRecord{}, errors.New("Guarantor decision application commit is invalid")
 	}
 	body := receipt.Body
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return guarantor.ClaimRecord{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	record, claimFound := position.Claims[body.ClaimID]
 	token, tokenFound := position.DecisionApplicationTokens[body.ClaimID]
 	transition, transitionFound := position.ClaimStateTransitionReceipts[body.ClaimID]
@@ -488,7 +510,6 @@ func (journal *GuarantorJournal) CommitDecisionApplication(agreementDigest strin
 	position.Claims[body.ClaimID] = record
 	position.MaterializedPayouts[body.ClaimID] = receipt.MaterializedPayoutObligationSet
 	position.DecisionApplicationReceipts[body.ClaimID] = receipt
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {

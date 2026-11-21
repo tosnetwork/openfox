@@ -471,8 +471,7 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 		Authorizations:                        []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
 	// The prerequisites are verified from the bytes this commit stores, so a
 	// later verification from the journal sees exactly what was verified here.
-	activationResolver := pendingEvidenceResolver{AuthorityKeyResolver: coordinator.resolverFor(agreementDigest),
-		pending: prerequisiteObjects}
+	activationResolver := coordinator.pendingResolverFor(agreementDigest, prerequisiteObjects)
 	if err := guarantor.VerifyCoverageActivationEvidenceV1(evidence, input.Offer, coordinator.AgreementVerifier,
 		activationResolver, coordinator.Authority, coordinator.CollateralFinalityVerifier, activatedAt); err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution, err
@@ -775,9 +774,26 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, IngressResolution: ingressResolution,
 			AdmissionResolution: admissionResolution}, err
 	}
+	// A revision admission carries the compact proof of the claim's initial
+	// admission, so every later verifier can bind the revision to it.
+	var initialAdmissionProof *guarantor.ClaimAdmissionReceiptProofV1
+	if !preview.Initial {
+		initial, found := coverage.ClaimAdmissionReceipts[guarantorClaimRevisionKey(claim.Body.ClaimID, 1)]
+		if !found {
+			return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, IngressResolution: ingressResolution,
+				AdmissionResolution: admissionResolution}, errors.New("Guarantor claim revision has no stored initial claim admission")
+		}
+		proof, proofErr := coordinator.sealClaimAdmissionProof(initial, coverage.Terms, now)
+		if proofErr != nil {
+			return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, IngressResolution: ingressResolution,
+				AdmissionResolution: admissionResolution}, proofErr
+		}
+		initialAdmissionProof = &proof
+	}
 	admissionReceipt := guarantor.AuthorizedClaimAdmissionReceiptV1{Body: admissionBody,
 		StageActionAdmissionEvidence: admissionStage, AuthorizedClaimIngressReceipt: ingressReceipt,
 		CoverageEndCommitment: effect.ExpectedCoverageEndCommitment, AuthorityInstanceRecord: instance,
+		InitialClaimAdmissionProof:            initialAdmissionProof,
 		AuthorityAdmissionEligibilityProofSet: admissionEligibility,
 		Authorizations:                        []guarantor.ProfileQualifiedObjectAuthorizationV1{admissionAuthorization}}
 	if err = guarantor.VerifyClaimAdmissionReceiptV1(admissionReceipt, coverage.Terms, coordinator.AgreementVerifier,

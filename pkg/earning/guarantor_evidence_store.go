@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	guarantor "github.com/tosnetwork/ai/protocol/pkg/agentguarantor"
-	"github.com/tosnetwork/openfox/pkg/fileutil"
 )
 
 // GuarantorStoredEvidence is one immutable receipt the journal serves by its
@@ -100,7 +99,7 @@ func (journal *GuarantorJournal) writeStagedEvidence(doc guarantorJournalDocumen
 				}
 			} else if !errors.Is(readErr, fs.ErrNotExist) {
 				return fmt.Errorf("read Guarantor immutable evidence file: %w", readErr)
-			} else if err := fileutil.WriteFileAtomicRoot(journal.root, name, stored.Wire, 0o600); err != nil {
+			} else if err := journal.writeFile(journal.root, name, stored.Wire, 0o600); err != nil {
 				return fmt.Errorf("write Guarantor immutable evidence file: %w", err)
 			}
 			stored.Wire = nil
@@ -146,6 +145,147 @@ func (journal *GuarantorJournal) checkStoredEvidenceFile(digest string, stored G
 	info, err := journal.root.Lstat(name)
 	if err != nil || !info.Mode().IsRegular() || uint64(info.Size()) != stored.ContentSize {
 		return fmt.Errorf("Guarantor journal immutable evidence %s has no file of its recorded length", digest)
+	}
+	return nil
+}
+
+// GuarantorEvidenceIntegrityReport counts what a full integrity check of the
+// stored immutable receipts read.
+type GuarantorEvidenceIntegrityReport struct {
+	Receipts uint64
+	Bytes    uint64
+}
+
+// VerifyStoredEvidence reads every immutable receipt file the journal names
+// and checks its length and SHA-256 against the journal record. Opening a
+// journal checks only that each file exists with its recorded length, and a
+// receipt is hashed whenever it is served; this is the on-demand check of
+// everything at once, for an operator who wants it before relying on a
+// journal restored from a backup or moved between machines. It reads every
+// receipt file, holds the journal for as long as that takes, and stops at the
+// first receipt that fails.
+func (journal *GuarantorJournal) VerifyStoredEvidence() (GuarantorEvidenceIntegrityReport, error) {
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	var report GuarantorEvidenceIntegrityReport
+	if err := journal.ensureAttached(); err != nil {
+		return report, err
+	}
+	// A receipt two coverages name is one file and is read once.
+	checked := map[string]GuarantorStoredEvidence{}
+	for _, coverage := range journal.doc.Coverages {
+		for digest, stored := range coverage.ImmutableEvidence {
+			if prior, seen := checked[digest]; seen {
+				if prior.ContentSize != stored.ContentSize || prior.ContentSHA256 != stored.ContentSHA256 {
+					return report, fmt.Errorf("Guarantor immutable evidence %s is recorded with two different contents", digest)
+				}
+				continue
+			}
+			wire, err := journal.readStoredEvidence(digest, stored)
+			if err != nil {
+				return report, fmt.Errorf("Guarantor immutable evidence %s: %w", digest, err)
+			}
+			checked[digest] = stored
+			receipts, receiptsFit := safeAddUnix(report.Receipts, 1)
+			bytesRead, bytesFit := safeAddUnix(report.Bytes, uint64(len(wire)))
+			if !receiptsFit || !bytesFit {
+				return report, errors.New("Guarantor immutable evidence integrity count overflows")
+			}
+			report.Receipts, report.Bytes = receipts, bytesRead
+		}
+	}
+	return report, nil
+}
+
+// isAtomicWriteTemporary reports whether name is a temporary file of an
+// interrupted atomic write: ".tmp-<process>-<nanoseconds>".
+func isAtomicWriteTemporary(name string) bool {
+	rest, found := strings.CutPrefix(name, ".tmp-")
+	if !found {
+		return false
+	}
+	process, nanoseconds, found := strings.Cut(rest, "-")
+	if !found || process == "" || nanoseconds == "" {
+		return false
+	}
+	for _, part := range []string{process, nanoseconds} {
+		for _, digit := range part {
+			if digit < '0' || digit > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isGuarantorEvidenceFileName reports whether name has the form of a stored
+// receipt's file name: the 64 lowercase hex digits of its envelope digest.
+func isGuarantorEvidenceFileName(name string) bool {
+	return canonicalSHA256("sha256:" + name)
+}
+
+// sweepCrashLeftovers removes the files a crash can leave beside a loaded
+// journal: a receipt file written before the document that would have named
+// it, and the temporary file of an interrupted atomic write. It runs when the
+// journal is opened, under the journal's exclusive lock, so no commit is in
+// flight. Only regular files are removed, and only those two kinds: a file
+// that any coverage's record names is never touched, nor is anything with
+// another name.
+func (journal *GuarantorJournal) sweepCrashLeftovers() error {
+	named := map[string]bool{}
+	for _, coverage := range journal.doc.Coverages {
+		for digest := range coverage.ImmutableEvidence {
+			name, err := guarantorEvidenceFile(digest)
+			if err != nil {
+				return err
+			}
+			named[path.Base(name)] = true
+		}
+	}
+	if err := journal.removeRegularFiles(".", isAtomicWriteTemporary); err != nil {
+		return err
+	}
+	return journal.removeRegularFiles(guarantorEvidenceDirectory, func(name string) bool {
+		if named[name] {
+			return false
+		}
+		return isAtomicWriteTemporary(name) || isGuarantorEvidenceFileName(name)
+	})
+}
+
+// removeRegularFiles removes the regular files directly inside directory that
+// remove selects by name. Directories, links and other entries are left alone.
+func (journal *GuarantorJournal) removeRegularFiles(directory string, remove func(name string) bool) error {
+	handle, err := journal.root.Open(directory)
+	if err != nil {
+		return fmt.Errorf("open Guarantor journal directory for its crash sweep: %w", err)
+	}
+	entries, err := handle.ReadDir(-1)
+	closeErr := handle.Close()
+	if err != nil {
+		return fmt.Errorf("list Guarantor journal directory for its crash sweep: %w", err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close Guarantor journal directory after its crash sweep listing: %w", closeErr)
+	}
+	for _, entry := range entries {
+		if !remove(entry.Name()) {
+			continue
+		}
+		target := path.Join(directory, entry.Name())
+		info, err := journal.root.Lstat(target)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect Guarantor journal crash leftover: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		if err := journal.root.Remove(target); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove Guarantor journal crash leftover: %w", err)
+		}
 	}
 	return nil
 }
@@ -303,17 +443,96 @@ func (resolver GuarantorJournalEvidenceResolver) ResolveImmutableGuarantorEviden
 	return resolver.Journal.ImmutableEvidence(resolver.AgreementDigest, descriptor)
 }
 
+// guarantorEvidenceResolver is an authority resolver that also serves
+// immutable evidence: the journal resolver and the pending resolver.
+type guarantorEvidenceResolver interface {
+	guarantor.AuthorityKeyResolver
+	guarantor.ImmutableEvidenceResolver
+}
+
+// The protocol finds the collateral finality verifier and the authority
+// control-resolution verifier by asking its resolver whether it is one. A
+// resolver wrapped to add evidence retrieval would hide both, so these types
+// put back exactly the ones the operator provides and no other.
+type (
+	evidenceResolverWithFinality struct {
+		guarantorEvidenceResolver
+		guarantor.CollateralAdapterFinalityVerifier
+	}
+	evidenceResolverWithControl struct {
+		guarantorEvidenceResolver
+		guarantor.AuthorityControlResolutionVerifier
+	}
+	evidenceResolverWithFinalityAndControl struct {
+		guarantorEvidenceResolver
+		guarantor.CollateralAdapterFinalityVerifier
+		guarantor.AuthorityControlResolutionVerifier
+	}
+)
+
+// guarantorVerifiersOf returns the collateral finality verifier and the
+// control-resolution verifier that resolver itself is, or nil for each it is
+// not.
+func guarantorVerifiersOf(resolver guarantor.AuthorityKeyResolver) (guarantor.CollateralAdapterFinalityVerifier,
+	guarantor.AuthorityControlResolutionVerifier) {
+	finality, _ := resolver.(guarantor.CollateralAdapterFinalityVerifier)
+	control, _ := resolver.(guarantor.AuthorityControlResolutionVerifier)
+	return finality, control
+}
+
+// forwardGuarantorVerifiers returns resolver exposing finality and control as
+// well, each only when it is not nil. With neither, resolver is returned as it
+// is, and a protocol check that needs one of them fails closed.
+func forwardGuarantorVerifiers(resolver guarantorEvidenceResolver, finality guarantor.CollateralAdapterFinalityVerifier,
+	control guarantor.AuthorityControlResolutionVerifier) guarantor.AuthorityKeyResolver {
+	switch {
+	case finality != nil && control != nil:
+		return evidenceResolverWithFinalityAndControl{resolver, finality, control}
+	case finality != nil:
+		return evidenceResolverWithFinality{resolver, finality}
+	case control != nil:
+		return evidenceResolverWithControl{resolver, control}
+	default:
+		return resolver
+	}
+}
+
+// pendingResolverFor is resolverFor with pending served ahead of the journal,
+// for an object verified before the commit that stores its evidence.
+func (coordinator *GuarantorProviderCoordinator) pendingResolverFor(agreementDigest string,
+	pending map[string]GuarantorStoredEvidence) guarantor.AuthorityKeyResolver {
+	underneath := coordinator.resolverFor(agreementDigest)
+	finality, control := guarantorVerifiersOf(underneath)
+	return forwardGuarantorVerifiers(pendingEvidenceResolver{AuthorityKeyResolver: underneath, pending: pending},
+		finality, control)
+}
+
 // resolverFor is the resolver the coordinator verifies agreementDigest's
 // claim lifecycle with: the operator's authority resolver plus immutable
 // evidence served from this journal for that Agreement only. An operator
 // resolver that already serves immutable evidence is used as it is.
+//
+// The journal resolver keeps what the operator provides for collateralized
+// coverage: the collateral finality verifier the coordinator is configured
+// with, or else the one the operator's resolver itself is, and the
+// control-resolution verifier the operator's resolver itself is. The protocol
+// re-verifies a collateralized activation in claim admission, cancellation and
+// closure with the verifier it finds on this resolver. When the operator
+// provides none, none is exposed and those checks fail closed.
 func (coordinator *GuarantorProviderCoordinator) resolverFor(agreementDigest string) guarantor.AuthorityKeyResolver {
 	if coordinator.Resolver == nil || coordinator.Journal == nil {
 		return coordinator.Resolver
 	}
-	if _, serves := coordinator.Resolver.(guarantor.ImmutableEvidenceResolver); serves {
-		return coordinator.Resolver
+	finality, control := guarantorVerifiersOf(coordinator.Resolver)
+	if serving, serves := coordinator.Resolver.(guarantorEvidenceResolver); serves {
+		if finality != nil || coordinator.CollateralFinalityVerifier == nil {
+			return coordinator.Resolver
+		}
+		return forwardGuarantorVerifiers(serving, coordinator.CollateralFinalityVerifier, control)
 	}
-	return GuarantorJournalEvidenceResolver{AuthorityKeyResolver: coordinator.Resolver, Journal: coordinator.Journal,
-		AgreementDigest: agreementDigest}
+	if coordinator.CollateralFinalityVerifier != nil {
+		finality = coordinator.CollateralFinalityVerifier
+	}
+	return forwardGuarantorVerifiers(GuarantorJournalEvidenceResolver{AuthorityKeyResolver: coordinator.Resolver,
+		Journal: coordinator.Journal, AgreementDigest: agreementDigest}, finality, control)
 }

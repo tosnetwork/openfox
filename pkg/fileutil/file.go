@@ -7,11 +7,18 @@
 package fileutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// ErrReplacedNotSynced reports that WriteFileAtomicRoot renamed the new file
+// into place and then could not sync its directory. The target already holds
+// the new data, so the caller must not treat the write as not having happened;
+// only its durability across a crash is unconfirmed.
+var ErrReplacedNotSynced = errors.New("file replaced but its directory was not synced")
 
 // WriteFileAtomic atomically writes data to a file using a temp file + rename pattern.
 //
@@ -163,7 +170,7 @@ func WriteFileAtomicRoot(root *os.Root, name string, data []byte, perm os.FileMo
 	}
 	cleanup = false
 	if err := syncRootDirectory(root, dir); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrReplacedNotSynced, err)
 	}
 	return nil
 }

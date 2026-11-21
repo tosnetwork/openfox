@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"os"
@@ -21,8 +22,12 @@ import (
 )
 
 const (
-	guarantorJournalSchema = "tos.openfox.agent-guarantor-journal.v1"
-	guarantorJournalFile   = "agent-guarantor-journal.json"
+	// guarantorJournalSchema v2 tracks each claim's revision epoch and keeps
+	// the immutable receipts it serves; a v1 journal has neither and is
+	// refused rather than read with guessed epochs.
+	guarantorJournalSchema        = "tos.openfox.agent-guarantor-journal.v2"
+	retiredGuarantorJournalSchema = "tos.openfox.agent-guarantor-journal.v1"
+	guarantorJournalFile          = "agent-guarantor-journal.json"
 )
 
 type GuarantorOfferPosition struct {
@@ -244,9 +249,12 @@ func OpenGuarantorJournal(directory, ownerID, agentID string) (*GuarantorJournal
 			_ = journal.Close()
 			return nil, err
 		}
-	} else if err != nil || journal.load(ownerID, agentID) != nil {
+	} else if err != nil {
 		_ = journal.Close()
-		return nil, errors.New("load Guarantor journal")
+		return nil, fmt.Errorf("load Guarantor journal: %w", err)
+	} else if loadErr := journal.load(ownerID, agentID); loadErr != nil {
+		_ = journal.Close()
+		return nil, fmt.Errorf("load Guarantor journal: %w", loadErr)
 	}
 	return journal, nil
 }
@@ -1688,6 +1696,13 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var doc guarantorJournalDocument
+	if err := decoder.Decode(&doc); err == nil && doc.Schema == retiredGuarantorJournalSchema {
+		return errors.New("Guarantor journal uses the retired v1 schema, which has no revision epochs; " +
+			"it cannot be read safely and must be recreated")
+	}
+	decoder = json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	doc = guarantorJournalDocument{}
 	if err := decoder.Decode(&doc); err != nil || decoder.Decode(&struct{}{}) != io.EOF || doc.Schema != guarantorJournalSchema || doc.OwnerID != ownerID || doc.AgentID != agentID ||
 		doc.Revision == 0 || doc.Offers == nil || doc.Coverages == nil || doc.ClaimToCoverage == nil || doc.AdmissionLogs == nil {
 		return errors.New("Guarantor journal document is invalid")
@@ -1752,6 +1767,15 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 		}
 		if coverage.RevisionEpochs == nil {
 			coverage.RevisionEpochs = map[string]GuarantorRevisionEpochState{}
+		}
+		// Every admitted claim's epoch is recorded from its first admission;
+		// a missing record is refused rather than read as a guessed epoch.
+		for claimID := range coverage.Claims {
+			state, found := coverage.RevisionEpochs[claimID]
+			if !found || (state.State != revisionEpochOpen && state.State != revisionEpochFrozen) ||
+				(state.State == revisionEpochFrozen) != (state.FrozenCut != nil) {
+				return fmt.Errorf("Guarantor journal claim %s has no valid revision epoch record", claimID)
+			}
 		}
 		if coverage.ImmutableEvidence == nil {
 			coverage.ImmutableEvidence = map[string]GuarantorStoredEvidence{}

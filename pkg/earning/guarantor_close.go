@@ -53,7 +53,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 			return GuarantorCloseCoverageResult{}, errors.New("terminal Guarantor coverage has an incomplete portable closure journal")
 		}
 		if err := guarantor.VerifyCoverageResolutionV1(*position.CoverageResolution, input.Offer,
-			coordinator.AgreementVerifier, coordinator.Resolver, coordinator.Authority,
+			coordinator.AgreementVerifier, coordinator.resolverFor(agreementDigest), coordinator.Authority,
 			coordinator.PaymentVerifier, now); err != nil {
 			return GuarantorCloseCoverageResult{}, fmt.Errorf("verify persisted coverage resolution: %w", err)
 		}
@@ -92,7 +92,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 	if position.FilingCloseReceipt != nil {
 		filingReceipt = *position.FilingCloseReceipt
 		if err := guarantor.VerifyClaimFilingCloseReceiptV1(filingReceipt, input.Offer,
-			coordinator.AgreementVerifier, coordinator.Resolver, coordinator.Authority, now); err != nil {
+			coordinator.AgreementVerifier, coordinator.resolverFor(agreementDigest), coordinator.Authority, now); err != nil {
 			return GuarantorCloseCoverageResult{}, fmt.Errorf("verify persisted filing-close receipt: %w", err)
 		}
 		filingReceiptDigest, err = guarantor.ClaimFilingCloseReceiptDigestV1(filingReceipt)
@@ -642,7 +642,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		return GuarantorCloseCoverageResult{}, fmt.Errorf("digest complete coverage resolution: %w", err)
 	}
 	if err := guarantor.VerifyCoverageResolutionV1(coverageResolution, input.Offer, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, coordinator.PaymentVerifier, now); err != nil {
+		coordinator.resolverFor(agreementDigest), coordinator.Authority, coordinator.PaymentVerifier, now); err != nil {
 		return GuarantorCloseCoverageResult{}, fmt.Errorf("verify complete coverage resolution: %w", err)
 	}
 	if _, err := coordinator.Journal.CommitCoverageResolution(agreementDigest, coverageResolution); err != nil {

@@ -291,7 +291,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 		AuthorityAdmissionEligibilityProofSet: eligibility,
 		Authorizations:                        []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(receipt, position.Terms, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, now); err != nil {
+		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
 		return GuarantorDecisionAdmissionResult{Receipt: receipt, Resolution: resolution}, fmt.Errorf("verify Guarantor decision admission: %w", err)
 	}
 	if _, err := coordinator.Journal.CommitDecisionAdmission(input.AgreementDigest, receipt); err != nil {
@@ -320,7 +320,7 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	}
 	decisionAdmission := input.DecisionAdmissionReceipt
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(decisionAdmission, position.Terms,
-		coordinator.AgreementVerifier, coordinator.Resolver, coordinator.Authority, now); err != nil {
+		coordinator.AgreementVerifier, coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
 		return GuarantorClaimTransitionResult{}, fmt.Errorf("verify current Guarantor decision admission: %w", err)
 	}
 	// The late-recovery path allows one challenge round: its candidate's
@@ -485,7 +485,7 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 		TransitionEvidenceSet: evidenceSet, AuthorityAdmissionEligibilityProofSet: eligibility,
 		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
 	if err := guarantor.VerifyClaimStateTransitionReceiptV1(receipt, position.Terms, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, now); err != nil {
+		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
 		return GuarantorClaimTransitionResult{Receipt: receipt, Resolution: resolution}, fmt.Errorf("verify Guarantor claim transition: %w", err)
 	}
 	if _, err := coordinator.Journal.CommitClaimStateTransition(input.AgreementDigest, receipt); err != nil {

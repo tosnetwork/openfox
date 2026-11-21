@@ -87,13 +87,11 @@ func lateRecoveryCandidateMarker(predecessor *guarantor.AuthorizedClaimStateTran
 	return predecessor.DecisionAdmissionProof.ReceiptBody.LateFilingCloseReceiptDigest
 }
 
-// revisionEpochOf is the claim's current epoch. A claim admitted before the
-// sink tracked epochs is in its first, open epoch.
+// revisionEpochOf is the claim's current epoch. Every claim's epoch is
+// recorded from its first admission; a claim without a record has no epoch
+// state, which every admission and cut refuses instead of guessing one.
 func revisionEpochOf(position GuarantorCoveragePosition, claimID string) GuarantorRevisionEpochState {
-	if state, found := position.RevisionEpochs[claimID]; found {
-		return state
-	}
-	return GuarantorRevisionEpochState{Epoch: 1, State: revisionEpochOpen, StateRevision: 1}
+	return position.RevisionEpochs[claimID]
 }
 
 // applyDecisionRevisionEpochCAS is the sink-side compare-and-swap of a

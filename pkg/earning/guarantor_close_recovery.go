@@ -27,11 +27,11 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 	}
 	now := coordinator.Authority.AuthorityNow().UTC()
 	terminalSet := *position.TerminalClaimSet
+	agreementDigest := terminalSet.Body.CoverageAgreementBodyDigest
 	if err := guarantor.VerifyTerminalClaimSetV1(terminalSet, input.Offer, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, coordinator.PaymentVerifier, now); err != nil {
+		coordinator.resolverFor(agreementDigest), coordinator.Authority, coordinator.PaymentVerifier, now); err != nil {
 		return GuarantorCloseCoverageResult{}, fmt.Errorf("verify persisted terminal claim set: %w", err)
 	}
-	agreementDigest := terminalSet.Body.CoverageAgreementBodyDigest
 	terminalDigest, _ := guarantor.TerminalClaimSetDigestV1(terminalSet)
 	disposition, err := guarantor.ComputeExposureDispositionV1(input.Offer.ExposureAdmissionReceipt, terminalSet.Body)
 	if err != nil {
@@ -47,7 +47,7 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 	if position.ExposureReleaseReceipt != nil {
 		releaseReceipt = *position.ExposureReleaseReceipt
 		if err := guarantor.VerifyExposureReleaseReceiptV1(releaseReceipt, input.Offer, coordinator.AgreementVerifier,
-			coordinator.Resolver, coordinator.Authority, coordinator.PaymentVerifier, now); err != nil {
+			coordinator.resolverFor(agreementDigest), coordinator.Authority, coordinator.PaymentVerifier, now); err != nil {
 			return GuarantorCloseCoverageResult{}, fmt.Errorf("verify persisted exposure release: %w", err)
 		}
 	} else {

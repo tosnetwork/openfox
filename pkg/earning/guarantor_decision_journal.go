@@ -249,12 +249,17 @@ func (journal *GuarantorJournal) CommitDecisionAdmission(agreementDigest string,
 		}
 		transition, transitioned := position.ClaimStateTransitionReceipts[body.ClaimID]
 		transitionDigest, _ := guarantor.ClaimStateTransitionReceiptDigestV1(transition)
+		// A head is replaced by its successor or by a fallback: at the
+		// successor or resolution deadline, or a late-recovery fallback, which
+		// the protocol admits from a reviewing or nonterminal head (once per
+		// claim, never from a head already on the late path).
+		fallback := body.DecisionPath == "terminal_fallback" || body.DecisionPath == "late_recovery_terminal_fallback"
 		reviewingSuccessor := transitioned && body.PriorClaimState == "reviewing" &&
-			(body.DecisionPath == "successor" || body.DecisionPath == "terminal_fallback") &&
+			(body.DecisionPath == "successor" || fallback) &&
 			body.PredecessorClaimStateTransitionReceiptDigest == transitionDigest &&
-			(body.DecisionPath == "terminal_fallback" || receipt.PredecessorClaimStateTransitionReceipt != nil &&
+			(fallback || receipt.PredecessorClaimStateTransitionReceipt != nil &&
 				sameJSON(*receipt.PredecessorClaimStateTransitionReceipt, transition))
-		nonterminalFallback := !transitioned && body.DecisionPath == "terminal_fallback" &&
+		nonterminalFallback := !transitioned && fallback &&
 			(body.PriorClaimState == "evidence_required" || body.PriorClaimState == "disputed") &&
 			body.PredecessorClaimStateTransitionReceiptDigest == ""
 		if body.PredecessorDecisionAdmissionReceiptDigest != existingDigest || (!reviewingSuccessor && !nonterminalFallback) {

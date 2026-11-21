@@ -208,6 +208,12 @@ type GuarantorActivateCoverageInput struct {
 	UnderlyingAuthorizationEvidence guarantor.GuarantorAgreementAuthorizationEvidenceSetV1
 	PrerequisiteEvidenceSet         *guarantor.CanonicalGuarantorEvidenceSetV1
 	CollateralLockEvidence          *guarantor.AuthorizedCollateralEvidenceV1
+	// CollateralControlEvidence and OperationalIndependenceEvidence are the
+	// other collateral prerequisites the prerequisite set names by descriptor.
+	// The journal stores every named prerequisite with the activation and
+	// serves it to each later verification of this coverage.
+	CollateralControlEvidence       *guarantor.AuthorizedCollateralControlEvidenceV1
+	OperationalIndependenceEvidence *guarantor.AuthorizedGuarantorOperationalIndependenceEvidenceV1
 	ActivatedAtUnix                 uint64
 }
 
@@ -294,6 +300,11 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 		}
 	default:
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, errors.New("unsupported Guarantor assurance level")
+	}
+	prerequisiteObjects, err := guarantorActivationPrerequisites(input.PrerequisiteEvidenceSet, input.CollateralLockEvidence,
+		input.CollateralControlEvidence, input.OperationalIndependenceEvidence)
+	if err != nil {
+		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
 	var coverage GuarantorCoveragePosition
 	_, _, coverages := coordinator.Journal.Snapshot()
@@ -458,12 +469,16 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 		PrerequisiteEvidenceSet: input.PrerequisiteEvidenceSet, TransitionEvidenceProjection: projection,
 		AuthorityAdmissionEligibilityProofSet: eligibilityProofSet,
 		Authorizations:                        []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
+	// The prerequisites are verified from the bytes this commit stores, so a
+	// later verification from the journal sees exactly what was verified here.
+	activationResolver := pendingEvidenceResolver{AuthorityKeyResolver: coordinator.resolverFor(agreementDigest),
+		pending: prerequisiteObjects}
 	if err := guarantor.VerifyCoverageActivationEvidenceV1(evidence, input.Offer, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, coordinator.CollateralFinalityVerifier, activatedAt); err != nil {
+		activationResolver, coordinator.Authority, coordinator.CollateralFinalityVerifier, activatedAt); err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution, err
 	}
 	if _, err := coordinator.Journal.CommitActivationEvidence(agreementDigest, coverage.Record.CoverageRevision,
-		coverage.Record.FilingStateRevision, evidence); err != nil {
+		coverage.Record.FilingStateRevision, evidence, prerequisiteObjects); err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution, err
 	}
 	return evidence, resolution, nil
@@ -766,7 +781,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		AuthorityAdmissionEligibilityProofSet: admissionEligibility,
 		Authorizations:                        []guarantor.ProfileQualifiedObjectAuthorizationV1{admissionAuthorization}}
 	if err = guarantor.VerifyClaimAdmissionReceiptV1(admissionReceipt, coverage.Terms, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, now); err != nil {
+		coordinator.resolverFor(agreementDigest), coordinator.Authority, now); err != nil {
 		return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, AdmissionReceipt: admissionReceipt,
 			IngressResolution: ingressResolution, AdmissionResolution: admissionResolution}, err
 	}

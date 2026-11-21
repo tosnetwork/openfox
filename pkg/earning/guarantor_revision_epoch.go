@@ -87,6 +87,60 @@ func lateRecoveryCandidateMarker(predecessor *guarantor.AuthorizedClaimStateTran
 	return predecessor.DecisionAdmissionProof.ReceiptBody.LateFilingCloseReceiptDigest
 }
 
+// expectedRevisionEpochOnLoad is the epoch a loaded journal must record for a
+// claim, derived from the claim's stored current decision admission and the
+// transition after it. Without a decision admission the claim is still in its
+// first, open epoch (revision admissions do not move the epoch). A decision
+// admission leaves the epoch frozen with exactly its cut and frozen fields; a
+// transition after it may reopen the next epoch. A record that differs, such
+// as an open epoch although no transition reopened it, contradicts the
+// receipts and is refused.
+func expectedRevisionEpochOnLoad(position GuarantorCoveragePosition, claimID string) (GuarantorRevisionEpochState, error) {
+	decision, decided := position.DecisionAdmissionReceipts[claimID]
+	transition, transitioned := position.ClaimStateTransitionReceipts[claimID]
+	if !decided {
+		if transitioned {
+			return GuarantorRevisionEpochState{}, errors.New("a transition is stored without its decision admission")
+		}
+		return GuarantorRevisionEpochState{Epoch: 1, State: revisionEpochOpen, StateRevision: 1}, nil
+	}
+	body, cut := decision.Body, decision.ClaimRevisionIngressCutProof
+	if body.ClaimID != claimID || body.FrozenRevisionEpoch != cut.RevisionEpoch ||
+		body.FrozenRevisionEpochStateRevision != cut.FrozenEpochStateRevision {
+		return GuarantorRevisionEpochState{}, errors.New("the stored decision admission's frozen fields differ from its cut")
+	}
+	frozen := GuarantorRevisionEpochState{Epoch: body.FrozenRevisionEpoch, State: revisionEpochFrozen,
+		StateRevision: body.FrozenRevisionEpochStateRevision, FrozenCut: &cut}
+	if !transitioned {
+		return frozen, nil
+	}
+	decisionDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(decision)
+	if err != nil || transition.Body.ClaimID != claimID || transition.DecisionAdmissionProof.ReceiptEnvelopeDigest != decisionDigest {
+		return GuarantorRevisionEpochState{}, errors.New("the stored transition does not follow the stored decision admission")
+	}
+	return reopenRevisionEpochAfter(frozen, transition)
+}
+
+// validateLoadedRevisionEpoch refuses a claim whose recorded epoch is missing,
+// malformed, or contradicts its stored decision admission and transition.
+func validateLoadedRevisionEpoch(position GuarantorCoveragePosition, claimID string) error {
+	state, found := position.RevisionEpochs[claimID]
+	if !found || (state.State != revisionEpochOpen && state.State != revisionEpochFrozen) ||
+		(state.State == revisionEpochFrozen) != (state.FrozenCut != nil) {
+		return fmt.Errorf("Guarantor journal claim %s has no valid revision epoch record", claimID)
+	}
+	expected, err := expectedRevisionEpochOnLoad(position, claimID)
+	if err != nil {
+		return fmt.Errorf("Guarantor journal claim %s revision epoch cannot be checked: %w", claimID, err)
+	}
+	if !sameJSON(state, expected) {
+		return fmt.Errorf("Guarantor journal claim %s revision epoch record (%s, epoch %d, state revision %d) "+
+			"contradicts its receipts (%s, epoch %d, state revision %d)", claimID, state.State, state.Epoch,
+			state.StateRevision, expected.State, expected.Epoch, expected.StateRevision)
+	}
+	return nil
+}
+
 // revisionEpochOf is the claim's current epoch. Every claim's epoch is
 // recorded from its first admission; a claim without a record has no epoch
 // state, which every admission and cut refuses instead of guessing one.

@@ -21,7 +21,9 @@ func TestGuarantorJournalPersistsOfferAndRejectsSplitWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenGuarantorJournal(directory, "owner:test", "agent:guarantor"); err == nil {
+	closeGuarantorJournalOnCleanup(t, journal)
+	if second, err := OpenGuarantorJournal(directory, "owner:test", "agent:guarantor"); err == nil {
+		closeGuarantorJournalOnCleanup(t, second)
 		t.Fatal("second Guarantor writer acquired the same economic domain")
 	}
 	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
@@ -41,7 +43,7 @@ func TestGuarantorJournalPersistsOfferAndRejectsSplitWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	closeGuarantorJournalOnCleanup(t, reopened)
 	_, offers, _ := reopened.Snapshot()
 	if len(offers) != 1 || offers[0].Record.Status != guarantor.OfferReservedUnsigned || offers[0].OfferEnvelopeDigest != "" {
 		t.Fatalf("unexpected recovered Guarantor offer: %#v", offers)
@@ -64,6 +66,7 @@ func TestGuarantorAdmissionCutBlocksPreparedAndSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	closeGuarantorJournalOnCleanup(t, journal)
 	receivedAt := time.Unix(2_000_000_000, 0).UTC()
 	entry, err := journal.BeginAdmission(domainID, actionID, requestDigest, receivedAt)
 	if err != nil || entry.Sequence != 1 {
@@ -79,7 +82,7 @@ func TestGuarantorAdmissionCutBlocksPreparedAndSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer journal.Close()
+	closeGuarantorJournalOnCleanup(t, journal)
 	resolution := commerce.ActionResolution{StableActionID: actionID, ExactRequestDigest: requestDigest,
 		State: commerce.ActionRejected, StateRevision: 2, EvidenceRefs: []string{digest("d")}}
 	if _, err := journal.ResolveAdmission(domainID, resolution); err != nil {
@@ -108,6 +111,7 @@ func TestGuarantorJournalRejectsTamperedAdmissionRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	closeGuarantorJournalOnCleanup(t, journal)
 	if _, err := journal.BeginAdmission(digest("a"), digest("b"), digest("c"), time.Unix(2_000_000_000, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +134,7 @@ func TestGuarantorJournalRejectsTamperedAdmissionRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if reopened, err := OpenGuarantorJournal(directory, "owner:test", "agent:guarantor"); err == nil {
-		_ = reopened.Close()
+		closeGuarantorJournalOnCleanup(t, reopened)
 		t.Fatal("tampered admission root was accepted")
 	}
 }

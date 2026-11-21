@@ -189,7 +189,7 @@ func (coordinator *GuarantorProviderCoordinator) CancelCoverage(ctx context.Cont
 		AuthorityAdmissionEligibilityProofSet: eligibility,
 		Authorizations:                        []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
 	if err := guarantor.VerifyCoverageCancellationReceiptV1(receipt, *position.ActivationEvidence,
-		coordinator.AgreementVerifier, coordinator.Resolver, coordinator.Authority, admittedAt); err != nil {
+		coordinator.AgreementVerifier, coordinator.resolverFor(agreementDigest), coordinator.Authority, admittedAt); err != nil {
 		return guarantor.AuthorizedCoverageCancellationReceiptV1{}, resolution, err
 	}
 	if _, err := coordinator.Journal.ApplyCancellation(agreementDigest, position.Record.CoverageRevision, receipt); err != nil {

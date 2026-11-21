@@ -82,7 +82,7 @@ func TestGuarantorPortfolioNeverAddsDifferentAssetUnits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer journal.Close()
+	closeGuarantorJournalOnCleanup(t, journal)
 	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
 	native := commerce.AssetIdentityV1{AssetNamespace: "tos.asset", AssetIdentifier: "native", Unit: "nano"}
 	token := commerce.AssetIdentityV1{AssetNamespace: "tos.jetton", AssetIdentifier: digest("9"), Unit: "micro"}

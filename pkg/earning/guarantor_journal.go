@@ -22,12 +22,18 @@ import (
 )
 
 const (
-	// guarantorJournalSchema v2 tracks each claim's revision epoch and keeps
-	// the immutable receipts it serves; a v1 journal has neither and is
-	// refused rather than read with guessed epochs.
-	guarantorJournalSchema        = "tos.openfox.agent-guarantor-journal.v2"
-	retiredGuarantorJournalSchema = "tos.openfox.agent-guarantor-journal.v1"
-	guarantorJournalFile          = "agent-guarantor-journal.json"
+	// guarantorJournalSchema v3 tracks each claim's revision epoch and keeps
+	// the immutable receipts it serves in content-addressed files beside the
+	// document, which records only their media type, size and hash. A v1
+	// journal has no epochs and a v2 journal holds the receipts inside the
+	// document; both are refused rather than read or converted.
+	guarantorJournalSchema          = "tos.openfox.agent-guarantor-journal.v3"
+	retiredGuarantorJournalSchema   = "tos.openfox.agent-guarantor-journal.v1"
+	retiredGuarantorJournalSchemaV2 = "tos.openfox.agent-guarantor-journal.v2"
+	guarantorJournalFile            = "agent-guarantor-journal.json"
+	// guarantorEvidenceDirectory holds one file per stored immutable receipt,
+	// named by the hex of its envelope digest.
+	guarantorEvidenceDirectory = "immutable-evidence"
 )
 
 type GuarantorOfferPosition struct {
@@ -239,6 +245,18 @@ func OpenGuarantorJournal(directory, ownerID, agentID string) (*GuarantorJournal
 		_ = domainLock.Close()
 		_ = root.Close()
 		return nil, err
+	}
+	if err := root.Mkdir(guarantorEvidenceDirectory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		_ = releaseAuthorityLock(lock)
+		_ = domainLock.Close()
+		_ = root.Close()
+		return nil, errors.New("create Guarantor immutable evidence directory")
+	}
+	if info, err := root.Lstat(guarantorEvidenceDirectory); err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		_ = releaseAuthorityLock(lock)
+		_ = domainLock.Close()
+		_ = root.Close()
+		return nil, errors.New("Guarantor immutable evidence directory security is invalid")
 	}
 	journal := &GuarantorJournal{directory: directory, root: root, lock: lock, domainLock: domainLock, now: time.Now,
 		doc: guarantorJournalDocument{Schema: guarantorJournalSchema, OwnerID: ownerID, AgentID: agentID, Revision: 1,
@@ -700,8 +718,8 @@ func (journal *GuarantorJournal) ActivateCoverage(agreementDigest string, expect
 // leave the action authority terminal while this projection is still pending,
 // but can never leave an ACTIVE coverage without its verification evidence.
 func (journal *GuarantorJournal) CommitActivationEvidence(agreementDigest string, expectedCoverageRevision,
-	expectedFilingRevision uint64,
-	evidence guarantor.AuthorizedCoverageActivationEvidenceV1) (GuarantorCoveragePosition, error) {
+	expectedFilingRevision uint64, evidence guarantor.AuthorizedCoverageActivationEvidenceV1,
+	prerequisites map[string]GuarantorStoredEvidence) (GuarantorCoveragePosition, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	digest, digestErr := guarantor.CoverageActivationEvidenceDigestV1(evidence)
@@ -722,6 +740,14 @@ func (journal *GuarantorJournal) CommitActivationEvidence(agreementDigest string
 	if err != nil || updated.CoverageRevision != evidence.Body.ActivatedCoverageRevision ||
 		updated.FilingStateRevision != evidence.Body.ActivatedClaimFilingStateRevision {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor activation evidence revisions differ from the journal CAS")
+	}
+	// The activation's prerequisite objects are stored with it, so every later
+	// verification of this activation (claim admission, cancellation, closure)
+	// resolves them from this coverage's journal.
+	for digest, stored := range prerequisites {
+		if err := storeImmutableWire(&position, stored.ContentType, digest, stored.Wire); err != nil {
+			return GuarantorCoveragePosition{}, err
+		}
 	}
 	position.Record, position.ActivationEvidence = updated, &evidence
 	next := cloneGuarantorDocument(journal.doc)
@@ -1693,16 +1719,22 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 	if err != nil {
 		return err
 	}
+	var header struct {
+		Schema string `json:"schema"`
+	}
+	if json.Unmarshal(raw, &header) == nil {
+		switch header.Schema {
+		case retiredGuarantorJournalSchema:
+			return errors.New("Guarantor journal uses the retired v1 schema, which has no revision epochs; " +
+				"it cannot be read safely and must be recreated")
+		case retiredGuarantorJournalSchemaV2:
+			return errors.New("Guarantor journal uses the retired v2 schema, which holds immutable receipts inside " +
+				"the document; it cannot be read safely and must be recreated")
+		}
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var doc guarantorJournalDocument
-	if err := decoder.Decode(&doc); err == nil && doc.Schema == retiredGuarantorJournalSchema {
-		return errors.New("Guarantor journal uses the retired v1 schema, which has no revision epochs; " +
-			"it cannot be read safely and must be recreated")
-	}
-	decoder = json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	doc = guarantorJournalDocument{}
 	if err := decoder.Decode(&doc); err != nil || decoder.Decode(&struct{}{}) != io.EOF || doc.Schema != guarantorJournalSchema || doc.OwnerID != ownerID || doc.AgentID != agentID ||
 		doc.Revision == 0 || doc.Offers == nil || doc.Coverages == nil || doc.ClaimToCoverage == nil || doc.AdmissionLogs == nil {
 		return errors.New("Guarantor journal document is invalid")
@@ -1768,17 +1800,24 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 		if coverage.RevisionEpochs == nil {
 			coverage.RevisionEpochs = map[string]GuarantorRevisionEpochState{}
 		}
-		// Every admitted claim's epoch is recorded from its first admission;
-		// a missing record is refused rather than read as a guessed epoch.
+		// Every admitted claim's epoch is recorded from its first admission
+		// and must agree with its stored decision admission and transition; a
+		// missing or contradicting record is refused rather than trusted.
 		for claimID := range coverage.Claims {
-			state, found := coverage.RevisionEpochs[claimID]
-			if !found || (state.State != revisionEpochOpen && state.State != revisionEpochFrozen) ||
-				(state.State == revisionEpochFrozen) != (state.FrozenCut != nil) {
-				return fmt.Errorf("Guarantor journal claim %s has no valid revision epoch record", claimID)
+			if err := validateLoadedRevisionEpoch(coverage, claimID); err != nil {
+				return err
 			}
 		}
 		if coverage.ImmutableEvidence == nil {
 			coverage.ImmutableEvidence = map[string]GuarantorStoredEvidence{}
+		}
+		if len(coverage.ImmutableEvidence) > maximumGuarantorStoredEvidenceReceipts {
+			return errors.New("Guarantor journal coverage holds more immutable receipts than its cap")
+		}
+		for digest, stored := range coverage.ImmutableEvidence {
+			if err := journal.checkStoredEvidenceFile(digest, stored); err != nil {
+				return err
+			}
 		}
 		if coverage.AggregatePendingDecisionReserveAtomic == "" {
 			coverage.AggregatePendingDecisionReserveAtomic = "0"
@@ -1852,7 +1891,19 @@ func (journal *GuarantorJournal) persist(doc guarantorJournalDocument) error {
 	return fileutil.WriteFileAtomicRoot(journal.root, guarantorJournalFile, raw, 0o600)
 }
 
+// commit writes every newly stored immutable receipt to its own file, then the
+// document that names them. A crash between the two leaves only an unnamed,
+// content-addressed file, never a document naming a receipt it cannot serve.
 func (journal *GuarantorJournal) commit(doc guarantorJournalDocument) error {
+	// Positions share their evidence maps with the in-memory document, and a
+	// document clone drops staged bytes, so receipts staged in either are
+	// written before any document naming them is persisted.
+	if err := journal.writeStagedEvidence(journal.doc); err != nil {
+		return err
+	}
+	if err := journal.writeStagedEvidence(doc); err != nil {
+		return err
+	}
 	if err := journal.persist(doc); err != nil {
 		return err
 	}

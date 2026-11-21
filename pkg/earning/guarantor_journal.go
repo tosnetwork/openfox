@@ -2062,6 +2062,7 @@ func (journal *GuarantorJournal) commit(doc guarantorJournalDocument) error {
 	if err := json.Unmarshal(raw, &committed); err != nil {
 		return fmt.Errorf("decode the Guarantor journal document to commit: %w", err)
 	}
+	carryGuarantorPlanFields(&committed, doc)
 	writeErr := journal.writeFile(journal.root, guarantorJournalFile, raw, 0o600)
 	if writeErr != nil && !errors.Is(writeErr, fileutil.ErrReplacedNotSynced) {
 		return writeErr
@@ -2087,7 +2088,47 @@ func (journal *GuarantorJournal) workingCopy() (guarantorJournalDocument, error)
 	if err := json.Unmarshal(raw, &copied); err != nil {
 		return guarantorJournalDocument{}, fmt.Errorf("copy Guarantor journal document: %w", err)
 	}
+	carryGuarantorPlanFields(&copied, journal.doc)
 	return copied, nil
+}
+
+// carryGuarantorPlanFields gives each plan in copied the semantic fields of
+// the same plan in source. A plan's semantic field values have no exported
+// form, so the document's encoding does not carry them and a copy made
+// through that encoding would lose them. The values themselves cannot be
+// changed from outside their package, so a fresh map holding the same values
+// shares no changeable memory with source.
+func carryGuarantorPlanFields(copied *guarantorJournalDocument, source guarantorJournalDocument) {
+	fields := func(original map[string]commerce.SemanticValue) map[string]commerce.SemanticValue {
+		if original == nil {
+			return nil
+		}
+		carried := make(map[string]commerce.SemanticValue, len(original))
+		for name, value := range original {
+			carried[name] = value
+		}
+		return carried
+	}
+	for offerID, offer := range copied.Offers {
+		if original := source.Offers[offerID].PreAcceptanceReleasePlan; offer.PreAcceptanceReleasePlan != nil && original != nil {
+			offer.PreAcceptanceReleasePlan.Fields = fields(original.Fields)
+		}
+	}
+	for planID, plan := range copied.FirmOfferIssuancePlans {
+		if original, found := source.FirmOfferIssuancePlans[planID]; found {
+			plan.Fields = fields(original.Fields)
+			copied.FirmOfferIssuancePlans[planID] = plan
+		}
+	}
+	for agreementDigest, coverage := range copied.Coverages {
+		original := source.Coverages[agreementDigest]
+		if coverage.ExposureReleasePlan != nil && original.ExposureReleasePlan != nil {
+			coverage.ExposureReleasePlan.Fields = fields(original.ExposureReleasePlan.Fields)
+		}
+		if coverage.CoverageResolutionPlan != nil && original.CoverageResolutionPlan != nil {
+			coverage.CoverageResolutionPlan.Fields = fields(original.CoverageResolutionPlan.Fields)
+		}
+	}
 }
 
 func sameJSON(left, right interface{}) bool {

@@ -1053,11 +1053,10 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		claimResult.AdmissionResolution.State != commerce.ActionTerminal {
 		t.Fatalf("admit claim: result=%#v err=%v", claimResult, err)
 	}
-	// The late-recovery scenario keeps the claim at its first revision: the
-	// late fallback must find the claim admission it stands on in the filing
-	// close's timely ingress cut, which records each claim's first admission.
+	// Every scenario revises the claim once; on the late-recovery path the
+	// fallback finds the claim's initial admission in the filing close's cut.
 	revisionResult := claimResult
-	if scenario != guarantorLateRecoveryFallback {
+	{
 		revisedRecovery := recovery
 		revisedRecovery.ClaimRevision = 2
 		revisedRecovery.DeclaredAtUnix = uint64(now.Add(3*time.Minute + time.Second).Unix())
@@ -1318,6 +1317,29 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		if payout.ExpiresAtUnix <= terms.TerminalResolutionDeadlineUnix || payout.ExpiresAtUnix > terms.LateRecoveryTerminalDeadlineUnix {
 			t.Fatalf("late payout expiry %d is outside (%d, %d]", payout.ExpiresAtUnix,
 				terms.TerminalResolutionDeadlineUnix, terms.LateRecoveryTerminalDeadlineUnix)
+		}
+
+		// The payout is made within its window, and the coverage closes with a
+		// terminal claim set holding the late-path decision.
+		lateSink := &guarantorTestPaymentSink{now: func() time.Time { return authority.now() }}
+		latePayouts := GuarantorPayoutService{Coordinator: &coordinator, Sink: lateSink,
+			Verifier: validPaymentEvidence{}, Enabled: true}
+		paid, paidResolution, paidRecord, err := latePayouts.Pay(ctx, agreementDigest, claimID,
+			payout.ObligationInstanceID, "tos:test", lateFence)
+		if err != nil || paidResolution.State != commerce.ActionTerminal || paidRecord.PayoutStatus != guarantor.PayoutPaid ||
+			paid.ResolvedState != "finalized" {
+			t.Fatalf("pay the late-path payout: state=%s err=%v", paidResolution.State, err)
+		}
+		lateClosedAt := authority.now()
+		lateClose, err := coordinator.CloseCoverage(ctx, GuarantorCloseCoverageInput{Offer: offer,
+			ActivationEvidence: activation}, lateFence)
+		if err != nil || lateClose.CoverageResolution.Body.TerminalState != "closed" ||
+			lateClose.ExposureRelease.Body.RealizedLoss.AmountAtomic != "400" {
+			t.Fatalf("close the coverage after the late-recovery path: err=%v", err)
+		}
+		if err := guarantor.VerifyTerminalClaimSetV1(lateClose.TerminalClaimSet, offer, coordinator.AgreementVerifier,
+			coordinator.resolverFor(agreementDigest), authority, coordinator.PaymentVerifier, lateClosedAt); err != nil {
+			t.Fatalf("the terminal claim set holding the late-path decision does not verify: %v", err)
 		}
 		return
 	}

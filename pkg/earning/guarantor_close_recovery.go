@@ -66,7 +66,7 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 				"target_revision": commerce.U64(portfolioRevision + 1), "terminal_evidence_set_digest": commerce.Digest32(terminalDigest)}
 			action, buildErr := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "portfolio.release",
 				fields, request, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", terminalDigest,
-				minUint64(position.Terms.TerminalResolutionDeadlineUnix, fence.Body.ExpiresAtUnix))
+				minUint64(guarantorClosureActionDeadline(position), fence.Body.ExpiresAtUnix))
 			if buildErr == nil {
 				action, buildErr = coordinator.Authority.SignAction(action, fence)
 			}
@@ -165,7 +165,7 @@ func (coordinator *GuarantorProviderCoordinator) resumeCoverageClosureFromTermin
 			"evidence_set_digest": commerce.Digest32(releaseDigest)}
 		action, buildErr := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.obligation.transition",
 			fields, request, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", releaseDigest,
-			minUint64(position.Terms.TerminalResolutionDeadlineUnix, fence.Body.ExpiresAtUnix))
+			minUint64(guarantorClosureActionDeadline(position), fence.Body.ExpiresAtUnix))
 		if buildErr == nil {
 			action, buildErr = coordinator.Authority.SignAction(action, fence)
 		}

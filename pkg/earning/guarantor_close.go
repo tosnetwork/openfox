@@ -384,7 +384,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		"evidence_set_digest": commerce.Digest32(closureEvidenceSetDigest)}
 	closureAction, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.obligation.transition",
 		closureFields, canonicalClosure, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", filingReceiptDigest,
-		minUint64(position.Terms.TerminalResolutionDeadlineUnix, fence.Body.ExpiresAtUnix))
+		minUint64(guarantorClosureActionDeadline(frozen), fence.Body.ExpiresAtUnix))
 	if err == nil {
 		closureAction, err = coordinator.Authority.SignAction(closureAction, fence)
 	}

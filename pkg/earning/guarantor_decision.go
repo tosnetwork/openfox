@@ -116,16 +116,13 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
-	cut, err := coordinator.Journal.ClaimRevisionAdmissionCut(input.AgreementDigest, input.Decision.Body.ClaimID,
-		uint64(now.Unix()))
+	// The successor of a challenged late-recovery candidate reuses the frozen
+	// epoch that challenge left; every other decision freezes the open epoch.
+	epoch, cut, err := coordinator.revisionEpochExpectationAndCut(input.AgreementDigest, position.Record.CoverageObligationID,
+		input.Decision.Body.ClaimID, input.Decision.Body.ExpectedClaimRevision, uint64(now.Unix()))
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
-	epoch := guarantor.ClaimRevisionEpochExpectationV1{SchemaVersion: 1,
-		CoverageAgreementBodyDigest: input.AgreementDigest, CoverageObligationID: position.Record.CoverageObligationID,
-		ClaimID: input.Decision.Body.ClaimID, RevisionEpoch: input.Decision.Body.ExpectedClaimRevision,
-		RevisionIngressLogID: cut.ClaimIngressLogID, ExpectedEpochState: "open",
-		ExpectedEpochStateRevision: cut.PriorEpochStateRevision, ExpectedClaimRevision: input.Decision.Body.ExpectedClaimRevision}
 	variant := guarantor.AuthorizedDecisionAdmissionVariantV1{AuthorizedClaimDecisionDigest: decisionDigest,
 		AuthorizedClaimAdmissionReceiptDigest: claimAdmissionDigest, ClaimRevisionEpochExpectation: epoch,
 		ExpectedClaimStateRevision:    record.ClaimStateRevision,
@@ -236,7 +233,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 		ClaimID: record.ClaimID, AuthorizedClaimDecisionDigest: decisionDigest, AdmissionMode: "authorized_decision",
 		AuthorizedClaimAdmissionReceiptDigest: mustGuarantorDigest(guarantor.ClaimAdmissionReceiptEnvelopeDomain, claimAdmission),
 		ClaimRevisionIngressCutProofDigest:    cutDigest, FrozenRevisionEpoch: epoch.RevisionEpoch,
-		PriorRevisionEpochStateRevision:     epoch.ExpectedEpochStateRevision,
+		PriorRevisionEpochStateRevision:     cut.PriorEpochStateRevision,
 		FrozenRevisionEpochStateRevision:    cut.FrozenEpochStateRevision,
 		FrozenClaimRevisionIngressHighWater: cut.AdmissionHighWater, FrozenClaimRevisionIngressLogRoot: cut.AdmissionLogRoot,
 		PredecessorDecisionAdmissionReceiptDigest:    variant.PredecessorDecisionAdmissionReceiptDigest,
@@ -264,6 +261,10 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 	if targetStatus == guarantor.ClaimEvidenceRequired || targetStatus == guarantor.ClaimDisputed {
 		body.ResultingApplicationToken = nil
 	}
+	// The successor of a challenged late-recovery candidate carries the
+	// candidate's late filing-close digest: it is the late path's one
+	// challenge round marker, and the payout ceiling follows it.
+	body.LateFilingCloseReceiptDigest = lateRecoveryCandidateMarker(predecessorTransition)
 	bodyDigest, err := guarantor.Digest("tos.service.agent-guarantor-claim-decision-admission-receipt-body.v1", body)
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{Resolution: resolution}, err
@@ -321,6 +322,13 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(decisionAdmission, position.Terms,
 		coordinator.AgreementVerifier, coordinator.Resolver, coordinator.Authority, now); err != nil {
 		return GuarantorClaimTransitionResult{}, fmt.Errorf("verify current Guarantor decision admission: %w", err)
+	}
+	// The late-recovery path allows one challenge round: its candidate's
+	// successor, marked by the candidate's late filing-close digest, is never
+	// challenged again.
+	if path := decisionAdmission.AuthorizedClaimDecision.Body.DecisionPath; input.TransitionKind == "challenge_admission" &&
+		(path == "successor" || path == "terminal_fallback") && decisionAdmission.Body.LateFilingCloseReceiptDigest != "" {
+		return GuarantorClaimTransitionResult{}, errors.New("Guarantor late-recovery successor cannot be challenged: the late-recovery path allows one challenge round")
 	}
 	claimID := decisionAdmission.Body.ClaimID
 	record, found := position.Claims[claimID]

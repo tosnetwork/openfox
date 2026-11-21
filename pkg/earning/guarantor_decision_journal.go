@@ -127,6 +127,12 @@ func (journal *GuarantorJournal) ClaimRevisionAdmissionCut(agreementDigest, clai
 	if !found || !claimFound || record.ClaimRevision == 0 {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor claim revision cut has no admitted claim")
 	}
+	// A fresh cut freezes the open epoch; a frozen epoch is reused with the
+	// cut that froze it and cannot be cut again.
+	epoch := revisionEpochOf(position, claimID)
+	if epoch.State != revisionEpochOpen {
+		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor claim revision epoch is frozen: reuse its cut")
+	}
 	logID, err := guarantor.ClaimIngressLogIDV1(agreementDigest, position.Record.CoverageObligationID, claimID)
 	if err != nil {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, err
@@ -174,8 +180,8 @@ func (journal *GuarantorJournal) ClaimRevisionAdmissionCut(agreementDigest, clai
 	}
 	proof := guarantor.ClaimIngressAdmissionCutProofV1{SchemaVersion: 1,
 		CoverageAgreementBodyDigest: agreementDigest, CoverageObligationID: position.Record.CoverageObligationID,
-		CutKind: "claim_revisions", ClaimID: claimID, RevisionEpoch: record.ClaimRevision,
-		PriorEpochStateRevision: 1, FrozenEpochStateRevision: 2, ClaimIngressLogID: logID,
+		CutKind: "claim_revisions", ClaimID: claimID, RevisionEpoch: epoch.Epoch,
+		PriorEpochStateRevision: epoch.StateRevision, FrozenEpochStateRevision: epoch.StateRevision + 1, ClaimIngressLogID: logID,
 		IngressCutoffUnix: cutoffUnix, AdmissionHighWater: uint64(len(proofEntries)), AdmissionLogRoot: root,
 		Entries: proofEntries, AdmittedClaimCount: uint64(len(proofEntries))}
 	if err := guarantor.ValidateClaimIngressAdmissionCutProofV1(proof); err != nil {
@@ -288,13 +294,24 @@ func (journal *GuarantorJournal) CommitDecisionAdmission(agreementDigest string,
 	if err != nil || pendingAfter != body.AggregatePendingDecisionReserveAfter.AmountAtomic {
 		return guarantor.ClaimRecord{}, errors.New("Guarantor decision reserve arithmetic differs")
 	}
-	record.ClaimStatus = target
-	record.ClaimStateRevision++
-	record.DecisionSequence = body.DecisionSequence
+	epoch, err := applyDecisionRevisionEpochCAS(revisionEpochOf(position, body.ClaimID), receipt)
+	if err != nil {
+		return guarantor.ClaimRecord{}, err
+	}
 	receiptDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(receipt)
 	if err != nil {
 		return guarantor.ClaimRecord{}, err
 	}
+	if err := storeImmutableEvidence(&position, guarantorDecisionAdmissionMediaType, receiptDigest, receipt); err != nil {
+		return guarantor.ClaimRecord{}, err
+	}
+	if position.RevisionEpochs == nil {
+		position.RevisionEpochs = map[string]GuarantorRevisionEpochState{}
+	}
+	position.RevisionEpochs[body.ClaimID] = epoch
+	record.ClaimStatus = target
+	record.ClaimStateRevision++
+	record.DecisionSequence = body.DecisionSequence
 	record.LastEvidenceDigest = receiptDigest
 	position.Record.CoverageRevision++
 	position.Record.LastEvidenceDigest = receiptDigest
@@ -369,6 +386,14 @@ func (journal *GuarantorJournal) CommitClaimStateTransition(agreementDigest stri
 	if err != nil {
 		return guarantor.ClaimRecord{}, err
 	}
+	epoch, err := reopenRevisionEpochAfter(revisionEpochOf(position, body.ClaimID), receipt)
+	if err != nil {
+		return guarantor.ClaimRecord{}, err
+	}
+	if position.RevisionEpochs == nil {
+		position.RevisionEpochs = map[string]GuarantorRevisionEpochState{}
+	}
+	position.RevisionEpochs[body.ClaimID] = epoch
 	record.ClaimStatus = target
 	record.ClaimStateRevision++
 	record.LastEvidenceDigest = receiptDigest
@@ -431,6 +456,9 @@ func (journal *GuarantorJournal) CommitDecisionApplication(agreementDigest strin
 	}
 	applicationDigest, err := guarantor.ClaimDecisionApplicationReceiptDigestV1(receipt)
 	if err != nil {
+		return guarantor.ClaimRecord{}, err
+	}
+	if err := storeImmutableEvidence(&position, guarantorDecisionApplicationMediaType, applicationDigest, receipt); err != nil {
 		return guarantor.ClaimRecord{}, err
 	}
 	token.TokenRevision++

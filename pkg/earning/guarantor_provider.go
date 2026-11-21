@@ -839,7 +839,8 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	}
 	payouts, err := guarantor.MaterializeClaimPayout(coordinator.OwnerID, coordinator.AgentID, coordinator.MandateDigest,
 		coverage.Terms.PayoutTemplate.AgreementObligationID, coverage.Terms, decision,
-		transitionDigest, transition.Body.TransitionedAtUnix, coverage.NextPayoutSequence)
+		transitionDigest, transition.Body.TransitionedAtUnix, coverage.NextPayoutSequence,
+		guarantor.OnLateRecoveryPathV1(admission.Body))
 	if err != nil {
 		return GuarantorDecisionApplicationResult{}, err
 	}

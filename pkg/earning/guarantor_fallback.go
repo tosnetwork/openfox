@@ -229,26 +229,15 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		}
 		variant.CurrentClaimStateTransitionReceiptDigest = transitionDigest
 	}
-	var initialAdmissionProof *guarantor.ClaimAdmissionReceiptProofV1
 	if lateRecovery {
+		// A revised claim's admission receipt, carried below, holds the proof of
+		// the claim's initial admission, whose timely ingress the filing close's
+		// cut records.
 		descriptor, descriptorErr := lateFilingCloseDescriptor(*input.LateFilingReceipt, position.Terms)
 		if descriptorErr != nil {
 			return GuarantorDecisionAdmissionResult{}, descriptorErr
 		}
 		variant.LateFilingCloseReceiptDescriptor = &descriptor
-		// A revised claim's late fallback carries the claim's initial
-		// admission, whose timely ingress the filing close's cut records.
-		if claimAdmission.Body.AdmissionKind == "revision" {
-			initial, found := position.ClaimAdmissionReceipts[guarantorClaimRevisionKey(input.ClaimID, 1)]
-			if !found {
-				return GuarantorDecisionAdmissionResult{}, errors.New("Guarantor late fallback has no stored initial claim admission")
-			}
-			proof, proofErr := coordinator.sealClaimAdmissionProof(initial, position.Terms, now)
-			if proofErr != nil {
-				return GuarantorDecisionAdmissionResult{}, proofErr
-			}
-			initialAdmissionProof = &proof
-		}
 	}
 	actionBody := guarantor.ClaimDecisionAdmissionActionBodyV1{SchemaVersion: 1, AdmissionMode: "deterministic_fallback",
 		DeterministicFallbackVariant: &variant}
@@ -384,7 +373,6 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		PriorPendingApplicationToken:           priorToken,
 		PredecessorClaimStateTransitionReceipt: currentTransition,
 		CurrentDecisionAdmissionProof:          currentDecisionProof,
-		InitialClaimAdmissionProof:             initialAdmissionProof,
 		AuthorityAdmissionEligibilityProofSet:  eligibility,
 		Authorizations:                         []guarantor.ProfileQualifiedObjectAuthorizationV1{receiptAuthorization}}
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(receipt, position.Terms, coordinator.AgreementVerifier,

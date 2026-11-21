@@ -515,8 +515,21 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	}
 	underlyingResolver := staticUnderlyingAgreementResolver{underlyingDigest: {
 		Body: underlying, AuthorizationEvidence: []commerce.AgreementAuthorizationEvidence{resolvedUnderlyingEvidence}}}
+	// Every deadline follows from one anchor, the coverage Agreement's expiry.
+	// Without a late-recovery contingency the terminal resolution deadline is
+	// that expiry. With one, the late-recovery terminal deadline is the expiry,
+	// late ingress ends one late-candidate closure before it, and the terminal
+	// resolution deadline one late-ingress window before that.
+	agreementExpiresAt := uint64(now.Add(time.Hour).Unix())
+	lateScenario := scenario == guarantorLateRecoveryFallback || scenario == guarantorLateFromDisputedFallback ||
+		scenario == guarantorLateFromReviewingFallback || scenario == guarantorLateCandidateTimesOut
+	deadlines := deriveGuarantorTestDeadlines(t, capacity, agreementExpiresAt, lateScenario,
+		claimProfile.MaximumLateIngressRecoveryWindowSeconds)
 	requested := guarantor.RequestedCoverageTermsV1{SchemaVersion: 1, CoverageCategory: "service-default",
-		BenefitKind: guarantor.BenefitFixed, CoverageAsset: asset,
+		MaximumLateIngressRecoveryWindowSeconds: deadlines.lateIngressWindowSeconds,
+		MaximumTerminalResolutionDeadlineUnix:   deadlines.terminalResolution,
+		MaximumLateRecoveryTerminalDeadlineUnix: deadlines.lateRecoveryTerminal,
+		BenefitKind:                             guarantor.BenefitFixed, CoverageAsset: asset,
 		RequestedAggregatePayout: commerce.AtomicAmountV1{Asset: asset, AmountAtomic: "1000"},
 		RequestedPerClaim:        commerce.AtomicAmountV1{Asset: asset, AmountAtomic: "500"}, MaximumClaims: 2,
 		RequestedClosureCapacity: capacity, RequestedCoverageStartsAtUnix: uint64(now.Add(2 * time.Minute).Unix()),
@@ -589,7 +602,7 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 				SubjectNamespace: "tos.agent", SubjectIdentifier: "agent:guarantor"}, ObligationIDs: []string{"obligation:coverage", "obligation:payout"},
 				EvidenceProfileURI: firmOfferEvidenceProfile.ProfileURI, EvidenceProfileVersion: uint32(firmOfferEvidenceProfile.ProfileVersion),
 				EvidenceProfileDigest: firmOfferEvidenceProfile.ProfileDigest, ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())}},
-		ValidFromUnix: uint64(now.Add(-time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())}
+		ValidFromUnix: uint64(now.Add(-time.Minute).Unix()), ExpiresAtUnix: agreementExpiresAt}
 	agreement, err = commerce.PrepareAgreementTargets(agreement)
 	if err != nil {
 		t.Fatal(err)
@@ -669,7 +682,10 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 				PermittedTerminalFailureOutcomes: []string{"failed"}}}},
 		},
 		CancellationPolicy:             cancellationPolicy,
-		TerminalResolutionDeadlineUnix: uint64(now.Add(55 * time.Minute).Unix()), CoverageStateDomainDigest: digest("4"),
+		TerminalResolutionDeadlineUnix:   deadlines.terminalResolution,
+		LateIngressRecoveryWindowSeconds: deadlines.lateIngressWindowSeconds,
+		LateIngressRecoveryDeadlineUnix:  deadlines.lateIngressRecovery,
+		LateRecoveryTerminalDeadlineUnix: deadlines.lateRecoveryTerminal, CoverageStateDomainDigest: digest("4"),
 		SelectedClaimProfileDigest: claimProfileDigest, SelectedPayoutAdapterProfile: payoutAdapter,
 		CoverageOperationAdapterProfile: ref("8", "coverage-operation"), ClaimOperationAdapterProfile: ref("9", "claim-operation"),
 		ExposureOperationAdapterProfile: ref("a", "exposure-operation"), StageActionAuthorityBinding: stageBinding,
@@ -683,14 +699,6 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		DecisionAdmissionAuthoritySubjects: []string{"agent:guarantor"}, DecisionAdmissionQuorumRule: "all",
 		DecisionAuthoritySubjects: []string{"agent:guarantor"}, DecisionQuorumRule: "all", PayoutTemplate: template,
 		PremiumObligationIDs: []string{"obligation:premium"}}
-	if scenario == guarantorLateRecoveryFallback || scenario == guarantorLateFromDisputedFallback ||
-		scenario == guarantorLateFromReviewingFallback || scenario == guarantorLateCandidateTimesOut {
-		// The late-recovery contingency: filing may close up to five minutes
-		// after the terminal resolution deadline, and the late path must end
-		// within the hour after that.
-		terms.LateIngressRecoveryDeadlineUnix = terms.TerminalResolutionDeadlineUnix + 300
-		terms.LateRecoveryTerminalDeadlineUnix = terms.TerminalResolutionDeadlineUnix + 3600
-	}
 	root := t.TempDir()
 	authorityDirectory, journalDirectory := filepath.Join(root, "authority"), filepath.Join(root, "guarantor")
 	if err := os.Mkdir(authorityDirectory, 0o700); err != nil {
@@ -1209,12 +1217,13 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		decisionReason.Result = guarantor.DecisionDisputed
 	}
 	decisionReasonDigest, _ := guarantor.ClaimDecisionReasonDigestV1(decisionReason)
-	// lateFilingClose closes claim filing a minute after the terminal
-	// resolution deadline, with the claim not yet final, and returns the
-	// filing-close receipt and a writer fence at that time.
+	// lateFilingClose closes claim filing twenty seconds after the terminal
+	// resolution deadline, inside the late-ingress window, with the claim not
+	// yet final, and returns the filing-close receipt and a writer fence at
+	// that time.
 	lateFilingClose := func(instance string) (*guarantor.AuthorizedClaimFilingCloseReceiptV1, commerce.WriterFence, time.Time) {
 		ctx := context.Background()
-		lateAt := time.Unix(int64(terms.TerminalResolutionDeadlineUnix)+60, 0).UTC()
+		lateAt := time.Unix(int64(terms.TerminalResolutionDeadlineUnix)+20, 0).UTC()
 		authority.now = func() time.Time { return lateAt }
 		lateFence, err := authority.AcquireWriter(ctx, instance, scope, time.Hour)
 		if err != nil {
@@ -1236,24 +1245,39 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		}
 		return filing, lateFence, lateAt
 	}
-	// checkInitialAdmissionProof: the late fallback of the revised claim
-	// carries the claim's initial admission proof and verifies with it; it is
-	// refused without it, and refused when the proof presented under the
-	// initial admission's digest is another admission's sealed proof.
+	// checkInitialAdmissionProof: the revision admission a late fallback
+	// carries holds the claim's initial admission proof and verifies with it.
+	// The proof lies outside the admission's signed body, so removing or
+	// replacing it leaves every signature valid and only the proof's own checks
+	// refuse: without it, and when the proof presented under the initial
+	// admission's digest is another admission's sealed proof. The fallback pins
+	// the carried admission by digest, so it is refused with the proof removed.
 	checkInitialAdmissionProof := func(receipt guarantor.AuthorizedClaimDecisionAdmissionReceiptV1, at time.Time) {
 		t.Helper()
-		proof := receipt.InitialClaimAdmissionProof
-		initialDigest := receipt.AuthorizedClaimAdmissionReceipt.Body.InitialClaimAdmissionReceiptDigest
-		if receipt.AuthorizedClaimAdmissionReceipt.Body.AdmissionKind != "revision" || proof == nil ||
+		admission := receipt.AuthorizedClaimAdmissionReceipt
+		proof := admission.InitialClaimAdmissionProof
+		initialDigest := admission.Body.InitialClaimAdmissionReceiptDigest
+		if admission.Body.AdmissionKind != "revision" || proof == nil ||
 			proof.ReceiptEnvelopeDigest != initialDigest || proof.ReceiptBody.AdmissionKind != "initial" {
 			t.Fatalf("the revised claim's late fallback does not carry its initial admission proof: %#v", proof)
 		}
-		missing := receipt
+		if err := guarantor.VerifyClaimAdmissionReceiptV1(admission, terms, coordinator.AgreementVerifier,
+			coordinator.resolverFor(agreementDigest), authority, at); err != nil {
+			t.Fatalf("the revision admission with its initial admission proof does not verify: %v", err)
+		}
+		missing := admission
 		missing.InitialClaimAdmissionProof = nil
-		if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(missing, terms, coordinator.AgreementVerifier,
+		if err := guarantor.VerifyClaimAdmissionReceiptV1(missing, terms, coordinator.AgreementVerifier,
 			coordinator.resolverFor(agreementDigest), authority, at); err == nil ||
 			!strings.Contains(err.Error(), "lacks its initial claim admission proof") {
-			t.Fatalf("a late fallback without its initial admission proof was not refused: %v", err)
+			t.Fatalf("a revision admission without its initial admission proof was not refused: %v", err)
+		}
+		stripped := receipt
+		stripped.AuthorizedClaimAdmissionReceipt = missing
+		if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(stripped, terms, coordinator.AgreementVerifier,
+			coordinator.resolverFor(agreementDigest), authority, at); err == nil ||
+			!strings.Contains(err.Error(), "claim admission reference differs from the carried receipt") {
+			t.Fatalf("a late fallback whose revision admission lost its initial proof was not refused: %v", err)
 		}
 		position, err := coordinator.coveragePosition(agreementDigest)
 		if err != nil {
@@ -1273,9 +1297,9 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		relabelled.ReceiptEnvelopeDigest = initialDigest
 		relabelled.ReceiptDescriptor.ContentDigest = initialDigest
 		relabelled.ReceiptBody.AdmissionKind = "initial"
-		substituted := receipt
+		substituted := admission
 		substituted.InitialClaimAdmissionProof = &relabelled
-		if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(substituted, terms, coordinator.AgreementVerifier,
+		if err := guarantor.VerifyClaimAdmissionReceiptV1(substituted, terms, coordinator.AgreementVerifier,
 			coordinator.resolverFor(agreementDigest), authority, at); err == nil ||
 			!strings.Contains(err.Error(), "initial claim admission proof is invalid") {
 			t.Fatalf("another admission's sealed proof was accepted as the initial admission: %v", err)
@@ -1334,8 +1358,7 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 				AgreementDigest: agreementDigest, ClaimID: claimID}, lateFence)
 			if err != nil || timedOut.Receipt.Body.DecisionPath != "terminal_fallback" ||
 				timedOut.Receipt.Body.PriorClaimState != "reviewing" ||
-				timedOut.Receipt.Body.LateFilingCloseReceiptDigest != candidate.Receipt.Body.LateFilingCloseReceiptDigest ||
-				timedOut.Receipt.InitialClaimAdmissionProof != nil {
+				timedOut.Receipt.Body.LateFilingCloseReceiptDigest != candidate.Receipt.Body.LateFilingCloseReceiptDigest {
 				t.Fatalf("admit the terminal fallback at the late candidate's successor deadline: resolution=%#v err=%v",
 					timedOut.Resolution, err)
 			}
@@ -1582,7 +1605,7 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 			// Claim filing closes late while the claim is still disputed; the
 			// late-recovery fallback replaces the disputed head in the journal.
 			ctx := context.Background()
-			lateAt := time.Unix(int64(terms.TerminalResolutionDeadlineUnix)+60, 0).UTC()
+			lateAt := time.Unix(int64(terms.TerminalResolutionDeadlineUnix)+20, 0).UTC()
 			authority.now = func() time.Time { return lateAt }
 			lateFence, err := authority.AcquireWriter(ctx, "instance:late-disputed", scope, time.Hour)
 			if err != nil {
@@ -2109,6 +2132,57 @@ func signGuarantorTestAcceptance(t *testing.T, agreement commerce.AgentAgreement
 		AuthorizationEvidenceSet: evidenceSet,
 		Authorizations:           []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization},
 	}
+}
+
+// guarantorTestDeadlines are coverage terms' deadlines derived from one
+// hard-effect deadline. Without a late-recovery contingency the three late
+// values are zero.
+type guarantorTestDeadlines struct {
+	terminalResolution       uint64
+	lateIngressWindowSeconds uint64
+	lateIngressRecovery      uint64
+	lateRecoveryTerminal     uint64
+}
+
+// guarantorLateCandidateClosureSeconds is the closure time the late-recovery
+// path reserves: the budget entry of a challengeable candidate with at most
+// one remaining challenge round.
+func guarantorLateCandidateClosureSeconds(t *testing.T, capacity guarantor.ClaimClosureCapacityV1) uint64 {
+	t.Helper()
+	key := "challengeable_candidate:r=0"
+	if capacity.MaximumChallengeRoundsPerClaim >= 1 {
+		key = "challengeable_candidate:r=1"
+	}
+	for _, entry := range capacity.ContinuationBudgetEntries {
+		if entry.ProfileStateKey == key {
+			return entry.MaximumRemainingClosureSeconds
+		}
+	}
+	t.Fatalf("the continuation budget has no %s entry", key)
+	return 0
+}
+
+// deriveGuarantorTestDeadlines applies the deadline derivation to a
+// hard-effect deadline: with a late contingency the late-recovery terminal
+// deadline is that deadline, late ingress ends one late-candidate closure
+// before it and the terminal resolution deadline one window before that;
+// without one the terminal resolution deadline is the hard-effect deadline.
+func deriveGuarantorTestDeadlines(t *testing.T, capacity guarantor.ClaimClosureCapacityV1, hardEffectDeadline uint64,
+	lateContingency bool, lateIngressWindowSeconds uint64) guarantorTestDeadlines {
+	t.Helper()
+	if !lateContingency {
+		return guarantorTestDeadlines{terminalResolution: hardEffectDeadline}
+	}
+	closure := guarantorLateCandidateClosureSeconds(t, capacity)
+	if lateIngressWindowSeconds == 0 || closure == 0 || hardEffectDeadline < closure ||
+		hardEffectDeadline-closure < lateIngressWindowSeconds {
+		t.Fatalf("no late-recovery deadlines fit before %d: closure=%d window=%d", hardEffectDeadline, closure,
+			lateIngressWindowSeconds)
+	}
+	lateIngress := hardEffectDeadline - closure
+	return guarantorTestDeadlines{terminalResolution: lateIngress - lateIngressWindowSeconds,
+		lateIngressWindowSeconds: lateIngressWindowSeconds, lateIngressRecovery: lateIngress,
+		lateRecoveryTerminal: hardEffectDeadline}
 }
 
 func mustGuarantorQuoteDigest(t *testing.T, request guarantor.AuthorizedCoverageQuoteRequestV1) string {

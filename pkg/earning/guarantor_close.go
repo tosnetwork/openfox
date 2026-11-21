@@ -39,7 +39,8 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		return GuarantorCloseCoverageResult{}, errors.New("Guarantor closure writer is stale")
 	}
 	if err := guarantor.VerifyCoverageActivationEvidenceV1(input.ActivationEvidence, input.Offer,
-		coordinator.AgreementVerifier, coordinator.Resolver, coordinator.Authority,
+		coordinator.AgreementVerifier, coordinator.resolverFor(input.ActivationEvidence.Body.CoverageAgreementBodyDigest),
+		coordinator.Authority,
 		coordinator.CollateralFinalityVerifier, now); err != nil {
 		return GuarantorCloseCoverageResult{}, err
 	}
@@ -70,7 +71,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 	endCommitment := input.ActivationEvidence.CoverageEndCommitment
 	if input.CancellationReceipt != nil {
 		if err := guarantor.VerifyCoverageCancellationReceiptV1(*input.CancellationReceipt, input.ActivationEvidence,
-			coordinator.AgreementVerifier, coordinator.Resolver, coordinator.Authority, now); err != nil {
+			coordinator.AgreementVerifier, coordinator.resolverFor(agreementDigest), coordinator.Authority, now); err != nil {
 			return GuarantorCloseCoverageResult{}, err
 		}
 		cancellationDigest, digestErr := guarantor.CoverageCancellationReceiptDigestV1(*input.CancellationReceipt)
@@ -841,28 +842,7 @@ func terminalClaimBundles(coordinator *GuarantorProviderCoordinator, position Gu
 			ClaimStateRevision: record.ClaimStateRevision, TerminalClaimStateTransitionReceiptDigest: transitionDigest,
 			MaterializedPayoutObligationSetDigest: payoutDigest, TerminalPayoutEvidenceSetDigest: paymentDigest}
 		buildAdmissionProof := func(receipt guarantor.AuthorizedClaimAdmissionReceiptV1) (guarantor.ClaimAdmissionReceiptProofV1, error) {
-			seal, descriptor, sealErr := guarantor.NewClaimAdmissionReceiptSealBodyV1(receipt, position.Terms, now)
-			if sealErr != nil {
-				return guarantor.ClaimAdmissionReceiptProofV1{}, sealErr
-			}
-			sealDigest, digestErr := guarantor.Digest(guarantor.ClaimAdmissionReceiptSealDomainV1, seal)
-			if digestErr != nil {
-				return guarantor.ClaimAdmissionReceiptProofV1{}, digestErr
-			}
-			stageName := "claim_revision_admission"
-			if receipt.Body.AdmissionKind == "initial" {
-				stageName = "initial_claim_admission"
-			}
-			bound, boundErr := guarantor.FindStageActionAuthorityV1(position.Terms.StageActionAuthorityBinding, stageName)
-			if boundErr != nil || bound.ActionAuthorityID == "" {
-				return guarantor.ClaimAdmissionReceiptProofV1{}, errors.New("Guarantor claim-admission seal authority is unavailable")
-			}
-			sealAuthorization, signErr := coordinator.ActionAuthoritySigner.SignObject("claim-admission-receipt-seal", sealDigest,
-				"tos.service.agent-guarantor-claim-admission-receipt-seal-signature.v1", now)
-			if signErr != nil || sealAuthorization.AuthoritySubject != bound.ActionAuthorityID {
-				return guarantor.ClaimAdmissionReceiptProofV1{}, errors.New("Guarantor claim-admission seal authority differs from the bound stage authority")
-			}
-			return guarantor.BuildClaimAdmissionReceiptProofV1(receipt, position.Terms, descriptor, seal, sealAuthorization)
+			return coordinator.sealClaimAdmissionProof(receipt, position.Terms, now)
 		}
 		initialProof, proofErr := buildAdmissionProof(initialAdmission)
 		if proofErr != nil {

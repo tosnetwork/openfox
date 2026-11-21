@@ -214,7 +214,7 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 		AuthorityAdmissionEligibilityProofSet: eligibility,
 		Authorizations:                        []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
 	if err := guarantor.VerifyCoverageNonActivationEvidenceV1(evidence, input.Offer, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, now); err != nil {
+		coordinator.resolverFor(agreementDigest), coordinator.Authority, now); err != nil {
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, resolution, err
 	}
 	if _, err := coordinator.Journal.ConfirmNonActivation(agreementDigest, position.Record.CoverageRevision,

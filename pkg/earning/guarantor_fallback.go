@@ -165,6 +165,12 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 			if lateRecovery {
 				return position.Terms.LateIngressRecoveryDeadlineUnix
 			}
+			// The fallback replacing a challenged late-recovery candidate is
+			// still on the late path, which ends at its own terminal deadline,
+			// after the ordinary terminal resolution deadline has passed.
+			if lateRecoveryCandidateMarker(currentTransition) != "" {
+				return position.Terms.LateRecoveryTerminalDeadlineUnix
+			}
 			return position.Terms.TerminalResolutionDeadlineUnix
 		}(), uint64(now.Add(30*24*time.Hour).Unix()))}
 	decision := guarantor.AuthorizedClaimDecisionV1{Body: decisionBody, DecisionEvidenceSet: evidenceSet,
@@ -223,12 +229,26 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		}
 		variant.CurrentClaimStateTransitionReceiptDigest = transitionDigest
 	}
+	var initialAdmissionProof *guarantor.ClaimAdmissionReceiptProofV1
 	if lateRecovery {
 		descriptor, descriptorErr := lateFilingCloseDescriptor(*input.LateFilingReceipt, position.Terms)
 		if descriptorErr != nil {
 			return GuarantorDecisionAdmissionResult{}, descriptorErr
 		}
 		variant.LateFilingCloseReceiptDescriptor = &descriptor
+		// A revised claim's late fallback carries the claim's initial
+		// admission, whose timely ingress the filing close's cut records.
+		if claimAdmission.Body.AdmissionKind == "revision" {
+			initial, found := position.ClaimAdmissionReceipts[guarantorClaimRevisionKey(input.ClaimID, 1)]
+			if !found {
+				return GuarantorDecisionAdmissionResult{}, errors.New("Guarantor late fallback has no stored initial claim admission")
+			}
+			proof, proofErr := coordinator.sealClaimAdmissionProof(initial, position.Terms, now)
+			if proofErr != nil {
+				return GuarantorDecisionAdmissionResult{}, proofErr
+			}
+			initialAdmissionProof = &proof
+		}
 	}
 	actionBody := guarantor.ClaimDecisionAdmissionActionBodyV1{SchemaVersion: 1, AdmissionMode: "deterministic_fallback",
 		DeterministicFallbackVariant: &variant}
@@ -250,6 +270,12 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		"", record.LastEvidenceDigest, func() uint64 {
 			if lateRecovery {
 				return position.Terms.LateIngressRecoveryDeadlineUnix
+			}
+			// The fallback replacing a challenged late-recovery candidate is
+			// still on the late path, which ends at its own terminal deadline,
+			// after the ordinary terminal resolution deadline has passed.
+			if lateRecoveryCandidateMarker(currentTransition) != "" {
+				return position.Terms.LateRecoveryTerminalDeadlineUnix
 			}
 			return position.Terms.TerminalResolutionDeadlineUnix
 		}())
@@ -358,6 +384,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		PriorPendingApplicationToken:           priorToken,
 		PredecessorClaimStateTransitionReceipt: currentTransition,
 		CurrentDecisionAdmissionProof:          currentDecisionProof,
+		InitialClaimAdmissionProof:             initialAdmissionProof,
 		AuthorityAdmissionEligibilityProofSet:  eligibility,
 		Authorizations:                         []guarantor.ProfileQualifiedObjectAuthorizationV1{receiptAuthorization}}
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(receipt, position.Terms, coordinator.AgreementVerifier,
@@ -392,6 +419,38 @@ func (coordinator *GuarantorProviderCoordinator) sealDecisionAdmissionProof(
 		return guarantor.ClaimDecisionAdmissionReceiptProofV1{}, err
 	}
 	return guarantor.BuildClaimDecisionAdmissionReceiptProofV1(receipt, terms, descriptor, sealBody, sealAuthorization)
+}
+
+// sealClaimAdmissionProof seals a claim admission receipt into its compact
+// proof under the stage authority bound for its admission kind.
+func (coordinator *GuarantorProviderCoordinator) sealClaimAdmissionProof(
+	receipt guarantor.AuthorizedClaimAdmissionReceiptV1, terms guarantor.CoverageTermsV1,
+	now time.Time) (guarantor.ClaimAdmissionReceiptProofV1, error) {
+	if coordinator.ActionAuthoritySigner == nil {
+		return guarantor.ClaimAdmissionReceiptProofV1{}, errors.New("Guarantor claim-admission proof has no Action Authority signer")
+	}
+	seal, descriptor, err := guarantor.NewClaimAdmissionReceiptSealBodyV1(receipt, terms, now)
+	if err != nil {
+		return guarantor.ClaimAdmissionReceiptProofV1{}, err
+	}
+	sealDigest, err := guarantor.Digest(guarantor.ClaimAdmissionReceiptSealDomainV1, seal)
+	if err != nil {
+		return guarantor.ClaimAdmissionReceiptProofV1{}, err
+	}
+	stageName := "claim_revision_admission"
+	if receipt.Body.AdmissionKind == "initial" {
+		stageName = "initial_claim_admission"
+	}
+	bound, err := guarantor.FindStageActionAuthorityV1(terms.StageActionAuthorityBinding, stageName)
+	if err != nil || bound.ActionAuthorityID == "" {
+		return guarantor.ClaimAdmissionReceiptProofV1{}, errors.New("Guarantor claim-admission seal authority is unavailable")
+	}
+	sealAuthorization, err := coordinator.ActionAuthoritySigner.SignObject("claim-admission-receipt-seal", sealDigest,
+		"tos.service.agent-guarantor-claim-admission-receipt-seal-signature.v1", now)
+	if err != nil || sealAuthorization.AuthoritySubject != bound.ActionAuthorityID {
+		return guarantor.ClaimAdmissionReceiptProofV1{}, errors.New("Guarantor claim-admission seal authority differs from the bound stage authority")
+	}
+	return guarantor.BuildClaimAdmissionReceiptProofV1(receipt, terms, descriptor, seal, sealAuthorization)
 }
 
 // lateFilingCloseDescriptor is the immutable reference a late-recovery

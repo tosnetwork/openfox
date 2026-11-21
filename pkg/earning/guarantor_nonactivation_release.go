@@ -28,11 +28,11 @@ func (coordinator *GuarantorProviderCoordinator) ReleaseNonActivatedExposure(ctx
 		return guarantor.AuthorizedNonActivationExposureReleaseReceiptV1{}, commerce.ActionResolution{},
 			errors.New("Guarantor non-activation release writer is stale")
 	}
+	agreementDigest := evidence.Body.CoverageAgreementBodyDigest
 	if err := guarantor.VerifyCoverageNonActivationEvidenceV1(evidence, offer, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, now); err != nil {
+		coordinator.resolverFor(agreementDigest), coordinator.Authority, now); err != nil {
 		return guarantor.AuthorizedNonActivationExposureReleaseReceiptV1{}, commerce.ActionResolution{}, err
 	}
-	agreementDigest := evidence.Body.CoverageAgreementBodyDigest
 	position, err := coordinator.coveragePosition(agreementDigest)
 	if err != nil || position.Record.CoverageStatus != guarantor.CoverageNotActivatedConfirmed ||
 		position.NonActivationEvidence == nil || len(position.ClaimAdmissionSequence) != 0 {
@@ -108,7 +108,7 @@ func (coordinator *GuarantorProviderCoordinator) ReleaseNonActivatedExposure(ctx
 		AuthorizedNonActivationEvidence: evidence,
 		Authorizations:                  []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
 	if err := guarantor.VerifyNonActivationExposureReleaseReceiptV1(receipt, offer, coordinator.AgreementVerifier,
-		coordinator.Resolver, coordinator.Authority, now); err != nil {
+		coordinator.resolverFor(agreementDigest), coordinator.Authority, now); err != nil {
 		return receipt, resolution, fmt.Errorf("verify Guarantor non-activation release: %w", err)
 	}
 	if _, err := coordinator.Journal.CommitNonActivationRelease(agreementDigest, receipt); err != nil {

@@ -471,8 +471,7 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 		Authorizations:                        []guarantor.ProfileQualifiedObjectAuthorizationV1{authorization}}
 	// The prerequisites are verified from the bytes this commit stores, so a
 	// later verification from the journal sees exactly what was verified here.
-	activationResolver := pendingEvidenceResolver{AuthorityKeyResolver: coordinator.resolverFor(agreementDigest),
-		pending: prerequisiteObjects}
+	activationResolver := coordinator.pendingResolverFor(agreementDigest, prerequisiteObjects)
 	if err := guarantor.VerifyCoverageActivationEvidenceV1(evidence, input.Offer, coordinator.AgreementVerifier,
 		activationResolver, coordinator.Authority, coordinator.CollateralFinalityVerifier, activatedAt); err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution, err

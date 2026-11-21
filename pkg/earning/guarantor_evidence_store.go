@@ -443,17 +443,96 @@ func (resolver GuarantorJournalEvidenceResolver) ResolveImmutableGuarantorEviden
 	return resolver.Journal.ImmutableEvidence(resolver.AgreementDigest, descriptor)
 }
 
+// guarantorEvidenceResolver is an authority resolver that also serves
+// immutable evidence: the journal resolver and the pending resolver.
+type guarantorEvidenceResolver interface {
+	guarantor.AuthorityKeyResolver
+	guarantor.ImmutableEvidenceResolver
+}
+
+// The protocol finds the collateral finality verifier and the authority
+// control-resolution verifier by asking its resolver whether it is one. A
+// resolver wrapped to add evidence retrieval would hide both, so these types
+// put back exactly the ones the operator provides and no other.
+type (
+	evidenceResolverWithFinality struct {
+		guarantorEvidenceResolver
+		guarantor.CollateralAdapterFinalityVerifier
+	}
+	evidenceResolverWithControl struct {
+		guarantorEvidenceResolver
+		guarantor.AuthorityControlResolutionVerifier
+	}
+	evidenceResolverWithFinalityAndControl struct {
+		guarantorEvidenceResolver
+		guarantor.CollateralAdapterFinalityVerifier
+		guarantor.AuthorityControlResolutionVerifier
+	}
+)
+
+// guarantorVerifiersOf returns the collateral finality verifier and the
+// control-resolution verifier that resolver itself is, or nil for each it is
+// not.
+func guarantorVerifiersOf(resolver guarantor.AuthorityKeyResolver) (guarantor.CollateralAdapterFinalityVerifier,
+	guarantor.AuthorityControlResolutionVerifier) {
+	finality, _ := resolver.(guarantor.CollateralAdapterFinalityVerifier)
+	control, _ := resolver.(guarantor.AuthorityControlResolutionVerifier)
+	return finality, control
+}
+
+// forwardGuarantorVerifiers returns resolver exposing finality and control as
+// well, each only when it is not nil. With neither, resolver is returned as it
+// is, and a protocol check that needs one of them fails closed.
+func forwardGuarantorVerifiers(resolver guarantorEvidenceResolver, finality guarantor.CollateralAdapterFinalityVerifier,
+	control guarantor.AuthorityControlResolutionVerifier) guarantor.AuthorityKeyResolver {
+	switch {
+	case finality != nil && control != nil:
+		return evidenceResolverWithFinalityAndControl{resolver, finality, control}
+	case finality != nil:
+		return evidenceResolverWithFinality{resolver, finality}
+	case control != nil:
+		return evidenceResolverWithControl{resolver, control}
+	default:
+		return resolver
+	}
+}
+
+// pendingResolverFor is resolverFor with pending served ahead of the journal,
+// for an object verified before the commit that stores its evidence.
+func (coordinator *GuarantorProviderCoordinator) pendingResolverFor(agreementDigest string,
+	pending map[string]GuarantorStoredEvidence) guarantor.AuthorityKeyResolver {
+	underneath := coordinator.resolverFor(agreementDigest)
+	finality, control := guarantorVerifiersOf(underneath)
+	return forwardGuarantorVerifiers(pendingEvidenceResolver{AuthorityKeyResolver: underneath, pending: pending},
+		finality, control)
+}
+
 // resolverFor is the resolver the coordinator verifies agreementDigest's
 // claim lifecycle with: the operator's authority resolver plus immutable
 // evidence served from this journal for that Agreement only. An operator
 // resolver that already serves immutable evidence is used as it is.
+//
+// The journal resolver keeps what the operator provides for collateralized
+// coverage: the collateral finality verifier the coordinator is configured
+// with, or else the one the operator's resolver itself is, and the
+// control-resolution verifier the operator's resolver itself is. The protocol
+// re-verifies a collateralized activation in claim admission, cancellation and
+// closure with the verifier it finds on this resolver. When the operator
+// provides none, none is exposed and those checks fail closed.
 func (coordinator *GuarantorProviderCoordinator) resolverFor(agreementDigest string) guarantor.AuthorityKeyResolver {
 	if coordinator.Resolver == nil || coordinator.Journal == nil {
 		return coordinator.Resolver
 	}
-	if _, serves := coordinator.Resolver.(guarantor.ImmutableEvidenceResolver); serves {
-		return coordinator.Resolver
+	finality, control := guarantorVerifiersOf(coordinator.Resolver)
+	if serving, serves := coordinator.Resolver.(guarantorEvidenceResolver); serves {
+		if finality != nil || coordinator.CollateralFinalityVerifier == nil {
+			return coordinator.Resolver
+		}
+		return forwardGuarantorVerifiers(serving, coordinator.CollateralFinalityVerifier, control)
 	}
-	return GuarantorJournalEvidenceResolver{AuthorityKeyResolver: coordinator.Resolver, Journal: coordinator.Journal,
-		AgreementDigest: agreementDigest}
+	if coordinator.CollateralFinalityVerifier != nil {
+		finality = coordinator.CollateralFinalityVerifier
+	}
+	return forwardGuarantorVerifiers(GuarantorJournalEvidenceResolver{AuthorityKeyResolver: coordinator.Resolver,
+		Journal: coordinator.Journal, AgreementDigest: agreementDigest}, finality, control)
 }

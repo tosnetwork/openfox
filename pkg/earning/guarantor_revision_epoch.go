@@ -1,6 +1,7 @@
 package earning
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -38,10 +39,14 @@ func (journal *GuarantorJournal) RevisionEpoch(agreementDigest, claimID string) 
 	if _, claimFound := position.Claims[claimID]; !found || !claimFound {
 		return GuarantorRevisionEpochState{}, errors.New("Guarantor revision epoch has no admitted claim")
 	}
-	state := revisionEpochOf(position, claimID)
-	if state.FrozenCut != nil {
-		cut := *state.FrozenCut
-		state.FrozenCut = &cut
+	// The state, with the cut it may hold, is returned as a private copy.
+	raw, err := json.Marshal(revisionEpochOf(position, claimID))
+	if err != nil {
+		return GuarantorRevisionEpochState{}, fmt.Errorf("copy Guarantor revision epoch: %w", err)
+	}
+	var state GuarantorRevisionEpochState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return GuarantorRevisionEpochState{}, fmt.Errorf("copy Guarantor revision epoch: %w", err)
 	}
 	return state, nil
 }

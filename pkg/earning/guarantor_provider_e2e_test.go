@@ -284,6 +284,10 @@ const (
 	// still open when claim filing closes late; the late-recovery fallback is
 	// admitted at the filing close, before that window ends.
 	guarantorLateBeforeOrdinaryDeadline
+	// guarantorCollateralAttested runs a collateral-attested coverage whose
+	// activation carries a signed collateral lock and signed control evidence,
+	// cancels it, and closes it through the initial fallback.
+	guarantorCollateralAttested
 )
 
 // TestGuarantorLateRecoveryIsTriggeredByTheFilingCloseAlone: the late-recovery
@@ -428,6 +432,15 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		ContinuationBudgetProfile:                   capacity.ContinuationBudgetProfile,
 		PermittedTerminalFallbacks:                  []guarantor.DeterministicClaimTerminalFallbackV1{fallback}}
 	claimProfileDigest, _ := codec.Digest("tos.service.agent-guarantor-claim-profile.v1", claimProfile)
+	// A collateralized scenario selects the collateral-attested profile; every
+	// other scenario is unsecured.
+	collateralized := scenario == guarantorCollateralAttested
+	assurance, collateralProfileDigest := guarantor.AssuranceUnsecuredSigned, ""
+	var collateral guarantorCollateralFixture
+	if collateralized {
+		collateral = newGuarantorCollateralFixture(t, asset, claimProfileDigest, ref)
+		assurance, collateralProfileDigest = guarantor.AssuranceCollateralAttested, collateral.profileDigest
+	}
 	payoutAdapter := ref("8", "payment")
 	profile := guarantor.ServiceProfileV1{SchemaVersion: 1, ProfileID: "profile:guarantor", Revision: 1,
 		ProviderAgentID: "agent:guarantor", AuthorityDomainDigest: digest("9"),
@@ -450,6 +463,9 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		ExposureAuthorityID: "authority:owner", ExposureAuthorizationProfile: ref("c", "authority"),
 		LifecycleAuthorityID: "authority:owner", LifecycleAuthorizationProfile: ref("c", "authority"), PolicyRevision: 1,
 		CreatedAtUnix: uint64(now.Add(-time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())}
+	if collateralized {
+		profile.CollateralProfiles = []guarantor.CollateralProfileV1{collateral.profile}
+	}
 	profileDigest, err := guarantor.ServiceProfileDigest(profile)
 	if err != nil {
 		t.Fatal(err)
@@ -538,7 +554,13 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	lateScenario := scenario == guarantorLateRecoveryFallback || scenario == guarantorLateFromDisputedFallback ||
 		scenario == guarantorLateFromReviewingFallback || scenario == guarantorLateCandidateTimesOut ||
 		scenario == guarantorLateBeforeOrdinaryDeadline
-	deadlines := deriveGuarantorTestDeadlines(t, capacity, agreementExpiresAt, lateScenario,
+	// Collateral is locked until the Agreement expires, so the hard-effect
+	// deadline of a collateralized coverage is one reorg window before that.
+	hardEffectDeadline := agreementExpiresAt
+	if collateralized {
+		hardEffectDeadline = agreementExpiresAt - testCollateralReorgSeconds
+	}
+	deadlines := deriveGuarantorTestDeadlines(t, capacity, hardEffectDeadline, lateScenario,
 		claimProfile.MaximumLateIngressRecoveryWindowSeconds)
 	requested := guarantor.RequestedCoverageTermsV1{SchemaVersion: 1, CoverageCategory: "service-default",
 		MaximumLateIngressRecoveryWindowSeconds: deadlines.lateIngressWindowSeconds,
@@ -552,8 +574,9 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		RequestedClaimFilingEndsAtUnix: uint64(now.Add(40 * time.Minute).Unix()), MaximumReviewDeadlineSeconds: 60,
 		MaximumChallengeWindowSeconds: 60, MaximumNonterminalResolutionWindowSeconds: 60,
 		MaximumSuccessorDecisionWindowSeconds: 60, MaximumPayoutDeadlineSeconds: 60, MaximumAdapterRecoveryWindowSeconds: 60,
-		ClaimTriggerProfile: trigger, ClaimEvidenceProfile: evidence, SelectedAssuranceLevel: guarantor.AssuranceUnsecuredSigned,
-		SelectedClaimProfileDigest: claimProfileDigest, SelectedPayoutAdapterProfile: payoutAdapter}
+		ClaimTriggerProfile: trigger, ClaimEvidenceProfile: evidence, SelectedAssuranceLevel: assurance,
+		SelectedCollateralProfileDigest: collateralProfileDigest,
+		SelectedClaimProfileDigest:      claimProfileDigest, SelectedPayoutAdapterProfile: payoutAdapter}
 	requestedDigest, err := guarantor.RequestedCoverageTermsDigest(requested)
 	if err != nil {
 		t.Fatal(err)
@@ -564,8 +587,9 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		ClaimantSubjects: []string{"agent:covered"}, UnderlyingAgreementBodyDigest: underlyingDigest,
 		CoveredObligationIDs: []string{"obligation:work"}, RequestedTermsDigest: requestedDigest,
 		MaximumFee:             commerce.AtomicAmountV1{Asset: asset, AmountAtomic: "100"},
-		SelectedAssuranceLevel: guarantor.AssuranceUnsecuredSigned, SelectedClaimProfileDigest: claimProfileDigest,
-		SelectedDecisionProfile: decisionProfile, SelectedPayoutAdapterProfile: payoutAdapter,
+		SelectedAssuranceLevel: assurance, SelectedClaimProfileDigest: claimProfileDigest,
+		SelectedCollateralProfileDigest: collateralProfileDigest,
+		SelectedDecisionProfile:         decisionProfile, SelectedPayoutAdapterProfile: payoutAdapter,
 		CreatedAtUnix: uint64(now.Unix()), ExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix())}
 	requestBodyDigest, _ := codec.Digest("tos.service.agent-guarantor-quote-request-body.v1", requestBody)
 	coveredAuthorization, err := guarantor.SignObjectAuthorization(
@@ -618,6 +642,16 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 				EvidenceProfileURI: firmOfferEvidenceProfile.ProfileURI, EvidenceProfileVersion: uint32(firmOfferEvidenceProfile.ProfileVersion),
 				EvidenceProfileDigest: firmOfferEvidenceProfile.ProfileDigest, ExpiresAtUnix: uint64(now.Add(time.Hour).Unix())}},
 		ValidFromUnix: uint64(now.Add(-time.Minute).Unix()), ExpiresAtUnix: agreementExpiresAt}
+	if collateralized {
+		// The collateral obligation is the Guarantor's, under its predicate.
+		agreement.Obligations = append([]commerce.AgreementObligation{{ObligationID: testCollateralObligationID,
+			Kind: "collateral", ObligorAgentID: "agent:guarantor", BeneficiaryAgentID: "agent:covered",
+			SubjectContentType: "text/plain", Subject: []byte("lock coverage collateral"),
+			ConfidentialityPolicy: "participants", CancellationPolicy: "coverage-terms", DisputePolicy: "evidence",
+			AuthorizationPredicateIDs: []string{"predicate:guarantor"}}}, agreement.Obligations...)
+		agreement.AuthorizationPredicates[1].ObligationIDs = []string{testCollateralObligationID,
+			"obligation:coverage", "obligation:payout"}
+	}
 	agreement, err = commerce.PrepareAgreementTargets(agreement)
 	if err != nil {
 		t.Fatal(err)
@@ -714,6 +748,13 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		DecisionAdmissionAuthoritySubjects: []string{"agent:guarantor"}, DecisionAdmissionQuorumRule: "all",
 		DecisionAuthoritySubjects: []string{"agent:guarantor"}, DecisionQuorumRule: "all", PayoutTemplate: template,
 		PremiumObligationIDs: []string{"obligation:premium"}}
+	if collateralized {
+		// Locked before coverage starts and until the Agreement expires, and
+		// releasable only then: one reorg window after the final deadline.
+		terms.SelectedCollateralProfileDigest, terms.CollateralObligationID = collateralProfileDigest, testCollateralObligationID
+		terms.CollateralTerms = collateral.terms(t, terms.MaximumAggregatePayout, terms.CoverageStartsAtUnix,
+			agreementExpiresAt, ref)
+	}
 	root := t.TempDir()
 	authorityDirectory, journalDirectory := filepath.Join(root, "authority"), filepath.Join(root, "guarantor")
 	if err := os.Mkdir(authorityDirectory, 0o700); err != nil {
@@ -741,6 +782,9 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	scope := []string{"commercial.quote.close", "commercial.quote.issue", "conditional.claim-decision.admit", "conditional.claim.decide", "conditional.claim.ingress",
 		"conditional.claim.submit", "conditional.claim.transition", "conditional.claim-filing.close", "conditional.obligation.transition",
 		"messenger.send", "payment.direct", "payment.domain-bound", "portfolio.release"}
+	if collateralized {
+		scope = append(scope, "collateral.transition")
+	}
 	sort.Strings(scope)
 	fence, err := authority.AcquireWriter(context.Background(), "instance:test", scope, time.Hour)
 	if err != nil {
@@ -775,10 +819,15 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	// The owner authority signs stage admissions and seals with its Action
 	// Authority controller.
 	resolver.controllers["authority:owner"] = ActionAuthorityController
+	// The custodian signs collateral evidence with its own controller. The
+	// finality double starts empty and accepts nothing until it is pinned to
+	// the lock.
+	resolver.controllers[testCollateralCustodian] = testCollateralCustodianController
+	collateralFinality := &pinnedCollateralFinality{}
 	coordinator := GuarantorProviderCoordinator{OwnerID: "owner:guarantor", AgentID: "agent:guarantor", MandateDigest: digest("5"),
 		PolicyRevision: 1, Policy: GuarantorRiskPolicy{MaximumAggregateExposureAtomic: "10000", MaximumPerCoverageAtomic: "2000",
 			MaximumPerCounterpartyAtomic: "3000", MinimumPremiumPPM: 10_000, MaximumClaimProbabilityPPM: 100_000,
-			CapitalCostPPM: 10_000, PermittedAssuranceLevels: []guarantor.AssuranceLevel{guarantor.AssuranceUnsecuredSigned},
+			CapitalCostPPM: 10_000, PermittedAssuranceLevels: []guarantor.AssuranceLevel{assurance},
 			MaximumActiveOffers: 10, MaximumActiveCoverages: 10, MaximumActiveClaims: 20}, Authority: authority,
 		Journal: journal, Signer: signer, ActionAuthoritySigner: actionSigner, FallbackSigner: fallbackSigner, Resolver: resolver,
 		Underwriter: staticGuarantorUnderwriter{GuarantorRiskEstimate{ClaimProbabilityPPM: 50_000,
@@ -792,6 +841,11 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 			guarantor.FirmOfferAgreementEvidenceProfileURI: GuarantorFirmOfferAgreementEvidenceVerifier{
 				AuthorityResolver: resolver, PublicationResolver: resolver, UnderlyingResolver: underlyingResolver,
 				AgreementVerifier: baseAgreementVerifier}}}}
+	if collateralized {
+		coordinator.CollateralAdapterEnabled = true
+		coordinator.CollateralAdapterProfileDigests = []string{collateral.profile.CustodyAdapterProfile.ProfileDigest}
+		coordinator.CollateralFinalityVerifier = collateralFinality
+	}
 	directTerms := terms
 	directTerms.StageActionAuthorityBinding.Stages = append([]guarantor.GuarantorStageActionAuthorityV1(nil),
 		terms.StageActionAuthorityBinding.Stages...)
@@ -1022,6 +1076,21 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 			AgreementBodyDigest: underlyingDigest, Evidence: []commerce.AgreementAuthorizationEvidence{underlyingEvidence}},
 		PrerequisiteEvidenceSet: &activationPrerequisites,
 		ActivatedAtUnix:         uint64(now.Add(2 * time.Minute).Unix())}
+	var collateralLockDigest, collateralControlDigest string
+	premiumPrerequisites := activationPrerequisites.Items
+	if collateralized {
+		// The collateral is locked and its control attested after acceptance
+		// and before coverage starts; only then does the finality double know
+		// a finalized lock.
+		lockedAt := now.Add(time.Minute)
+		lock, finalized := signedCollateralLock(t, &coordinator, fence, terms, agreementDigest,
+			coverages[0].Record.LastEvidenceDigest, lockedAt)
+		collateralFinality.finalized = append(collateralFinality.finalized, finalized)
+		control := signedCollateralControl(t, signer, terms, agreementDigest, lockedAt, agreementExpiresAt)
+		activationPrerequisites, collateralLockDigest, collateralControlDigest = collateralActivationPrerequisites(t,
+			terms, agreementDigest, lock, control, premiumPrerequisites...)
+		activationInput.CollateralLockEvidence, activationInput.CollateralControlEvidence = &lock, &control
+	}
 	baseAuthority := coordinator.Authority
 	coordinator.Authority = &failAfterTerminalEconomicAuthority{EconomicAuthority: baseAuthority, failOnce: true}
 	if _, _, crashErr := coordinator.ActivateCoverage(context.Background(), activationInput, fence); crashErr == nil {
@@ -1039,6 +1108,20 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	_, _, coverages = journal.Snapshot()
 	if coverages[0].Record.CoverageStatus != guarantor.CoverageActive || coverages[0].Record.ClaimFilingStatus != guarantor.FilingOpen {
 		t.Fatalf("coverage did not activate atomically: %#v", coverages[0].Record)
+	}
+	if collateralized {
+		// Activation stored both collateral prerequisites in the journal.
+		for name, stored := range map[string]struct{ digest, mediaType string }{
+			"lock":    {collateralLockDigest, guarantor.CollateralEvidenceContentTypeV1},
+			"control": {collateralControlDigest, guarantor.CollateralControlEvidenceContentTypeV1}} {
+			record, found := coverages[0].ImmutableEvidence[stored.digest]
+			_, fileErr := os.Lstat(filepath.Join(journalDirectory, guarantorEvidenceDirectory,
+				strings.TrimPrefix(stored.digest, "sha256:")))
+			if !found || record.ContentType != stored.mediaType || record.ContentSize == 0 || fileErr != nil {
+				t.Fatalf("activation did not store the collateral %s evidence in the journal: record=%#v file=%v",
+					name, record, fileErr)
+			}
+		}
 	}
 	authority.now = func() time.Time { return now.Add(4 * time.Minute) }
 	manifest := guarantor.ClaimEvidenceManifestV1{SchemaVersion: 1, Items: []guarantor.ClaimEvidenceDescriptorV1{{
@@ -1208,6 +1291,132 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 			t.Fatalf("the terminal claim set holding a fallback decision does not verify: %v", err)
 		}
 		return receipt
+	}
+	if collateralized {
+		// Claim admission above already re-verified the collateralized
+		// activation through the journal resolver. Each verification is now
+		// checked on its own: it passes through that resolver, and is refused
+		// without the finality verifier or without a stored prerequisite.
+		ctx := context.Background()
+		check := collateralVerificationCheck{coordinator: &coordinator, journalDir: journalDirectory,
+			agreementDigest: agreementDigest, prerequisites: []string{collateralLockDigest, collateralControlDigest}}
+		admittedAt := time.Unix(int64(revisionResult.AdmissionReceipt.Body.AdmittedAtUnix), 0).UTC()
+		check.run(t, "claim admission", func(resolver guarantor.AuthorityKeyResolver) error {
+			return guarantor.VerifyClaimAdmissionReceiptV1(revisionResult.AdmissionReceipt, terms,
+				coordinator.AgreementVerifier, resolver, authority, admittedAt)
+		})
+
+		// The claim is closed by the initial fallback, and the coverage with it.
+		fallbackAt := admittedAt.Add(time.Duration(terms.ReviewDeadlineSeconds+1) * time.Second)
+		authority.now = func() time.Time { return fallbackAt }
+		denied, err := coordinator.AdmitInitialFallbackDecision(ctx, GuarantorAdmitInitialFallbackInput{
+			AgreementDigest: agreementDigest, ClaimID: claimID}, fence)
+		if err != nil || denied.Receipt.Body.AdmittedClaimState != "denied" {
+			t.Fatalf("admit the initial fallback of the collateralized coverage: resolution=%#v err=%v", denied.Resolution, err)
+		}
+		challengeClosedAt := fallbackAt.Add(time.Duration(terms.ChallengeWindowSeconds+1) * time.Second)
+		authority.now = func() time.Time { return challengeClosedAt }
+		final, err := coordinator.TransitionClaimDecision(ctx, GuarantorTransitionClaimInput{AgreementDigest: agreementDigest,
+			DecisionAdmissionReceipt: denied.Receipt, TransitionKind: "challenge_close"}, fence)
+		if err != nil || final.Receipt.Body.ResultingClaimState != "final_denied" {
+			t.Fatalf("close the fallback's challenge window: resolution=%#v err=%v", final.Resolution, err)
+		}
+		if _, err := coordinator.ApplyClaimDecision(ctx, GuarantorApplyDecisionInput{AgreementDigest: agreementDigest,
+			DecisionAdmissionReceipt: denied.Receipt, TerminalTransitionReceipt: final.Receipt}, fence); err != nil {
+			t.Fatalf("apply the fallback denial: %v", err)
+		}
+		coverageClosedAt := now.Add(45 * time.Minute)
+		authority.now = func() time.Time { return coverageClosedAt }
+		closed, err := coordinator.CloseCoverage(ctx, GuarantorCloseCoverageInput{Offer: offer,
+			ActivationEvidence: activation}, fence)
+		if err != nil || closed.CoverageResolution.Body.TerminalState != "closed" {
+			t.Fatalf("close the collateralized coverage: state=%q err=%v", closed.CoverageResolution.Body.TerminalState, err)
+		}
+		check.run(t, "closure", func(resolver guarantor.AuthorityKeyResolver) error {
+			return guarantor.VerifyTerminalClaimSetV1(closed.TerminalClaimSet, offer, coordinator.AgreementVerifier,
+				resolver, authority, coordinator.PaymentVerifier, coverageClosedAt)
+		})
+
+		// A coverage is cancelled only from its activation, before any claim,
+		// so cancellation runs on a second collateralized coverage with its own
+		// lock, on the same logical clock as the first.
+		authority.now = func() time.Time { return now }
+		fence, err = authority.AcquireWriter(ctx, "instance:collateral-cancellation", scope, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cancelRequestBody := requestBody
+		cancelRequestBody.RequestID = "request:coverage:collateral-cancellation"
+		cancelRequestBody.CreatedAtUnix = uint64(now.Add(3 * time.Second).Unix())
+		cancelQuote := signGuarantorTestQuote(t, cancelRequestBody, requested, ref("d", "request-authority"), coveredKey)
+		cancelAgreement := agreement
+		cancelAgreement.AuthorizationPredicates = append([]commerce.AgreementAuthorizationPredicate(nil),
+			agreement.AuthorizationPredicates...)
+		cancelAgreement.AgreementID = "agreement:coverage:collateral-cancellation"
+		for index := range cancelAgreement.AuthorizationPredicates {
+			cancelAgreement.AuthorizationPredicates[index].EvidenceTargetProjectionDigest = ""
+		}
+		cancelAgreement, err = commerce.PrepareAgreementTargets(cancelAgreement)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cancelAgreementDigest, _ := commerce.AgreementBodyDigest(cancelAgreement)
+		cancelTerms := terms
+		cancelTerms.CoverageID, cancelTerms.CoverageStateDomainDigest = digest("d"), digest("c")
+		cancelTerms.QuoteRequestDigest = mustGuarantorQuoteDigest(t, cancelQuote)
+		cancelOffer, _, err := coordinator.IssueFirmOffer(ctx, GuarantorIssueOfferInput{Request: cancelQuote,
+			ProfileArtifact: profileArtifact, Agreement: cancelAgreement, Terms: cancelTerms,
+			CoverageObligationID: "obligation:coverage", IssuedAtUnix: uint64(now.Add(3 * time.Second).Unix()),
+			AcceptByUnix: uint64(now.Add(time.Minute).Unix()), ReservationExpiresAtUnix: uint64(now.Add(6 * time.Minute).Unix()),
+			ExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix())}, fence)
+		if err != nil {
+			t.Fatalf("issue the cancellable collateralized offer: %v", err)
+		}
+		cancelAcceptance := signGuarantorTestAcceptance(t, cancelAgreement, cancelOffer, "agent:covered",
+			map[string]ed25519.PrivateKey{"agent:covered": coveredKey, "agent:guarantor": guarantorKey},
+			commerce.ProfileRefV1{ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1,
+				ProfileDigest: agreementProfile}, underlyingResolver, baseAgreementVerifier,
+			now.Add(35*time.Second), now.Add(95*time.Second))
+		cancelAcceptanceReceipt, _, err := coordinator.AcceptCoverage(ctx, GuarantorAcceptCoverageInput{Offer: cancelOffer,
+			Request: cancelAcceptance, CoverageObligationID: "obligation:coverage",
+			ReceivedAtUnix: uint64(now.Add(35 * time.Second).Unix())}, fence)
+		if err != nil {
+			t.Fatalf("accept the cancellable collateralized coverage: %v", err)
+		}
+		authority.now = func() time.Time { return now.Add(time.Minute) }
+		cancelLock, cancelFinalized := signedCollateralLock(t, &coordinator, fence, cancelTerms, cancelAgreementDigest,
+			digest("9"), now.Add(time.Minute))
+		collateralFinality.finalized = append(collateralFinality.finalized, cancelFinalized)
+		cancelControl := signedCollateralControl(t, signer, cancelTerms, cancelAgreementDigest, now.Add(time.Minute),
+			agreementExpiresAt)
+		cancelPrerequisites, cancelLockDigest, cancelControlDigest := collateralActivationPrerequisites(t, cancelTerms,
+			cancelAgreementDigest, cancelLock, cancelControl, premiumPrerequisites...)
+		cancelActivation, _, err := coordinator.ActivateCoverage(ctx, GuarantorActivateCoverageInput{Offer: cancelOffer,
+			AcceptanceReceipt: cancelAcceptanceReceipt, UnderlyingAgreement: underlying,
+			UnderlyingAuthorizationEvidence: guarantor.GuarantorAgreementAuthorizationEvidenceSetV1{SchemaVersion: 1,
+				AgreementID: underlying.AgreementID, AgreementVersion: underlying.Version,
+				AgreementBodyDigest: underlyingDigest, Evidence: []commerce.AgreementAuthorizationEvidence{underlyingEvidence}},
+			PrerequisiteEvidenceSet: &cancelPrerequisites, CollateralLockEvidence: &cancelLock,
+			CollateralControlEvidence: &cancelControl, ActivatedAtUnix: cancelTerms.CoverageStartsAtUnix}, fence)
+		if err != nil {
+			t.Fatalf("activate the cancellable collateralized coverage: %v", err)
+		}
+		cancelCreated := now.Add(2*time.Minute + 10*time.Second)
+		cancelledAt := cancelCreated.Add(5 * time.Second)
+		cancelReceipt, cancelResolution, err := coordinator.CancelCoverage(ctx, GuarantorCancelCoverageInput{
+			Request: signedTestCancellationRequest(t, cancelAgreement, cancelAgreementDigest, cancellationPolicy,
+				testGuarantorController(coveredPublic), cancelCreated),
+			AdmittedAtUnix: uint64(cancelledAt.Unix())}, fence)
+		if err != nil || cancelResolution.State != commerce.ActionTerminal || cancelReceipt.Body.State != "coverage_ended" {
+			t.Fatalf("cancel the collateralized coverage: state=%s err=%v", cancelResolution.State, err)
+		}
+		cancelCheck := collateralVerificationCheck{coordinator: &coordinator, journalDir: journalDirectory,
+			agreementDigest: cancelAgreementDigest, prerequisites: []string{cancelLockDigest, cancelControlDigest}}
+		cancelCheck.run(t, "cancellation", func(resolver guarantor.AuthorityKeyResolver) error {
+			return guarantor.VerifyCoverageCancellationReceiptV1(cancelReceipt, cancelActivation,
+				coordinator.AgreementVerifier, resolver, authority, cancelledAt)
+		})
+		return
 	}
 	if scenario == guarantorInitialFallback {
 		admittedAt := time.Unix(int64(revisionResult.AdmissionReceipt.Body.AdmittedAtUnix), 0).UTC()
@@ -1899,9 +2108,6 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		coordinator.Resolver, coordinator.Authority, coordinator.PaymentVerifier, authority.now()); err == nil {
 		t.Fatal("coverage-resolution verifier accepted a request that no longer binds its exposure-release digest")
 	}
-	// The returned resolution shares its request bytes with the journal's
-	// copy, so the changed byte is put back.
-	tamperedResolution.StageActionAdmissionEvidence.CanonicalRequest[0] ^= 1
 	_, _, coverages = journal.Snapshot()
 	if coverages[0].Record.CoverageStatus != guarantor.CoverageClosed ||
 		coverages[0].Record.ClaimFilingStatus != guarantor.FilingFrozen {
@@ -2117,10 +2323,6 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		validPaymentEvidence{}, authority.AuthorityNow()) == nil {
 		t.Fatal("portable terminal evidence accepted a substituted payment request")
 	}
-	// As above, the changed byte is shared with the journal's copy.
-	tampered.AuthorizedExposureReleaseReceipt.AuthorizedTerminalClaimSetEvidence.
-		ClaimResolutionBundles[0].TerminalPayoutEvidenceSet.PayoutExecutionEvidence[0].
-		StageActionAdmissionEvidence.CanonicalRequest[0] ^= 1
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}

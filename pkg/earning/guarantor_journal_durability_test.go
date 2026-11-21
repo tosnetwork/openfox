@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,10 +34,13 @@ func cloneGuarantorDocument(doc guarantorJournalDocument) guarantorJournalDocume
 var errInjectedJournalWrite = errors.New("injected journal write failure")
 
 // journalWriteFault makes a journal's document write, its evidence file
-// writes, or both fail without touching the disk.
+// writes, or both fail without touching the disk. With documentAfterRename
+// the document is written and renamed into place and the write then fails
+// the way a failed directory sync does.
 type journalWriteFault struct {
-	document bool
-	evidence bool
+	document            bool
+	evidence            bool
+	documentAfterRename bool
 }
 
 func (fault *journalWriteFault) install(journal *GuarantorJournal) {
@@ -46,7 +50,137 @@ func (fault *journalWriteFault) install(journal *GuarantorJournal) {
 		if name == guarantorJournalFile && fault.document || name != guarantorJournalFile && fault.evidence {
 			return errInjectedJournalWrite
 		}
-		return fileutil.WriteFileAtomicRoot(root, name, data, perm)
+		if err := fileutil.WriteFileAtomicRoot(root, name, data, perm); err != nil {
+			return err
+		}
+		if name == guarantorJournalFile && fault.documentAfterRename {
+			return fmt.Errorf("%w: %w", fileutil.ErrReplacedNotSynced, errInjectedJournalWrite)
+		}
+		return nil
+	}
+}
+
+// TestGuarantorJournalCommitThatFailsAfterItsRenameIsCommitted: a document
+// write that fails after the new document was renamed into place has replaced
+// the document on disk, so the commit has happened. Memory is replaced too,
+// the caller is told so with a distinct error, and repeating the call does
+// not commit again.
+func TestGuarantorJournalCommitThatFailsAfterItsRenameIsCommitted(t *testing.T) {
+	fixture := newJournalDurabilityFixture(t)
+	journal, directory := fixture.journal, fixture.directory
+	fault := &journalWriteFault{documentAfterRename: true}
+	fault.install(journal)
+	documentFile := filepath.Join(directory, guarantorJournalFile)
+	for _, operation := range fixture.operations(t) {
+		before, err := os.ReadFile(documentFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fault.documentAfterRename = true
+		err = operation.run()
+		if !errors.Is(err, ErrGuarantorJournalCommittedNotSynced) || !errors.Is(err, errInjectedJournalWrite) {
+			t.Fatalf("%s with a failing directory sync: got %v, want the committed-but-not-synced error", operation.name, err)
+		}
+		committed, readErr := os.ReadFile(documentFile)
+		if readErr != nil || bytes.Equal(committed, before) {
+			t.Fatalf("%s: the document on disk did not change although its rename happened: %v", operation.name, readErr)
+		}
+		assertGuarantorJournalMemoryIsOnDisk(t, journal, directory, operation.name+" after its directory sync failed")
+		// The same call again writes nothing: it returns its committed result,
+		// or is refused by its compare-and-swap on the state it already moved.
+		fault.documentAfterRename = false
+		if err := operation.run(); errors.Is(err, ErrGuarantorJournalCommittedNotSynced) ||
+			errors.Is(err, errInjectedJournalWrite) {
+			t.Fatalf("%s repeated after it was committed: %v", operation.name, err)
+		}
+		repeated, readErr := os.ReadFile(documentFile)
+		if readErr != nil || !bytes.Equal(repeated, committed) {
+			t.Fatalf("%s: repeating a committed call wrote the document again: %v", operation.name, readErr)
+		}
+	}
+}
+
+// TestGuarantorJournalSharesNoMemoryWithItsCallers: what a caller hands to a
+// commit and what the journal hands back are copies. Changing a stored
+// receipt's caller-owned bytes, a returned position, a snapshot, a plan, a
+// cut or a revision epoch afterwards changes nothing in the journal.
+func TestGuarantorJournalSharesNoMemoryWithItsCallers(t *testing.T) {
+	fixture := newJournalDurabilityFixture(t)
+	journal, directory := fixture.journal, fixture.directory
+	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
+	unchanged := func(after string) {
+		t.Helper()
+		assertGuarantorJournalMemoryIsOnDisk(t, journal, directory, after)
+	}
+
+	// A receipt handed to a commit, and the position the commit returns.
+	filing := guarantor.AuthorizedClaimFilingCloseReceiptV1{
+		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{{AuthoritySubject: "agent:guarantor"}}}
+	filing.Body.SchemaVersion, filing.Body.CoverageAgreementBodyDigest = 1, fixture.decided
+	filing.Body.FrozenClaimAdmissionLogRoot = digest("a")
+	returned, err := journal.CommitClaimFilingCloseReceipt(fixture.decided, filing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filing.Authorizations[0].AuthoritySubject = "agent:changed-by-the-caller"
+	unchanged("after the caller changed the receipt it had stored")
+	returned.FilingCloseReceipt.Authorizations[0].AuthoritySubject = "agent:changed-in-the-returned-position"
+	returned.Claims[fixture.decidedClaim] = guarantor.ClaimRecord{ClaimID: "changed"}
+	for key := range returned.ImmutableEvidence {
+		delete(returned.ImmutableEvidence, key)
+	}
+	unchanged("after the caller changed the position a commit returned")
+
+	// Everything the journal hands back.
+	_, offers, coverages := journal.Snapshot()
+	for index := range offers {
+		if offers[index].PreAcceptanceReleasePlan != nil {
+			offers[index].PreAcceptanceReleasePlan.Action.WriterGeneration = 99
+		}
+	}
+	for index := range coverages {
+		coverages[index].Claims["changed"] = guarantor.ClaimRecord{ClaimID: "changed"}
+		for key, decision := range coverages[index].DecisionAdmissionReceipts {
+			decision.ClaimRevisionIngressCutProof.Entries = append(decision.ClaimRevisionIngressCutProof.Entries,
+				guarantor.ClaimIngressResolutionEntryV1{ClaimIngressSequence: 99})
+			coverages[index].DecisionAdmissionReceipts[key] = decision
+		}
+		if coverages[index].FilingCloseReceipt != nil {
+			coverages[index].FilingCloseReceipt.Authorizations[0].AuthoritySubject = "agent:changed-in-a-snapshot"
+		}
+	}
+	unchanged("after the caller changed a snapshot")
+	epoch, err := journal.RevisionEpoch(fixture.decided, fixture.decidedClaim)
+	if err != nil || epoch.FrozenCut == nil {
+		t.Fatalf("the decided claim's revision epoch: %#v err=%v", epoch, err)
+	}
+	epoch.FrozenCut.AdmissionLogRoot = digest("9")
+	unchanged("after the caller changed a returned revision epoch")
+	resolution := commerce.ActionResolution{StableActionID: fixture.preparedAction,
+		ExactRequestDigest: fixture.preparedRequest, State: commerce.ActionRejected, StateRevision: 2,
+		EvidenceRefs: []string{digest("d")}}
+	entry, err := journal.ResolveAdmission(fixture.domain, resolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution.EvidenceRefs[0] = digest("e")
+	entry.Resolution.EvidenceRefs[0] = digest("f")
+	unchanged("after the caller changed an admission resolution it stored and the entry returned")
+	cut, err := journal.FreezeAdmissionCut(fixture.domain, uint64(fixture.at.Unix()))
+	if err != nil || len(cut.Entries) != 1 {
+		t.Fatalf("the admission cut: %#v err=%v", cut, err)
+	}
+	cut.Entries[0].Resolution.EvidenceRefs[0] = digest("0")
+	unchanged("after the caller changed a returned admission cut")
+
+	// The journal still holds what was committed.
+	_, _, coverages = journal.Snapshot()
+	for _, coverage := range coverages {
+		if coverage.FilingCloseReceipt != nil &&
+			coverage.FilingCloseReceipt.Authorizations[0].AuthoritySubject != "agent:guarantor" {
+			t.Fatalf("the stored filing-close receipt was changed through shared memory: %q",
+				coverage.FilingCloseReceipt.Authorizations[0].AuthoritySubject)
+		}
 	}
 }
 

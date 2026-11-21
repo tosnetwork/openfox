@@ -386,7 +386,15 @@ func (journal *GuarantorJournal) FirmOfferIssuancePlan(authorityInstanceID strin
 	if journal.ensureAttached() != nil {
 		return GuarantorFirmOfferIssuancePlan{}, false
 	}
-	plan, found := journal.doc.FirmOfferIssuancePlans[authorityInstanceID]
+	if _, found := journal.doc.FirmOfferIssuancePlans[authorityInstanceID]; !found {
+		return GuarantorFirmOfferIssuancePlan{}, false
+	}
+	// The plan is returned as a private copy.
+	doc, err := journal.workingCopy()
+	if err != nil {
+		return GuarantorFirmOfferIssuancePlan{}, false
+	}
+	plan, found := doc.FirmOfferIssuancePlans[authorityInstanceID]
 	return plan, found
 }
 
@@ -399,11 +407,16 @@ func (journal *GuarantorJournal) FirmOfferByDigest(envelopeDigest string) (guara
 	if journal.ensureAttached() != nil || !canonicalSHA256(envelopeDigest) {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, false
 	}
-	for _, position := range journal.doc.Offers {
+	for offerID, position := range journal.doc.Offers {
 		if position.OfferEnvelopeDigest == envelopeDigest && position.AuthorizedFirmOffer != nil {
 			digest, err := guarantor.FirmOfferDigest(*position.AuthorizedFirmOffer)
 			if err == nil && digest == envelopeDigest {
-				return *position.AuthorizedFirmOffer, true
+				// The offer is returned as a private copy.
+				doc, copyErr := journal.workingCopy()
+				if copyErr != nil || doc.Offers[offerID].AuthorizedFirmOffer == nil {
+					return guarantor.AuthorizedFirmCoverageOfferV1{}, false
+				}
+				return *doc.Offers[offerID].AuthorizedFirmOffer, true
 			}
 		}
 	}
@@ -1787,6 +1800,8 @@ func (journal *GuarantorJournal) FreezeAdmissionCut(domainID string, cutoffUnix 
 			return GuarantorAdmissionCut{}, errors.New("Guarantor admission cut has a gap or unresolved action")
 		}
 		root = entry.LogRootAfter
+		// The cut's entries are private copies.
+		entries[index].Resolution.EvidenceRefs = append([]string(nil), entry.Resolution.EvidenceRefs...)
 	}
 	if len(entries) == 0 {
 		root, _ = guarantorAdmissionInitialRoot(log.RootDomain, domainID)
@@ -1799,22 +1814,29 @@ func isGuarantorAdmissionTerminal(state commerce.ActionResolutionState) bool {
 		state == commerce.ActionAccepted
 }
 
+// Snapshot returns the journal's revision, offers and coverages as private
+// copies: changing them does not change the journal. If the document cannot
+// be copied it returns nothing.
 func (journal *GuarantorJournal) Snapshot() (uint64, []GuarantorOfferPosition, []GuarantorCoveragePosition) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	offers := make([]GuarantorOfferPosition, 0, len(journal.doc.Offers))
-	for _, offer := range journal.doc.Offers {
+	doc, err := journal.workingCopy()
+	if err != nil {
+		return 0, nil, nil
+	}
+	offers := make([]GuarantorOfferPosition, 0, len(doc.Offers))
+	for _, offer := range doc.Offers {
 		offers = append(offers, offer)
 	}
 	sort.Slice(offers, func(i, j int) bool { return offers[i].Record.OfferID < offers[j].Record.OfferID })
-	coverages := make([]GuarantorCoveragePosition, 0, len(journal.doc.Coverages))
-	for _, coverage := range journal.doc.Coverages {
+	coverages := make([]GuarantorCoveragePosition, 0, len(doc.Coverages))
+	for _, coverage := range doc.Coverages {
 		coverages = append(coverages, coverage)
 	}
 	sort.Slice(coverages, func(i, j int) bool {
 		return coverages[i].Record.CoverageAgreementBodyDigest < coverages[j].Record.CoverageAgreementBodyDigest
 	})
-	return journal.doc.Revision, offers, coverages
+	return doc.Revision, offers, coverages
 }
 
 func (journal *GuarantorJournal) load(ownerID, agentID string) error {
@@ -1990,28 +2012,64 @@ func (journal *GuarantorJournal) ensureAttached() error {
 	return nil
 }
 
-func (journal *GuarantorJournal) persist(doc guarantorJournalDocument) error {
+// ErrGuarantorJournalCommittedNotSynced reports a commit whose document is on
+// disk and in memory although the write returned an error: the new document
+// was renamed into place and the directory sync after it failed. The commit
+// has happened and must not be retried as if nothing was written; repeating
+// the same call returns the committed result. Only the document's durability
+// across a crash is unconfirmed.
+var ErrGuarantorJournalCommittedNotSynced = errors.New("Guarantor journal document is committed but its directory sync failed")
+
+func encodeGuarantorDocument(doc guarantorJournalDocument) ([]byte, error) {
 	raw, err := json.Marshal(doc)
 	if err != nil || len(raw) > 64<<20 {
-		return errors.New("encode bounded Guarantor journal")
+		return nil, errors.New("encode bounded Guarantor journal")
+	}
+	return raw, nil
+}
+
+func (journal *GuarantorJournal) persist(doc guarantorJournalDocument) error {
+	raw, err := encodeGuarantorDocument(doc)
+	if err != nil {
+		return err
 	}
 	return journal.writeFile(journal.root, guarantorJournalFile, raw, 0o600)
 }
 
 // commit writes every newly stored immutable receipt to its own file, then the
-// document that names them, and only then makes that document the in-memory
-// one. A crash between the two writes leaves only an unnamed,
-// content-addressed file, never a document naming a receipt it cannot serve.
-// A failed write leaves the in-memory document as it is on disk: doc is the
-// caller's working copy, so nothing staged in it outlives the failure.
+// document that names them, and only then replaces the in-memory document. A
+// crash between the two writes leaves only an unnamed, content-addressed file,
+// never a document naming a receipt it cannot serve.
+//
+// The in-memory document always equals the one on disk. A write that fails
+// before the document is renamed into place leaves both as they were: doc is
+// the caller's working copy, so nothing staged in it outlives the failure. A
+// write that fails after the rename has replaced the document, so memory is
+// replaced too and the error is ErrGuarantorJournalCommittedNotSynced.
+//
+// The in-memory document is decoded from the bytes written, not taken from
+// doc, so it shares no memory with the receipts and plans the caller put into
+// doc or with the position the caller returns.
 func (journal *GuarantorJournal) commit(doc guarantorJournalDocument) error {
 	if err := journal.writeStagedEvidence(doc); err != nil {
 		return err
 	}
-	if err := journal.persist(doc); err != nil {
+	raw, err := encodeGuarantorDocument(doc)
+	if err != nil {
 		return err
 	}
-	journal.doc = doc
+	var committed guarantorJournalDocument
+	if err := json.Unmarshal(raw, &committed); err != nil {
+		return fmt.Errorf("decode the Guarantor journal document to commit: %w", err)
+	}
+	writeErr := journal.writeFile(journal.root, guarantorJournalFile, raw, 0o600)
+	if writeErr != nil && !errors.Is(writeErr, fileutil.ErrReplacedNotSynced) {
+		return writeErr
+	}
+	journal.doc = committed
+	if writeErr != nil {
+		return fmt.Errorf("%w: %w", ErrGuarantorJournalCommittedNotSynced, writeErr)
+	}
 	return nil
 }
 

@@ -21,7 +21,13 @@ func (journal *GuarantorJournal) InitialClaimIngressAdmissionCut(agreementDigest
 	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(agreementDigest) || cutoffUnix == 0 {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor initial claim ingress cut input is invalid")
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	// The proof is built from a private copy, so it shares no memory with the
+	// journal.
+	doc, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return guarantor.ClaimIngressAdmissionCutProofV1{}, copyErr
+	}
+	position, found := doc.Coverages[agreementDigest]
 	if !found {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor initial claim ingress cut has no coverage")
 	}
@@ -29,7 +35,7 @@ func (journal *GuarantorJournal) InitialClaimIngressAdmissionCut(agreementDigest
 	if err != nil {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, err
 	}
-	log, logFound := journal.doc.AdmissionLogs[logID]
+	log, logFound := doc.AdmissionLogs[logID]
 	if !logFound {
 		root, rootErr := guarantor.InitialClaimLogRootV1(guarantor.ClaimIngressLogRootDomainV1, logID)
 		if rootErr != nil {
@@ -122,7 +128,13 @@ func (journal *GuarantorJournal) ClaimRevisionAdmissionCut(agreementDigest, clai
 		!canonicalSHA256(claimID) || cutoffUnix == 0 {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor claim revision cut input is invalid")
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	// The proof is built from a private copy, so it shares no memory with the
+	// journal.
+	doc, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return guarantor.ClaimIngressAdmissionCutProofV1{}, copyErr
+	}
+	position, found := doc.Coverages[agreementDigest]
 	record, claimFound := position.Claims[claimID]
 	if !found || !claimFound || record.ClaimRevision == 0 {
 		return guarantor.ClaimIngressAdmissionCutProofV1{}, errors.New("Guarantor claim revision cut has no admitted claim")

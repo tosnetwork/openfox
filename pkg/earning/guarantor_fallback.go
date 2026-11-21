@@ -96,9 +96,6 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 	default:
 		return GuarantorDecisionAdmissionResult{}, errors.New("Guarantor claim state is not fallback-eligible")
 	}
-	if !ok || uint64(now.Unix()) < cutoff {
-		return GuarantorDecisionAdmissionResult{}, errors.New("Guarantor fallback deadline has not elapsed")
-	}
 	lateRecovery := input.LateFilingReceipt != nil
 	if lateRecovery {
 		filing := *input.LateFilingReceipt
@@ -108,7 +105,13 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 			uint64(now.Unix()) > position.Terms.LateIngressRecoveryDeadlineUnix {
 			return GuarantorDecisionAdmissionResult{}, errors.New("Guarantor late fallback lacks its exact bounded filing-close predecessor")
 		}
-		decisionPath, cutoff = "late_recovery_terminal_fallback", filing.Body.ClosedAtUnix
+		// The late-recovery trigger is the filing close alone: the head's own
+		// review, resolution or successor deadline is not part of it, so the
+		// late fallback may be admitted before that deadline has passed.
+		decisionPath, cutoff, ok = "late_recovery_terminal_fallback", filing.Body.ClosedAtUnix, true
+	}
+	if !ok || uint64(now.Unix()) < cutoff {
+		return GuarantorDecisionAdmissionResult{}, errors.New("Guarantor fallback deadline has not elapsed")
 	}
 	claimDigest, err := guarantor.ClaimEnvelopeDigest(claim)
 	if err != nil {

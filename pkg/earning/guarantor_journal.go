@@ -220,6 +220,9 @@ type GuarantorJournal struct {
 	domainLock *localEconomicDomainLock
 	doc        guarantorJournalDocument
 	now        func() time.Time
+	// writeFile writes one journal file atomically: the document or an
+	// immutable evidence file. Tests replace it to inject a failed write.
+	writeFile func(root *os.Root, name string, data []byte, perm os.FileMode) error
 }
 
 func OpenGuarantorJournal(directory, ownerID, agentID string) (*GuarantorJournal, error) {
@@ -259,6 +262,7 @@ func OpenGuarantorJournal(directory, ownerID, agentID string) (*GuarantorJournal
 		return nil, errors.New("Guarantor immutable evidence directory security is invalid")
 	}
 	journal := &GuarantorJournal{directory: directory, root: root, lock: lock, domainLock: domainLock, now: time.Now,
+		writeFile: fileutil.WriteFileAtomicRoot,
 		doc: guarantorJournalDocument{Schema: guarantorJournalSchema, OwnerID: ownerID, AgentID: agentID, Revision: 1,
 			Offers: map[string]GuarantorOfferPosition{}, Coverages: map[string]GuarantorCoveragePosition{}, ClaimToCoverage: map[string]string{},
 			AdmissionLogs: map[string]GuarantorAdmissionLog{}, FirmOfferIssuancePlans: map[string]GuarantorFirmOfferIssuancePlan{}}}
@@ -273,6 +277,13 @@ func OpenGuarantorJournal(directory, ownerID, agentID string) (*GuarantorJournal
 	} else if loadErr := journal.load(ownerID, agentID); loadErr != nil {
 		_ = journal.Close()
 		return nil, fmt.Errorf("load Guarantor journal: %w", loadErr)
+	}
+	// A crash between writing a receipt file and the document naming it, or
+	// inside an atomic write, leaves a file no record names. The journal is
+	// loaded and exclusively locked here, so those files are removed now.
+	if err := journal.sweepCrashLeftovers(); err != nil {
+		_ = journal.Close()
+		return nil, fmt.Errorf("sweep Guarantor journal crash leftovers: %w", err)
 	}
 	return journal, nil
 }
@@ -328,7 +339,10 @@ func (journal *GuarantorJournal) ReserveUnsignedOffer(position GuarantorOfferPos
 		}
 		return errors.New("Guarantor offer identity conflicts with prior reservation")
 	}
-	next := cloneGuarantorDocument(journal.doc)
+	next, err := journal.workingCopy()
+	if err != nil {
+		return err
+	}
 	next.Offers[position.Record.OfferID] = position
 	next.Revision++
 	return journal.commit(next)
@@ -357,7 +371,10 @@ func (journal *GuarantorJournal) SaveFirmOfferIssuancePlan(plan GuarantorFirmOff
 		}
 		return errors.New("Guarantor firm-offer issuance plan conflicts")
 	}
-	next := cloneGuarantorDocument(journal.doc)
+	next, err := journal.workingCopy()
+	if err != nil {
+		return err
+	}
 	next.FirmOfferIssuancePlans[plan.AuthorityInstanceID] = plan
 	next.Revision++
 	return journal.commit(next)
@@ -408,7 +425,10 @@ func (journal *GuarantorJournal) CompleteFirmOfferIssuancePlan(authorityInstance
 		position.Record.Status != guarantor.OfferIssued {
 		return errors.New("Guarantor firm-offer issuance plan cannot complete before its exact offer")
 	}
-	next := cloneGuarantorDocument(journal.doc)
+	next, err := journal.workingCopy()
+	if err != nil {
+		return err
+	}
 	delete(next.FirmOfferIssuancePlans, authorityInstanceID)
 	next.Revision++
 	return journal.commit(next)
@@ -428,7 +448,10 @@ func (journal *GuarantorJournal) DiscardUnadmittedFirmOfferIssuancePlan(authorit
 	if authority.Resolve(plan.Action.StableActionID, plan.Action.ExactRequestDigest).State != commerce.ActionUnknown {
 		return errors.New("an admitted Guarantor firm-offer plan cannot be discarded")
 	}
-	next := cloneGuarantorDocument(journal.doc)
+	next, err := journal.workingCopy()
+	if err != nil {
+		return err
+	}
 	delete(next.FirmOfferIssuancePlans, authorityInstanceID)
 	next.Revision++
 	return journal.commit(next)
@@ -440,7 +463,11 @@ func (journal *GuarantorJournal) CommitFirmOffer(offerID, envelopeDigest string)
 	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(envelopeDigest) {
 		return GuarantorOfferPosition{}, errors.New("Guarantor firm offer commit is invalid")
 	}
-	position, found := journal.doc.Offers[offerID]
+	next, err := journal.workingCopy()
+	if err != nil {
+		return GuarantorOfferPosition{}, err
+	}
+	position, found := next.Offers[offerID]
 	if !found || position.AuthorizedFirmOffer == nil {
 		return GuarantorOfferPosition{}, errors.New("Guarantor firm offer has no reserved predecessor")
 	}
@@ -456,7 +483,6 @@ func (journal *GuarantorJournal) CommitFirmOffer(offerID, envelopeDigest string)
 		return GuarantorOfferPosition{}, err
 	}
 	position.Record, position.OfferEnvelopeDigest = updated, envelopeDigest
-	next := cloneGuarantorDocument(journal.doc)
 	next.Offers[offerID] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -473,7 +499,11 @@ func (journal *GuarantorJournal) ExpireOffer(offerID string, expectedRevision ui
 	if err := journal.ensureAttached(); err != nil || digestErr != nil {
 		return GuarantorOfferPosition{}, errors.New("Guarantor offer expiry is invalid")
 	}
-	position, found := journal.doc.Offers[offerID]
+	next, err := journal.workingCopy()
+	if err != nil {
+		return GuarantorOfferPosition{}, err
+	}
+	position, found := next.Offers[offerID]
 	if !found || uint64(now.UTC().Unix()) <= position.AcceptByUnix {
 		return GuarantorOfferPosition{}, errors.New("Guarantor offer cutoff has not passed")
 	}
@@ -488,7 +518,6 @@ func (journal *GuarantorJournal) ExpireOffer(offerID string, expectedRevision ui
 		return GuarantorOfferPosition{}, err
 	}
 	position.Record, position.NonAcceptanceEvidence = updated, &evidence
-	next := cloneGuarantorDocument(journal.doc)
 	next.Offers[offerID] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -505,7 +534,11 @@ func (journal *GuarantorJournal) ReleaseExpiredOffer(offerID string, expectedRev
 	if err := journal.ensureAttached(); err != nil || digestErr != nil {
 		return GuarantorOfferPosition{}, errors.New("Guarantor expired offer release is invalid")
 	}
-	position, found := journal.doc.Offers[offerID]
+	next, err := journal.workingCopy()
+	if err != nil {
+		return GuarantorOfferPosition{}, err
+	}
+	position, found := next.Offers[offerID]
 	if !found {
 		return GuarantorOfferPosition{}, errors.New("Guarantor offer does not exist")
 	}
@@ -520,7 +553,6 @@ func (journal *GuarantorJournal) ReleaseExpiredOffer(offerID string, expectedRev
 		return GuarantorOfferPosition{}, err
 	}
 	position.Record, position.PreAcceptanceReleaseReceipt = updated, &receipt
-	next := cloneGuarantorDocument(journal.doc)
 	next.Offers[offerID] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -538,7 +570,11 @@ func (journal *GuarantorJournal) StoreOfferReleasePlan(offerID string,
 		plan.TargetPortfolioRevision != plan.BasePortfolioRevision+1 || len(plan.CanonicalRequest) == 0 {
 		return GuarantorOfferPosition{}, errors.New("Guarantor pre-acceptance release plan is invalid")
 	}
-	position, found := journal.doc.Offers[offerID]
+	next, err := journal.workingCopy()
+	if err != nil {
+		return GuarantorOfferPosition{}, err
+	}
+	position, found := next.Offers[offerID]
 	if !found || position.Record.Status != guarantor.OfferExpired {
 		return GuarantorOfferPosition{}, errors.New("Guarantor offer is not awaiting pre-acceptance release")
 	}
@@ -549,7 +585,6 @@ func (journal *GuarantorJournal) StoreOfferReleasePlan(offerID string,
 		return GuarantorOfferPosition{}, errors.New("Guarantor pre-acceptance release plan conflicts")
 	}
 	position.PreAcceptanceReleasePlan = &plan
-	next := cloneGuarantorDocument(journal.doc)
 	next.Offers[offerID] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -565,7 +600,11 @@ func (journal *GuarantorJournal) RefreshOfferReleasePlanAction(offerID string,
 	if err := journal.ensureAttached(); err != nil {
 		return GuarantorOfferPosition{}, err
 	}
-	position, found := journal.doc.Offers[offerID]
+	next, err := journal.workingCopy()
+	if err != nil {
+		return GuarantorOfferPosition{}, err
+	}
+	position, found := next.Offers[offerID]
 	if !found || position.PreAcceptanceReleasePlan == nil ||
 		position.PreAcceptanceReleasePlan.Action.StableActionID != action.StableActionID ||
 		position.PreAcceptanceReleasePlan.Action.ExactRequestDigest != action.ExactRequestDigest ||
@@ -576,7 +615,6 @@ func (journal *GuarantorJournal) RefreshOfferReleasePlanAction(offerID string,
 		return position, nil
 	}
 	position.PreAcceptanceReleasePlan.Action = action
-	next := cloneGuarantorDocument(journal.doc)
 	next.Offers[offerID] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -598,12 +636,16 @@ func (journal *GuarantorJournal) AcceptOffer(offerID, agreementDigest string, te
 		receipt.Body.AuthorizedAcceptanceRequestEnvelopeDigest != acceptanceEvidenceDigest {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor acceptance is invalid")
 	}
-	offer, found := journal.doc.Offers[offerID]
+	next, err := journal.workingCopy()
+	if err != nil {
+		return GuarantorCoveragePosition{}, err
+	}
+	offer, found := next.Offers[offerID]
 	if !found || offer.Record.Status != guarantor.OfferIssued || uint64(receivedAt.UTC().Unix()) > offer.AcceptByUnix ||
 		offer.Record.AgreementDigest != agreementDigest {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor offer is not eligible for acceptance")
 	}
-	if existing, found := journal.doc.Coverages[agreementDigest]; found {
+	if existing, found := next.Coverages[agreementDigest]; found {
 		if existing.AcceptanceReceipt != nil && sameJSON(*existing.AcceptanceReceipt, receipt) {
 			return existing, nil
 		}
@@ -653,7 +695,6 @@ func (journal *GuarantorJournal) AcceptOffer(offerID, agreementDigest string, te
 	position.PaidByObligation = map[string]string{}
 	position.DefaultedByObligation = map[string]string{}
 	offer.Record = accepted
-	next := cloneGuarantorDocument(journal.doc)
 	next.Offers[offerID], next.Coverages[agreementDigest] = offer, position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -669,7 +710,11 @@ func (journal *GuarantorJournal) TransitionCoverage(agreementDigest string, expe
 	if err := journal.ensureAttached(); err != nil {
 		return GuarantorCoveragePosition{}, err
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if !found {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor coverage does not exist")
 	}
@@ -678,7 +723,6 @@ func (journal *GuarantorJournal) TransitionCoverage(agreementDigest string, expe
 		return GuarantorCoveragePosition{}, err
 	}
 	position.Record = updated
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -694,7 +738,11 @@ func (journal *GuarantorJournal) ActivateCoverage(agreementDigest string, expect
 	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(evidenceDigest) {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor activation is invalid")
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if !found {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor coverage does not exist")
 	}
@@ -704,7 +752,6 @@ func (journal *GuarantorJournal) ActivateCoverage(agreementDigest string, expect
 		return GuarantorCoveragePosition{}, err
 	}
 	position.Record = updated
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -723,7 +770,11 @@ func (journal *GuarantorJournal) CommitActivationEvidence(agreementDigest string
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	digest, digestErr := guarantor.CoverageActivationEvidenceDigestV1(evidence)
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || digestErr != nil || !found ||
 		evidence.Body.CoverageAgreementBodyDigest != agreementDigest {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor activation evidence commit is invalid")
@@ -750,7 +801,6 @@ func (journal *GuarantorJournal) CommitActivationEvidence(agreementDigest string
 		}
 	}
 	position.Record, position.ActivationEvidence = updated, &evidence
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -764,7 +814,11 @@ func (journal *GuarantorJournal) ConfirmNonActivation(agreementDigest string, ex
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	digest, digestErr := guarantor.CoverageNonActivationEvidenceDigestV1(evidence)
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || digestErr != nil || !found ||
 		evidence.Body.CoverageAgreementBodyDigest != agreementDigest {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor non-activation evidence commit is invalid")
@@ -782,7 +836,6 @@ func (journal *GuarantorJournal) ConfirmNonActivation(agreementDigest string, ex
 		return GuarantorCoveragePosition{}, err
 	}
 	position.Record, position.NonActivationEvidence = updated, &evidence
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -796,7 +849,11 @@ func (journal *GuarantorJournal) CommitNonActivationRelease(agreementDigest stri
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	digest, digestErr := guarantor.NonActivationExposureReleaseReceiptDigestV1(receipt)
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || digestErr != nil || !found ||
 		position.Record.CoverageStatus != guarantor.CoverageNotActivatedConfirmed || position.NonActivationEvidence == nil ||
 		receipt.Body.CoverageAgreementBodyDigest != agreementDigest {
@@ -811,7 +868,6 @@ func (journal *GuarantorJournal) CommitNonActivationRelease(agreementDigest stri
 	}
 	position.NonActivationReleaseReceipt = &receipt
 	position.Record.LastEvidenceDigest = digest
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -825,7 +881,11 @@ func (journal *GuarantorJournal) ApplyCancellation(agreementDigest string, expec
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	digest, digestErr := guarantor.CoverageCancellationReceiptDigestV1(receipt)
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || digestErr != nil || !found ||
 		receipt.Body.CoverageAgreementBodyDigest != agreementDigest {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor cancellation receipt commit is invalid")
@@ -843,7 +903,6 @@ func (journal *GuarantorJournal) ApplyCancellation(agreementDigest string, expec
 		return GuarantorCoveragePosition{}, err
 	}
 	position.Record, position.CancellationReceipt = updated, &receipt
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -967,7 +1026,11 @@ func (journal *GuarantorJournal) CommitClaimAdmission(agreementDigest string,
 	if err := journal.ensureAttached(); err != nil {
 		return guarantor.ClaimRecord{}, err
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return guarantor.ClaimRecord{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if !found || position.Record.CoverageRevision != preview.PriorCoverageRevision ||
 		position.ClaimAdmissionLogRoot != preview.PriorClaimAdmissionLogRoot {
 		return guarantor.ClaimRecord{}, errors.New("Guarantor claim admission lost its coverage CAS")
@@ -1026,7 +1089,6 @@ func (journal *GuarantorJournal) CommitClaimAdmission(agreementDigest string,
 	position.ClaimAdmissionLogRoot = preview.AdmittedClaimAdmissionLogRoot
 	position.ClaimRevisionSequence[claim.Body.ClaimID] = preview.ClaimRevisionAdmissionSequence
 	position.ClaimRevisionLogRoot[claim.Body.ClaimID] = preview.AdmittedClaimRevisionLogRoot
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.ClaimToCoverage[claim.Body.ClaimID] = agreementDigest
 	next.Revision++
@@ -1049,7 +1111,11 @@ func (journal *GuarantorJournal) RecordTerminalPayout(agreementDigest, claimID, 
 		request.ObligationInstanceID != obligationInstanceID || !canonicalSHA256(obligationInstanceID) || !canonicalSHA256(evidenceDigest) {
 		return guarantor.ClaimRecord{}, errors.New("Guarantor payout evidence is invalid")
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return guarantor.ClaimRecord{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	record, claimFound := position.Claims[claimID]
 	if digestErr != nil || executionErr != nil || !canonicalSHA256(executionDigest) || execution.ObligationInstanceID != obligationInstanceID ||
 		!sameJSON(execution.AgreementPaymentEvidence, evidence) {
@@ -1099,7 +1165,6 @@ func (journal *GuarantorJournal) RecordTerminalPayout(agreementDigest, claimID, 
 	position.PayoutExecutionEvidence[obligationInstanceID] = execution
 	position.PaidByObligation[obligationInstanceID] = paidAtomic
 	position.Claims[claimID] = updated
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1121,7 +1186,11 @@ func (journal *GuarantorJournal) RecordTerminalPayoutDefault(agreementDigest, cl
 		!canonicalSHA256(obligationInstanceID) || !canonicalSHA256(evidenceDigest) {
 		return guarantor.ClaimRecord{}, errors.New("Guarantor payout default evidence is invalid")
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return guarantor.ClaimRecord{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	record, claimFound := position.Claims[claimID]
 	if digestErr != nil || executionErr != nil || !canonicalSHA256(executionDigest) ||
 		execution.ObligationInstanceID != obligationInstanceID || !sameJSON(execution.AgreementPaymentEvidence, evidence) {
@@ -1171,7 +1240,6 @@ func (journal *GuarantorJournal) RecordTerminalPayoutDefault(agreementDigest, cl
 	position.PayoutExecutionEvidence[obligationInstanceID] = execution
 	position.DefaultedByObligation[obligationInstanceID] = request.Amount.AmountAtomic
 	position.Claims[claimID] = updated
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1187,7 +1255,11 @@ func (journal *GuarantorJournal) FreezeClaimFiling(agreementDigest, evidenceDige
 	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(evidenceDigest) {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor claim filing close is invalid")
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if !found || (position.Record.CoverageStatus != guarantor.CoverageActive &&
 		position.Record.CoverageStatus != guarantor.CoverageEnded) || filingCutoffUnix == 0 ||
 		uint64(closedAt.UTC().Unix()) < filingCutoffUnix {
@@ -1200,7 +1272,6 @@ func (journal *GuarantorJournal) FreezeClaimFiling(agreementDigest, evidenceDige
 		return GuarantorCoveragePosition{}, err
 	}
 	position.Record = updated
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1214,7 +1285,11 @@ func (journal *GuarantorJournal) CommitClaimFilingCloseReceipt(agreementDigest s
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	digest, digestErr := guarantor.ClaimFilingCloseReceiptDigestV1(receipt)
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || digestErr != nil || !found ||
 		receipt.Body.CoverageAgreementBodyDigest != agreementDigest {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor filing-close receipt commit is invalid")
@@ -1240,7 +1315,6 @@ func (journal *GuarantorJournal) CommitClaimFilingCloseReceipt(agreementDigest s
 		return GuarantorCoveragePosition{}, err
 	}
 	position.FilingCloseReceipt = &receipt
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1254,7 +1328,11 @@ func (journal *GuarantorJournal) CommitTerminalClaimSet(agreementDigest string,
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	digest, digestErr := guarantor.TerminalClaimSetDigestV1(evidence)
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || digestErr != nil || !found ||
 		evidence.Body.CoverageAgreementBodyDigest != agreementDigest {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor terminal claim-set commit is invalid")
@@ -1275,7 +1353,6 @@ func (journal *GuarantorJournal) CommitTerminalClaimSet(agreementDigest string,
 		position.Record = updated
 	}
 	position.TerminalClaimSet = &evidence
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1289,7 +1366,11 @@ func (journal *GuarantorJournal) CommitExposureReleaseReceipt(agreementDigest st
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	digest, digestErr := guarantor.ExposureReleaseReceiptDigestV1(receipt)
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || digestErr != nil || !found ||
 		position.Record.CoverageStatus != guarantor.CoverageReleasePending ||
 		receipt.Body.CoverageAgreementBodyDigest != agreementDigest || position.TerminalClaimSet == nil {
@@ -1303,7 +1384,6 @@ func (journal *GuarantorJournal) CommitExposureReleaseReceipt(agreementDigest st
 		return GuarantorCoveragePosition{}, errors.New("Guarantor exposure-release receipt conflicts")
 	}
 	position.ExposureReleaseReceipt = &receipt
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1317,7 +1397,11 @@ func (journal *GuarantorJournal) PrepareExposureReleasePlan(agreementDigest stri
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	_, actionErr := commerce.AuthorizedActionDigest(plan.Action)
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorExposureReleasePlan{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || !found || position.Record.CoverageStatus != guarantor.CoverageReleasePending ||
 		position.TerminalClaimSet == nil || actionErr != nil ||
 		len(plan.CanonicalRequest) == 0 || plan.CreatedAtUnix == 0 {
@@ -1330,7 +1414,6 @@ func (journal *GuarantorJournal) PrepareExposureReleasePlan(agreementDigest stri
 		return GuarantorExposureReleasePlan{}, errors.New("Guarantor exposure-release plan conflicts")
 	}
 	position.ExposureReleasePlan = &plan
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1348,7 +1431,11 @@ func (journal *GuarantorJournal) ReauthorizeExposureReleasePlan(agreementDigest 
 	plan GuarantorExposureReleasePlan) (GuarantorExposureReleasePlan, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorExposureReleasePlan{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || !found || position.ExposureReleasePlan == nil ||
 		position.ExposureReleaseReceipt != nil {
 		return GuarantorExposureReleasePlan{}, errors.New("Guarantor exposure-release plan cannot be reauthorized")
@@ -1364,7 +1451,6 @@ func (journal *GuarantorJournal) ReauthorizeExposureReleasePlan(agreementDigest 
 		return GuarantorExposureReleasePlan{}, errors.New("Guarantor exposure-release reauthorization changes frozen semantics")
 	}
 	position.ExposureReleasePlan = &plan
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1378,7 +1464,11 @@ func (journal *GuarantorJournal) PrepareCoverageResolutionPlan(agreementDigest s
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	_, actionErr := commerce.AuthorizedActionDigest(plan.Action)
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoverageResolutionPlan{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || !found || position.Record.CoverageStatus != guarantor.CoverageReleasePending ||
 		position.ExposureReleaseReceipt == nil || actionErr != nil ||
 		len(plan.CanonicalRequest) == 0 || plan.CreatedAtUnix == 0 {
@@ -1391,7 +1481,6 @@ func (journal *GuarantorJournal) PrepareCoverageResolutionPlan(agreementDigest s
 		return GuarantorCoverageResolutionPlan{}, errors.New("Guarantor coverage-resolution plan conflicts")
 	}
 	position.CoverageResolutionPlan = &plan
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1407,7 +1496,11 @@ func (journal *GuarantorJournal) ReauthorizeCoverageResolutionPlan(agreementDige
 	plan GuarantorCoverageResolutionPlan) (GuarantorCoverageResolutionPlan, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoverageResolutionPlan{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || !found || position.CoverageResolutionPlan == nil ||
 		position.CoverageResolution != nil {
 		return GuarantorCoverageResolutionPlan{}, errors.New("Guarantor coverage-resolution plan cannot be reauthorized")
@@ -1423,7 +1516,6 @@ func (journal *GuarantorJournal) ReauthorizeCoverageResolutionPlan(agreementDige
 		return GuarantorCoverageResolutionPlan{}, errors.New("Guarantor coverage-resolution reauthorization changes frozen semantics")
 	}
 	position.CoverageResolutionPlan = &plan
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1437,7 +1529,11 @@ func (journal *GuarantorJournal) CommitCoverageResolution(agreementDigest string
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	digest, digestErr := guarantor.CoverageResolutionDigestV1(resolution)
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if err := journal.ensureAttached(); err != nil || digestErr != nil || !found ||
 		resolution.Body.CoverageAgreementBodyDigest != agreementDigest || position.ExposureReleaseReceipt == nil {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor coverage-resolution commit is invalid")
@@ -1458,7 +1554,6 @@ func (journal *GuarantorJournal) CommitCoverageResolution(agreementDigest string
 		position.Record = updated
 	}
 	position.CoverageResolution = &resolution
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1480,7 +1575,11 @@ func (journal *GuarantorJournal) BeginCoverageRelease(agreementDigest, terminalC
 	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(terminalClaimSetDigest) {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor coverage closure is invalid")
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if !found || position.Record.ClaimFilingStatus != guarantor.FilingFrozen {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor claim filing cut is not frozen")
 	}
@@ -1499,7 +1598,6 @@ func (journal *GuarantorJournal) BeginCoverageRelease(agreementDigest, terminalC
 		return GuarantorCoveragePosition{}, err
 	}
 	position.Record = updated
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1515,7 +1613,11 @@ func (journal *GuarantorJournal) ResolveCoverage(agreementDigest string, target 
 	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(releaseEvidenceDigest) {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor coverage resolution is invalid")
 	}
-	position, found := journal.doc.Coverages[agreementDigest]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorCoveragePosition{}, copyErr
+	}
+	position, found := next.Coverages[agreementDigest]
 	if !found {
 		return GuarantorCoveragePosition{}, errors.New("Guarantor coverage does not exist")
 	}
@@ -1524,7 +1626,6 @@ func (journal *GuarantorJournal) ResolveCoverage(agreementDigest string, target 
 		return GuarantorCoveragePosition{}, err
 	}
 	position.Record = updated
-	next := cloneGuarantorDocument(journal.doc)
 	next.Coverages[agreementDigest] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1554,7 +1655,11 @@ func (journal *GuarantorJournal) beginAdmission(domainID, rootDomain, stableActi
 		!canonicalSHA256(exactRequestDigest) || receivedAt.IsZero() {
 		return GuarantorAdmissionEntry{}, errors.New("Guarantor admission identity is invalid")
 	}
-	log, found := journal.doc.AdmissionLogs[domainID]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorAdmissionEntry{}, copyErr
+	}
+	log, found := next.AdmissionLogs[domainID]
 	if !found {
 		root, err := guarantorAdmissionInitialRoot(rootDomain, domainID)
 		if err != nil {
@@ -1587,7 +1692,6 @@ func (journal *GuarantorJournal) beginAdmission(domainID, rootDomain, stableActi
 		Resolution: commerce.ActionResolution{StableActionID: stableActionID, ExactRequestDigest: exactRequestDigest,
 			State: commerce.ActionPrepared, StateRevision: 1}}
 	log.Entries[stableActionID], log.NextSequence, log.CurrentRoot = entry, sequence+1, root
-	next := cloneGuarantorDocument(journal.doc)
 	next.AdmissionLogs[domainID] = log
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1602,7 +1706,11 @@ func (journal *GuarantorJournal) ResolveAdmission(domainID string, resolution co
 	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(domainID) || commerce.ValidateActionResolution(resolution) != nil {
 		return GuarantorAdmissionEntry{}, errors.New("Guarantor admission resolution is invalid")
 	}
-	log, found := journal.doc.AdmissionLogs[domainID]
+	next, copyErr := journal.workingCopy()
+	if copyErr != nil {
+		return GuarantorAdmissionEntry{}, copyErr
+	}
+	log, found := next.AdmissionLogs[domainID]
 	entry, entryFound := log.Entries[resolution.StableActionID]
 	if !found || !entryFound || entry.ExactRequestDigest != resolution.ExactRequestDigest {
 		return GuarantorAdmissionEntry{}, errors.New("Guarantor admission resolution has no exact predecessor")
@@ -1618,7 +1726,6 @@ func (journal *GuarantorJournal) ResolveAdmission(domainID string, resolution co
 	}
 	entry.Resolution = resolution
 	log.Entries[resolution.StableActionID] = entry
-	next := cloneGuarantorDocument(journal.doc)
 	next.AdmissionLogs[domainID] = log
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1888,19 +1995,16 @@ func (journal *GuarantorJournal) persist(doc guarantorJournalDocument) error {
 	if err != nil || len(raw) > 64<<20 {
 		return errors.New("encode bounded Guarantor journal")
 	}
-	return fileutil.WriteFileAtomicRoot(journal.root, guarantorJournalFile, raw, 0o600)
+	return journal.writeFile(journal.root, guarantorJournalFile, raw, 0o600)
 }
 
 // commit writes every newly stored immutable receipt to its own file, then the
-// document that names them. A crash between the two leaves only an unnamed,
+// document that names them, and only then makes that document the in-memory
+// one. A crash between the two writes leaves only an unnamed,
 // content-addressed file, never a document naming a receipt it cannot serve.
+// A failed write leaves the in-memory document as it is on disk: doc is the
+// caller's working copy, so nothing staged in it outlives the failure.
 func (journal *GuarantorJournal) commit(doc guarantorJournalDocument) error {
-	// Positions share their evidence maps with the in-memory document, and a
-	// document clone drops staged bytes, so receipts staged in either are
-	// written before any document naming them is persisted.
-	if err := journal.writeStagedEvidence(journal.doc); err != nil {
-		return err
-	}
 	if err := journal.writeStagedEvidence(doc); err != nil {
 		return err
 	}
@@ -1911,11 +2015,21 @@ func (journal *GuarantorJournal) commit(doc guarantorJournalDocument) error {
 	return nil
 }
 
-func cloneGuarantorDocument(doc guarantorJournalDocument) guarantorJournalDocument {
-	raw, _ := json.Marshal(doc)
-	var cloned guarantorJournalDocument
-	_ = json.Unmarshal(raw, &cloned)
-	return cloned
+// workingCopy returns a private deep copy of the committed document. A commit
+// method reads everything it changes from this copy and changes only the copy;
+// commit swaps it in after it is persisted. A commit that fails, and a method
+// that returns early, therefore leave no trace in the in-memory document: not
+// in a map, not behind a pointer, and not as staged evidence.
+func (journal *GuarantorJournal) workingCopy() (guarantorJournalDocument, error) {
+	raw, err := json.Marshal(journal.doc)
+	if err != nil {
+		return guarantorJournalDocument{}, fmt.Errorf("copy Guarantor journal document: %w", err)
+	}
+	var copied guarantorJournalDocument
+	if err := json.Unmarshal(raw, &copied); err != nil {
+		return guarantorJournalDocument{}, fmt.Errorf("copy Guarantor journal document: %w", err)
+	}
+	return copied, nil
 }
 
 func sameJSON(left, right interface{}) bool {

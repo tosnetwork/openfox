@@ -1349,6 +1349,18 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 				coordinator.resolverFor(agreementDigest), authority, deadlineAt); err != nil {
 				t.Fatalf("the terminal fallback after the late candidate is not portable: %v", err)
 			}
+			// Without the candidate's marker, or with another digest in its
+			// place, the same fallback is refused.
+			for name, marker := range map[string]string{"removed": "",
+				"changed": "sha256:" + strings.Repeat("7", 64)} {
+				altered := timedOut.Receipt
+				altered.Body.LateFilingCloseReceiptDigest = marker
+				if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(altered, terms, coordinator.AgreementVerifier,
+					coordinator.resolverFor(agreementDigest), authority, deadlineAt); err == nil ||
+					!strings.Contains(err.Error(), "is not its late-recovery marker") {
+					t.Fatalf("the terminal fallback with its marker %s was not refused: %v", name, err)
+				}
+			}
 			// The journal keeps the fallback as the head, and reloads.
 			if err := journal.Close(); err != nil {
 				t.Fatal(err)

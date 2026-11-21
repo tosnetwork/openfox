@@ -893,7 +893,7 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	fields := guarantor.ClaimDecisionApplicationSemanticFieldsV1(bound, requestBody, decision, claimDigest)
 	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.claim.decide", fields,
 		canonicalRequest, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", record.LastEvidenceDigest,
-		coverage.Terms.TerminalResolutionDeadlineUnix)
+		guarantorClosureActionDeadline(coverage))
 	if err != nil {
 		return GuarantorDecisionApplicationResult{}, err
 	}

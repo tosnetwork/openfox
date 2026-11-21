@@ -149,7 +149,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 	fields := guarantor.DecisionAdmissionSemanticFieldsV1(bound, actionBody, input.Decision, headDigest, identityDigest)
 	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID,
 		"conditional.claim-decision.admit", fields, request, fence, coordinator.PolicyRevision, coordinator.MandateDigest,
-		"", record.LastEvidenceDigest, position.Terms.TerminalResolutionDeadlineUnix)
+		"", record.LastEvidenceDigest, guarantorClosureActionDeadline(position))
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
@@ -423,7 +423,7 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	fields := guarantor.ClaimStateTransitionSemanticFieldsV1(bound, requestBody, evidenceSetDigest)
 	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.claim.transition",
 		fields, request, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", record.LastEvidenceDigest,
-		position.Terms.TerminalResolutionDeadlineUnix)
+		guarantorClosureActionDeadline(position))
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err
 	}

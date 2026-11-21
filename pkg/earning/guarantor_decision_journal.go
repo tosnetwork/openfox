@@ -261,12 +261,16 @@ func (journal *GuarantorJournal) CommitDecisionAdmission(agreementDigest string,
 			return guarantor.ClaimRecord{}, errors.New("Guarantor claim already has a conflicting decision head")
 		}
 	}
+	// A late-recovery fallback starts from whichever head the claim has: the
+	// admitted claim, or a nonterminal or reviewing head.
+	lateRecovery := body.DecisionPath == "late_recovery_terminal_fallback"
 	initial := record.DecisionSequence == 0 && record.ClaimStatus == guarantor.ClaimAdmitted &&
-		(body.DecisionPath == "initial" || body.DecisionPath == "initial_terminal_fallback")
+		(body.DecisionPath == "initial" || body.DecisionPath == "initial_terminal_fallback" || lateRecovery)
 	successorState := record.ClaimStatus == guarantor.ClaimReviewing || record.ClaimStatus == guarantor.ClaimEvidenceRequired ||
 		record.ClaimStatus == guarantor.ClaimDisputed
 	successor := record.DecisionSequence > 0 && successorState &&
-		(body.DecisionPath == "successor" && record.ClaimStatus == guarantor.ClaimReviewing || body.DecisionPath == "terminal_fallback")
+		(body.DecisionPath == "successor" && record.ClaimStatus == guarantor.ClaimReviewing ||
+			body.DecisionPath == "terminal_fallback" || lateRecovery)
 	if body.DecisionSequence != record.DecisionSequence+1 || (!initial && !successor) {
 		return guarantor.ClaimRecord{}, errors.New("Guarantor decision lineage is invalid")
 	}

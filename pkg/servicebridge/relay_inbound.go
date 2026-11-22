@@ -73,9 +73,9 @@ type RelayPollState struct {
 type RelayInbound struct {
 	agentID string
 	keys    *RelayKeys
-	// chat, when set, is the chat lane: an envelope sealed to one of its
+	// lane, when set, is the second lane: an envelope sealed to one of its
 	// keys is handed to it, never to the receiver.
-	chat     *ChatCarrier
+	lane     RelayLane
 	receiver *Receiver
 	pool     *relayPool
 	now      func() time.Time
@@ -145,14 +145,14 @@ func (r *RelayInbound) Due(ctx context.Context) time.Time {
 	return next
 }
 
-// pollRelays is every relay of the rail and the chat keys, each once: one
+// pollRelays is every relay of the rail and the lane keys, each once: one
 // listing of a relay serves both lanes.
 func (r *RelayInbound) pollRelays() []string {
 	relays := r.keys.PollRelays()
-	if r.chat == nil {
+	if r.lane == nil {
 		return relays
 	}
-	for _, relay := range r.chat.Keys.PollRelays() {
+	for _, relay := range r.lane.LaneKeys().PollRelays() {
 		if !containsString(relays, relay) {
 			relays = append(relays, relay)
 		}
@@ -161,15 +161,16 @@ func (r *RelayInbound) pollRelays() []string {
 	return relays
 }
 
-// heldKey reports whether a key id is held by the rail lane or the chat lane.
+// heldKey reports whether a key id is held by the rail lane or the second
+// lane.
 func (r *RelayInbound) heldKey(keyID [agentpacketseal.KeyIDSize]byte) bool {
 	if _, held := r.keys.private(keyID); held {
 		return true
 	}
-	if r.chat == nil {
+	if r.lane == nil {
 		return false
 	}
-	_, held := r.chat.Keys.private(keyID)
+	_, held := r.lane.LaneKeys().private(keyID)
 	return held
 }
 
@@ -343,17 +344,17 @@ func (r *RelayInbound) process(ctx context.Context, client relayAPI, relay strin
 		r.remember(key, entry.ExpiresAtUnix)
 		return ""
 	}
-	opened, chat, ok := r.open(raw, entry.EnvelopeID)
+	opened, lane, ok := r.open(raw, entry.EnvelopeID)
 	if !ok {
 		r.remember(key, entry.ExpiresAtUnix)
 		r.remember(bytesMemoryKey(raw), entry.ExpiresAtUnix)
 		return ""
 	}
-	if chat {
-		// Opened under a chat key: it must carry a relay frame and goes to
-		// the chat lane only. The lane leaves it listed only for a retry or
-		// an unavailable finalized state or daemon.
-		if !r.chat.receive(ctx, opened.PacketJSON) {
+	if lane {
+		// Opened under a key of the second lane: it goes to that lane only.
+		// The lane leaves it listed only for a retry or while something it
+		// needs to decide is unavailable.
+		if !r.lane.Receive(ctx, opened.PacketJSON) {
 			return ""
 		}
 		return r.ackAt(ctx, client, relay, entry.EnvelopeID, r.settle(opened))
@@ -383,19 +384,20 @@ func (r *RelayInbound) process(ctx context.Context, client relayAPI, relay strin
 // open runs the first three recipient steps. A failure at any of them is
 // the envelope's: it is remembered and never acknowledged.
 //
-// It also reports which lane's key opened it: chat is true for a chat key.
-// The key id in the header picks the key, so the lane is decided by the key
-// the envelope was sealed to and by nothing inside it.
+// It also reports which lane's key opened it: the first flag is true for a
+// key of the second lane. The key id in the header picks the key, so the
+// lane is decided by the key the envelope was sealed to and by nothing
+// inside it.
 func (r *RelayInbound) open(raw []byte, listed [32]byte) (agentpacketseal.Opened, bool, bool) {
 	header, err := agentpacketseal.ParseEnvelope(raw)
 	if err != nil || header.RecipientAgentID != r.agentID || header.EnvelopeID != listed {
 		return agentpacketseal.Opened{}, false, false
 	}
-	chat := false
+	lane := false
 	private, held := r.keys.private(header.RecipientKeyID)
-	if !held && r.chat != nil {
-		private, held = r.chat.Keys.private(header.RecipientKeyID)
-		chat = held
+	if !held && r.lane != nil {
+		private, held = r.lane.LaneKeys().private(header.RecipientKeyID)
+		lane = held
 	}
 	if !held {
 		return agentpacketseal.Opened{}, false, false
@@ -404,7 +406,7 @@ func (r *RelayInbound) open(raw []byte, listed [32]byte) (agentpacketseal.Opened
 	if err != nil || opened.Header.EnvelopeID != listed {
 		return agentpacketseal.Opened{}, false, false
 	}
-	return opened, chat, true
+	return opened, lane, true
 }
 
 func (r *RelayInbound) settledFor(id [32]byte) *settledEnvelope {

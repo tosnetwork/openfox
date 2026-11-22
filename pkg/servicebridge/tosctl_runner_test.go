@@ -21,7 +21,33 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 2 && os.Args[1] == "stand-in-tosctl" {
 		standInTOSCTL(os.Args[2], os.Args[3:])
 	}
+	// The fixtures name messenger_socket as their route of last resort and
+	// never send through it. Where the program registered no fallback
+	// transport, the tests register one that refuses every send.
+	if registeredFallbackTransport() == nil {
+		RegisterFallbackTransport(func(string) (PacketTransport, error) { return refusingFallback{}, nil })
+	}
 	os.Exit(m.Run())
+}
+
+// refusingFallback is a fallback packet transport that delivers nothing.
+type refusingFallback struct{}
+
+func (refusingFallback) Send(context.Context, OutboundPacket) error {
+	return errors.New("servicebridge: the test fallback transport delivers nothing")
+}
+
+// withoutExtensions runs the test as a program that registered neither a
+// fallback transport nor a relay lane, and restores both afterwards.
+func withoutExtensions(t *testing.T) {
+	t.Helper()
+	fallback, lane := registeredFallbackTransport(), registeredRelayLane()
+	RegisterFallbackTransport(nil)
+	RegisterRelayLane(nil)
+	t.Cleanup(func() {
+		RegisterFallbackTransport(fallback)
+		RegisterRelayLane(lane)
+	})
 }
 
 func standInTOSCTL(mode string, rest []string) {

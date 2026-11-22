@@ -51,7 +51,7 @@ func loadChatConfig(path string) (NodeConfig, error) {
 	if err != nil {
 		return NodeConfig{}, err
 	}
-	if config.Chat == nil {
+	if ChatSection(config) == nil {
 		return NodeConfig{}, errors.New("servicebridge: the configuration has no chat section; run init with " +
 			"--messenger-carrier-socket")
 	}
@@ -98,7 +98,8 @@ func ChatRepublish(ctx context.Context, configPath string, env SetupEnv) (*ChatC
 	if err != nil {
 		return nil, err
 	}
-	lifetime, err := config.Chat.cardLifetime()
+	chat := ChatSection(config)
+	lifetime, err := chat.cardLifetime()
 	if err != nil {
 		return nil, err
 	}
@@ -114,15 +115,15 @@ func ChatRepublish(ctx context.Context, configPath string, env SetupEnv) (*ChatC
 	if err != nil {
 		return nil, err
 	}
-	if err = publishChatCard(config.Chat.CardPath, key.CardJSON); err != nil {
+	if err = publishChatCard(chat.CardPath, key.CardJSON); err != nil {
 		return nil, err
 	}
 	return &ChatCardResult{
 		AgentID: config.AgentID, KeyID: agentpacketseal.KeyIDText(key.KeyID), NotBeforeUnix: key.NotBeforeUnix,
-		NotAfterUnix: key.NotAfterUnix, Relays: key.Relays, CardPath: config.Chat.CardPath,
+		NotAfterUnix: key.NotAfterUnix, Relays: key.Relays, CardPath: chat.CardPath,
 		NextSteps: []string{
-			"set the Messenger daemon's relay_carriage.card_path to " + config.Chat.CardPath + ", carry_socket_path " +
-				"to " + config.Chat.CarrierSocket + " and listen_socket_path to " + config.Chat.MessengerCarrierSocket,
+			"set the Messenger daemon's relay_carriage.card_path to " + chat.CardPath + ", carry_socket_path " +
+				"to " + chat.CarrierSocket + " and listen_socket_path to " + chat.MessengerCarrierSocket,
 			"openfox earning chat contact export --rail-config " + configPath + " --out <file>, once the daemon " +
 				"published its relay evidence",
 		},
@@ -151,7 +152,7 @@ func heldChatCard(config NodeConfig, now time.Time) (OwnRelayKey, bool, error) {
 	if err = keys.load(); err != nil {
 		return OwnRelayKey{}, false, err
 	}
-	published, readErr := readPrivateFile(config.Chat.CardPath, relayframe.MaxCardBytes)
+	published, readErr := readPrivateFile(ChatSection(config).CardPath, relayframe.MaxCardBytes)
 	unix := uint64(now.Unix())
 	var longest *OwnRelayKey
 	for index := range keys.keys {
@@ -184,7 +185,7 @@ func ChatContactExport(configPath, out string, now time.Time) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if config.Chat.EvidenceExportDir == "" {
+	if ChatSection(config).EvidenceExportDir == "" {
 		return nil, errors.New("servicebridge: chat.evidence_export_dir is not configured")
 	}
 	key, published, err := heldChatCard(config, now)
@@ -195,7 +196,7 @@ func ChatContactExport(configPath, out string, now time.Time) ([]byte, error) {
 		return nil, errors.New("servicebridge: the card path does not hold the current chat card; run `openfox " +
 			"earning chat republish`")
 	}
-	raw, err := readPrivateFile(filepath.Join(config.Chat.EvidenceExportDir, directory.RelayContactFile),
+	raw, err := readPrivateFile(filepath.Join(ChatSection(config).EvidenceExportDir, directory.RelayContactFile),
 		relayframe.MaxContactBytes)
 	if err != nil {
 		return nil, errors.New("servicebridge: the daemon has not exported its relay contact yet (relay-contact.json " +
@@ -410,7 +411,7 @@ func ChatContactRemove(configPath, agent string) (*ChatContactRemoved, error) {
 		return nil, err
 	}
 	removed, err := removeChatContact(filepath.Join(config.StateDir, relayStateDir, relayChatPeersDir),
-		config.Chat.ContactDir, config.AgentID, agent)
+		ChatSection(config).ContactDir, config.AgentID, agent)
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +432,7 @@ func ChatContactImport(ctx context.Context, configPath, file string, now func() 
 	if err != nil {
 		return nil, err
 	}
-	if config.Chat.ContactDir == "" {
+	if ChatSection(config).ContactDir == "" {
 		return nil, errors.New("servicebridge: chat.contact_dir is not configured")
 	}
 	raw, err := readBoundedFile(file, maxChatContactBytes)
@@ -455,7 +456,7 @@ func ChatContactImport(ctx context.Context, configPath, file string, now func() 
 		return nil, err
 	}
 	cards.AllowLoopbackRelays(ownRelaysOnLoopback(relays))
-	imported, err := importChatContact(ctx, cards, config.Chat.ContactDir, config.AgentID, raw)
+	imported, err := importChatContact(ctx, cards, ChatSection(config).ContactDir, config.AgentID, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -606,8 +607,8 @@ func readChatStatus(ctx context.Context, configPath string, now time.Time) (*Cha
 		return nil, err
 	}
 	report := &ChatStatusReport{
-		AgentID: config.AgentID, Relays: relays, CarrierSocket: config.Chat.CarrierSocket,
-		MessengerCarrierSocket: config.Chat.MessengerCarrierSocket, CardPath: config.Chat.CardPath,
+		AgentID: config.AgentID, Relays: relays, CarrierSocket: ChatSection(config).CarrierSocket,
+		MessengerCarrierSocket: ChatSection(config).MessengerCarrierSocket, CardPath: ChatSection(config).CardPath,
 		PeerCards: []PeerCardView{}, Outbox: []RelayOutboxView{}, Rooms: []RoomCardsView{},
 		RoomAdmissions: []RoomAdmissionView{}, PeerEnvelopes: []PeerEnvelopeCount{},
 	}
@@ -630,7 +631,7 @@ func readChatStatus(ctx context.Context, configPath string, now time.Time) (*Cha
 			Relays: append([]string(nil), card.Card.Relays...),
 		})
 	}
-	outbox, err := ReadRelayOutbox(filepath.Join(root, relayChatOutboxDir))
+	outbox, err := ReadChatOutbox(filepath.Join(root, relayChatOutboxDir))
 	if err != nil {
 		return nil, err
 	}
@@ -651,7 +652,7 @@ func readChatStatus(ctx context.Context, configPath string, now time.Time) (*Cha
 	if counts != nil {
 		report.PeerEnvelopes = counts
 	}
-	if config.Chat.OwnerSocket != "" {
+	if ChatSection(config).OwnerSocket != "" {
 		owner, ownerErr := chatOwnerClient(config)
 		var rooms ChatRooms
 		if ownerErr == nil {

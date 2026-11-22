@@ -288,11 +288,12 @@ func relayTrustOf(config NodeConfig, base string) string {
 }
 
 // ownRelayURLs is every relay this node's own cards name: the rail relays
-// and the chat relays. The pinned CA file applies to all of them.
+// and the relays the chat section names. The pinned CA file applies to all
+// of them.
 func ownRelayURLs(config NodeConfig) []string {
 	own := append([]string(nil), config.RelayURLs...)
-	if config.Chat != nil {
-		for _, relay := range config.Chat.RelayURLs {
+	if handler := registeredRelayLane(); config.Chat != nil && handler != nil {
+		for _, relay := range handler.OwnRelays(config) {
 			if !slices.Contains(own, relay) {
 				own = append(own, relay)
 			}

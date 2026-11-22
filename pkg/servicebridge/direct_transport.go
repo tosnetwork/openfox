@@ -235,11 +235,18 @@ func openPacketTransport(config NodeConfig, relay *RelayTransport) (PacketTransp
 	}
 	routed := RoutedTransport{Direct: DirectTransport{Peers: config.DirectPeers}, Relay: relay}
 	if config.MessengerSocket != "" {
-		client, err := newMessengerClient(config.MessengerSocket)
+		open := registeredFallbackTransport()
+		if open == nil {
+			return nil, ErrNoFallbackTransport
+		}
+		fallback, err := open(config.MessengerSocket)
 		if err != nil {
 			return nil, err
 		}
-		routed.Fallback = MessengerTransport{Client: client}
+		if fallback == nil {
+			return nil, errors.New("servicebridge: the fallback packet transport did not open")
+		}
+		routed.Fallback = fallback
 	}
 	if routed.Fallback == nil && len(config.DirectPeers) == 0 && relay == nil {
 		return nil, errors.New("servicebridge: the rail node has no packet transport: configure messenger_socket, " +

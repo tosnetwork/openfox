@@ -1,0 +1,30 @@
+{
+  "network": {
+    "network_id": "",
+    "genesis_root_hash": "",
+    "genesis_file_hash": ""
+  },
+  "rpc_endpoints": null,
+  "quorum": 0,
+  "registry_code_boc_file": "",
+  "registry_code_hash": "",
+  "actor_code_hash": "",
+  "state_dir": "/var/lib/rail",
+  "agent_id": "",
+  "packet_controller": "",
+  "packet_key_id": "",
+  "tosctl": {
+    "binary": "",
+    "sha256": "",
+    "config_path": "",
+    "vault_url_env": ""
+  },
+  "wallet_name": "",
+  "wallet_address": "",
+  "receiver_socket": "/var/lib/rail/rail-receiver.sock",
+  "chat": {
+    "carrier_socket": "/c.sock",
+    "messenger_carrier_socket": "/d.sock",
+    "card_path": "/card.json"
+  }
+}

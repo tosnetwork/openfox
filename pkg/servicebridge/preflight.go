@@ -318,8 +318,23 @@ func RunPreflight(ctx context.Context, configPath string, env PreflightEnv) *Pre
 	p.checkChain()
 	p.checkSigners()
 	p.checkRelay()
-	p.checkChat()
+	p.checkLane()
 	return p.report
+}
+
+// checkLane runs the checks of the lane the chat section configures. A
+// section this program registered no lane for fails: `serve` would refuse
+// it.
+func (p *preflight) checkLane() {
+	if p.config.Chat == nil {
+		return
+	}
+	handler := registeredRelayLane()
+	if handler == nil {
+		p.addf("chat.config", CheckFail, "%v", ErrNoRelayLane)
+		return
+	}
+	handler.Preflight(p)
 }
 
 const providerSection = "config.provider section"
@@ -520,6 +535,10 @@ func (p *preflight) checkTransport() {
 	}
 	if _, self := p.config.DirectPeers[p.config.AgentID]; self {
 		p.addf("transport.peers", CheckFail, "direct_peers names this node's own Agent")
+		return
+	}
+	if err := checkFallbackSocket(p.config.MessengerSocket); err != nil {
+		p.addf("transport.peers", CheckFail, "%v", err)
 		return
 	}
 	rest := "every other recipient goes through the Messenger"

@@ -121,11 +121,12 @@ func (c ChatConfig) timeout() (time.Duration, error) {
 
 // chatRelays returns the chat relay list: its own, or the rail's.
 func chatRelays(config NodeConfig) ([]string, error) {
-	if config.Chat == nil {
+	chat := ChatSection(config)
+	if chat == nil {
 		return nil, errChatInvalidLane
 	}
-	if len(config.Chat.RelayURLs) > 0 {
-		return canonicalRelayURLs(config.Chat.RelayURLs)
+	if len(chat.RelayURLs) > 0 {
+		return canonicalRelayURLs(chat.RelayURLs)
 	}
 	return canonicalRelayURLs(config.RelayURLs)
 }
@@ -135,9 +136,12 @@ func chatRelays(config NodeConfig) ([]string, error) {
 // the Messenger: a packet inside a copy inside a packet buys nothing and
 // halves every bound.
 func validateChatConfig(config NodeConfig) error {
-	chat := config.Chat
-	if chat == nil {
+	if config.Chat == nil {
 		return nil
+	}
+	chat := ChatSection(config)
+	if chat == nil {
+		return errChatInvalidLane
 	}
 	var problems []error
 	if config.MessengerSocket != "" {
@@ -376,6 +380,9 @@ func openChatCarrier(root, agentID string, lane chatLaneConfig, verifier mldsa44
 	}
 	if err := transport.setPacketBound(agentpacketseal.MaxPacketJSONBytes); err != nil {
 		return nil, err
+	}
+	if kindsErr := transport.setFrameKinds(chatMaxFrameKind, chatUnreadableFrameKind); kindsErr != nil {
+		return nil, kindsErr
 	}
 	rooms, err := openRoomAdmissions(filepath.Join(root, relayChatRoomAdmissionsDir))
 	if err != nil {

@@ -66,12 +66,16 @@ func (coordinator *GuarantorProviderCoordinator) committedClaimAdmission(coverag
 	admissionResolution, err := coordinator.committedActionResolution(admission.Body.StableActionID,
 		admission.Body.ExactRequestDigest)
 	if err != nil {
-		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution,
-			AdmissionResolution: admissionResolution}, false, err
+		return GuarantorClaimAdmissionResult{
+			IngressResolution:   ingressResolution,
+			AdmissionResolution: admissionResolution,
+		}, false, err
 	}
-	return GuarantorClaimAdmissionResult{ClaimDigest: claimDigest, IngressReceipt: ingress,
+	return GuarantorClaimAdmissionResult{
+		ClaimDigest: claimDigest, IngressReceipt: ingress,
 		AdmissionReceipt: admission, IngressResolution: ingressResolution,
-		AdmissionResolution: admissionResolution}, true, nil
+		AdmissionResolution: admissionResolution,
+	}, true, nil
 }
 
 // committedDecisionAdmission returns the receipt committed for decision when
@@ -118,13 +122,19 @@ func claimTransitionEvidenceSet(input GuarantorTransitionClaimInput, terms guara
 			return guarantor.CanonicalGuarantorEvidenceSetV1{}, err
 		}
 		const contentType = "application/vnd.tos.service.agent-guarantor-claim-decision-admission.v1+cbor"
-		evidenceSet = guarantor.CanonicalGuarantorEvidenceSetV1{SchemaVersion: 1,
-			Items: []guarantor.CanonicalGuarantorEvidenceItemV1{{ContentType: contentType,
+		evidenceSet = guarantor.CanonicalGuarantorEvidenceSetV1{
+			SchemaVersion: 1,
+			Items: []guarantor.CanonicalGuarantorEvidenceItemV1{{
+				ContentType:            contentType,
 				EvidenceProfileDigest:  terms.DecisionAdmissionProfile.ProfileDigest,
 				EvidenceEnvelopeDigest: decisionAdmissionDigest, Representation: "content_addressed",
-				ImmutableDescriptor: &guarantor.ImmutableEvidenceDescriptorV1{ContentType: contentType,
+				ImmutableDescriptor: &guarantor.ImmutableEvidenceDescriptorV1{
+					ContentType:   contentType,
 					ContentDigest: decisionAdmissionDigest, ContentSize: uint64(len(admissionBytes)),
-					RetrievalPolicyDigest: terms.DecisionAdmissionProfile.ProfileDigest}}}}
+					RetrievalPolicyDigest: terms.DecisionAdmissionProfile.ProfileDigest,
+				},
+			}},
+		}
 	}
 	switch input.TransitionKind {
 	case "challenge_close":
@@ -194,6 +204,8 @@ func (coordinator *GuarantorProviderCoordinator) committedDecisionApplication(co
 	if err != nil {
 		return GuarantorDecisionApplicationResult{Resolution: resolution}, false, err
 	}
-	return GuarantorDecisionApplicationResult{Payouts: stored.MaterializedPayoutObligationSet, Receipt: stored,
-		Resolution: resolution}, true, nil
+	return GuarantorDecisionApplicationResult{
+		Payouts: stored.MaterializedPayoutObligationSet, Receipt: stored,
+		Resolution: resolution,
+	}, true, nil
 }

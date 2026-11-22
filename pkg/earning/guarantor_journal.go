@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"sync"
@@ -1902,6 +1903,14 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 		doc.Revision == 0 || doc.Offers == nil || doc.Coverages == nil || doc.ClaimToCoverage == nil || doc.AdmissionLogs == nil {
 		return errors.New("Guarantor journal document is invalid")
 	}
+	// Checked before any default is filled in below: doc is still exactly what
+	// was decoded.
+	if err := requireExactGuarantorDocument(raw, doc); err != nil {
+		return fmt.Errorf("Guarantor journal document is invalid: %w", err)
+	}
+	if err := validateGuarantorOffers(doc); err != nil {
+		return err
+	}
 	if doc.FirmOfferIssuancePlans == nil {
 		doc.FirmOfferIssuancePlans = map[string]GuarantorFirmOfferIssuancePlan{}
 	}
@@ -2130,8 +2139,84 @@ func (journal *GuarantorJournal) workingCopy() (guarantorJournalDocument, error)
 	return copied, nil
 }
 
+// sameJSON reports whether left and right have the same JSON encoding. A
+// value that cannot be encoded equals nothing, itself included: every caller
+// treats "not the same" as the refusing answer, so an encoding failure
+// refuses instead of comparing two empty results as equal.
 func sameJSON(left, right interface{}) bool {
-	l, _ := json.Marshal(left)
-	r, _ := json.Marshal(right)
-	return string(l) == string(r)
+	l, leftErr := json.Marshal(left)
+	r, rightErr := json.Marshal(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return bytes.Equal(l, r)
+}
+
+// requireExactGuarantorDocument refuses a document on disk that is not, member
+// for member, what this journal writes for the document it decoded from it.
+// Decoding alone is more lenient than that: it matches a member name in any
+// letter case and keeps the last of two members with one name, so a document
+// could carry a second, differently spelled copy of a member, or a member
+// decoding drops or defaults, and still load. The document is therefore
+// walked for repeated member names at every depth, and then encoded again and
+// compared with the bytes read as a tree: member order and spacing are free,
+// every name and value is not.
+func requireExactGuarantorDocument(raw []byte, doc guarantorJournalDocument) error {
+	if err := rejectDuplicateJSONKeys(raw); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	read, err := decodeJSONTree(raw)
+	if err != nil {
+		return err
+	}
+	written, err := decodeJSONTree(encoded)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(read, written) {
+		return errors.New("document has members or values this journal does not write")
+	}
+	return nil
+}
+
+// decodeJSONTree decodes one JSON value into maps, slices and scalars, keeping
+// every number's exact digits.
+func decodeJSONTree(raw []byte) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var tree any
+	if err := decoder.Decode(&tree); err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("JSON contains trailing data")
+	}
+	return tree, nil
+}
+
+// validateGuarantorOffers checks each stored offer position against the key it
+// is stored under and against the receipt its state claims: an offer is found
+// by its key and summed by its record, so the two must name one offer, and a
+// released offer must hold the release receipt its record commits to.
+func validateGuarantorOffers(doc guarantorJournalDocument) error {
+	for offerID, position := range doc.Offers {
+		if offerID != position.Record.OfferID {
+			return fmt.Errorf("Guarantor offer %s is stored under another identity", offerID)
+		}
+		if position.Record.Status != guarantor.OfferReleased {
+			continue
+		}
+		if position.PreAcceptanceReleaseReceipt == nil {
+			return fmt.Errorf("Guarantor offer %s is released without a release receipt", offerID)
+		}
+		receiptDigest, err := guarantor.PreAcceptanceExposureReleaseReceiptDigestV1(*position.PreAcceptanceReleaseReceipt)
+		if err != nil || receiptDigest != position.Record.LastEvidenceDigest {
+			return fmt.Errorf("Guarantor offer %s is released by another receipt than the stored one", offerID)
+		}
+	}
+	return nil
 }

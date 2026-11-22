@@ -1704,9 +1704,7 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 	if err != nil {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
 	}
-	offerAdmissionDomain, err := guarantor.Digest("tos.service.agent-guarantor-firm-offer-admission-domain.v1", struct {
-		AuthorityInstanceID string `json:"authority_instance_id"`
-	}{instance.AuthorityInstanceID})
+	offerAdmissionDomain, err := firmOfferAdmissionDomainID(instance.AuthorityInstanceID)
 	if err != nil {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
 	}
@@ -1775,7 +1773,8 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 		GrossExposureAtomic: decision.GrossExposureAtomic, NetExposureAtomic: decision.NetExposureAtomic,
 		AcceptByUnix: input.AcceptByUnix, ReservationExpiresAt: input.ReservationExpiresAtUnix, AuthorizedFirmOffer: &offer,
 		Record: guarantor.OfferRecord{OfferID: instance.AuthorityInstanceID, ReservationID: reservationID,
-			AgreementDigest: agreementDigest, Status: guarantor.OfferReservedUnsigned, StateRevision: 3,
+			AgreementDigest: agreementDigest, Status: guarantor.OfferReservedUnsigned,
+			StateRevision:      guarantorReservedUnsignedOfferRevision,
 			LastEvidenceDigest: descriptorDigest}}
 	plan := GuarantorFirmOfferIssuancePlan{AuthorityInstanceID: instance.AuthorityInstanceID,
 		AdmissionDomainID: offerAdmissionDomain, Action: action, Fields: fields,

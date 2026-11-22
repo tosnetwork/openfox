@@ -160,6 +160,221 @@ func TestGuarantorJournalPlanResumesAfterARestart(t *testing.T) {
 	}
 }
 
+// TestSameJSONFailsClosed: two values that cannot be encoded are not the same,
+// and neither is such a value and one that can be.
+func TestSameJSONFailsClosed(t *testing.T) {
+	unencodable := func() {}
+	if sameJSON(unencodable, unencodable) {
+		t.Fatal("two values that cannot be encoded compared as the same")
+	}
+	if sameJSON(unencodable, nil) || sameJSON(nil, unencodable) {
+		t.Fatal("a value that cannot be encoded compared as the same as one that can")
+	}
+	if !sameJSON(map[string]uint64{"a": 1}, map[string]uint64{"a": 1}) || sameJSON(uint64(1), uint64(2)) {
+		t.Fatal("sameJSON does not compare encodings")
+	}
+}
+
+// nextTestWriterGeneration is action and fence moved to the next writer
+// generation, as a takeover reauthorizes them.
+func nextTestWriterGeneration(action commerce.AuthorizedAction, fence commerce.WriterFence) (commerce.AuthorizedAction,
+	commerce.WriterFence) {
+	action.WriterGeneration++
+	fence.Body.WriterGeneration = action.WriterGeneration
+	return action, fence
+}
+
+// requireExposureReleaseReauthorizationRefusesAChangedPlan reauthorizes the
+// stored exposure-release plan of agreementDigest with a semantic field
+// changed and with the request changed. Both name the stored action under a
+// newer writer generation, as a takeover does; neither may be stored.
+func requireExposureReleaseReauthorizationRefusesAChangedPlan(t *testing.T, journal *GuarantorJournal,
+	agreementDigest string) {
+	t.Helper()
+	revision, stored := storedTestCoveragePosition(t, journal, agreementDigest)
+	if stored.ExposureReleasePlan == nil {
+		t.Fatal("the coverage holds no exposure-release plan")
+	}
+	// Each changed plan is made from its own private copy of the position.
+	_, first := storedTestCoveragePosition(t, journal, agreementDigest)
+	changedField := *first.ExposureReleasePlan
+	changedField.Action, changedField.WriterFence = nextTestWriterGeneration(changedField.Action, changedField.WriterFence)
+	changedField.Fields["target_revision"] = commerce.U64(changedField.RequestBody.TargetPortfolioRevision + 1)
+	if _, err := journal.ReauthorizeExposureReleasePlan(agreementDigest, changedField); err == nil {
+		t.Error("an exposure-release plan was reauthorized with a changed semantic field")
+	}
+	_, again := storedTestCoveragePosition(t, journal, agreementDigest)
+	changedRequest := *again.ExposureReleasePlan
+	changedRequest.Action, changedRequest.WriterFence = nextTestWriterGeneration(changedRequest.Action, changedRequest.WriterFence)
+	changedRequest.RequestBody.TargetPortfolioRevision++
+	request, err := guarantor.Canonical(changedRequest.RequestBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedRequest.CanonicalRequest = request
+	if _, err := journal.ReauthorizeExposureReleasePlan(agreementDigest, changedRequest); err == nil {
+		t.Error("an exposure-release plan was reauthorized with a changed request")
+	}
+	requireTestCoveragePositionUnchanged(t, journal, agreementDigest, revision, stored)
+}
+
+// requireCoverageResolutionReauthorizationRefusesAChangedPlan is the same for
+// the stored coverage-resolution plan of agreementDigest.
+func requireCoverageResolutionReauthorizationRefusesAChangedPlan(t *testing.T, journal *GuarantorJournal,
+	agreementDigest string) {
+	t.Helper()
+	revision, stored := storedTestCoveragePosition(t, journal, agreementDigest)
+	if stored.CoverageResolutionPlan == nil {
+		t.Fatal("the coverage holds no coverage-resolution plan")
+	}
+	// Each changed plan is made from its own private copy of the position.
+	_, first := storedTestCoveragePosition(t, journal, agreementDigest)
+	changedField := *first.CoverageResolutionPlan
+	changedField.Action, changedField.WriterFence = nextTestWriterGeneration(changedField.Action, changedField.WriterFence)
+	changedField.Fields["expected_state_revision"] = commerce.U64(changedField.RequestBody.ExpectedRevision + 1)
+	if _, err := journal.ReauthorizeCoverageResolutionPlan(agreementDigest, changedField); err == nil {
+		t.Error("a coverage-resolution plan was reauthorized with a changed semantic field")
+	}
+	_, again := storedTestCoveragePosition(t, journal, agreementDigest)
+	changedRequest := *again.CoverageResolutionPlan
+	changedRequest.Action, changedRequest.WriterFence = nextTestWriterGeneration(changedRequest.Action, changedRequest.WriterFence)
+	changedRequest.RequestBody.ExpectedRevision++
+	changedRequest.RequestBody.TargetRevision++
+	request, err := guarantor.Canonical(changedRequest.RequestBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedRequest.CanonicalRequest = request
+	if _, err := journal.ReauthorizeCoverageResolutionPlan(agreementDigest, changedRequest); err == nil {
+		t.Error("a coverage-resolution plan was reauthorized with a changed request")
+	}
+	requireTestCoveragePositionUnchanged(t, journal, agreementDigest, revision, stored)
+}
+
+// storedTestCoveragePosition returns the journal's revision and a private copy
+// of the coverage position of agreementDigest.
+func storedTestCoveragePosition(t *testing.T, journal *GuarantorJournal, agreementDigest string) (uint64,
+	GuarantorCoveragePosition) {
+	t.Helper()
+	revision, _, coverages := journal.Snapshot()
+	for _, coverage := range coverages {
+		if coverage.Record.CoverageAgreementBodyDigest == agreementDigest {
+			return revision, coverage
+		}
+	}
+	t.Fatalf("the journal holds no coverage %s", agreementDigest)
+	return 0, GuarantorCoveragePosition{}
+}
+
+// requireTestCoveragePositionUnchanged fails unless the journal is still at
+// revision and holds want for agreementDigest.
+func requireTestCoveragePositionUnchanged(t *testing.T, journal *GuarantorJournal, agreementDigest string,
+	revision uint64, want GuarantorCoveragePosition) {
+	t.Helper()
+	gotRevision, got := storedTestCoveragePosition(t, journal, agreementDigest)
+	if gotRevision != revision || !sameJSON(got, want) {
+		t.Errorf("a refused reauthorization changed the journal: revision %d, want %d", gotRevision, revision)
+	}
+}
+
+// tamperedTestFirmOfferIssuancePlan are the changes to a document holding one
+// firm-offer issuance plan that a load must refuse: each changes what a resume
+// would reserve or record, and each differs from what the plan's own offer
+// derives.
+func tamperedTestFirmOfferIssuancePlan(t *testing.T) map[string]func(doc map[string]any) {
+	t.Helper()
+	planOf := func(doc map[string]any) map[string]any {
+		plans, found := doc["firm_offer_issuance_plans"].(map[string]any)
+		if !found || len(plans) != 1 {
+			t.Fatalf("the document does not hold exactly one firm-offer issuance plan: %v", doc["firm_offer_issuance_plans"])
+		}
+		for _, plan := range plans {
+			return plan.(map[string]any)
+		}
+		return nil
+	}
+	member := func(name string) func(doc map[string]any) map[string]any {
+		return func(doc map[string]any) map[string]any {
+			value, found := planOf(doc)[name].(map[string]any)
+			if !found {
+				t.Fatalf("the firm-offer issuance plan has no %s", name)
+			}
+			return value
+		}
+	}
+	position, reservation, action := member("position"), member("reservation"), member("authorized_action")
+	other := "sha256:" + strings.Repeat("9", 64)
+	return map[string]func(doc map[string]any){
+		"the position's gross exposure changed": func(doc map[string]any) { position(doc)["gross_exposure_atomic"] = "1" },
+		"the position's net exposure changed":   func(doc map[string]any) { position(doc)["net_exposure_atomic"] = "1" },
+		"the position's accept-by changed": func(doc map[string]any) {
+			position(doc)["accept_by_unix"] = json.Number("4000000000")
+		},
+		"the position's reservation expiry changed": func(doc map[string]any) {
+			position(doc)["reservation_expires_at_unix"] = json.Number("4000000001")
+		},
+		"the position's covered party changed": func(doc map[string]any) {
+			position(doc)["covered_party_agent_id"] = "agent:another"
+		},
+		"the position's quote request changed": func(doc map[string]any) { position(doc)["quote_request_digest"] = other },
+		"the position's coverage asset changed": func(doc map[string]any) {
+			position(doc)["coverage_asset"].(map[string]any)["asset_identifier"] = "another-asset"
+		},
+		"the position's record given another evidence digest": func(doc map[string]any) {
+			position(doc)["record"].(map[string]any)["last_evidence_digest"] = other
+		},
+		"the position's record given another agreement": func(doc map[string]any) {
+			position(doc)["record"].(map[string]any)["agreement_digest"] = other
+		},
+		"the position's record already issued": func(doc map[string]any) {
+			position(doc)["record"].(map[string]any)["status"] = string(guarantor.OfferIssued)
+		},
+		"the reservation's maximum loss changed": func(doc map[string]any) {
+			reservation(doc)["maximum_loss_atomic"] = json.Number("1")
+		},
+		"the reservation's agreement changed": func(doc map[string]any) { reservation(doc)["agreement_digest"] = other },
+		"the reservation already released":    func(doc map[string]any) { reservation(doc)["released"] = true },
+		"the reservation's asset removed":     func(doc map[string]any) { delete(reservation(doc), "asset") },
+		"the admission domain changed":        func(doc map[string]any) { planOf(doc)["admission_domain_id"] = other },
+		"the action's policy revision changed": func(doc map[string]any) {
+			action(doc)["policy_revision"] = json.Number("99")
+		},
+		"the action's expiry changed": func(doc map[string]any) {
+			action(doc)["expires_at_unix"] = json.Number("4000000002")
+		},
+	}
+}
+
+// restartTestGuarantorJournalHoldingAFirmOfferPlan restarts journal while it
+// holds exactly one firm-offer issuance plan: every tampered document is
+// refused, and the journal opened from disk holds the plan as it was stored.
+func restartTestGuarantorJournalHoldingAFirmOfferPlan(t *testing.T, journal *GuarantorJournal,
+	directory string) *GuarantorJournal {
+	t.Helper()
+	journal.mu.Lock()
+	identities := make([]string, 0, len(journal.doc.FirmOfferIssuancePlans))
+	for identity := range journal.doc.FirmOfferIssuancePlans {
+		identities = append(identities, identity)
+	}
+	journal.mu.Unlock()
+	if len(identities) != 1 {
+		t.Fatalf("the journal holds %d firm-offer issuance plans, want one", len(identities))
+	}
+	stored, found := journal.FirmOfferIssuancePlan(identities[0])
+	if !found {
+		t.Fatal("the journal does not return its firm-offer issuance plan")
+	}
+	journal = restartTestGuarantorJournalDocuments(t, journal, directory, tamperedTestFirmOfferIssuancePlan(t))
+	loaded, found := journal.FirmOfferIssuancePlan(identities[0])
+	if !found {
+		t.Fatal("the journal opened from disk holds no firm-offer issuance plan")
+	}
+	if !reflect.DeepEqual(loaded.Fields, stored.Fields) || !sameJSON(loaded, stored) {
+		t.Fatalf("the firm-offer issuance plan loaded from disk is %#v, want %#v", loaded, stored)
+	}
+	return journal
+}
+
 // TestGuarantorJournalKeepsPlanSemanticFieldsAcrossCopies: a stored plan keeps
 // its semantic fields through later commits, and the maps handed in and handed
 // back are not the journal's.
@@ -243,6 +458,9 @@ func TestGuarantorJournalStoresOnlyAPlanItWouldLoad(t *testing.T) {
 			*plan = testGuarantorOfferReleasePlan(t, position, ^uint64(0))
 		},
 		"another owner's action": func(plan *GuarantorPreAcceptanceReleasePlan) { plan.Action.OwnerID = "owner:another" },
+		"a request body that is not its canonical request": func(plan *GuarantorPreAcceptanceReleasePlan) {
+			plan.RequestBody.ReleaseVariant = "post_acceptance"
+		},
 	} {
 		plan := testGuarantorOfferReleasePlan(t, position, 6)
 		change(&plan)
@@ -299,6 +517,24 @@ func editTestGuarantorJournalFile(t *testing.T, directory string, original []byt
 func restartTestGuarantorJournal(t *testing.T, journal *GuarantorJournal, directory, agreementDigest string,
 	tampered map[string]func(coverage map[string]any)) *GuarantorJournal {
 	t.Helper()
+	documents := make(map[string]func(doc map[string]any), len(tampered))
+	for name, change := range tampered {
+		documents[name] = func(doc map[string]any) {
+			coverage, found := doc["coverages"].(map[string]any)[agreementDigest].(map[string]any)
+			if !found {
+				t.Fatalf("the document has no coverage %s", agreementDigest)
+			}
+			change(coverage)
+		}
+	}
+	return restartTestGuarantorJournalDocuments(t, journal, directory, documents)
+}
+
+// restartTestGuarantorJournalDocuments is restartTestGuarantorJournal for
+// changes made anywhere in the document.
+func restartTestGuarantorJournalDocuments(t *testing.T, journal *GuarantorJournal, directory string,
+	tampered map[string]func(doc map[string]any)) *GuarantorJournal {
+	t.Helper()
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -308,13 +544,7 @@ func restartTestGuarantorJournal(t *testing.T, journal *GuarantorJournal, direct
 		t.Fatal(err)
 	}
 	for name, change := range tampered {
-		editTestGuarantorJournalFile(t, directory, original, func(doc map[string]any) {
-			coverage, found := doc["coverages"].(map[string]any)[agreementDigest].(map[string]any)
-			if !found {
-				t.Fatalf("the document has no coverage %s", agreementDigest)
-			}
-			change(coverage)
-		})
+		editTestGuarantorJournalFile(t, directory, original, change)
 		opened, err := OpenGuarantorJournal(directory, "owner:guarantor", "agent:guarantor")
 		if err == nil {
 			_ = opened.Close()
@@ -529,12 +759,80 @@ func TestGuarantorJournalRefusesATamperedPlan(t *testing.T) {
 		"the offer no longer expired": func(t *testing.T, doc map[string]any) {
 			offerOf(t, doc)["record"].(map[string]any)["status"] = string(guarantor.OfferIssued)
 		},
+		// The request body is what a resume reads; it must be the request the
+		// action's digest covers.
+		"the request body's release variant changed": func(t *testing.T, doc map[string]any) {
+			planOf(t, doc)["request_body"].(map[string]any)["release_variant"] = "post_acceptance"
+		},
+		"the offer released with no release receipt": func(t *testing.T, doc map[string]any) {
+			offerOf(t, doc)["record"].(map[string]any)["status"] = string(guarantor.OfferReleased)
+		},
+		"the offer stored under another key": func(t *testing.T, doc map[string]any) {
+			offers := doc["offers"].(map[string]any)
+			offers[digest("f")] = offerOf(t, doc)
+			delete(offers, offerID)
+		},
+		// Decoding matches a member name in any letter case, so each of these
+		// would otherwise decode as the member it resembles.
+		"a plan member renamed to another letter case": func(t *testing.T, doc map[string]any) {
+			plan := planOf(t, doc)
+			plan["Released_At_Unix"] = plan["released_at_unix"]
+			delete(plan, "released_at_unix")
+		},
+		"a plan member added whose name differs only in case": func(t *testing.T, doc map[string]any) {
+			planOf(t, doc)["Released_At_Unix"] = json.Number("1")
+		},
+		"a second semantic-fields member differing in case": func(t *testing.T, doc map[string]any) {
+			planOf(t, doc)["Semantic_Fields"] = map[string]any{}
+		},
+		"an offer member renamed to another letter case": func(t *testing.T, doc map[string]any) {
+			offer := offerOf(t, doc)
+			offer["Accept_By_Unix"] = offer["accept_by_unix"]
+			delete(offer, "accept_by_unix")
+		},
+		"a document member renamed to another letter case": func(t *testing.T, doc map[string]any) {
+			doc["Revision"] = doc["revision"]
+			delete(doc, "revision")
+		},
+		"a record member renamed to another letter case": func(t *testing.T, doc map[string]any) {
+			record := offerOf(t, doc)["record"].(map[string]any)
+			record["State_Revision"] = record["state_revision"]
+			delete(record, "state_revision")
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			editTestGuarantorJournalFile(t, directory, original, func(doc map[string]any) { change(t, doc) })
 			if err := openTestGuarantorJournalErr(t, directory); err == nil {
 				// The journal opened holds the process-wide domain lock.
 				t.Error("a journal with a tampered plan was loaded")
+			}
+		})
+	}
+	// A member written twice cannot be expressed through a decoded document, so
+	// these are made in the bytes. Decoding keeps the last of the two; the
+	// first is the changed one, so each of these documents decodes to exactly
+	// the original.
+	insertBefore := func(t *testing.T, member, duplicate string) []byte {
+		t.Helper()
+		if bytes.Count(original, []byte(member)) != 1 {
+			t.Fatalf("the document does not hold %s exactly once", member)
+		}
+		return bytes.Replace(original, []byte(member), []byte(duplicate+member), 1)
+	}
+	for name, edited := range map[string][]byte{
+		"two offers members in the document":       insertBefore(t, `"offers":`, `"offers":{},`),
+		"two revision members in the document":     insertBefore(t, `"revision":`, `"revision":1,`),
+		"two release plans in one offer":           insertBefore(t, `"pre_acceptance_release_plan":`, `"pre_acceptance_release_plan":null,`),
+		"two records in one offer":                 insertBefore(t, `"record":`, `"record":{"offer_id":"`+offerID+`","status":"issued","state_revision":1},`),
+		"two release times in one plan":            insertBefore(t, `"released_at_unix":`, `"released_at_unix":1,`),
+		"two offers of one identity in the offers": insertBefore(t, `"`+offerID+`":{`, `"`+offerID+`":null,`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(directory, guarantorJournalFile), edited, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := openTestGuarantorJournalErr(t, directory); err == nil {
+				t.Error("a journal with a member written twice was loaded")
 			}
 		})
 	}

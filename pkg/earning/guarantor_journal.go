@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"sync"
@@ -22,14 +23,17 @@ import (
 )
 
 const (
-	// guarantorJournalSchema v3 tracks each claim's revision epoch and keeps
-	// the immutable receipts it serves in content-addressed files beside the
-	// document, which records only their media type, size and hash. A v1
-	// journal has no epochs and a v2 journal holds the receipts inside the
-	// document; both are refused rather than read or converted.
-	guarantorJournalSchema          = "tos.openfox.agent-guarantor-journal.v3"
+	// guarantorJournalSchema v4 tracks each claim's revision epoch, keeps the
+	// immutable receipts it serves in content-addressed files beside the
+	// document, which records only their media type, size and hash, and
+	// stores each plan's semantic fields in their transport form. A v1 journal
+	// has no epochs, a v2 journal holds the receipts inside the document and a
+	// v3 journal holds plans without their semantic fields; all three are
+	// refused rather than read or converted.
+	guarantorJournalSchema          = "tos.openfox.agent-guarantor-journal.v4"
 	retiredGuarantorJournalSchema   = "tos.openfox.agent-guarantor-journal.v1"
 	retiredGuarantorJournalSchemaV2 = "tos.openfox.agent-guarantor-journal.v2"
+	retiredGuarantorJournalSchemaV3 = "tos.openfox.agent-guarantor-journal.v3"
 	guarantorJournalFile            = "agent-guarantor-journal.json"
 	// guarantorEvidenceDirectory holds one file per stored immutable receipt,
 	// named by the hex of its envelope digest.
@@ -351,19 +355,17 @@ func (journal *GuarantorJournal) ReserveUnsignedOffer(position GuarantorOfferPos
 func (journal *GuarantorJournal) SaveFirmOfferIssuancePlan(plan GuarantorFirmOfferIssuancePlan) error {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(plan.AuthorityInstanceID) ||
-		!canonicalSHA256(plan.AdmissionDomainID) || !canonicalSHA256(plan.OfferDigest) ||
-		!canonicalSHA256(plan.ReceiptDigest) || plan.Action.StableActionID == "" ||
-		plan.Action.ExactRequestDigest == "" || plan.Reservation.ReservationID == "" || len(plan.CanonicalRequest) == 0 {
+	if err := journal.ensureAttached(); err != nil {
 		return errors.New("Guarantor firm-offer issuance plan is invalid")
 	}
-	wantOfferDigest, offerErr := guarantor.FirmOfferDigest(plan.Offer)
-	wantRequestDigest, requestErr := commerce.ExactRequestDigest(plan.CanonicalRequest)
-	if offerErr != nil || requestErr != nil || wantOfferDigest != plan.OfferDigest ||
-		wantRequestDigest != plan.Action.ExactRequestDigest || plan.Offer.Body.OfferID != plan.AuthorityInstanceID ||
-		plan.Offer.Body.ReservationID != plan.Reservation.ReservationID ||
-		plan.Position.Record.OfferID != plan.AuthorityInstanceID {
-		return errors.New("Guarantor firm-offer issuance plan binding is invalid")
+	// The plan is checked exactly as a load checks it, so nothing is stored
+	// that a restart would refuse.
+	var stored *GuarantorOfferPosition
+	if position, found := journal.doc.Offers[plan.AuthorityInstanceID]; found {
+		stored = &position
+	}
+	if err := validateFirmOfferIssuancePlan(journal.doc.OwnerID, journal.doc.AgentID, plan, stored); err != nil {
+		return err
 	}
 	if existing, found := journal.doc.FirmOfferIssuancePlans[plan.AuthorityInstanceID]; found {
 		if sameJSON(existing, plan) {
@@ -578,9 +580,7 @@ func (journal *GuarantorJournal) StoreOfferReleasePlan(offerID string,
 	plan GuarantorPreAcceptanceReleasePlan) (GuarantorOfferPosition, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	if err := journal.ensureAttached(); err != nil || plan.Action.ActionKind != "portfolio.release" ||
-		!canonicalSHA256(plan.Action.StableActionID) || !canonicalSHA256(plan.Action.ExactRequestDigest) ||
-		plan.TargetPortfolioRevision != plan.BasePortfolioRevision+1 || len(plan.CanonicalRequest) == 0 {
+	if err := journal.ensureAttached(); err != nil {
 		return GuarantorOfferPosition{}, errors.New("Guarantor pre-acceptance release plan is invalid")
 	}
 	next, err := journal.workingCopy()
@@ -590,6 +590,11 @@ func (journal *GuarantorJournal) StoreOfferReleasePlan(offerID string,
 	position, found := next.Offers[offerID]
 	if !found || position.Record.Status != guarantor.OfferExpired {
 		return GuarantorOfferPosition{}, errors.New("Guarantor offer is not awaiting pre-acceptance release")
+	}
+	// The plan is checked exactly as a load checks it, so nothing is stored
+	// that a restart would refuse.
+	if err := validatePreAcceptanceReleasePlan(next.OwnerID, next.AgentID, position, plan); err != nil {
+		return GuarantorOfferPosition{}, err
 	}
 	if position.PreAcceptanceReleasePlan != nil {
 		if sameJSON(*position.PreAcceptanceReleasePlan, plan) {
@@ -628,6 +633,10 @@ func (journal *GuarantorJournal) RefreshOfferReleasePlanAction(offerID string,
 		return position, nil
 	}
 	position.PreAcceptanceReleasePlan.Action = action
+	if err := validatePreAcceptanceReleasePlan(next.OwnerID, next.AgentID, position,
+		*position.PreAcceptanceReleasePlan); err != nil {
+		return GuarantorOfferPosition{}, err
+	}
 	next.Offers[offerID] = position
 	next.Revision++
 	if err := journal.commit(next); err != nil {
@@ -1420,6 +1429,11 @@ func (journal *GuarantorJournal) PrepareExposureReleasePlan(agreementDigest stri
 		len(plan.CanonicalRequest) == 0 || plan.CreatedAtUnix == 0 {
 		return GuarantorExposureReleasePlan{}, errors.New("Guarantor exposure-release plan is invalid")
 	}
+	// The plan is checked exactly as a load checks it, so nothing is stored
+	// that a restart would refuse.
+	if err := validateExposureReleasePlan(next.OwnerID, next.AgentID, agreementDigest, position, plan); err != nil {
+		return GuarantorExposureReleasePlan{}, err
+	}
 	if position.ExposureReleasePlan != nil {
 		if sameJSON(*position.ExposureReleasePlan, plan) {
 			return *position.ExposureReleasePlan, nil
@@ -1454,7 +1468,9 @@ func (journal *GuarantorJournal) ReauthorizeExposureReleasePlan(agreementDigest 
 		return GuarantorExposureReleasePlan{}, errors.New("Guarantor exposure-release plan cannot be reauthorized")
 	}
 	prior := *position.ExposureReleasePlan
-	if !sameJSON(prior.Fields, plan.Fields) || !bytes.Equal(prior.CanonicalRequest, plan.CanonicalRequest) ||
+	// The semantic fields are frozen with the stable action identity: the
+	// validation below requires them to derive it.
+	if !bytes.Equal(prior.CanonicalRequest, plan.CanonicalRequest) ||
 		!sameJSON(prior.RequestBody, plan.RequestBody) || !sameJSON(prior.Disposition, plan.Disposition) ||
 		prior.Action.StableActionID != plan.Action.StableActionID ||
 		prior.Action.ExactRequestDigest != plan.Action.ExactRequestDigest ||
@@ -1462,6 +1478,9 @@ func (journal *GuarantorJournal) ReauthorizeExposureReleasePlan(agreementDigest 
 		plan.WriterFence.Body.WriterGeneration != plan.Action.WriterGeneration ||
 		plan.CreatedAtUnix < prior.CreatedAtUnix {
 		return GuarantorExposureReleasePlan{}, errors.New("Guarantor exposure-release reauthorization changes frozen semantics")
+	}
+	if err := validateExposureReleasePlan(next.OwnerID, next.AgentID, agreementDigest, position, plan); err != nil {
+		return GuarantorExposureReleasePlan{}, err
 	}
 	position.ExposureReleasePlan = &plan
 	next.Coverages[agreementDigest] = position
@@ -1486,6 +1505,11 @@ func (journal *GuarantorJournal) PrepareCoverageResolutionPlan(agreementDigest s
 		position.ExposureReleaseReceipt == nil || actionErr != nil ||
 		len(plan.CanonicalRequest) == 0 || plan.CreatedAtUnix == 0 {
 		return GuarantorCoverageResolutionPlan{}, errors.New("Guarantor coverage-resolution plan is invalid")
+	}
+	// The plan is checked exactly as a load checks it, so nothing is stored
+	// that a restart would refuse.
+	if err := validateCoverageResolutionPlan(next.OwnerID, next.AgentID, agreementDigest, position, plan); err != nil {
+		return GuarantorCoverageResolutionPlan{}, err
 	}
 	if position.CoverageResolutionPlan != nil {
 		if sameJSON(*position.CoverageResolutionPlan, plan) {
@@ -1519,7 +1543,9 @@ func (journal *GuarantorJournal) ReauthorizeCoverageResolutionPlan(agreementDige
 		return GuarantorCoverageResolutionPlan{}, errors.New("Guarantor coverage-resolution plan cannot be reauthorized")
 	}
 	prior := *position.CoverageResolutionPlan
-	if !sameJSON(prior.Fields, plan.Fields) || !bytes.Equal(prior.CanonicalRequest, plan.CanonicalRequest) ||
+	// The semantic fields are frozen with the stable action identity: the
+	// validation below requires them to derive it.
+	if !bytes.Equal(prior.CanonicalRequest, plan.CanonicalRequest) ||
 		!sameJSON(prior.RequestBody, plan.RequestBody) || prior.TargetStatus != plan.TargetStatus ||
 		prior.TargetState != plan.TargetState || prior.Action.StableActionID != plan.Action.StableActionID ||
 		prior.Action.ExactRequestDigest != plan.Action.ExactRequestDigest ||
@@ -1527,6 +1553,9 @@ func (journal *GuarantorJournal) ReauthorizeCoverageResolutionPlan(agreementDige
 		plan.WriterFence.Body.WriterGeneration != plan.Action.WriterGeneration ||
 		plan.CreatedAtUnix < prior.CreatedAtUnix {
 		return GuarantorCoverageResolutionPlan{}, errors.New("Guarantor coverage-resolution reauthorization changes frozen semantics")
+	}
+	if err := validateCoverageResolutionPlan(next.OwnerID, next.AgentID, agreementDigest, position, plan); err != nil {
+		return GuarantorCoverageResolutionPlan{}, err
 	}
 	position.CoverageResolutionPlan = &plan
 	next.Coverages[agreementDigest] = position
@@ -1859,14 +1888,29 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 		case retiredGuarantorJournalSchemaV2:
 			return errors.New("Guarantor journal uses the retired v2 schema, which holds immutable receipts inside " +
 				"the document; it cannot be read safely and must be recreated")
+		case retiredGuarantorJournalSchemaV3:
+			return errors.New("Guarantor journal uses the retired v3 schema, which holds plans without their " +
+				"semantic fields; it cannot be resumed safely and must be recreated")
 		}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var doc guarantorJournalDocument
-	if err := decoder.Decode(&doc); err != nil || decoder.Decode(&struct{}{}) != io.EOF || doc.Schema != guarantorJournalSchema || doc.OwnerID != ownerID || doc.AgentID != agentID ||
-		doc.Revision == 0 || doc.Offers == nil || doc.Coverages == nil || doc.ClaimToCoverage == nil || doc.AdmissionLogs == nil {
+	if err := decoder.Decode(&doc); err != nil {
+		return fmt.Errorf("Guarantor journal document is invalid: %w", err)
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF || doc.Schema != guarantorJournalSchema || doc.OwnerID != ownerID ||
+		doc.AgentID != agentID || doc.Revision == 0 || doc.Offers == nil || doc.Coverages == nil ||
+		doc.ClaimToCoverage == nil || doc.AdmissionLogs == nil {
 		return errors.New("Guarantor journal document is invalid")
+	}
+	// Checked before any default is filled in below: doc is still exactly what
+	// was decoded.
+	if err := requireExactGuarantorDocument(raw, doc); err != nil {
+		return fmt.Errorf("Guarantor journal document is invalid: %w", err)
+	}
+	if err := validateGuarantorOffers(doc); err != nil {
+		return err
 	}
 	if doc.FirmOfferIssuancePlans == nil {
 		doc.FirmOfferIssuancePlans = map[string]GuarantorFirmOfferIssuancePlan{}
@@ -1959,6 +2003,11 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 		}
 		doc.Coverages[key] = coverage
 	}
+	// A plan is what a restart resumes from, so each one must still belong to
+	// the receipts stored beside it.
+	if err := validateGuarantorPlans(doc); err != nil {
+		return fmt.Errorf("Guarantor journal plan is invalid: %w", err)
+	}
 	journal.doc = doc
 	return nil
 }
@@ -2049,7 +2098,8 @@ func (journal *GuarantorJournal) persist(doc guarantorJournalDocument) error {
 //
 // The in-memory document is decoded from the bytes written, not taken from
 // doc, so it shares no memory with the receipts and plans the caller put into
-// doc or with the position the caller returns.
+// doc or with the position the caller returns, and it holds exactly what a
+// restart would load, each plan's semantic fields included.
 func (journal *GuarantorJournal) commit(doc guarantorJournalDocument) error {
 	if err := journal.writeStagedEvidence(doc); err != nil {
 		return err
@@ -2062,7 +2112,6 @@ func (journal *GuarantorJournal) commit(doc guarantorJournalDocument) error {
 	if err := json.Unmarshal(raw, &committed); err != nil {
 		return fmt.Errorf("decode the Guarantor journal document to commit: %w", err)
 	}
-	carryGuarantorPlanFields(&committed, doc)
 	writeErr := journal.writeFile(journal.root, guarantorJournalFile, raw, 0o600)
 	if writeErr != nil && !errors.Is(writeErr, fileutil.ErrReplacedNotSynced) {
 		return writeErr
@@ -2088,51 +2137,89 @@ func (journal *GuarantorJournal) workingCopy() (guarantorJournalDocument, error)
 	if err := json.Unmarshal(raw, &copied); err != nil {
 		return guarantorJournalDocument{}, fmt.Errorf("copy Guarantor journal document: %w", err)
 	}
-	carryGuarantorPlanFields(&copied, journal.doc)
 	return copied, nil
 }
 
-// carryGuarantorPlanFields gives each plan in copied the semantic fields of
-// the same plan in source. A plan's semantic field values have no exported
-// form, so the document's encoding does not carry them and a copy made
-// through that encoding would lose them. The values themselves cannot be
-// changed from outside their package, so a fresh map holding the same values
-// shares no changeable memory with source.
-func carryGuarantorPlanFields(copied *guarantorJournalDocument, source guarantorJournalDocument) {
-	fields := func(original map[string]commerce.SemanticValue) map[string]commerce.SemanticValue {
-		if original == nil {
-			return nil
-		}
-		carried := make(map[string]commerce.SemanticValue, len(original))
-		for name, value := range original {
-			carried[name] = value
-		}
-		return carried
+// sameJSON reports whether left and right have the same JSON encoding. A
+// value that cannot be encoded equals nothing, itself included: every caller
+// treats "not the same" as the refusing answer, so an encoding failure
+// refuses instead of comparing two empty results as equal.
+func sameJSON(left, right any) bool {
+	l, leftErr := json.Marshal(left)
+	r, rightErr := json.Marshal(right)
+	if leftErr != nil || rightErr != nil {
+		return false
 	}
-	for offerID, offer := range copied.Offers {
-		if original := source.Offers[offerID].PreAcceptanceReleasePlan; offer.PreAcceptanceReleasePlan != nil && original != nil {
-			offer.PreAcceptanceReleasePlan.Fields = fields(original.Fields)
-		}
-	}
-	for planID, plan := range copied.FirmOfferIssuancePlans {
-		if original, found := source.FirmOfferIssuancePlans[planID]; found {
-			plan.Fields = fields(original.Fields)
-			copied.FirmOfferIssuancePlans[planID] = plan
-		}
-	}
-	for agreementDigest, coverage := range copied.Coverages {
-		original := source.Coverages[agreementDigest]
-		if coverage.ExposureReleasePlan != nil && original.ExposureReleasePlan != nil {
-			coverage.ExposureReleasePlan.Fields = fields(original.ExposureReleasePlan.Fields)
-		}
-		if coverage.CoverageResolutionPlan != nil && original.CoverageResolutionPlan != nil {
-			coverage.CoverageResolutionPlan.Fields = fields(original.CoverageResolutionPlan.Fields)
-		}
-	}
+	return bytes.Equal(l, r)
 }
 
-func sameJSON(left, right interface{}) bool {
-	l, _ := json.Marshal(left)
-	r, _ := json.Marshal(right)
-	return string(l) == string(r)
+// requireExactGuarantorDocument refuses a document on disk that is not, member
+// for member, what this journal writes for the document it decoded from it.
+// Decoding alone is more lenient than that: it matches a member name in any
+// letter case and keeps the last of two members with one name, so a document
+// could carry a second, differently spelled copy of a member, or a member
+// decoding drops or defaults, and still load. The document is therefore
+// walked for repeated member names at every depth, and then encoded again and
+// compared with the bytes read as a tree: member order and spacing are free,
+// every name and value is not.
+func requireExactGuarantorDocument(raw []byte, doc guarantorJournalDocument) error {
+	if err := rejectDuplicateJSONKeys(raw); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	read, err := decodeJSONTree(raw)
+	if err != nil {
+		return err
+	}
+	written, err := decodeJSONTree(encoded)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(read, written) {
+		return errors.New("document has members or values this journal does not write")
+	}
+	return nil
+}
+
+// decodeJSONTree decodes one JSON value into maps, slices and scalars, keeping
+// every number's exact digits.
+func decodeJSONTree(raw []byte) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var tree any
+	if err := decoder.Decode(&tree); err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("JSON contains trailing data")
+	}
+	return tree, nil
+}
+
+// validateGuarantorOffers checks each stored offer position against the key it
+// is stored under and against the receipt its state claims: an offer is found
+// by its key and summed by its record, so the two must name one offer, and a
+// released offer must hold the release receipt its record commits to.
+func validateGuarantorOffers(doc guarantorJournalDocument) error {
+	for offerID, position := range doc.Offers {
+		if offerID != position.Record.OfferID {
+			return fmt.Errorf("Guarantor offer %s is stored under another identity", offerID)
+		}
+		if position.Record.Status != guarantor.OfferReleased {
+			continue
+		}
+		if position.PreAcceptanceReleaseReceipt == nil {
+			return fmt.Errorf("Guarantor offer %s is released without a release receipt", offerID)
+		}
+		receiptDigest, err := guarantor.PreAcceptanceExposureReleaseReceiptDigestV1(
+			*position.PreAcceptanceReleaseReceipt,
+		)
+		if err != nil || receiptDigest != position.Record.LastEvidenceDigest {
+			return fmt.Errorf("Guarantor offer %s is released by another receipt than the stored one", offerID)
+		}
+	}
+	return nil
 }

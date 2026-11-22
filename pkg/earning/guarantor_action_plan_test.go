@@ -231,8 +231,14 @@ func TestGuarantorJournalRefusesATamperedActionPlan(t *testing.T) {
 		"an empty plan map":    func(doc map[string]any) { doc["action_plans"] = map[string]any{} },
 	} {
 		editTestGuarantorJournalFile(t, fixture.directory, original, change)
-		if loadErr := openTestGuarantorJournalErr(t, fixture.directory); loadErr == nil {
+		// A journal that loads is closed at once: left open it would hold the
+		// journal's lock and every later case would be refused for that.
+		loaded, loadErr := OpenGuarantorJournal(fixture.directory, "owner:guarantor", "agent:guarantor")
+		if loadErr == nil {
 			t.Errorf("a journal whose action plan has %s changed was loaded", name)
+			if closeErr := loaded.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
 		}
 	}
 	editTestGuarantorJournalFile(t, fixture.directory, original, func(map[string]any) {})

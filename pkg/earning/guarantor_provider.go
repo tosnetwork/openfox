@@ -412,7 +412,10 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 	resolution, err := coordinator.Authority.Admit(action, fields, canonicalRequest, fence, nil)
 	if err != nil {
 		if commerce.ValidateActionResolution(resolution) == nil && isGuarantorAdmissionTerminal(resolution.State) {
-			_, _ = coordinator.Journal.ResolveAdmission(activationDomainID, resolution)
+			// Recording the terminal result is best effort here, but a commit
+			// left without a confirmed sync is reported with the failure.
+			_, resolveErr := coordinator.Journal.ResolveAdmission(activationDomainID, resolution)
+			err = errors.Join(err, guarantorJournalDurabilityError(resolveErr))
 		}
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution, err
 	}
@@ -1396,12 +1399,16 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution, err
 	}
 	if isTerminalActionResolution(resolution.State) {
-		_, _ = coordinator.Journal.ResolveAdmission(admissionDomainID, resolution)
+		// Recording the terminal result is best effort, but a commit left
+		// without a confirmed sync is never returned as a plain success: the
+		// stored receipt comes back with that error.
+		_, resolveErr := coordinator.Journal.ResolveAdmission(admissionDomainID, resolution)
+		durabilityErr := guarantorJournalDurabilityError(resolveErr)
 		if resolution.State == commerce.ActionTerminal && storedReceipt != nil {
-			return *storedReceipt, resolution, nil
+			return *storedReceipt, resolution, durabilityErr
 		}
-		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution,
-			errors.New("Guarantor acceptance was already terminal without a recoverable receipt")
+		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution, errors.Join(
+			errors.New("Guarantor acceptance was already terminal without a recoverable receipt"), durabilityErr)
 	}
 	if resolution.State != commerce.ActionPrepared {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution,
@@ -1450,11 +1457,19 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 	}
 	coverage, err := coordinator.Journal.AcceptOffer(input.Offer.Body.OfferID, agreementDigest, input.Offer.CoverageTerms,
 		input.CoverageObligationID, requestDigest, receipt, receivedAt)
+	if errors.Is(err, ErrGuarantorJournalCommittedNotSynced) {
+		// The acceptance is in the journal: the coverage exists and the offer
+		// is accepted. It is not rejected and not repeated. The receipt is
+		// returned with the error; repeating the call returns the stored
+		// receipt once the journal has confirmed the commit.
+		return receipt, resolution, err
+	}
 	if err != nil {
 		rejected, transitionErr := coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
 			commerce.ActionRejected, requestDigest, []string{requestDigest})
 		if transitionErr == nil {
-			_, _ = coordinator.Journal.ResolveAdmission(admissionDomainID, rejected)
+			_, resolveErr := coordinator.Journal.ResolveAdmission(admissionDomainID, rejected)
+			err = errors.Join(err, guarantorJournalDurabilityError(resolveErr))
 			resolution = rejected
 		}
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution, err

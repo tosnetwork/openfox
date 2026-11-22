@@ -226,9 +226,37 @@ type GuarantorJournal struct {
 	// writeFile writes one journal file atomically: the document or an
 	// immutable evidence file. Tests replace it to inject a failed write.
 	writeFile func(root *os.Root, name string, data []byte, perm os.FileMode) error
+	// syncDirectory makes the entries of a directory inside the journal
+	// durable. Tests replace it to observe or fail a directory sync.
+	syncDirectory func(root *os.Root, directory string) error
+	// readOnly marks a journal opened for inspection. It writes nothing: no
+	// document, no evidence file, and it removes nothing.
+	readOnly bool
+	// unconfirmed is set by a commit whose document was renamed into place
+	// while the directory sync after it failed, and cleared once the same
+	// document has been written again successfully. While it is set the
+	// journal does nothing else.
+	unconfirmed bool
 }
 
+// OpenGuarantorJournal opens the journal for the Provider that writes it. It
+// creates a journal that does not exist yet and removes what a crash left
+// behind.
 func OpenGuarantorJournal(directory, ownerID, agentID string) (*GuarantorJournal, error) {
+	return openGuarantorJournal(directory, ownerID, agentID, false)
+}
+
+// OpenGuarantorJournalReadOnly opens an existing journal for inspection. It
+// loads the document with the same checks as the writer's open and changes
+// nothing: it creates no journal and no evidence directory, removes no crash
+// leftover, and refuses every commit. It takes the journal's locks like the
+// writer's open, so it fails while a Provider has the journal open; taking
+// them creates the journal's lock file if a restored journal has none.
+func OpenGuarantorJournalReadOnly(directory, ownerID, agentID string) (*GuarantorJournal, error) {
+	return openGuarantorJournal(directory, ownerID, agentID, true)
+}
+
+func openGuarantorJournal(directory, ownerID, agentID string, readOnly bool) (*GuarantorJournal, error) {
 	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || ownerID == "" || agentID == "" ||
 		validateRelayJournalDirectorySecurity(directory) != nil {
 		return nil, errors.New("Guarantor journal configuration or directory security is invalid")
@@ -241,6 +269,12 @@ func OpenGuarantorJournal(directory, ownerID, agentID string) (*GuarantorJournal
 	if err != nil {
 		return nil, errors.New("open Guarantor journal directory")
 	}
+	if readOnly {
+		if _, err := root.Lstat(guarantorJournalFile); err != nil {
+			_ = root.Close()
+			return nil, errors.New("Guarantor journal does not exist or cannot be inspected")
+		}
+	}
 	domainLock, err := acquireLocalEconomicDomainLock("agent-guarantor\x00" + ownerID + "\x00" + agentID)
 	if err != nil {
 		_ = root.Close()
@@ -252,20 +286,25 @@ func OpenGuarantorJournal(directory, ownerID, agentID string) (*GuarantorJournal
 		_ = root.Close()
 		return nil, err
 	}
-	if err := root.Mkdir(guarantorEvidenceDirectory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		_ = releaseAuthorityLock(lock)
-		_ = domainLock.Close()
-		_ = root.Close()
-		return nil, errors.New("create Guarantor immutable evidence directory")
+	if !readOnly {
+		if err := root.Mkdir(guarantorEvidenceDirectory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			_ = releaseAuthorityLock(lock)
+			_ = domainLock.Close()
+			_ = root.Close()
+			return nil, errors.New("create Guarantor immutable evidence directory")
+		}
 	}
-	if info, err := root.Lstat(guarantorEvidenceDirectory); err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+	// A journal inspected read-only may have no evidence directory yet; the
+	// load then refuses any record that names a receipt.
+	if info, err := root.Lstat(guarantorEvidenceDirectory); (err != nil && (!readOnly || !errors.Is(err, os.ErrNotExist))) ||
+		(err == nil && (!info.IsDir() || info.Mode().Perm()&0o077 != 0)) {
 		_ = releaseAuthorityLock(lock)
 		_ = domainLock.Close()
 		_ = root.Close()
 		return nil, errors.New("Guarantor immutable evidence directory security is invalid")
 	}
 	journal := &GuarantorJournal{directory: directory, root: root, lock: lock, domainLock: domainLock, now: time.Now,
-		writeFile: fileutil.WriteFileAtomicRoot,
+		writeFile: fileutil.WriteFileAtomicRoot, syncDirectory: fileutil.SyncDirectoryRoot, readOnly: readOnly,
 		doc: guarantorJournalDocument{Schema: guarantorJournalSchema, OwnerID: ownerID, AgentID: agentID, Revision: 1,
 			Offers: map[string]GuarantorOfferPosition{}, Coverages: map[string]GuarantorCoveragePosition{}, ClaimToCoverage: map[string]string{},
 			AdmissionLogs: map[string]GuarantorAdmissionLog{}, FirmOfferIssuancePlans: map[string]GuarantorFirmOfferIssuancePlan{}}}
@@ -281,9 +320,13 @@ func OpenGuarantorJournal(directory, ownerID, agentID string) (*GuarantorJournal
 		_ = journal.Close()
 		return nil, fmt.Errorf("load Guarantor journal: %w", loadErr)
 	}
+	if readOnly {
+		return journal, nil
+	}
 	// A crash between writing a receipt file and the document naming it, or
 	// inside an atomic write, leaves a file no record names. The journal is
-	// loaded and exclusively locked here, so those files are removed now.
+	// loaded and exclusively locked here, so those files are removed now. Only
+	// the writer's open does this: an inspection removes nothing.
 	if err := journal.sweepCrashLeftovers(); err != nil {
 		_ = journal.Close()
 		return nil, fmt.Errorf("sweep Guarantor journal crash leftovers: %w", err)
@@ -336,6 +379,11 @@ func (journal *GuarantorJournal) ReserveUnsignedOffer(position GuarantorOfferPos
 	if _, err := nonnegativeBig(position.NetExposureAtomic); err != nil {
 		return err
 	}
+	// A replayed reservation returns below without a working copy, so an
+	// unconfirmed commit is confirmed here first.
+	if err := journal.confirmDurable(); err != nil {
+		return err
+	}
 	if existing, found := journal.doc.Offers[position.Record.OfferID]; found {
 		if sameJSON(existing, position) {
 			return nil
@@ -356,6 +404,11 @@ func (journal *GuarantorJournal) SaveFirmOfferIssuancePlan(plan GuarantorFirmOff
 	defer journal.mu.Unlock()
 	if err := journal.ensureAttached(); err != nil {
 		return errors.New("Guarantor firm-offer issuance plan is invalid")
+	}
+	// A replayed plan returns below without a working copy, so an unconfirmed
+	// commit is confirmed here first.
+	if err := journal.confirmDurable(); err != nil {
+		return err
 	}
 	// The plan is checked exactly as a load checks it, so nothing is stored
 	// that a restart would refuse.
@@ -430,6 +483,11 @@ func (journal *GuarantorJournal) CompleteFirmOfferIssuancePlan(authorityInstance
 	if err := journal.ensureAttached(); err != nil {
 		return err
 	}
+	// A plan already completed returns below without a working copy, so an
+	// unconfirmed commit is confirmed here first.
+	if err := journal.confirmDurable(); err != nil {
+		return err
+	}
 	plan, found := journal.doc.FirmOfferIssuancePlans[authorityInstanceID]
 	position, offerFound := journal.doc.Offers[authorityInstanceID]
 	if !found {
@@ -454,6 +512,11 @@ func (journal *GuarantorJournal) DiscardUnadmittedFirmOfferIssuancePlan(authorit
 	defer journal.mu.Unlock()
 	if err := journal.ensureAttached(); err != nil || authority == nil {
 		return errors.New("Guarantor firm-offer plan discard is unavailable")
+	}
+	// A plan already discarded returns below without a working copy, so an
+	// unconfirmed commit is confirmed here first.
+	if err := journal.confirmDurable(); err != nil {
+		return err
 	}
 	plan, found := journal.doc.FirmOfferIssuancePlans[authorityInstanceID]
 	if !found {
@@ -2054,10 +2117,65 @@ func (journal *GuarantorJournal) ensureAttached() error {
 // ErrGuarantorJournalCommittedNotSynced reports a commit whose document is on
 // disk and in memory although the write returned an error: the new document
 // was renamed into place and the directory sync after it failed. The commit
-// has happened and must not be retried as if nothing was written; repeating
-// the same call returns the committed result. Only the document's durability
-// across a crash is unconfirmed.
+// has happened and must not be retried as if nothing was written, undone, or
+// reported as a success: only the document's durability across a crash is
+// unconfirmed. Until it is confirmed the journal does nothing else, and every
+// further call fails with ErrGuarantorJournalDurabilityUnconfirmed.
 var ErrGuarantorJournalCommittedNotSynced = errors.New("Guarantor journal document is committed but its directory sync failed")
+
+// ErrGuarantorJournalDurabilityUnconfirmed reports a call that did nothing
+// because an earlier commit is on disk without a confirmed directory sync and
+// writing the same document again failed too. Unlike
+// ErrGuarantorJournalCommittedNotSynced it says nothing was committed by this
+// call. The call can be repeated; once the document is confirmed, repeating
+// the call that committed it returns its committed result without writing.
+var ErrGuarantorJournalDurabilityUnconfirmed = errors.New("Guarantor journal holds a commit whose durability is not confirmed")
+
+// errGuarantorJournalReadOnly refuses a write to a journal opened for
+// inspection.
+var errGuarantorJournalReadOnly = errors.New("Guarantor journal is open read-only")
+
+// guarantorJournalDurabilityError returns err when it reports a committed
+// document whose durability is unconfirmed, by the call itself or by an
+// earlier one, and nil for any other error. A caller that otherwise ignores
+// or replaces a journal error uses it so that this one is never lost.
+func guarantorJournalDurabilityError(err error) error {
+	if errors.Is(err, ErrGuarantorJournalCommittedNotSynced) || errors.Is(err, ErrGuarantorJournalDurabilityUnconfirmed) {
+		return err
+	}
+	return nil
+}
+
+// ConfirmDurable makes an unconfirmed commit durable by writing the committed
+// document again, and reports whether the journal can be used. It writes
+// nothing when no commit is unconfirmed.
+func (journal *GuarantorJournal) ConfirmDurable() error {
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if err := journal.ensureAttached(); err != nil {
+		return err
+	}
+	return journal.confirmDurable()
+}
+
+// confirmDurable writes the committed document again when its commit's
+// directory sync failed. The same bytes go through a complete atomic write,
+// so success confirms exactly the document that was committed; nothing is
+// committed a second time. The caller holds the journal.
+func (journal *GuarantorJournal) confirmDurable() error {
+	if !journal.unconfirmed {
+		return nil
+	}
+	raw, err := encodeGuarantorDocument(journal.doc)
+	if err == nil {
+		err = journal.writeFile(journal.root, guarantorJournalFile, raw, 0o600)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrGuarantorJournalDurabilityUnconfirmed, err)
+	}
+	journal.unconfirmed = false
+	return nil
+}
 
 func encodeGuarantorDocument(doc guarantorJournalDocument) ([]byte, error) {
 	raw, err := json.Marshal(doc)
@@ -2068,6 +2186,9 @@ func encodeGuarantorDocument(doc guarantorJournalDocument) ([]byte, error) {
 }
 
 func (journal *GuarantorJournal) persist(doc guarantorJournalDocument) error {
+	if journal.readOnly {
+		return errGuarantorJournalReadOnly
+	}
 	raw, err := encodeGuarantorDocument(doc)
 	if err != nil {
 		return err
@@ -2084,13 +2205,18 @@ func (journal *GuarantorJournal) persist(doc guarantorJournalDocument) error {
 // before the document is renamed into place leaves both as they were: doc is
 // the caller's working copy, so nothing staged in it outlives the failure. A
 // write that fails after the rename has replaced the document, so memory is
-// replaced too and the error is ErrGuarantorJournalCommittedNotSynced.
+// replaced too, the journal is marked unconfirmed and the error is
+// ErrGuarantorJournalCommittedNotSynced. A later successful document write
+// confirms it: its directory sync covers the earlier rename.
 //
 // The in-memory document is decoded from the bytes written, not taken from
 // doc, so it shares no memory with the receipts and plans the caller put into
 // doc or with the position the caller returns, and it holds exactly what a
 // restart would load, each plan's semantic fields included.
 func (journal *GuarantorJournal) commit(doc guarantorJournalDocument) error {
+	if journal.readOnly {
+		return errGuarantorJournalReadOnly
+	}
 	if err := journal.writeStagedEvidence(doc); err != nil {
 		return err
 	}
@@ -2107,6 +2233,7 @@ func (journal *GuarantorJournal) commit(doc guarantorJournalDocument) error {
 		return writeErr
 	}
 	journal.doc = committed
+	journal.unconfirmed = writeErr != nil
 	if writeErr != nil {
 		return fmt.Errorf("%w: %w", ErrGuarantorJournalCommittedNotSynced, writeErr)
 	}
@@ -2118,7 +2245,16 @@ func (journal *GuarantorJournal) commit(doc guarantorJournalDocument) error {
 // commit swaps it in after it is persisted. A commit that fails, and a method
 // that returns early, therefore leave no trace in the in-memory document: not
 // in a map, not behind a pointer, and not as staged evidence.
+//
+// Every commit method and every snapshot starts here, so this is where a
+// commit whose durability is unconfirmed is confirmed first. If it cannot be,
+// the caller gets ErrGuarantorJournalDurabilityUnconfirmed and does nothing:
+// no method returns a result, replayed or new, from a document that may not
+// survive a crash.
 func (journal *GuarantorJournal) workingCopy() (guarantorJournalDocument, error) {
+	if err := journal.confirmDurable(); err != nil {
+		return guarantorJournalDocument{}, err
+	}
 	raw, err := json.Marshal(journal.doc)
 	if err != nil {
 		return guarantorJournalDocument{}, fmt.Errorf("copy Guarantor journal document: %w", err)

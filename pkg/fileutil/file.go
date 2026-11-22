@@ -175,6 +175,17 @@ func WriteFileAtomicRoot(root *os.Root, name string, data []byte, perm os.FileMo
 	return nil
 }
 
+// SyncDirectoryRoot syncs a directory inside an already-open directory
+// capability, making the entries renamed into it durable. A caller that finds
+// a file already in place, written by an earlier attempt whose own directory
+// sync may have failed, uses it before relying on that file.
+func SyncDirectoryRoot(root *os.Root, directory string) error {
+	if root == nil || directory == "" || filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
+		return fmt.Errorf("invalid rooted directory to sync")
+	}
+	return syncRootDirectory(root, directory)
+}
+
 func CopyFile(src, dst string, perm os.FileMode) error {
 	data, err := os.ReadFile(src)
 	if err != nil {

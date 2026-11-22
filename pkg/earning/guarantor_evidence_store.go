@@ -83,7 +83,14 @@ func guarantorEvidenceFile(digest string) (string, error) {
 // writeStagedEvidence writes each receipt stored since the last commit to its
 // own file and clears its staged bytes. An existing file must hold exactly
 // the same bytes.
+//
+// A file found already in place was renamed there by an earlier attempt, and
+// that attempt's own directory sync may be the very thing that failed. The
+// document about to be written names the file, so the evidence directory is
+// synced again before it: a failure here fails the commit, and the document
+// never names a receipt whose directory entry could be lost in a crash.
 func (journal *GuarantorJournal) writeStagedEvidence(doc guarantorJournalDocument) error {
+	foundInPlace := false
 	for _, coverage := range doc.Coverages {
 		for digest, stored := range coverage.ImmutableEvidence {
 			if stored.Wire == nil {
@@ -97,6 +104,7 @@ func (journal *GuarantorJournal) writeStagedEvidence(doc guarantorJournalDocumen
 				if string(existing) != string(stored.Wire) {
 					return errors.New("Guarantor immutable evidence file conflicts with a stored receipt")
 				}
+				foundInPlace = true
 			} else if !errors.Is(readErr, fs.ErrNotExist) {
 				return fmt.Errorf("read Guarantor immutable evidence file: %w", readErr)
 			} else if err := journal.writeFile(journal.root, name, stored.Wire, 0o600); err != nil {
@@ -104,6 +112,11 @@ func (journal *GuarantorJournal) writeStagedEvidence(doc guarantorJournalDocumen
 			}
 			stored.Wire = nil
 			coverage.ImmutableEvidence[digest] = stored
+		}
+	}
+	if foundInPlace {
+		if err := journal.syncDirectory(journal.root, guarantorEvidenceDirectory); err != nil {
+			return fmt.Errorf("sync Guarantor immutable evidence directory: %w", err)
 		}
 	}
 	return nil
@@ -512,26 +525,37 @@ func (coordinator *GuarantorProviderCoordinator) pendingResolverFor(agreementDig
 // evidence served from this journal for that Agreement only. An operator
 // resolver that already serves immutable evidence is used as it is.
 //
-// The journal resolver keeps what the operator provides for collateralized
-// coverage: the collateral finality verifier the coordinator is configured
-// with, or else the one the operator's resolver itself is, and the
-// control-resolution verifier the operator's resolver itself is. The protocol
-// re-verifies a collateralized activation in claim admission, cancellation and
-// closure with the verifier it finds on this resolver. When the operator
-// provides none, none is exposed and those checks fail closed.
+// The protocol re-verifies a collateralized activation in claim admission,
+// cancellation and closure with the collateral finality verifier it finds on
+// this resolver. There is exactly one, chosen in a fixed order whichever
+// resolver serves the evidence:
+//
+//  1. the verifier the coordinator is configured with. It is the
+//     owner-enabled one: an offer is issued and an activation is verified
+//     with it and no other, so every later verification of that activation
+//     uses the same one.
+//  2. only when the coordinator is configured with none, the verifier the
+//     operator's resolver itself is.
+//
+// A verifier the operator's resolver happens to be never answers ahead of the
+// configured one. The control-resolution verifier is the one the operator's
+// resolver itself is; the coordinator has no other. When the operator provides
+// none, none is exposed and those checks fail closed.
 func (coordinator *GuarantorProviderCoordinator) resolverFor(agreementDigest string) guarantor.AuthorityKeyResolver {
 	if coordinator.Resolver == nil || coordinator.Journal == nil {
 		return coordinator.Resolver
 	}
 	finality, control := guarantorVerifiersOf(coordinator.Resolver)
-	if serving, serves := coordinator.Resolver.(guarantorEvidenceResolver); serves {
-		if finality != nil || coordinator.CollateralFinalityVerifier == nil {
-			return coordinator.Resolver
-		}
-		return forwardGuarantorVerifiers(serving, coordinator.CollateralFinalityVerifier, control)
-	}
 	if coordinator.CollateralFinalityVerifier != nil {
 		finality = coordinator.CollateralFinalityVerifier
+	}
+	if serving, serves := coordinator.Resolver.(guarantorEvidenceResolver); serves {
+		if coordinator.CollateralFinalityVerifier == nil {
+			// Nothing is configured, so the operator's resolver already
+			// exposes exactly what it provides.
+			return coordinator.Resolver
+		}
+		return forwardGuarantorVerifiers(serving, finality, control)
 	}
 	return forwardGuarantorVerifiers(GuarantorJournalEvidenceResolver{AuthorityKeyResolver: coordinator.Resolver,
 		Journal: coordinator.Journal, AgreementDigest: agreementDigest}, finality, control)

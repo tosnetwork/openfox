@@ -935,9 +935,27 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	}
 	late := now.Add(4 * time.Minute)
 	authority.now = func() time.Time { return late }
-	expiredClosed, closeErr := coordinator.CloseExpiredOffer(context.Background(), GuarantorCloseExpiredOfferInput{
-		Offer: expiringOffer}, fence)
-	if closeErr != nil || expiredClosed.ExpiryResolution.State != commerce.ActionTerminal ||
+	// Every journal commit of this closure loses its directory sync once. The
+	// coordinator stops at each with the committed-but-not-synced error and
+	// commits nothing further in that call; called again it resumes from what
+	// the journal holds and reaches the same closure, each step committed
+	// once.
+	closeSyncLoss := &journalSyncLossFault{remaining: 3}
+	removeCloseSyncLoss := closeSyncLoss.install(journal)
+	var expiredClosed GuarantorCloseExpiredOfferResult
+	closeStops := repeatUntilTestGuarantorCommitsAreSynced(t, closeSyncLoss, "closing the expired offer", func() error {
+		var closeErr error
+		expiredClosed, closeErr = coordinator.CloseExpiredOffer(context.Background(), GuarantorCloseExpiredOfferInput{
+			Offer: expiringOffer}, fence)
+		return closeErr
+	})
+	removeCloseSyncLoss()
+	if closeStops != 3 || closeSyncLoss.lost != 3 {
+		t.Fatalf("closing the expired offer stopped %d times for %d commits that lost their sync, want 3 and 3",
+			closeStops, closeSyncLoss.lost)
+	}
+	var closeErr error
+	if expiredClosed.ExpiryResolution.State != commerce.ActionTerminal ||
 		expiredClosed.ReleaseResolution.State != commerce.ActionTerminal || expiredClosed.NonAcceptanceEvidence.Body.AcceptedCount != 0 ||
 		expiredClosed.ReleaseReceipt.Body.State != "released_unaccepted" {
 		t.Fatalf("close expiring offer: %#v err=%v", expiredClosed, closeErr)
@@ -2172,11 +2190,43 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		commerce.ProfileRefV1{ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1,
 			ProfileDigest: agreementProfile}, underlyingResolver, baseAgreementVerifier,
 		now.Add(30*time.Second), now.Add(90*time.Second))
-	nonActivationReceipt, nonActivationResolution, err := coordinator.AcceptCoverage(context.Background(),
-		GuarantorAcceptCoverageInput{Offer: nonActivationOffer, Request: nonActivationAcceptance,
-			CoverageObligationID: "obligation:coverage", ReceivedAtUnix: uint64(now.Add(30 * time.Second).Unix())}, fence)
-	if err != nil || nonActivationResolution.State != commerce.ActionTerminal {
-		t.Fatalf("accept non-activation coverage: state=%s err=%v", nonActivationResolution.State, err)
+	// Each of this acceptance's three journal commits loses its directory sync
+	// once: the admission, the acceptance itself and the recorded terminal
+	// result. The coordinator reports each one and stops. The acceptance that
+	// is in the journal is never rejected, the call that only records the
+	// terminal result is not returned as a plain success, and the acceptance
+	// is returned once, from the journal, when every commit is confirmed.
+	acceptSyncLoss := &journalSyncLossFault{remaining: 3}
+	removeAcceptSyncLoss := acceptSyncLoss.install(journal)
+	rejections := &rejectionCountingAuthority{EconomicAuthority: coordinator.Authority}
+	coordinator.Authority = rejections
+	var nonActivationReceipt guarantor.AuthorizedCoverageAcceptanceReceiptV1
+	var unsyncedAcceptances []guarantor.AuthorizedCoverageAcceptanceReceiptV1
+	acceptStops := repeatUntilTestGuarantorCommitsAreSynced(t, acceptSyncLoss, "accepting the coverage", func() error {
+		var acceptErr error
+		nonActivationReceipt, nonActivationResolution, acceptErr = coordinator.AcceptCoverage(context.Background(),
+			GuarantorAcceptCoverageInput{Offer: nonActivationOffer, Request: nonActivationAcceptance,
+				CoverageObligationID: "obligation:coverage", ReceivedAtUnix: uint64(now.Add(30 * time.Second).Unix())}, fence)
+		if acceptErr != nil && nonActivationReceipt.Body.SchemaVersion != 0 {
+			unsyncedAcceptances = append(unsyncedAcceptances, nonActivationReceipt)
+		}
+		return acceptErr
+	})
+	removeAcceptSyncLoss()
+	coordinator.Authority = rejections.EconomicAuthority
+	if acceptStops != 3 || acceptSyncLoss.lost != 3 || rejections.rejections != 0 {
+		t.Fatalf("accepting the coverage stopped %d times for %d commits that lost their sync and asked for %d rejections, want 3, 3 and none",
+			acceptStops, acceptSyncLoss.lost, rejections.rejections)
+	}
+	// The acceptance was reported with its receipt when its own commit lost
+	// its sync and again when recording the terminal result did; both are the
+	// receipt finally returned.
+	if len(unsyncedAcceptances) != 2 || !sameJSON(unsyncedAcceptances[0], nonActivationReceipt) ||
+		!sameJSON(unsyncedAcceptances[1], nonActivationReceipt) {
+		t.Fatalf("the acceptance reported with a lost sync is not the one returned: %d reported", len(unsyncedAcceptances))
+	}
+	if nonActivationResolution.State != commerce.ActionTerminal {
+		t.Fatalf("accept non-activation coverage: state=%s", nonActivationResolution.State)
 	}
 	nonActivationInput := GuarantorConfirmNonActivationInput{Offer: nonActivationOffer, AcceptanceReceipt: nonActivationReceipt,
 		ResolvedAtUnix: nonActivationTerms.CoverageStartsAtUnix}

@@ -166,6 +166,71 @@ func TestJournalResolverForwardsExactlyTheVerifiersTheOperatorProvides(t *testin
 	}
 }
 
+// operatorServingEvidenceWithFinality is an operator resolver that serves
+// immutable evidence and is itself a finality verifier.
+type operatorServingEvidenceWithFinality struct {
+	operatorServingEvidence
+	*pinnedCollateralFinality
+}
+
+// TestTheConfiguredFinalityVerifierAnswersAheadOfTheResolversOwn: the protocol
+// asks the resolver it is given for the collateral finality verifier, and the
+// coordinator verifies every activation with the verifier it is configured
+// with. So that one answers on every resolver the coordinator builds, ahead
+// of a verifier the operator's resolver itself is, whichever resolver serves
+// the evidence; the resolver's own answers only when none is configured.
+func TestTheConfiguredFinalityVerifierAnswersAheadOfTheResolversOwn(t *testing.T) {
+	journal, _ := openTestGuarantorJournal(t)
+	agreement := "sha256:" + strings.Repeat("c", 64)
+	base := newGuarantorPinnedResolver(nil)
+	configuredReference, ownReference := "sha256:"+strings.Repeat("d", 64), "sha256:"+strings.Repeat("e", 64)
+	configured := &pinnedCollateralFinality{finalized: []finalizedCollateralTransition{{reference: configuredReference}}}
+	own := &pinnedCollateralFinality{finalized: []finalizedCollateralTransition{{reference: ownReference}}}
+	accepts := func(verifier guarantor.CollateralAdapterFinalityVerifier, reference string) bool {
+		return verifier.VerifyCollateralAdapterFinalityV1(guarantor.CollateralAdapterRequestV1{},
+			guarantor.CollateralAdapterEvidenceV1{}, guarantor.CollateralPositionStateV1{}, reference, time.Time{},
+			guarantor.CollateralTermsV1{}) == nil
+	}
+	for name, test := range map[string]struct {
+		operator   guarantor.AuthorityKeyResolver
+		configured guarantor.CollateralAdapterFinalityVerifier
+		answers    string
+	}{
+		"a resolver that is a finality verifier, another one configured": {
+			operatorWithFinality{base, own}, configured, configuredReference},
+		"a resolver that is a finality verifier, none configured": {
+			operatorWithFinality{base, own}, nil, ownReference},
+		"an evidence-serving resolver that is a finality verifier, another one configured": {
+			operatorServingEvidenceWithFinality{operatorServingEvidence{base}, own}, configured, configuredReference},
+		"an evidence-serving resolver that is a finality verifier, none configured": {
+			operatorServingEvidenceWithFinality{operatorServingEvidence{base}, own}, nil, ownReference},
+		"an evidence-serving resolver, one configured": {
+			operatorServingEvidence{base}, configured, configuredReference},
+	} {
+		coordinator := GuarantorProviderCoordinator{Resolver: test.operator, Journal: journal}
+		if test.configured != nil {
+			coordinator.CollateralFinalityVerifier = test.configured
+		}
+		for kind, resolver := range map[string]guarantor.AuthorityKeyResolver{
+			"journal resolver": coordinator.resolverFor(agreement),
+			"pending resolver": coordinator.pendingResolverFor(agreement, map[string]GuarantorStoredEvidence{})} {
+			if _, serves := resolver.(guarantor.ImmutableEvidenceResolver); !serves {
+				t.Errorf("%s, %s: the resolver does not serve immutable evidence", name, kind)
+			}
+			exposed, isFinality := resolver.(guarantor.CollateralAdapterFinalityVerifier)
+			if !isFinality {
+				t.Errorf("%s, %s: no finality verifier is exposed", name, kind)
+				continue
+			}
+			for _, reference := range []string{configuredReference, ownReference} {
+				if got, want := accepts(exposed, reference), reference == test.answers; got != want {
+					t.Errorf("%s, %s: the exposed finality verifier accepts %s: %v, want %v", name, kind, reference, got, want)
+				}
+			}
+		}
+	}
+}
+
 // guarantorCollateralFixture is one collateral-attested profile with a
 // custodian-authorized lock transition and Guarantor-controlled custody.
 type guarantorCollateralFixture struct {

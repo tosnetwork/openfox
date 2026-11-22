@@ -129,6 +129,20 @@ func closeGuarantorJournalOnCleanup(t *testing.T, journal *GuarantorJournal) {
 	t.Cleanup(func() { _ = journal.Close() })
 }
 
+// testGuarantorSnapshot is journal.Snapshot for a test that expects the
+// journal to be readable: a journal that is not fails the test instead of
+// looking empty.
+func testGuarantorSnapshot(t *testing.T, journal *GuarantorJournal) (uint64, []GuarantorOfferPosition,
+	[]GuarantorCoveragePosition,
+) {
+	t.Helper()
+	revision, offers, coverages, err := journal.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot the Guarantor journal: %v", err)
+	}
+	return revision, offers, coverages
+}
+
 // rewriteTestGuarantorJournal persists a changed copy of the journal document
 // and closes the journal, so the next open loads exactly that document.
 func rewriteTestGuarantorJournal(t *testing.T, journal *GuarantorJournal, change func(*guarantorJournalDocument)) {

@@ -44,7 +44,7 @@ func TestGuarantorJournalPersistsOfferAndRejectsSplitWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeGuarantorJournalOnCleanup(t, reopened)
-	_, offers, _ := reopened.Snapshot()
+	_, offers, _ := testGuarantorSnapshot(t, reopened)
 	if len(offers) != 1 || offers[0].Record.Status != guarantor.OfferReservedUnsigned || offers[0].OfferEnvelopeDigest != "" {
 		t.Fatalf("unexpected recovered Guarantor offer: %#v", offers)
 	}

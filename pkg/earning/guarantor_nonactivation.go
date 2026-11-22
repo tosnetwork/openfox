@@ -53,7 +53,10 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
 	var position GuarantorCoveragePosition
-	_, _, coverages := coordinator.Journal.Snapshot()
+	_, _, coverages, snapshotErr := coordinator.Journal.Snapshot()
+	if snapshotErr != nil {
+		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, snapshotErr
+	}
 	for _, candidate := range coverages {
 		if candidate.Record.CoverageAgreementBodyDigest == agreementDigest {
 			position = candidate

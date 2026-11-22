@@ -159,7 +159,8 @@ func TestInspectingAGuarantorJournalChangesNothing(t *testing.T) {
 	}
 	evidence := filepath.Join(directory, guarantorEvidenceDirectory)
 	leftovers := []string{filepath.Join(evidence, strings.Repeat("f", 64)),
-		filepath.Join(evidence, ".tmp-4242-1700000000000000000"), filepath.Join(directory, ".tmp-4242-1700")}
+		filepath.Join(evidence, ".tmp-4242-1700000000000000000-0123456789abcdef"),
+		filepath.Join(directory, ".tmp-4242-1700-00ff00ff00ff00ff")}
 	for _, leftover := range leftovers {
 		if err := os.WriteFile(leftover, []byte("leftover"), 0o600); err != nil {
 			t.Fatal(err)
@@ -172,7 +173,7 @@ func TestInspectingAGuarantorJournalChangesNothing(t *testing.T) {
 		t.Fatalf("open the journal read-only: %v", err)
 	}
 	closeGuarantorJournalOnCleanup(t, inspected)
-	revision, _, coverages := inspected.Snapshot()
+	revision, _, coverages := testGuarantorSnapshot(t, inspected)
 	if revision != 2 || len(coverages) != 1 {
 		t.Fatalf("the journal opened read-only holds revision %d and %d coverages", revision, len(coverages))
 	}
@@ -247,9 +248,22 @@ func TestAnUnconfirmedGuarantorJournalDoesNothingElse(t *testing.T) {
 			refused(operation.name+" on an unconfirmed journal", operation.run())
 		}
 		refused("confirming while the document cannot be written", journal.ConfirmDurable())
-		if revision, offers, coverages := journal.Snapshot(); revision != 0 || offers != nil || coverages != nil {
+		revision, offers, coverages, snapshotErr := journal.Snapshot()
+		refused("a snapshot of an unconfirmed journal", snapshotErr)
+		if revision != 0 || offers != nil || coverages != nil {
 			t.Fatalf("an unconfirmed journal handed out a snapshot at revision %d", revision)
 		}
+		for _, reader := range fixture.readers(t) {
+			refused(reader.name+" on an unconfirmed journal", reader.run())
+		}
+		// An inspection of what is on disk still answers, and confirms nothing.
+		if _, err := journal.VerifyStoredEvidence(); err != nil {
+			t.Fatalf("the integrity check of an unconfirmed journal: %v", err)
+		}
+		refused("a second snapshot, after the integrity check", func() error {
+			_, _, _, err := journal.Snapshot()
+			return err
+		}())
 	}
 	*fault = journalWriteFault{}
 	if err := journal.ConfirmDurable(); err != nil {
@@ -261,17 +275,23 @@ func TestAnUnconfirmedGuarantorJournalDoesNothingElse(t *testing.T) {
 	if err := journal.ConfirmDurable(); err != nil {
 		t.Fatalf("confirm a journal with nothing unconfirmed: %v", err)
 	}
-	revision, _, _ := journal.Snapshot()
+	revision, _, _ := testGuarantorSnapshot(t, journal)
+	for _, reader := range fixture.readers(t) {
+		err := reader.run()
+		if errors.Is(err, ErrGuarantorJournalDurabilityUnconfirmed) || (reader.answers && err != nil) {
+			t.Fatalf("%s after the commit was confirmed: %v", reader.name, err)
+		}
+	}
 	for _, operation := range operations {
 		if err := operation.run(); err != nil {
 			t.Fatalf("%s after the commit was confirmed: %v", operation.name, err)
 		}
 	}
-	if after, _, _ := journal.Snapshot(); after != revision+uint64(len(operations)) {
+	if after, _, _ := testGuarantorSnapshot(t, journal); after != revision+uint64(len(operations)) {
 		t.Fatalf("the journal moved from revision %d to %d over %d commits", revision, after, len(operations))
 	}
 	reopened := reopenTestGuarantorJournal(t, journal, fixture.directory)
-	if after, _, _ := reopened.Snapshot(); after != revision+uint64(len(operations)) {
+	if after, _, _ := testGuarantorSnapshot(t, reopened); after != revision+uint64(len(operations)) {
 		t.Fatalf("the reloaded journal is at revision %d", after)
 	}
 }

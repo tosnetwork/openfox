@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	guarantor "github.com/tosnetwork/ai/protocol/pkg/agentguarantor"
+
+	"github.com/tosnetwork/openfox/pkg/fileutil"
 )
 
 // GuarantorStoredEvidence is one immutable receipt the journal serves by its
@@ -177,6 +179,11 @@ type GuarantorEvidenceIntegrityReport struct {
 // journal restored from a backup or moved between machines. It reads every
 // receipt file, holds the journal for as long as that takes, and stops at the
 // first receipt that fails.
+//
+// It is an inspection: it reports what is on disk now and nothing is done on
+// its answer, so unlike the readers a coordinator acts on it also answers
+// while a commit's durability is unconfirmed, and it does not try to confirm
+// that commit.
 func (journal *GuarantorJournal) VerifyStoredEvidence() (GuarantorEvidenceIntegrityReport, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
@@ -211,24 +218,10 @@ func (journal *GuarantorJournal) VerifyStoredEvidence() (GuarantorEvidenceIntegr
 }
 
 // isAtomicWriteTemporary reports whether name is a temporary file of an
-// interrupted atomic write: ".tmp-<process>-<nanoseconds>".
+// interrupted atomic write. The atomic write owns the shape of that name, so
+// it is the one that recognizes it.
 func isAtomicWriteTemporary(name string) bool {
-	rest, found := strings.CutPrefix(name, ".tmp-")
-	if !found {
-		return false
-	}
-	process, nanoseconds, found := strings.Cut(rest, "-")
-	if !found || process == "" || nanoseconds == "" {
-		return false
-	}
-	for _, part := range []string{process, nanoseconds} {
-		for _, digit := range part {
-			if digit < '0' || digit > '9' {
-				return false
-			}
-		}
-	}
-	return true
+	return fileutil.IsAtomicWriteTemporaryName(name)
 }
 
 // isGuarantorEvidenceFileName reports whether name has the form of a stored
@@ -409,12 +402,13 @@ func (resolver pendingEvidenceResolver) ResolveImmutableGuarantorEvidence(
 // that a descriptor names. It fails closed when the coverage or receipt is
 // absent (including a receipt held only by another coverage), or the receipt
 // has another media type or length, or the descriptor is empty or larger than
-// a Guarantor object may be.
+// a Guarantor object may be. A receipt is served to be relied on, so none is
+// served while a commit's durability is unconfirmed.
 func (journal *GuarantorJournal) ImmutableEvidence(agreementDigest string,
 	descriptor guarantor.ImmutableEvidenceDescriptorV1) ([]byte, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	if err := journal.ensureAttached(); err != nil {
+	if err := journal.readable(); err != nil {
 		return nil, err
 	}
 	if descriptor.ContentSize == 0 || descriptor.ContentSize > guarantor.MaxCanonicalObjectBytes {

@@ -118,9 +118,9 @@ func summarizeGuarantorJournal(directory, ownerID, agentID string, report *guara
 		return err
 	}
 	defer func() { err = errors.Join(err, journal.Close()) }()
-	revision, offers, coverages := journal.Snapshot()
-	if revision == 0 {
-		return errors.New("Agent Guarantor journal could not be read")
+	revision, offers, coverages, err := journal.Snapshot()
+	if err != nil {
+		return fmt.Errorf("Agent Guarantor journal could not be read: %w", err)
 	}
 	report.JournalRevision = revision
 	for _, offer := range offers {
@@ -188,9 +188,9 @@ func verifyGuarantorJournalEvidence(directory, ownerID, agentID string, output i
 		return err
 	}
 	defer func() { err = errors.Join(err, journal.Close()) }()
-	revision, _, _ := journal.Snapshot()
-	if revision == 0 {
-		return errors.New("Agent Guarantor journal could not be read")
+	revision, _, _, err := journal.Snapshot()
+	if err != nil {
+		return fmt.Errorf("Agent Guarantor journal could not be read: %w", err)
 	}
 	report, err := journal.VerifyStoredEvidence()
 	if err != nil {

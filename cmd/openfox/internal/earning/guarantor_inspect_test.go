@@ -58,13 +58,28 @@ func newInspectTestJournal(t *testing.T) inspectTestJournal {
 	sum := sha256.Sum256(fixture.wire)
 	empty := map[string]any{}
 	document["revision"] = 2
-	document["coverages"] = map[string]any{"sha256:" + strings.Repeat("c", 64): map[string]any{
+	// The journal loads only a document that is, member for member, what it
+	// writes, so the coverage starts from every member an empty one has.
+	blank, err := json.Marshal(openfoxearning.GuarantorCoveragePosition{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var coverage map[string]any
+	if err = json.Unmarshal(blank, &coverage); err != nil {
+		t.Fatal(err)
+	}
+	for member, value := range map[string]any{
 		"claims": empty, "decisions": empty, "materialized_payouts": empty, "payout_evidence": empty,
 		"payout_requests": empty, "paid_by_obligation": empty, "claim_admission_sequence": empty,
 		"claim_admission_log_root": "sha256:" + strings.Repeat("a", 64), "paid_atomic": "7",
 		"immutable_evidence": map[string]any{fixture.receipt: map[string]any{
 			"content_type": "application/vnd.tos.service.agent-guarantor-claim-admission.v1+cbor",
-			"content_size": len(fixture.wire), "content_sha256": "sha256:" + hex.EncodeToString(sum[:])}}}}
+			"content_size": len(fixture.wire), "content_sha256": "sha256:" + hex.EncodeToString(sum[:]),
+		}},
+	} {
+		coverage[member] = value
+	}
+	document["coverages"] = map[string]any{"sha256:" + strings.Repeat("c", 64): coverage}
 	edited, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
@@ -75,9 +90,9 @@ func newInspectTestJournal(t *testing.T) inspectTestJournal {
 	evidence := filepath.Join(fixture.directory, "immutable-evidence")
 	fixture.receiptFile = filepath.Join(evidence, strings.TrimPrefix(fixture.receipt, "sha256:"))
 	for path, content := range map[string][]byte{fixture.receiptFile: fixture.wire,
-		filepath.Join(evidence, strings.Repeat("f", 64)):          []byte("a receipt no record names"),
-		filepath.Join(evidence, ".tmp-4242-1700000000000000000"):  []byte("an interrupted receipt write"),
-		filepath.Join(fixture.directory, ".tmp-4242-17000000000"): []byte("an interrupted document write")} {
+		filepath.Join(evidence, strings.Repeat("f", 64)):                           []byte("a receipt no record names"),
+		filepath.Join(evidence, ".tmp-4242-1700000000000000000-0123456789abcdef"):  []byte("an interrupted receipt write"),
+		filepath.Join(fixture.directory, ".tmp-4242-17000000000-00ff00ff00ff00ff"): []byte("an interrupted document write")} {
 		if err := os.WriteFile(path, content, 0o600); err != nil {
 			t.Fatal(err)
 		}

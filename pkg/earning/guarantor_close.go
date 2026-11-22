@@ -654,7 +654,10 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 }
 
 func (coordinator *GuarantorProviderCoordinator) coveragePosition(agreementDigest string) (GuarantorCoveragePosition, error) {
-	_, _, coverages := coordinator.Journal.Snapshot()
+	_, _, coverages, err := coordinator.Journal.Snapshot()
+	if err != nil {
+		return GuarantorCoveragePosition{}, err
+	}
 	for _, position := range coverages {
 		if position.Record.CoverageAgreementBodyDigest == agreementDigest {
 			return position, nil

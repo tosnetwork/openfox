@@ -307,7 +307,10 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
 	var coverage GuarantorCoveragePosition
-	_, _, coverages := coordinator.Journal.Snapshot()
+	_, _, coverages, snapshotErr := coordinator.Journal.Snapshot()
+	if snapshotErr != nil {
+		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, snapshotErr
+	}
 	for _, candidate := range coverages {
 		if candidate.Record.CoverageAgreementBodyDigest == agreementDigest {
 			coverage = candidate
@@ -501,7 +504,10 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		return GuarantorClaimAdmissionResult{}, errors.New("Guarantor claim writer is stale")
 	}
 	var coverage GuarantorCoveragePosition
-	_, _, positions := coordinator.Journal.Snapshot()
+	_, _, positions, snapshotErr := coordinator.Journal.Snapshot()
+	if snapshotErr != nil {
+		return GuarantorClaimAdmissionResult{}, snapshotErr
+	}
 	for _, candidate := range positions {
 		if candidate.Record.CoverageAgreementBodyDigest == agreementDigest {
 			coverage = candidate
@@ -1055,7 +1061,10 @@ func (coordinator *GuarantorProviderCoordinator) CloseExpiredOffer(ctx context.C
 		return GuarantorCloseExpiredOfferResult{}, err
 	}
 	var offerPosition GuarantorOfferPosition
-	_, offers, _ := coordinator.Journal.Snapshot()
+	_, offers, _, snapshotErr := coordinator.Journal.Snapshot()
+	if snapshotErr != nil {
+		return GuarantorCloseExpiredOfferResult{}, snapshotErr
+	}
 	for _, candidate := range offers {
 		if candidate.Record.OfferID == input.Offer.Body.OfferID {
 			offerPosition = candidate
@@ -1321,7 +1330,12 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 	agreementDigest := input.Request.Body.CoverageAgreementBodyDigest
 	var priorOfferRevision uint64
 	var storedReceipt *guarantor.AuthorizedCoverageAcceptanceReceiptV1
-	_, positions, coverages := coordinator.Journal.Snapshot()
+	// A journal that cannot be read is not a journal without the offer: the
+	// acceptance fails with the journal's error, not as an unknown offer.
+	_, positions, coverages, snapshotErr := coordinator.Journal.Snapshot()
+	if snapshotErr != nil {
+		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, snapshotErr
+	}
 	for _, position := range positions {
 		if position.Record.OfferID == input.Offer.Body.OfferID && position.OfferEnvelopeDigest == offerDigest {
 			if position.Record.Status == guarantor.OfferIssued {
@@ -1557,7 +1571,10 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 	if err != nil || len(rawEligibilityProof) == 0 || len(rawEligibilityProof) > 64<<10 {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, errors.New("fresh Guarantor quote eligibility proof is unavailable")
 	}
-	portfolio := coordinator.portfolioFor(input.Request.Body.CoveredPartyAgentID, input.Terms.CoverageAsset)
+	portfolio, err := coordinator.portfolioFor(input.Request.Body.CoveredPartyAgentID, input.Terms.CoverageAsset)
+	if err != nil {
+		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
+	}
 	decision, err := EvaluateGuarantorQuote(input.Request, coordinator.Policy, estimate, portfolio, issuedAt)
 	if err != nil || !decision.Admitted {
 		if err != nil {
@@ -1668,7 +1685,13 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 	if err != nil {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
 	}
-	if priorPlan, found := coordinator.Journal.FirmOfferIssuancePlan(instance.AuthorityInstanceID); found {
+	// A journal that cannot be read may hold a plan: issuing a second action
+	// beside it is exactly what the plan exists to prevent.
+	priorPlan, found, err := coordinator.Journal.FirmOfferIssuancePlan(instance.AuthorityInstanceID)
+	if err != nil {
+		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
+	}
+	if found {
 		priorResolution := coordinator.Authority.Resolve(priorPlan.Action.StableActionID, priorPlan.Action.ExactRequestDigest)
 		if priorResolution.State != commerce.ActionUnknown {
 			if err := guarantor.VerifyFirmOffer(priorPlan.Offer, input.Request, input.Agreement, coordinator.Resolver,
@@ -1880,9 +1903,16 @@ func (coordinator *GuarantorProviderCoordinator) resumeFirmOfferIssuancePlan(pla
 	return plan.Offer, resolution, nil
 }
 
+// portfolioFor sums the exposure an underwriting decision is made against. A
+// journal that cannot be read holds an unknown exposure, not none, so it is an
+// error and no quote is evaluated against it.
 func (coordinator *GuarantorProviderCoordinator) portfolioFor(counterparty string,
-	asset commerce.AssetIdentityV1) GuarantorPortfolioSnapshot {
-	_, offers, coverages := coordinator.Journal.Snapshot()
+	asset commerce.AssetIdentityV1,
+) (GuarantorPortfolioSnapshot, error) {
+	_, offers, coverages, err := coordinator.Journal.Snapshot()
+	if err != nil {
+		return GuarantorPortfolioSnapshot{}, err
+	}
 	aggregate, party := new(big.Int), new(big.Int)
 	var activeOffers, activeCoverages, activeClaims uint32
 	coveredPartyByReservation := make(map[string]string, len(offers))
@@ -1935,8 +1965,10 @@ func (coordinator *GuarantorProviderCoordinator) portfolioFor(counterparty strin
 			}
 		}
 	}
-	return GuarantorPortfolioSnapshot{AggregateReservedAtomic: aggregate.String(), CounterpartyReservedAtomic: party.String(),
-		ActiveOffers: activeOffers, ActiveCoverages: activeCoverages, ActiveClaims: activeClaims}
+	return GuarantorPortfolioSnapshot{
+		AggregateReservedAtomic: aggregate.String(), CounterpartyReservedAtomic: party.String(),
+		ActiveOffers: activeOffers, ActiveCoverages: activeCoverages, ActiveClaims: activeClaims,
+	}, nil
 }
 
 func firstError(primary, fallback error) error {

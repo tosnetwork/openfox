@@ -258,6 +258,18 @@ func OpenGuarantorJournalReadOnly(directory, ownerID, agentID string) (*Guaranto
 }
 
 func openGuarantorJournal(directory, ownerID, agentID string, readOnly bool) (*GuarantorJournal, error) {
+	return openGuarantorJournalSyncedBy(directory, ownerID, agentID, readOnly, fileutil.SyncDirectoryRoot)
+}
+
+// openGuarantorJournalSyncedBy opens the journal with syncDirectory as the
+// function that makes a directory's entries durable. Tests pass one that
+// observes or fails the syncs of the open itself.
+func openGuarantorJournalSyncedBy(directory, ownerID, agentID string, readOnly bool,
+	syncDirectory func(root *os.Root, directory string) error,
+) (*GuarantorJournal, error) {
+	if syncDirectory == nil {
+		return nil, errors.New("Guarantor journal configuration or directory security is invalid")
+	}
 	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || ownerID == "" || agentID == "" ||
 		validateRelayJournalDirectorySecurity(directory) != nil {
 		return nil, errors.New("Guarantor journal configuration or directory security is invalid")
@@ -305,7 +317,7 @@ func openGuarantorJournal(directory, ownerID, agentID string, readOnly bool) (*G
 		return nil, errors.New("Guarantor immutable evidence directory security is invalid")
 	}
 	journal := &GuarantorJournal{directory: directory, root: root, lock: lock, domainLock: domainLock, now: time.Now,
-		writeFile: fileutil.WriteFileAtomicRoot, syncDirectory: fileutil.SyncDirectoryRoot, readOnly: readOnly,
+		writeFile: fileutil.WriteFileAtomicRoot, syncDirectory: syncDirectory, readOnly: readOnly,
 		doc: guarantorJournalDocument{Schema: guarantorJournalSchema, OwnerID: ownerID, AgentID: agentID, Revision: 1,
 			Offers: map[string]GuarantorOfferPosition{}, Coverages: map[string]GuarantorCoveragePosition{}, ClaimToCoverage: map[string]string{},
 			AdmissionLogs: map[string]GuarantorAdmissionLog{}, FirmOfferIssuancePlans: map[string]GuarantorFirmOfferIssuancePlan{}}}
@@ -332,9 +344,35 @@ func openGuarantorJournal(directory, ownerID, agentID string, readOnly bool) (*G
 		_ = journal.Close()
 		return nil, fmt.Errorf("sweep Guarantor journal crash leftovers: %w", err)
 	}
+	// The journal answers from what it just loaded, and whether the last
+	// writer's final rename was made durable is not recorded anywhere: a
+	// writer that lost a directory sync and then stopped leaves a document
+	// that reads back and may still vanish in a crash. So the open confirms
+	// what it loaded before it hands the journal out, and fails if it cannot.
+	if err := journal.confirmLoadedDurable(); err != nil {
+		_ = journal.Close()
+		return nil, fmt.Errorf("confirm Guarantor journal durability: %w", err)
+	}
 	return journal, nil
 }
 
+// confirmLoadedDurable syncs the journal directory, which holds the document,
+// and the evidence directory, which holds the receipt files the document
+// names. Both syncs are cheap and change nothing, so every writer's open
+// makes them. The caller holds the journal or is still opening it.
+func (journal *GuarantorJournal) confirmLoadedDurable() error {
+	for _, directory := range []string{".", guarantorEvidenceDirectory} {
+		if err := journal.syncDirectory(journal.root, directory); err != nil {
+			return fmt.Errorf("sync %s: %w", directory, err)
+		}
+	}
+	return nil
+}
+
+// Close releases the journal. A commit whose durability is still unconfirmed
+// is confirmed first, and a failure to confirm it is returned: the caller
+// closing the journal is the last one who can be told. The journal is closed
+// either way, and the next writer's open confirms what it loads.
 func (journal *GuarantorJournal) Close() error {
 	if journal == nil {
 		return nil
@@ -342,8 +380,13 @@ func (journal *GuarantorJournal) Close() error {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	var result error
+	if journal.unconfirmed && journal.root != nil {
+		result = journal.confirmDurable()
+	}
 	if journal.lock != nil {
-		result = releaseAuthorityLock(journal.lock)
+		if err := releaseAuthorityLock(journal.lock); result == nil {
+			result = err
+		}
 		journal.lock = nil
 	}
 	if journal.root != nil {
@@ -435,47 +478,77 @@ func (journal *GuarantorJournal) SaveFirmOfferIssuancePlan(plan GuarantorFirmOff
 	return journal.commit(next)
 }
 
-func (journal *GuarantorJournal) FirmOfferIssuancePlan(authorityInstanceID string) (GuarantorFirmOfferIssuancePlan, bool) {
-	journal.mu.Lock()
-	defer journal.mu.Unlock()
-	if journal.ensureAttached() != nil {
-		return GuarantorFirmOfferIssuancePlan{}, false
+// readable is what every reader whose answer a caller may act on checks
+// before it reads: the journal is open on its own directory, and no commit is
+// left without a confirmed sync. An unconfirmed commit is confirmed here
+// first, exactly as a commit method does; if it cannot be, the reader fails
+// with ErrGuarantorJournalDurabilityUnconfirmed instead of answering from a
+// document that may not survive a crash. "Not found" is such an answer too.
+// The caller holds the journal.
+func (journal *GuarantorJournal) readable() error {
+	if err := journal.ensureAttached(); err != nil {
+		return err
 	}
-	if _, found := journal.doc.FirmOfferIssuancePlans[authorityInstanceID]; !found {
-		return GuarantorFirmOfferIssuancePlan{}, false
-	}
-	// The plan is returned as a private copy.
-	doc, err := journal.workingCopy()
-	if err != nil {
-		return GuarantorFirmOfferIssuancePlan{}, false
-	}
-	plan, found := doc.FirmOfferIssuancePlans[authorityInstanceID]
-	return plan, found
+	return journal.confirmDurable()
 }
 
-// FirmOfferByDigest returns the exact authorized bytes retained at issuance.
-// Acceptance never reconstructs a commercial offer from chat, a body digest,
-// or a now-deleted outbound transport record.
-func (journal *GuarantorJournal) FirmOfferByDigest(envelopeDigest string) (guarantor.AuthorizedFirmCoverageOfferV1, bool) {
+// FirmOfferIssuancePlan returns the stored firm-offer issuance plan of
+// authorityInstanceID as a private copy, and whether there is one. An error
+// means the journal could not be read: it says nothing about the plan, and a
+// caller must not treat it as "no plan".
+func (journal *GuarantorJournal) FirmOfferIssuancePlan(authorityInstanceID string) (GuarantorFirmOfferIssuancePlan,
+	bool, error,
+) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	if journal.ensureAttached() != nil || !canonicalSHA256(envelopeDigest) {
-		return guarantor.AuthorizedFirmCoverageOfferV1{}, false
+	if err := journal.readable(); err != nil {
+		return GuarantorFirmOfferIssuancePlan{}, false, err
+	}
+	if _, found := journal.doc.FirmOfferIssuancePlans[authorityInstanceID]; !found {
+		return GuarantorFirmOfferIssuancePlan{}, false, nil
+	}
+	doc, err := journal.workingCopy()
+	if err != nil {
+		return GuarantorFirmOfferIssuancePlan{}, false, err
+	}
+	plan, found := doc.FirmOfferIssuancePlans[authorityInstanceID]
+	return plan, found, nil
+}
+
+// FirmOfferByDigest returns the exact authorized bytes retained at issuance,
+// as a private copy, and whether the journal holds them. Acceptance never
+// reconstructs a commercial offer from chat, a body digest, or a now-deleted
+// outbound transport record. An error means the journal could not be read: it
+// says nothing about the offer, and a caller must not treat it as "no offer".
+func (journal *GuarantorJournal) FirmOfferByDigest(envelopeDigest string) (guarantor.AuthorizedFirmCoverageOfferV1,
+	bool, error,
+) {
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if err := journal.readable(); err != nil {
+		return guarantor.AuthorizedFirmCoverageOfferV1{}, false, err
+	}
+	if !canonicalSHA256(envelopeDigest) {
+		return guarantor.AuthorizedFirmCoverageOfferV1{}, false, nil
 	}
 	for offerID, position := range journal.doc.Offers {
-		if position.OfferEnvelopeDigest == envelopeDigest && position.AuthorizedFirmOffer != nil {
-			digest, err := guarantor.FirmOfferDigest(*position.AuthorizedFirmOffer)
-			if err == nil && digest == envelopeDigest {
-				// The offer is returned as a private copy.
-				doc, copyErr := journal.workingCopy()
-				if copyErr != nil || doc.Offers[offerID].AuthorizedFirmOffer == nil {
-					return guarantor.AuthorizedFirmCoverageOfferV1{}, false
-				}
-				return *doc.Offers[offerID].AuthorizedFirmOffer, true
-			}
+		if position.OfferEnvelopeDigest != envelopeDigest || position.AuthorizedFirmOffer == nil {
+			continue
 		}
+		digest, err := guarantor.FirmOfferDigest(*position.AuthorizedFirmOffer)
+		if err != nil || digest != envelopeDigest {
+			continue
+		}
+		doc, err := journal.workingCopy()
+		if err != nil {
+			return guarantor.AuthorizedFirmCoverageOfferV1{}, false, err
+		}
+		if doc.Offers[offerID].AuthorizedFirmOffer == nil {
+			return guarantor.AuthorizedFirmCoverageOfferV1{}, false, errors.New("copy the stored Guarantor firm offer")
+		}
+		return *doc.Offers[offerID].AuthorizedFirmOffer, true, nil
 	}
-	return guarantor.AuthorizedFirmCoverageOfferV1{}, false
+	return guarantor.AuthorizedFirmCoverageOfferV1{}, false, nil
 }
 
 func (journal *GuarantorJournal) CompleteFirmOfferIssuancePlan(authorityInstanceID, offerDigest string) error {
@@ -1004,7 +1077,7 @@ func (journal *GuarantorJournal) PreviewClaimAdmission(agreementDigest string,
 	claim guarantor.AuthorizedCoverageClaimV1, claimEnvelopeDigest string) (GuarantorClaimAdmissionPreview, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	if err := journal.ensureAttached(); err != nil {
+	if err := journal.readable(); err != nil {
 		return GuarantorClaimAdmissionPreview{}, err
 	}
 	position, found := journal.doc.Coverages[agreementDigest]
@@ -1842,7 +1915,7 @@ func (journal *GuarantorJournal) ResolveAdmission(domainID string, resolution co
 func (journal *GuarantorJournal) AdmissionEntryRoots(domainID, stableActionID string) (string, string, uint64, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	if err := journal.ensureAttached(); err != nil {
+	if err := journal.readable(); err != nil {
 		return "", "", 0, err
 	}
 	log, found := journal.doc.AdmissionLogs[domainID]
@@ -1868,7 +1941,10 @@ func (journal *GuarantorJournal) AdmissionEntryRoots(domainID, stableActionID st
 func (journal *GuarantorJournal) FreezeAdmissionCut(domainID string, cutoffUnix uint64) (GuarantorAdmissionCut, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(domainID) || cutoffUnix == 0 {
+	if err := journal.readable(); err != nil {
+		return GuarantorAdmissionCut{}, fmt.Errorf("Guarantor admission cut is unavailable: %w", err)
+	}
+	if !canonicalSHA256(domainID) || cutoffUnix == 0 {
 		return GuarantorAdmissionCut{}, errors.New("Guarantor admission cut is invalid")
 	}
 	log, found := journal.doc.AdmissionLogs[domainID]
@@ -1907,14 +1983,20 @@ func isGuarantorAdmissionTerminal(state commerce.ActionResolutionState) bool {
 }
 
 // Snapshot returns the journal's revision, offers and coverages as private
-// copies: changing them does not change the journal. If the document cannot
-// be copied it returns nothing.
-func (journal *GuarantorJournal) Snapshot() (uint64, []GuarantorOfferPosition, []GuarantorCoveragePosition) {
+// copies: changing them does not change the journal. An error means the
+// journal could not be read, because it is closed, holds a commit whose
+// durability is unconfirmed, or cannot be copied. It then returns nothing, and
+// a caller must not read that as a journal holding no offers and no
+// coverages.
+func (journal *GuarantorJournal) Snapshot() (uint64, []GuarantorOfferPosition, []GuarantorCoveragePosition, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
+	if err := journal.readable(); err != nil {
+		return 0, nil, nil, err
+	}
 	doc, err := journal.workingCopy()
 	if err != nil {
-		return 0, nil, nil
+		return 0, nil, nil, err
 	}
 	offers := make([]GuarantorOfferPosition, 0, len(doc.Offers))
 	for _, offer := range doc.Offers {
@@ -1928,7 +2010,7 @@ func (journal *GuarantorJournal) Snapshot() (uint64, []GuarantorOfferPosition, [
 	sort.Slice(coverages, func(i, j int) bool {
 		return coverages[i].Record.CoverageAgreementBodyDigest < coverages[j].Record.CoverageAgreementBodyDigest
 	})
-	return doc.Revision, offers, coverages
+	return doc.Revision, offers, coverages, nil
 }
 
 func (journal *GuarantorJournal) load(ownerID, agentID string) error {

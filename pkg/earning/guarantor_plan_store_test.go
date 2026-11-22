@@ -90,7 +90,7 @@ func reopenTestGuarantorJournal(t *testing.T, journal *GuarantorJournal, directo
 // storedTestOfferReleasePlan returns the only offer's release plan.
 func storedTestOfferReleasePlan(t *testing.T, journal *GuarantorJournal) GuarantorPreAcceptanceReleasePlan {
 	t.Helper()
-	_, offers, _ := journal.Snapshot()
+	_, offers, _ := testGuarantorSnapshot(t, journal)
 	if len(offers) != 1 || offers[0].PreAcceptanceReleasePlan == nil {
 		t.Fatalf("the journal does not hold the release plan: %#v", offers)
 	}
@@ -288,7 +288,7 @@ func storedTestCoveragePosition(t *testing.T, journal *GuarantorJournal, agreeme
 	GuarantorCoveragePosition,
 ) {
 	t.Helper()
-	revision, _, coverages := journal.Snapshot()
+	revision, _, coverages := testGuarantorSnapshot(t, journal)
 	for _, coverage := range coverages {
 		if coverage.Record.CoverageAgreementBodyDigest == agreementDigest {
 			return revision, coverage
@@ -395,14 +395,14 @@ func restartTestGuarantorJournalHoldingAFirmOfferPlan(t *testing.T, journal *Gua
 	if len(identities) != 1 {
 		t.Fatalf("the journal holds %d firm-offer issuance plans, want one", len(identities))
 	}
-	stored, found := journal.FirmOfferIssuancePlan(identities[0])
-	if !found {
-		t.Fatal("the journal does not return its firm-offer issuance plan")
+	stored, found, err := journal.FirmOfferIssuancePlan(identities[0])
+	if err != nil || !found {
+		t.Fatalf("the journal does not return its firm-offer issuance plan: %v", err)
 	}
 	journal = restartTestGuarantorJournalDocuments(t, journal, directory, tamperedTestFirmOfferIssuancePlan(t))
-	loaded, found := journal.FirmOfferIssuancePlan(identities[0])
-	if !found {
-		t.Fatal("the journal opened from disk holds no firm-offer issuance plan")
+	loaded, found, err := journal.FirmOfferIssuancePlan(identities[0])
+	if err != nil || !found {
+		t.Fatalf("the journal opened from disk holds no firm-offer issuance plan: %v", err)
 	}
 	if !reflect.DeepEqual(loaded.Fields, stored.Fields) || !sameJSON(loaded, stored) {
 		t.Fatalf("the firm-offer issuance plan loaded from disk is %#v, want %#v", loaded, stored)

@@ -829,11 +829,11 @@ func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackSce
 		root = process.directory
 	}
 	authorityDirectory, journalDirectory := filepath.Join(root, "authority"), filepath.Join(root, "guarantor")
-	if err := os.MkdirAll(authorityDirectory, 0o700); err != nil {
-		t.Fatal(err)
+	if mkdirErr := os.MkdirAll(authorityDirectory, 0o700); mkdirErr != nil {
+		t.Fatal(mkdirErr)
 	}
-	if err := os.MkdirAll(journalDirectory, 0o700); err != nil {
-		t.Fatal(err)
+	if mkdirErr := os.MkdirAll(journalDirectory, 0o700); mkdirErr != nil {
+		t.Fatal(mkdirErr)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:guarantor", "agent:guarantor", "authority:owner",
 		testAuthorityKeys(), PortfolioLimits{MaximumLossAtomic: 10_000, LockedCapitalAtomic: 10_000})

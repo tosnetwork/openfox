@@ -207,3 +207,28 @@ func TestWriteFileAtomicRootRetainsOpenedDirectoryAfterRename(t *testing.T) {
 		t.Fatalf("opened directory did not receive rooted write: %q err=%v", raw, err)
 	}
 }
+
+func TestSyncDirectoryRootSyncsOnlyADirectoryInsideItsRoot(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Mkdir(filepath.Join(directory, "evidence"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	for _, name := range []string{".", "evidence"} {
+		if err := SyncDirectoryRoot(root, name); err != nil {
+			t.Errorf("sync %q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "missing", "evidence/..", "../outside", filepath.Join(directory, "evidence")} {
+		if err := SyncDirectoryRoot(root, name); err == nil {
+			t.Errorf("sync %q did not fail", name)
+		}
+	}
+	if err := SyncDirectoryRoot(nil, "evidence"); err == nil {
+		t.Error("sync without a root did not fail")
+	}
+}

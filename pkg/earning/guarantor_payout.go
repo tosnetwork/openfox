@@ -41,7 +41,10 @@ func (service GuarantorPayoutService) Pay(ctx context.Context, agreementDigest, 
 		return commerce.AgreementPaymentEvidence{}, commerce.ActionResolution{}, guarantor.ClaimRecord{}, errors.New("Guarantor payout writer is stale")
 	}
 	var coverage GuarantorCoveragePosition
-	_, _, coverages := coordinator.Journal.Snapshot()
+	_, _, coverages, snapshotErr := coordinator.Journal.Snapshot()
+	if snapshotErr != nil {
+		return commerce.AgreementPaymentEvidence{}, commerce.ActionResolution{}, guarantor.ClaimRecord{}, snapshotErr
+	}
 	for _, candidate := range coverages {
 		if candidate.Record.CoverageAgreementBodyDigest == agreementDigest {
 			coverage = candidate

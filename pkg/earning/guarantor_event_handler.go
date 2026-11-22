@@ -152,7 +152,12 @@ func (handler *GuarantorProviderEventHandler) handleAcceptanceRequest(ctx contex
 		!guarantorAgreementHasParticipant(request.CoverageAgreementBody, event.SenderAgentID) {
 		return PermanentGuarantorEventError{Err: errors.New("Guarantor acceptance transport subject differs from its signed request")}
 	}
-	offer, found := handler.Coordinator.Journal.FirmOfferByDigest(request.Body.AuthorizedFirmOfferEnvelopeDigest)
+	// A journal that cannot be read fails the event, which stays leased for
+	// retry; only a journal that was read and holds no such offer refuses it.
+	offer, found, err := handler.Coordinator.Journal.FirmOfferByDigest(request.Body.AuthorizedFirmOfferEnvelopeDigest)
+	if err != nil {
+		return err
+	}
 	if !found {
 		return errors.New("Guarantor acceptance references an offer not retained by this Provider")
 	}

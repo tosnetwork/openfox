@@ -106,13 +106,22 @@ func TestGuarantorPortfolioNeverAddsDifferentAssetUnits(t *testing.T) {
 		{ReservationID: digest("2"), MaximumLossAtomic: 100},
 		{ReservationID: digest("6"), MaximumLossAtomic: 900_000_000_000},
 	}}}
-	if snapshot := coordinator.portfolioFor("agent:party", native); snapshot.AggregateReservedAtomic != "100" ||
+	snapshot, err := coordinator.portfolioFor("agent:party", native)
+	if err != nil || snapshot.AggregateReservedAtomic != "100" ||
 		snapshot.CounterpartyReservedAtomic != "100" || snapshot.ActiveOffers != 0 {
-		t.Fatalf("native portfolio was contaminated by token atomic units: %#v", snapshot)
+		t.Fatalf("native portfolio was contaminated by token atomic units: %#v err=%v", snapshot, err)
 	}
-	if snapshot := coordinator.portfolioFor("agent:party", token); snapshot.AggregateReservedAtomic != "900000000000" ||
+	snapshot, err = coordinator.portfolioFor("agent:party", token)
+	if err != nil || snapshot.AggregateReservedAtomic != "900000000000" ||
 		snapshot.CounterpartyReservedAtomic != "900000000000" || snapshot.ActiveOffers != 0 {
-		t.Fatalf("token portfolio was contaminated by native atomic units: %#v", snapshot)
+		t.Fatalf("token portfolio was contaminated by native atomic units: %#v err=%v", snapshot, err)
+	}
+	// A journal that cannot be read is an unknown exposure, not none.
+	if err = journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if unread, unreadErr := coordinator.portfolioFor("agent:party", native); unreadErr == nil {
+		t.Fatalf("a portfolio was summed over a journal that cannot be read: %#v", unread)
 	}
 }
 

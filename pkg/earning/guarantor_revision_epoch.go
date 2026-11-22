@@ -32,7 +32,7 @@ const (
 func (journal *GuarantorJournal) RevisionEpoch(agreementDigest, claimID string) (GuarantorRevisionEpochState, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	if err := journal.ensureAttached(); err != nil {
+	if err := journal.readable(); err != nil {
 		return GuarantorRevisionEpochState{}, err
 	}
 	position, found := journal.doc.Coverages[agreementDigest]

@@ -132,7 +132,7 @@ func TestGuarantorJournalSharesNoMemoryWithItsCallers(t *testing.T) {
 	unchanged("after the caller changed the position a commit returned")
 
 	// Everything the journal hands back.
-	_, offers, coverages := journal.Snapshot()
+	_, offers, coverages := testGuarantorSnapshot(t, journal)
 	for index := range offers {
 		if offers[index].PreAcceptanceReleasePlan != nil {
 			offers[index].PreAcceptanceReleasePlan.Action.WriterGeneration = 99
@@ -174,7 +174,7 @@ func TestGuarantorJournalSharesNoMemoryWithItsCallers(t *testing.T) {
 	unchanged("after the caller changed a returned admission cut")
 
 	// The journal still holds what was committed.
-	_, _, coverages = journal.Snapshot()
+	_, _, coverages = testGuarantorSnapshot(t, journal)
 	for _, coverage := range coverages {
 		if coverage.FilingCloseReceipt != nil &&
 			coverage.FilingCloseReceipt.Authorizations[0].AuthoritySubject != "agent:guarantor" {
@@ -309,6 +309,71 @@ type journalDurabilityOperation struct {
 	name           string
 	evidenceDigest string
 	run            func() error
+}
+
+// journalDurabilityReader is one read of the journal that a coordinator acts
+// on. answers says whether the fixture holds what it asks for; a reader that
+// asks for something the fixture does not hold fails for that reason, which is
+// an answer too.
+type journalDurabilityReader struct {
+	name    string
+	run     func() error
+	answers bool
+}
+
+// readers are the journal's reads whose answer a coordinator acts on, each
+// against this fixture. A snapshot is the remaining one and is checked where
+// its result is.
+func (fixture journalDurabilityFixture) readers(t *testing.T) []journalDurabilityReader {
+	t.Helper()
+	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
+	journal := fixture.journal
+	return []journalDurabilityReader{
+		{name: "the roots of an admission entry", answers: true, run: func() error {
+			_, _, _, err := journal.AdmissionEntryRoots(fixture.domain, fixture.preparedAction)
+			return err
+		}},
+		// The fixture's admission is still prepared, so its cut is refused for
+		// that reason once the journal can be read.
+		{name: "an admission cut", run: func() error {
+			_, err := journal.FreezeAdmissionCut(fixture.domain, uint64(fixture.at.Unix()))
+			return err
+		}},
+		{name: "an admission cut of a domain with no log", answers: true, run: func() error {
+			_, err := journal.FreezeAdmissionCut(digest("9"), uint64(fixture.at.Unix()))
+			return err
+		}},
+		{name: "a revision epoch", answers: true, run: func() error {
+			_, err := journal.RevisionEpoch(fixture.decided, fixture.decidedClaim)
+			return err
+		}},
+		{name: "a claim admission preview", run: func() error {
+			var claim guarantor.AuthorizedCoverageClaimV1
+			claim.Body.CoverageAgreementBodyDigest = fixture.undecided
+			_, err := journal.PreviewClaimAdmission(fixture.undecided, claim, digest("9"))
+			return err
+		}},
+		{name: "an immutable receipt", run: func() error {
+			_, err := journal.ImmutableEvidence(fixture.decided, guarantor.ImmutableEvidenceDescriptorV1{
+				ContentType: "application/octet-stream", ContentSize: 1, ContentDigest: digest("9"),
+			})
+			return err
+		}},
+		{name: "a firm offer by its digest, not held", answers: true, run: func() error {
+			_, found, err := journal.FirmOfferByDigest(digest("9"))
+			if err == nil && found {
+				t.Fatal("the fixture holds a firm offer it should not")
+			}
+			return err
+		}},
+		{name: "a firm-offer issuance plan, not held", answers: true, run: func() error {
+			_, found, err := journal.FirmOfferIssuancePlan(digest("9"))
+			if err == nil && found {
+				t.Fatal("the fixture holds a firm-offer issuance plan it should not")
+			}
+			return err
+		}},
+	}
 }
 
 func (fixture journalDurabilityFixture) operations(t *testing.T) []journalDurabilityOperation {
@@ -553,20 +618,24 @@ func TestOpeningAGuarantorJournalSweepsCrashLeftovers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(file(hexName("f")))                         // an orphan receipt file
-	write(file(".tmp-4242-1700000000000000000"))      // an interrupted receipt write
-	write(filepath.Join(directory, ".tmp-4242-1700")) // an interrupted document write
-	write(file("README"))                             // not a receipt name
-	write(file(".tmp-notes"))                         // not an atomic-write temporary
-	write(file(hexName("a")[:63]))                    // one digit short of a receipt name
+	interruptedReceipt := file(".tmp-4242-1700000000000000000-0123456789abcdef")
+	interruptedDocument := filepath.Join(directory, ".tmp-4242-1700-00ff00ff00ff00ff")
+	write(file(hexName("f")))      // an orphan receipt file
+	write(interruptedReceipt)      // an interrupted receipt write
+	write(interruptedDocument)     // an interrupted document write
+	write(file("README"))          // not a receipt name
+	write(file(".tmp-notes"))      // not an atomic-write temporary
+	write(file(hexName("a")[:63])) // one digit short of a receipt name
 	if err := os.Mkdir(file(hexName("1")), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(file("README"), file(hexName("2"))); err != nil {
 		t.Fatal(err)
 	}
-	removed := []string{file(strings.TrimPrefix(uncommitted, "sha256:")), file(hexName("f")),
-		file(".tmp-4242-1700000000000000000"), filepath.Join(directory, ".tmp-4242-1700")}
+	removed := []string{
+		file(strings.TrimPrefix(uncommitted, "sha256:")), file(hexName("f")),
+		interruptedReceipt, interruptedDocument,
+	}
 	kept := []string{file(strings.TrimPrefix(named, "sha256:")), file("README"), file(".tmp-notes"),
 		file(hexName("a")[:63]), file(hexName("1")), file(hexName("2")),
 		filepath.Join(directory, guarantorJournalFile)}

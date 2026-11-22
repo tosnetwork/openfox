@@ -7,10 +7,13 @@
 package fileutil
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -19,6 +22,75 @@ import (
 // the new data, so the caller must not treat the write as not having happened;
 // only its durability across a crash is unconfirmed.
 var ErrReplacedNotSynced = errors.New("file replaced but its directory was not synced")
+
+// temporaryNameAttempts bounds how often an atomic write picks another
+// temporary name after finding its choice already taken.
+const temporaryNameAttempts = 8
+
+// temporaryName returns the name of a temporary file, without its directory:
+// ".tmp-<process>-<nanoseconds>-<random>", the last part 16 hexadecimal digits
+// from the system's random source. The process and the clock alone do not
+// tell two writers in one process apart, since two of them can read the same
+// clock value. Tests replace it to force two writers onto one name.
+var temporaryName = func() (string, error) {
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(".tmp-%d-%d-%s", os.Getpid(), time.Now().UnixNano(), hex.EncodeToString(random[:])), nil
+}
+
+// createTemporaryFile creates the temporary file of an atomic write in dir
+// through create, which must fail with os.ErrExist when the name is taken. A
+// name that is taken is replaced by another instead of failing the write; the
+// file that holds it is not touched. It returns the file and its name.
+func createTemporaryFile(dir string, create func(name string) (*os.File, error)) (*os.File, string, error) {
+	var lastErr error
+	for attempt := 0; attempt < temporaryNameAttempts; attempt++ {
+		base, err := temporaryName()
+		if err != nil {
+			return nil, "", fmt.Errorf("choose a temporary file name: %w", err)
+		}
+		name := filepath.Join(dir, base)
+		file, err := create(name)
+		if err == nil {
+			return file, name, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, "", err
+		}
+		lastErr = err
+	}
+	return nil, "", lastErr
+}
+
+// IsAtomicWriteTemporaryName reports whether name, a file name without its
+// directory, has the shape of the temporary file of an atomic write:
+// ".tmp-<process>-<nanoseconds>-<random>", the first two parts decimal and the
+// last lower-case hexadecimal. A caller that owns a directory uses it to find
+// what an interrupted write left behind.
+func IsAtomicWriteTemporaryName(name string) bool {
+	rest, found := strings.CutPrefix(name, ".tmp-")
+	if !found {
+		return false
+	}
+	parts := strings.Split(rest, "-")
+	if len(parts) != 3 {
+		return false
+	}
+	for index, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, character := range part {
+			decimal := character >= '0' && character <= '9'
+			if !decimal && (index != 2 || character < 'a' || character > 'f') {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 // WriteFileAtomic atomically writes data to a file using a temp file + rename pattern.
 //
@@ -63,16 +135,13 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 
 	// Create temp file in the same directory (ensures atomic rename works)
 	// Using a hidden prefix (.tmp-) to avoid issues with some tools
-	tmpFile, err := os.OpenFile(
-		filepath.Join(dir, fmt.Sprintf(".tmp-%d-%d", os.Getpid(), time.Now().UnixNano())),
-		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
-		perm,
-	)
+	tmpFile, tmpPath, err := createTemporaryFile(dir, func(name string) (*os.File, error) {
+		return os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 
-	tmpPath := tmpFile.Name()
 	cleanup := true
 
 	defer func() {
@@ -141,8 +210,9 @@ func WriteFileAtomicRoot(root *os.Root, name string, data []byte, perm os.FileMo
 		return fmt.Errorf("invalid rooted atomic-write target")
 	}
 	dir := filepath.Dir(name)
-	temporary := filepath.Join(dir, fmt.Sprintf(".tmp-%d-%d", os.Getpid(), time.Now().UnixNano()))
-	tmpFile, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	tmpFile, temporary, err := createTemporaryFile(dir, func(name string) (*os.File, error) {
+		return root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create rooted temp file: %w", err)
 	}
@@ -173,6 +243,17 @@ func WriteFileAtomicRoot(root *os.Root, name string, data []byte, perm os.FileMo
 		return fmt.Errorf("%w: %w", ErrReplacedNotSynced, err)
 	}
 	return nil
+}
+
+// SyncDirectoryRoot syncs a directory inside an already-open directory
+// capability, making the entries renamed into it durable. A caller that finds
+// a file already in place, written by an earlier attempt whose own directory
+// sync may have failed, uses it before relying on that file.
+func SyncDirectoryRoot(root *os.Root, directory string) error {
+	if root == nil || directory == "" || filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
+		return fmt.Errorf("invalid rooted directory to sync")
+	}
+	return syncRootDirectory(root, directory)
 }
 
 func CopyFile(src, dst string, perm os.FileMode) error {

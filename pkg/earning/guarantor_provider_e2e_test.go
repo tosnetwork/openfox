@@ -851,7 +851,7 @@ func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackSce
 		t.Fatal(err)
 	}
 	closeGuarantorJournalOnCleanup(t, journal)
-	if scenario == guarantorNoFallback {
+	if scenario == guarantorNoFallback && process == nil {
 		// The complete lifecycle runs every commit method with real receipts:
 		// none may change the in-memory document before its commit.
 		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)

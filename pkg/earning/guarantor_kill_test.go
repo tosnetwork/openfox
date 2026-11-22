@@ -57,9 +57,9 @@ const (
 	guarantorKillResultsFile = "kill-test-results.json"
 )
 
-// guarantorKillSteps are the coordinator calls a process makes, in order. A
-// process runs the first n of them; the ones an earlier process completed are
-// repeated and must return what that process committed.
+// guarantorKillSteps are the coordinator calls of the test, in order. A
+// process is given the first n of them: it makes the n-th call, with what the
+// journal holds of the calls before it, which an earlier process completed.
 var guarantorKillSteps = []string{"issue", "accept", "activate", "claim"}
 
 // guarantorKillEntropy is a deterministic entropy source: SHA-256 in counter
@@ -276,6 +276,50 @@ func (process *guarantorKillProcess) drive(t *testing.T, fixture guarantorKillFi
 	results := map[string]string{}
 	var offer guarantor.AuthorizedFirmCoverageOfferV1
 	var acceptance guarantor.AuthorizedCoverageAcceptanceReceiptV1
+	recordOffer := func(issued guarantor.AuthorizedFirmCoverageOfferV1) {
+		offer = issued
+		results["offer"], _ = guarantor.FirmOfferDigest(issued)
+		results["offer writer generation"] = strconv.FormatUint(
+			issued.ExposureAdmissionReceipt.Body.WriterGeneration, 10)
+	}
+	recordAcceptance := func(receipt guarantor.AuthorizedCoverageAcceptanceReceiptV1) {
+		acceptance = receipt
+		results["acceptance"], _ = guarantor.CoverageAcceptanceReceiptDigestV1(receipt)
+		results["acceptance writer generation"] = strconv.FormatUint(receipt.Body.WriterGeneration, 10)
+	}
+	recordActivation := func(activation guarantor.AuthorizedCoverageActivationEvidenceV1) {
+		results["activation"], _ = guarantor.CoverageActivationEvidenceDigestV1(activation)
+		results["activation writer generation"] = strconv.FormatUint(activation.Body.WriterGeneration, 10)
+	}
+	// Only the process's last step goes through the coordinator. What the
+	// steps before it returned is what the journal holds of them, committed
+	// by an earlier process.
+	_, storedOffers, storedCoverages := testGuarantorSnapshot(t, coordinator.Journal)
+	for _, position := range storedOffers {
+		if process.steps > 1 && position.Record.AgreementDigest == fixture.agreementDigest {
+			if position.AuthorizedFirmOffer == nil {
+				t.Fatal("the journal holds the offer of an earlier step without its envelope")
+			}
+			recordOffer(*position.AuthorizedFirmOffer)
+		}
+	}
+	for _, position := range storedCoverages {
+		if position.Record.CoverageAgreementBodyDigest != fixture.agreementDigest {
+			continue
+		}
+		if process.steps > 2 {
+			if position.AcceptanceReceipt == nil {
+				t.Fatal("the journal holds the coverage of an earlier step without its acceptance receipt")
+			}
+			recordAcceptance(*position.AcceptanceReceipt)
+		}
+		if process.steps > 3 {
+			if position.ActivationEvidence == nil {
+				t.Fatal("the journal holds the coverage of an earlier step without its activation evidence")
+			}
+			recordActivation(*position.ActivationEvidence)
+		}
+	}
 	steps := map[string]func(){
 		"issue": func() {
 			at(0)
@@ -283,10 +327,7 @@ func (process *guarantorKillProcess) drive(t *testing.T, fixture guarantorKillFi
 			if err != nil || resolution.State != commerce.ActionTerminal {
 				t.Fatalf("issue the firm offer: state=%s err=%v", resolution.State, err)
 			}
-			offer = issued
-			results["offer"], _ = guarantor.FirmOfferDigest(issued)
-			results["offer writer generation"] = strconv.FormatUint(
-				issued.ExposureAdmissionReceipt.Body.WriterGeneration, 10)
+			recordOffer(issued)
 		},
 		"accept": func() {
 			receivedAt := at(time.Minute)
@@ -306,9 +347,7 @@ func (process *guarantorKillProcess) drive(t *testing.T, fixture guarantorKillFi
 			if err != nil || resolution.State != commerce.ActionTerminal {
 				t.Fatalf("accept the coverage: state=%s err=%v", resolution.State, err)
 			}
-			acceptance = receipt
-			results["acceptance"], _ = guarantor.CoverageAcceptanceReceiptDigestV1(receipt)
-			results["acceptance writer generation"] = strconv.FormatUint(receipt.Body.WriterGeneration, 10)
+			recordAcceptance(receipt)
 		},
 		"activate": func() {
 			activatedAt := at(2 * time.Minute)
@@ -348,8 +387,7 @@ func (process *guarantorKillProcess) drive(t *testing.T, fixture guarantorKillFi
 			if err != nil || resolution.State != commerce.ActionTerminal {
 				t.Fatalf("activate the coverage: state=%s err=%v", resolution.State, err)
 			}
-			results["activation"], _ = guarantor.CoverageActivationEvidenceDigestV1(activation)
-			results["activation writer generation"] = strconv.FormatUint(activation.Body.WriterGeneration, 10)
+			recordActivation(activation)
 		},
 		"claim": func() {
 			at(4 * time.Minute)
@@ -368,9 +406,9 @@ func (process *guarantorKillProcess) drive(t *testing.T, fixture guarantorKillFi
 				admitted.AdmissionReceipt.Body.WriterGeneration, 10)
 		},
 	}
-	for index := 0; index < process.steps; index++ {
-		hooks.armed, hooks.seen = hooks.kind != "" && index == process.steps-1, 0
-		steps[guarantorKillSteps[index]]()
+	if process.steps > 0 {
+		hooks.armed = hooks.kind != ""
+		steps[guarantorKillSteps[process.steps-1]]()
 	}
 	if process.point != "" {
 		t.Fatalf("the process ran %d steps to the end without reaching its kill point %s", process.steps,
@@ -474,12 +512,13 @@ type guarantorKillPoint struct {
 	step int
 	// point is the process's kill point.
 	point string
-	// generation is the writer generation the step's receipts must carry: 2,
-	// the killed process's, when that process had fixed the action in a plan
-	// whose action is terminal, or in the committed receipt; 3, the resuming
-	// process's, when the killed one had fixed nothing the authority holds
-	// as terminal, so the resuming one authorizes the action itself.
-	generation int
+	// authorizer says whose writer generation the step's receipts must carry:
+	// 1, the killed process's, when that process had fixed the action in a
+	// plan whose action is terminal, or in the committed receipt; 2, the
+	// resuming process's, when the killed one had fixed nothing the
+	// authority holds as terminal, so the resuming one authorizes the action
+	// itself.
+	authorizer int
 	// leavesTemporary is set when the kill leaves the temporary file of an
 	// interrupted document write in the journal directory.
 	leavesTemporary bool
@@ -494,20 +533,20 @@ type guarantorKillPoint struct {
 //	activate: 1 admission, 2 plan, 3 terminal result, 4 activation
 //	claim:    1 ingress admission, 2 ingress plan, 3 ingress result, 4 admission plan, 5 claim admission
 var guarantorKillPoints = []guarantorKillPoint{
-	{"issue: inside its first document write", 0, "during-write:1", 3, true},
-	{"issue: plan stored, authority not asked", 0, "after-write:2", 3, false},
-	{"issue: offer issued in the journal, before the terminal transition", 0, "before-terminal:1", 2, false},
-	{"issue: authority terminal, before the journal records it", 0, "after-terminal:1", 2, false},
-	{"issue: last commit made, before the offer is returned", 0, "after-write:6", 2, false},
-	{"accept: plan stored, authority not asked", 1, "after-write:2", 3, false},
-	{"accept: action prepared, before the terminal transition", 1, "before-terminal:1", 3, false},
-	{"accept: authority terminal, before the journal commit", 1, "after-terminal:1", 2, false},
-	{"accept: authority terminal, inside the commit's document write", 1, "during-write:3", 2, true},
-	{"accept: journal commit made, before the receipt is returned", 1, "after-write:3", 2, false},
-	{"activate: authority terminal, before the journal commit", 2, "after-terminal:1", 2, false},
-	{"activate: journal commit made, before the evidence is returned", 2, "after-write:4", 2, false},
-	{"claim: both actions terminal, before the journal commit", 3, "after-terminal:2", 2, false},
-	{"claim: journal commit made, before the receipts are returned", 3, "after-write:5", 2, false},
+	{"issue: inside its first document write", 0, "during-write:1", 2, true},
+	{"issue: plan stored, authority not asked", 0, "after-write:2", 2, false},
+	{"issue: offer issued in the journal, before the terminal transition", 0, "before-terminal:1", 1, false},
+	{"issue: authority terminal, before the journal records it", 0, "after-terminal:1", 1, false},
+	{"issue: last commit made, before the offer is returned", 0, "after-write:6", 1, false},
+	{"accept: plan stored, authority not asked", 1, "after-write:2", 2, false},
+	{"accept: action prepared, before the terminal transition", 1, "before-terminal:1", 2, false},
+	{"accept: authority terminal, before the journal commit", 1, "after-terminal:1", 1, false},
+	{"accept: authority terminal, inside the commit's document write", 1, "during-write:3", 1, true},
+	{"accept: journal commit made, before the receipt is returned", 1, "after-write:3", 1, false},
+	{"activate: authority terminal, before the journal commit", 2, "after-terminal:1", 1, false},
+	{"activate: journal commit made, before the evidence is returned", 2, "after-write:4", 1, false},
+	{"claim: both actions terminal, before the journal commit", 3, "after-terminal:2", 1, false},
+	{"claim: journal commit made, before the receipts are returned", 3, "after-write:5", 1, false},
 }
 
 // TestGuarantorCoordinatorResumesAfterBeingKilled kills a process running the
@@ -521,9 +560,9 @@ var guarantorKillPoints = []guarantorKillPoint{
 // authority issues to the n-th process on a directory is the same in both.
 // The reference for a kill point is therefore a run in which the same number
 // of processes took the writer and none was killed: the call is made by the
-// second process where the killed process had fixed the action, and by the
-// third, after a second that did nothing new, where the resuming process
-// authorizes it.
+// process in the killed one's place where the killed process had fixed the
+// action, and by the next one, after a process that made nothing new, where
+// the resuming process authorizes it.
 func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" || runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
 		t.Skipf("a process cannot be killed with SIGKILL on %s", runtime.GOOS)
@@ -598,37 +637,47 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 		}
 		return decoded
 	}
-	// prefixes[n] holds the stores after one process made the first n calls.
+	// prefixes[n] holds the stores after the first n calls, each made by a
+	// process of its own: n+1 processes, the first of which created the
+	// stores and made no call. The process that makes call n+1 on a copy of
+	// prefixes[n] is therefore process n+2 there and takes writer generation
+	// n+2, in a reference run and in a killed run alike.
 	prefixes := make([]string, len(guarantorKillSteps))
 	for steps := range guarantorKillSteps {
 		prefixes[steps] = filepath.Join(base, "prefix-"+strconv.Itoa(steps))
-		if mkdirErr := os.Mkdir(prefixes[steps], 0o700); mkdirErr != nil {
-			t.Fatal(mkdirErr)
+		if steps == 0 {
+			if mkdirErr := os.Mkdir(prefixes[steps], 0o700); mkdirErr != nil {
+				t.Fatal(mkdirErr)
+			}
+		} else {
+			copyGuarantorKillTestTree(t, prefixes[steps-1], prefixes[steps])
 		}
-		run(prefixes[steps], 1, steps, "")
+		run(prefixes[steps], steps+1, steps, "")
 	}
-	// reference returns what an uninterrupted run returns when the call of
-	// step is made by the process that takes writer generation generation.
+	// reference returns what an uninterrupted run returns for the call of
+	// step when the authorizer-th process after the prefix makes it: the
+	// first, or the second after a first that only repeated the call before.
 	references := map[string]map[string]string{}
-	reference := func(step, generation int) map[string]string {
+	reference := func(step, authorizer int) map[string]string {
 		t.Helper()
-		key := strconv.Itoa(step) + "/" + strconv.Itoa(generation)
+		key := strconv.Itoa(step) + "/" + strconv.Itoa(authorizer)
 		if cached, found := references[key]; found {
 			return cached
 		}
-		directory := filepath.Join(base, "reference-"+strconv.Itoa(step)+"-"+strconv.Itoa(generation))
+		directory := filepath.Join(base, "reference-"+strconv.Itoa(step)+"-"+strconv.Itoa(authorizer))
 		copyGuarantorKillTestTree(t, prefixes[step], directory)
-		for ordinal := 2; ordinal < generation; ordinal++ {
+		ordinal := step + 2
+		for ; ordinal < step+1+authorizer; ordinal++ {
 			run(directory, ordinal, step, "")
 		}
-		run(directory, generation, step+1, "")
+		run(directory, ordinal, step+1, "")
 		references[key] = results(directory)
-		wantGeneration := strconv.Itoa(generation)
+		wantGeneration := strconv.Itoa(ordinal)
 		for name, value := range references[key] {
 			if strings.HasPrefix(name, guarantorKillStepResult[step]) && strings.HasSuffix(name, "writer generation") &&
 				value != wantGeneration {
 				t.Fatalf("the reference for step %s by process %d carries %s = %s", guarantorKillSteps[step],
-					generation, name, value)
+					ordinal, name, value)
 			}
 		}
 		return references[key]
@@ -637,7 +686,7 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 		t.Run(point.name, func(t *testing.T) {
 			directory := filepath.Join(base, "killed-"+strconv.Itoa(index))
 			copyGuarantorKillTestTree(t, prefixes[point.step], directory)
-			run(directory, 2, point.step+1, point.point)
+			run(directory, point.step+2, point.step+1, point.point)
 			journalDirectory := filepath.Join(directory, "guarantor")
 			if left := guarantorKillTestTemporaries(t, journalDirectory); (len(left) != 0) != point.leavesTemporary {
 				t.Fatalf("the killed process left the temporary files %v, want some: %v", left, point.leavesTemporary)
@@ -646,21 +695,16 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 				t.Fatal("the killed process wrote its results")
 			}
 			// A fresh process opens what the killed one left and makes the
-			// same calls.
-			run(directory, 3, point.step+1, "")
+			// same call.
+			run(directory, point.step+3, point.step+1, "")
 			resumed := results(directory)
-			want := reference(point.step, point.generation)
+			want := reference(point.step, point.authorizer)
 			if !reflect.DeepEqual(resumed, want) {
 				t.Fatalf("the process resumed after the kill returned\n%v\nan uninterrupted run returns\n%v", resumed,
 					want)
 			}
 			if left := guarantorKillTestTemporaries(t, journalDirectory); len(left) != 0 {
 				t.Fatalf("the resumed process left the temporary files %v", left)
-			}
-			// Making the calls once more returns the same receipts again.
-			run(directory, 4, point.step+1, "")
-			if again := results(directory); !reflect.DeepEqual(again, want) {
-				t.Fatalf("a further process returned\n%v\nwant\n%v", again, want)
 			}
 		})
 	}

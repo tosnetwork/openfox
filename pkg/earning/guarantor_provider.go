@@ -513,6 +513,13 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 			coverage = candidate
 		}
 	}
+	// A claim repeated after its admission was committed gets the committed
+	// receipts: its ingress and admission actions are terminal and the logs it
+	// was sequenced into have advanced.
+	if committed, replayed, replayErr := coordinator.committedClaimAdmission(coverage,
+		claim); replayErr != nil || replayed {
+		return committed, replayErr
+	}
 	if coverage.Record.CoverageAgreementBodyDigest == "" ||
 		guarantor.VerifyClaim(claim, coverage.Terms, agreementDigest, coverage.Record.CoverageObligationID,
 			coordinator.Resolver, now) != nil {
@@ -811,8 +818,11 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 			IngressResolution: ingressResolution, AdmissionResolution: admissionResolution}, err
 	}
 	if _, err = coordinator.Journal.CommitClaimAdmission(agreementDigest, ingressReceipt, admissionReceipt, preview); err != nil {
-		return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, AdmissionReceipt: admissionReceipt,
-			IngressResolution: ingressResolution, AdmissionResolution: admissionResolution}, err
+		// A commit that lost its sync is committed: the result returned with
+		// that error is the complete one a repeated call returns.
+		return GuarantorClaimAdmissionResult{ClaimDigest: claimDigest, IngressReceipt: ingressReceipt,
+			AdmissionReceipt: admissionReceipt, IngressResolution: ingressResolution,
+			AdmissionResolution: admissionResolution}, err
 	}
 	return GuarantorClaimAdmissionResult{ClaimDigest: claimDigest, IngressReceipt: ingressReceipt,
 		AdmissionReceipt: admissionReceipt, IngressResolution: ingressResolution,
@@ -865,6 +875,16 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	}
 	decision := admission.AuthorizedClaimDecision
 	claimID := decision.Body.ClaimID
+	transitionDigest, err := guarantor.ClaimStateTransitionReceiptDigestV1(transition)
+	if err != nil {
+		return GuarantorDecisionApplicationResult{}, err
+	}
+	// An application repeated after it was committed gets the committed
+	// receipt: its token is consumed and cannot be applied again.
+	if committed, replayed, replayErr := coordinator.committedDecisionApplication(coverage, claimID,
+		admissionEnvelopeDigest, transitionDigest); replayErr != nil || replayed {
+		return committed, replayErr
+	}
 	claim, claimFound := coverage.ClaimEnvelopes[claimID]
 	record, recordFound := coverage.Claims[claimID]
 	token, tokenFound := coverage.DecisionApplicationTokens[claimID]
@@ -872,10 +892,6 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 		!sameJSON(coverage.ClaimStateTransitionReceipts[claimID], transition) || token.State != "pending" ||
 		record.ClaimStateRevision != transition.Body.ResultingClaimStateRevision {
 		return GuarantorDecisionApplicationResult{}, errors.New("Guarantor decision application has no current pending token")
-	}
-	transitionDigest, err := guarantor.ClaimStateTransitionReceiptDigestV1(transition)
-	if err != nil {
-		return GuarantorDecisionApplicationResult{}, err
 	}
 	payouts, err := guarantor.MaterializeClaimPayout(coordinator.OwnerID, coordinator.AgentID, coordinator.MandateDigest,
 		coverage.Terms.PayoutTemplate.AgreementObligationID, coverage.Terms, decision,

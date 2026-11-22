@@ -176,8 +176,11 @@ func TestOpeningAGuarantorJournalConfirmsWhatItLoads(t *testing.T) {
 // their directory sync: the document is written and renamed into place and
 // the write then reports the failed sync. It does so for the next remaining
 // new documents and counts them in lost. Writing the same document again,
-// which is how the journal confirms a commit, goes through.
+// which is how the journal confirms a commit, goes through. The first skip
+// new documents are written undisturbed, so a test can lose the sync of a
+// call's last commit alone.
 type journalSyncLossFault struct {
+	skip      int
 	remaining int
 	lost      int
 	last      []byte
@@ -196,6 +199,10 @@ func (fault *journalSyncLossFault) install(journal *GuarantorJournal) func() {
 		repeated := bytes.Equal(data, fault.last)
 		fault.last = append([]byte(nil), data...)
 		if repeated || fault.remaining == 0 {
+			return nil
+		}
+		if fault.skip > 0 {
+			fault.skip--
 			return nil
 		}
 		fault.remaining--

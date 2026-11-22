@@ -290,12 +290,15 @@ func (process *guarantorKillProcess) drive(t *testing.T, fixture guarantorKillFi
 		},
 		"accept": func() {
 			receivedAt := at(time.Minute)
-			request := signGuarantorTestAcceptance(t, fixture.agreement, offer, "agent:covered",
-				map[string]ed25519.PrivateKey{"agent:covered": fixture.coveredKey, "agent:guarantor": fixture.guarantorKey},
-				commerce.ProfileRefV1{
-					ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1,
-					ProfileDigest: commerce.AgentSignatureProfileDigest(),
-				}, fixture.underlyingResolver, fixture.agreementVerifier, receivedAt, fixture.now.Add(4*time.Minute))
+			keys := map[string]ed25519.PrivateKey{
+				"agent:covered": fixture.coveredKey, "agent:guarantor": fixture.guarantorKey,
+			}
+			profile := commerce.ProfileRefV1{
+				ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1,
+				ProfileDigest: commerce.AgentSignatureProfileDigest(),
+			}
+			request := signGuarantorTestAcceptance(t, fixture.agreement, offer, "agent:covered", keys, profile,
+				fixture.underlyingResolver, fixture.agreementVerifier, receivedAt, fixture.now.Add(4*time.Minute))
 			receipt, resolution, err := coordinator.AcceptCoverage(ctx, GuarantorAcceptCoverageInput{
 				Offer: offer, Request: request, CoverageObligationID: "obligation:coverage",
 				ReceivedAtUnix: uint64(receivedAt.Unix()),
@@ -491,32 +494,20 @@ type guarantorKillPoint struct {
 //	activate: 1 admission, 2 plan, 3 terminal result, 4 activation
 //	claim:    1 ingress admission, 2 ingress plan, 3 ingress result, 4 admission plan, 5 claim admission
 var guarantorKillPoints = []guarantorKillPoint{
-	{name: "issue: inside its first document write", step: 0, point: "during-write:1", generation: 3,
-		leavesTemporary: true},
-	{name: "issue: plan stored, authority not asked", step: 0, point: "after-write:2", generation: 3},
-	{name: "issue: offer issued in the journal, before the terminal transition", step: 0,
-		point: "before-terminal:1", generation: 2},
-	{name: "issue: authority terminal, before the journal records it", step: 0, point: "after-terminal:1",
-		generation: 2},
-	{name: "issue: last commit made, before the offer is returned", step: 0, point: "after-write:6",
-		generation: 2},
-	{name: "accept: plan stored, authority not asked", step: 1, point: "after-write:2", generation: 3},
-	{name: "accept: action prepared, before the terminal transition", step: 1, point: "before-terminal:1",
-		generation: 3},
-	{name: "accept: authority terminal, before the journal commit", step: 1, point: "after-terminal:1",
-		generation: 2},
-	{name: "accept: authority terminal, inside the journal commit's document write", step: 1,
-		point: "during-write:3", generation: 2, leavesTemporary: true},
-	{name: "accept: journal commit made, before the receipt is returned", step: 1, point: "after-write:3",
-		generation: 2},
-	{name: "activate: authority terminal, before the journal commit", step: 2, point: "after-terminal:1",
-		generation: 2},
-	{name: "activate: journal commit made, before the evidence is returned", step: 2, point: "after-write:4",
-		generation: 2},
-	{name: "claim: both actions terminal, before the journal commit", step: 3, point: "after-terminal:2",
-		generation: 2},
-	{name: "claim: journal commit made, before the receipts are returned", step: 3, point: "after-write:5",
-		generation: 2},
+	{"issue: inside its first document write", 0, "during-write:1", 3, true},
+	{"issue: plan stored, authority not asked", 0, "after-write:2", 3, false},
+	{"issue: offer issued in the journal, before the terminal transition", 0, "before-terminal:1", 2, false},
+	{"issue: authority terminal, before the journal records it", 0, "after-terminal:1", 2, false},
+	{"issue: last commit made, before the offer is returned", 0, "after-write:6", 2, false},
+	{"accept: plan stored, authority not asked", 1, "after-write:2", 3, false},
+	{"accept: action prepared, before the terminal transition", 1, "before-terminal:1", 3, false},
+	{"accept: authority terminal, before the journal commit", 1, "after-terminal:1", 2, false},
+	{"accept: authority terminal, inside the commit's document write", 1, "during-write:3", 2, true},
+	{"accept: journal commit made, before the receipt is returned", 1, "after-write:3", 2, false},
+	{"activate: authority terminal, before the journal commit", 2, "after-terminal:1", 2, false},
+	{"activate: journal commit made, before the evidence is returned", 2, "after-write:4", 2, false},
+	{"claim: both actions terminal, before the journal commit", 3, "after-terminal:2", 2, false},
+	{"claim: journal commit made, before the receipts are returned", 3, "after-write:5", 2, false},
 }
 
 // TestGuarantorCoordinatorResumesAfterBeingKilled kills a process running the

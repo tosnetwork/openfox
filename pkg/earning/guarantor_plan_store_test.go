@@ -200,6 +200,77 @@ func TestGuarantorJournalKeepsPlanSemanticFieldsAcrossCopies(t *testing.T) {
 	}
 }
 
+// TestGuarantorJournalStoresOnlyAPlanItWouldLoad: a plan is checked when it is
+// stored exactly as it is when the journal loads, so a plan a restart would
+// refuse never reaches the document.
+func TestGuarantorJournalStoresOnlyAPlanItWouldLoad(t *testing.T) {
+	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
+	offerID := digest("7")
+	journal, directory := openTestGuarantorJournal(t)
+	position := testExpiredGuarantorOffer(offerID)
+	rewriteTestGuarantorJournal(t, journal, func(doc *guarantorJournalDocument) { doc.Offers[offerID] = position })
+	journal, err := OpenGuarantorJournal(directory, "owner:guarantor", "agent:guarantor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeGuarantorJournalOnCleanup(t, journal)
+	before, err := os.ReadFile(filepath.Join(directory, guarantorJournalFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]func(plan *GuarantorPreAcceptanceReleasePlan){
+		"a semantic field that does not derive the stable action identity": func(plan *GuarantorPreAcceptanceReleasePlan) {
+			plan.Fields["target_revision"] = commerce.U64(9)
+		},
+		"a semantic field missing": func(plan *GuarantorPreAcceptanceReleasePlan) {
+			delete(plan.Fields, "reservation_id")
+		},
+		"no semantic fields": func(plan *GuarantorPreAcceptanceReleasePlan) { plan.Fields = nil },
+		"another offer's reservation": func(plan *GuarantorPreAcceptanceReleasePlan) {
+			other := testExpiredGuarantorOffer(offerID)
+			other.Record.ReservationID = digest("b")
+			*plan = testGuarantorOfferReleasePlan(t, other, 6)
+		},
+		"other non-acceptance evidence": func(plan *GuarantorPreAcceptanceReleasePlan) {
+			other := testExpiredGuarantorOffer(offerID)
+			other.NonAcceptanceEvidence.Body.AcceptanceAdmissionLogRoot = digest("c")
+			*plan = testGuarantorOfferReleasePlan(t, other, 6)
+		},
+		"a request of another digest": func(plan *GuarantorPreAcceptanceReleasePlan) {
+			plan.CanonicalRequest = []byte("another-request")
+		},
+		"an overflowing target revision": func(plan *GuarantorPreAcceptanceReleasePlan) {
+			*plan = testGuarantorOfferReleasePlan(t, position, ^uint64(0))
+		},
+		"another owner's action": func(plan *GuarantorPreAcceptanceReleasePlan) { plan.Action.OwnerID = "owner:another" },
+	} {
+		plan := testGuarantorOfferReleasePlan(t, position, 6)
+		change(&plan)
+		if _, err := journal.StoreOfferReleasePlan(offerID, plan); err == nil {
+			t.Fatalf("a release plan with %s was stored", name)
+		}
+	}
+	after, err := os.ReadFile(filepath.Join(directory, guarantorJournalFile))
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("a refused plan changed the document: %v", err)
+	}
+	stored := testGuarantorOfferReleasePlan(t, position, 6)
+	if _, err := journal.StoreOfferReleasePlan(offerID, stored); err != nil {
+		t.Fatalf("store the valid release plan: %v", err)
+	}
+	// A reauthorized action must keep the plan one the journal would load.
+	otherOwner := stored.Action
+	otherOwner.WriterGeneration, otherOwner.OwnerID = 2, "owner:another"
+	if _, err := journal.RefreshOfferReleasePlanAction(offerID, otherOwner); err == nil {
+		t.Fatal("a release plan was reauthorized with another owner's action")
+	}
+	journal = reopenTestGuarantorJournal(t, journal, directory)
+	if got := storedTestOfferReleasePlan(t, journal); !reflect.DeepEqual(got.Fields, stored.Fields) ||
+		got.Action.OwnerID != "owner:guarantor" {
+		t.Fatalf("the journal loaded another plan than the one stored: %#v", got)
+	}
+}
+
 // editTestGuarantorJournalFile rewrites the journal document on disk through
 // change, which edits the decoded document in place. Numbers keep their exact
 // digits.

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 
 	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 	guarantor "github.com/tosnetwork/ai/protocol/pkg/agentguarantor"
@@ -174,14 +173,6 @@ func (plan *GuarantorCoverageResolutionPlan) UnmarshalJSON(raw []byte) error {
 	*plan = GuarantorCoverageResolutionPlan(decoded)
 	plan.Fields = fields
 	return nil
-}
-
-// sameGuarantorPlanFields reports whether two plans of one action kind carry
-// the same semantic fields. A field set that cannot be exported equals none.
-func sameGuarantorPlanFields(actionKind string, left, right map[string]commerce.SemanticValue) bool {
-	leftWire, leftErr := commerce.ExportSemanticFields(actionKind, left)
-	rightWire, rightErr := commerce.ExportSemanticFields(actionKind, right)
-	return leftErr == nil && rightErr == nil && reflect.DeepEqual(leftWire, rightWire)
 }
 
 // guarantorPlanFieldValues is a plan's semantic fields in transport form,

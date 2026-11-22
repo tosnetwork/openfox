@@ -1467,8 +1467,9 @@ func (journal *GuarantorJournal) ReauthorizeExposureReleasePlan(agreementDigest 
 		return GuarantorExposureReleasePlan{}, errors.New("Guarantor exposure-release plan cannot be reauthorized")
 	}
 	prior := *position.ExposureReleasePlan
-	if !sameGuarantorPlanFields(prior.Action.ActionKind, prior.Fields, plan.Fields) ||
-		!bytes.Equal(prior.CanonicalRequest, plan.CanonicalRequest) ||
+	// The semantic fields are frozen with the stable action identity: the
+	// validation below requires them to derive it.
+	if !bytes.Equal(prior.CanonicalRequest, plan.CanonicalRequest) ||
 		!sameJSON(prior.RequestBody, plan.RequestBody) || !sameJSON(prior.Disposition, plan.Disposition) ||
 		prior.Action.StableActionID != plan.Action.StableActionID ||
 		prior.Action.ExactRequestDigest != plan.Action.ExactRequestDigest ||
@@ -1541,9 +1542,9 @@ func (journal *GuarantorJournal) ReauthorizeCoverageResolutionPlan(agreementDige
 		return GuarantorCoverageResolutionPlan{}, errors.New("Guarantor coverage-resolution plan cannot be reauthorized")
 	}
 	prior := *position.CoverageResolutionPlan
-	if validateCoverageResolutionPlan(next.OwnerID, next.AgentID, agreementDigest, position, plan) != nil ||
-		!sameGuarantorPlanFields(prior.Action.ActionKind, prior.Fields, plan.Fields) ||
-		!bytes.Equal(prior.CanonicalRequest, plan.CanonicalRequest) ||
+	// The semantic fields are frozen with the stable action identity: the
+	// validation below requires them to derive it.
+	if !bytes.Equal(prior.CanonicalRequest, plan.CanonicalRequest) ||
 		!sameJSON(prior.RequestBody, plan.RequestBody) || prior.TargetStatus != plan.TargetStatus ||
 		prior.TargetState != plan.TargetState || prior.Action.StableActionID != plan.Action.StableActionID ||
 		prior.Action.ExactRequestDigest != plan.Action.ExactRequestDigest ||
@@ -1551,6 +1552,9 @@ func (journal *GuarantorJournal) ReauthorizeCoverageResolutionPlan(agreementDige
 		plan.WriterFence.Body.WriterGeneration != plan.Action.WriterGeneration ||
 		plan.CreatedAtUnix < prior.CreatedAtUnix {
 		return GuarantorCoverageResolutionPlan{}, errors.New("Guarantor coverage-resolution reauthorization changes frozen semantics")
+	}
+	if err := validateCoverageResolutionPlan(next.OwnerID, next.AgentID, agreementDigest, position, plan); err != nil {
+		return GuarantorCoverageResolutionPlan{}, err
 	}
 	position.CoverageResolutionPlan = &plan
 	next.Coverages[agreementDigest] = position

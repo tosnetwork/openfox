@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,63 +16,6 @@ import (
 
 	"github.com/tosnetwork/openfox/pkg/fileutil"
 )
-
-// TestGuarantorJournalKeepsPlanSemanticFieldsAcrossCopies: a plan's semantic
-// field values are not part of the document's encoding, so every copy of the
-// document carries them over from the plan it copies. A stored plan keeps
-// them through later commits, and the maps handed in and handed back are not
-// the journal's.
-func TestGuarantorJournalKeepsPlanSemanticFieldsAcrossCopies(t *testing.T) {
-	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
-	offerID := digest("7")
-	journal, directory := openTestGuarantorJournal(t)
-	rewriteTestGuarantorJournal(t, journal, func(doc *guarantorJournalDocument) {
-		doc.Offers[offerID] = GuarantorOfferPosition{QuoteRequestDigest: digest("3"),
-			Record: guarantor.OfferRecord{OfferID: offerID, Status: guarantor.OfferExpired, StateRevision: 4}}
-	})
-	journal, err := OpenGuarantorJournal(directory, "owner:guarantor", "agent:guarantor")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closeGuarantorJournalOnCleanup(t, journal)
-	want := map[string]commerce.SemanticValue{"owner_id": commerce.ID("owner:guarantor"),
-		"expected_state_revision": commerce.U64(7)}
-	handedIn := map[string]commerce.SemanticValue{"owner_id": commerce.ID("owner:guarantor"),
-		"expected_state_revision": commerce.U64(7)}
-	if _, err := journal.StoreOfferReleasePlan(offerID, GuarantorPreAcceptanceReleasePlan{
-		Action: commerce.AuthorizedAction{ActionKind: "portfolio.release", StableActionID: digest("4"),
-			ExactRequestDigest: digest("5")}, Fields: handedIn, CanonicalRequest: []byte("release-request"),
-		BasePortfolioRevision: 1, TargetPortfolioRevision: 2}); err != nil {
-		t.Fatal(err)
-	}
-	handedIn["owner_id"] = commerce.ID("owner:changed-by-the-caller")
-	stored := func() map[string]commerce.SemanticValue {
-		t.Helper()
-		_, offers, _ := journal.Snapshot()
-		if len(offers) != 1 || offers[0].PreAcceptanceReleasePlan == nil {
-			t.Fatalf("the journal does not hold the release plan: %#v", offers)
-		}
-		return offers[0].PreAcceptanceReleasePlan.Fields
-	}
-	if got := stored(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the stored plan's semantic fields are %#v, want %#v", got, want)
-	}
-	// Later commits copy the document again.
-	for index, action := range []string{digest("1"), digest("2")} {
-		if _, err := journal.BeginAdmission(digest("8"), action, digest("9"),
-			time.Unix(2_000_000_000+int64(index), 0).UTC()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	handedBack := stored()
-	if !reflect.DeepEqual(handedBack, want) {
-		t.Fatalf("the plan's semantic fields after later commits are %#v, want %#v", handedBack, want)
-	}
-	handedBack["owner_id"] = commerce.ID("owner:changed-in-a-snapshot")
-	if got := stored(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the plan's semantic fields were changed through a map the journal handed out: %#v", got)
-	}
-}
 
 // cloneGuarantorDocument is a deep copy of a journal document for tests that
 // build or change a document by hand.
@@ -314,6 +256,8 @@ type journalDurabilityFixture struct {
 	preparedAction  string
 	preparedRequest string
 	at              time.Time
+	// releasePlan is the expired offer's release plan as the fixture stores it.
+	releasePlan GuarantorPreAcceptanceReleasePlan
 }
 
 func newJournalDurabilityFixture(t *testing.T) journalDurabilityFixture {
@@ -322,6 +266,7 @@ func newJournalDurabilityFixture(t *testing.T) journalDurabilityFixture {
 	fixture := journalDurabilityFixture{decided: digest("c"), decidedClaim: digest("b"), undecided: digest("d"),
 		undecidedClaim: digest("e"), offerID: digest("7"), domain: digest("8"), preparedAction: digest("1"),
 		preparedRequest: digest("2"), at: time.Unix(2_000_000_000, 0).UTC()}
+	fixture.releasePlan = testGuarantorOfferReleasePlan(t, testExpiredGuarantorOffer(fixture.offerID), 1)
 	journal, directory := openTestGuarantorJournal(t)
 	rewriteTestGuarantorJournal(t, journal, func(doc *guarantorJournalDocument) {
 		decided := testCoverageWithClaim(fixture.decidedClaim)
@@ -339,11 +284,9 @@ func newJournalDurabilityFixture(t *testing.T) journalDurabilityFixture {
 			ClaimRevision: 1, ClaimStateRevision: 2, ClaimStatus: guarantor.ClaimAdmitted}
 		doc.Coverages[fixture.undecided] = undecided
 
-		doc.Offers[fixture.offerID] = GuarantorOfferPosition{QuoteRequestDigest: digest("3"),
-			Record: guarantor.OfferRecord{OfferID: fixture.offerID, Status: guarantor.OfferExpired, StateRevision: 4},
-			PreAcceptanceReleasePlan: &GuarantorPreAcceptanceReleasePlan{Action: commerce.AuthorizedAction{
-				ActionKind: "portfolio.release", StableActionID: digest("4"), ExactRequestDigest: digest("5"),
-				WriterGeneration: 1}}}
+		expired := testExpiredGuarantorOffer(fixture.offerID)
+		expired.PreAcceptanceReleasePlan = &fixture.releasePlan
+		doc.Offers[fixture.offerID] = expired
 	})
 	reopened, err := OpenGuarantorJournal(directory, "owner:guarantor", "agent:guarantor")
 	if err != nil {
@@ -416,8 +359,8 @@ func (fixture journalDurabilityFixture) operations(t *testing.T) []journalDurabi
 		ReservationExpiresAt: 2_000_000_200, Record: guarantor.OfferRecord{OfferID: digest("6"),
 			ReservationID: digest("3"), AgreementDigest: digest("4"), Status: guarantor.OfferReservedUnsigned,
 			StateRevision: 3, LastEvidenceDigest: digest("5")}}
-	reauthorized := commerce.AuthorizedAction{ActionKind: "portfolio.release", StableActionID: digest("4"),
-		ExactRequestDigest: digest("5"), WriterGeneration: 2}
+	reauthorized := fixture.releasePlan.Action
+	reauthorized.WriterGeneration = 2
 	resolution := commerce.ActionResolution{StableActionID: fixture.preparedAction,
 		ExactRequestDigest: fixture.preparedRequest, State: commerce.ActionRejected, StateRevision: 2,
 		EvidenceRefs: []string{digest("d")}}

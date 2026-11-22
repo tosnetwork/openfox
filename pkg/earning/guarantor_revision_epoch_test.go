@@ -190,6 +190,13 @@ func TestJournalRefusesTheRetiredSchemaAndMissingEpochs(t *testing.T) {
 	if err := openTestGuarantorJournalErr(t, directory); err == nil || !strings.Contains(err.Error(), "retired v2 schema") {
 		t.Fatalf("a v2 journal was not refused with its reason: %v", err)
 	}
+	journal, directory = openTestGuarantorJournal(t)
+	rewriteTestGuarantorJournal(t, journal, func(doc *guarantorJournalDocument) {
+		doc.Schema = retiredGuarantorJournalSchemaV3
+	})
+	if err := openTestGuarantorJournalErr(t, directory); err == nil || !strings.Contains(err.Error(), "retired v3 schema") {
+		t.Fatalf("a v3 journal was not refused with its reason: %v", err)
+	}
 
 	claimID := "sha256:" + strings.Repeat("b", 64)
 	agreement := "sha256:" + strings.Repeat("c", 64)

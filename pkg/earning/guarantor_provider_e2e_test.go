@@ -2038,6 +2038,17 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	frozenReleaseActionID, frozenReleaseRequest := frozenReleasePlan.Action.StableActionID,
 		frozenReleasePlan.Action.ExactRequestDigest
 	coordinator.ClosureFailureInjector = nil
+	// The process restarts after the crash. The journal is opened again from
+	// disk and holds nothing of the journal that stored the plan, so recovery
+	// resumes from what the document alone carries. A document whose plan was
+	// changed, or whose terminal claim set or reservation is no longer the one
+	// the plan releases for, is refused.
+	journal = restartTestGuarantorJournal(t, journal, journalDirectory, agreementDigest,
+		tamperedTestExposureReleasePlan(t))
+	coordinator.Journal = journal
+	if scenario == guarantorNoFallback {
+		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
+	}
 	// A different writer generation takes over after the crash. Recovery must
 	// reauthorize the exact same release/resolution semantics rather than mint a
 	// successor identity or relying on the predecessor writer lease.
@@ -2309,11 +2320,45 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	}
 	authority.now = func() time.Time { return now.Add(41 * time.Minute) }
 	coordinator.Authority = authority
+	// This closure crashes once its coverage-resolution plan is stored, and the
+	// process restarts: the journal opened from disk resumes the stored plan to
+	// the resolution the plan names. A document whose plan was changed, or
+	// whose exposure release is no longer the one the plan resolves from, is
+	// refused.
+	resolutionCrash := &oneShotGuarantorClosureFailure{target: "coverage_resolution_plan_prepared"}
+	coordinator.ClosureFailureInjector = resolutionCrash
+	if _, crashErr := coordinator.CloseCoverage(context.Background(), GuarantorCloseCoverageInput{
+		Offer: cancellationOffer, ActivationEvidence: cancellationActivation, CancellationReceipt: &cancelReceipt},
+		fence); crashErr == nil || !resolutionCrash.fired {
+		t.Fatalf("the closure did not stop at its stored coverage-resolution plan: %v", crashErr)
+	}
+	coordinator.ClosureFailureInjector = nil
+	var frozenResolutionPlan *GuarantorCoverageResolutionPlan
+	_, _, crashPositions = journal.Snapshot()
+	for index := range crashPositions {
+		if crashPositions[index].Record.CoverageAgreementBodyDigest == cancellationAgreementDigest {
+			frozenResolutionPlan = crashPositions[index].CoverageResolutionPlan
+		}
+	}
+	if frozenResolutionPlan == nil {
+		t.Fatal("the closure crash did not persist its coverage-resolution plan")
+	}
+	journal = restartTestGuarantorJournal(t, journal, journalDirectory, cancellationAgreementDigest,
+		tamperedTestCoverageResolutionPlan(t, "closed"))
+	coordinator.Journal = journal
 	cancelledClose, err := coordinator.CloseCoverage(context.Background(), GuarantorCloseCoverageInput{
 		Offer: cancellationOffer, ActivationEvidence: cancellationActivation, CancellationReceipt: &cancelReceipt}, fence)
 	if err != nil || cancelledClose.TerminalClaimSet.Body.CoverageClosureReason != "accepted_cancellation" ||
 		cancelledClose.FilingCloseReceipt.Body.IncidentEligibilityEndsAtUnix != cancelReceipt.Body.IncidentEligibilityEndsAtUnix {
 		t.Fatalf("close cancelled coverage: result=%#v err=%v", cancelledClose, err)
+	}
+	if resolved := cancelledClose.CoverageResolution.Body; resolved.TerminalState != "cancelled" ||
+		resolved.StableActionID != frozenResolutionPlan.Action.StableActionID ||
+		resolved.ExactRequestDigest != frozenResolutionPlan.Action.ExactRequestDigest ||
+		resolved.PriorCoverageRevision != frozenResolutionPlan.RequestBody.ExpectedRevision ||
+		resolved.ResolvedCoverageRevision != frozenResolutionPlan.RequestBody.TargetRevision ||
+		resolved.ResolvedAtUnix != frozenResolutionPlan.CreatedAtUnix {
+		t.Fatalf("the closure resumed after a restart is not the one its stored plan names: %#v", resolved)
 	}
 	tampered := closed.CoverageResolution
 	tampered.AuthorizedExposureReleaseReceipt.AuthorizedTerminalClaimSetEvidence.

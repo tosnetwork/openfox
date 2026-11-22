@@ -326,6 +326,12 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 			coverage = candidate
 		}
 	}
+	// An activation repeated after it was committed gets the committed
+	// evidence: the coverage is no longer pending.
+	if committed, committedResolution, replayed, replayErr := coordinator.committedCoverageActivation(coverage,
+		input); replayErr != nil || replayed {
+		return committed, committedResolution, replayErr
+	}
 	if coverage.Record.CoverageStatus != guarantor.CoveragePendingAuthorization ||
 		coverage.Record.ClaimFilingStatus != guarantor.FilingNotOpen {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, errors.New("Guarantor coverage is not pending activation")

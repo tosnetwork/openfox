@@ -494,15 +494,17 @@ func (coordinator *GuarantorProviderCoordinator) admitPlannedActionBy(planned gu
 		// and fence this call cannot recover, so nothing is built on it.
 		if prior := coordinator.Authority.Resolve(action.StableActionID,
 			action.ExactRequestDigest); prior.State != commerce.ActionUnknown {
-			return prior, fmt.Errorf("Guarantor action is already %s at its authority and the journal holds no plan for it",
-				prior.State)
+			return prior, fmt.Errorf(
+				"Guarantor action is already %s at its authority and the journal holds no plan for it", prior.State)
 		}
-		if err := coordinator.Journal.PrepareActionPlan(GuarantorActionPlan{Kind: planned.kind,
-			ScopeID: planned.scopeID, SubjectID: planned.subjectID, Action: action, WriterFence: fence, Fields: fields,
-			CanonicalRequest: request, PreparedAtUnix: uint64(now.Unix())}); err != nil {
+		plan := GuarantorActionPlan{
+			Kind: planned.kind, ScopeID: planned.scopeID, SubjectID: planned.subjectID, Action: action,
+			WriterFence: fence, Fields: fields, CanonicalRequest: request, PreparedAtUnix: uint64(now.Unix()),
+		}
+		err := coordinator.Journal.PrepareActionPlan(plan)
+		if err != nil {
 			return commerce.ActionResolution{}, err
 		}
-		var err error
 		resolution, err = admit()
 		if err != nil {
 			return resolution, err

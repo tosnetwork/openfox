@@ -720,7 +720,8 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		instance, err = coordinator.Authority.AllocateInstance(commerce.AuthorityInstanceAllocationRequest{
 			OwnerID: coordinator.OwnerID, AgentID: coordinator.AgentID, PurposeKind: "conditional.claim.submit",
 			MandateDigest: coordinator.MandateDigest, ApprovalDigestOrZero: zeroSHA256Digest(),
-			DownstreamEffectDescriptorDigest: effectDigest, PredecessorAuthorityInstanceID: zeroSHA256Digest()}, fence)
+			DownstreamEffectDescriptorDigest: effectDigest, PredecessorAuthorityInstanceID: zeroSHA256Digest(),
+		}, fence)
 		if err != nil {
 			return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
 		}
@@ -744,7 +745,9 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 	admissionResolution, err := coordinator.admitPlannedAction(admissionPlan, admissionAction, admissionFields,
 		admissionRequest, fence, now)
 	if err != nil {
-		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution, AdmissionResolution: admissionResolution}, err
+		return GuarantorClaimAdmissionResult{
+			IngressResolution: ingressResolution, AdmissionResolution: admissionResolution,
+		}, err
 	}
 	admissionResolution, err = coordinator.settlePlannedAction(admissionResolution, admissionAction, claimDigest,
 		[]string{claimDigest})
@@ -858,16 +861,14 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, AdmissionReceipt: admissionReceipt,
 			IngressResolution: ingressResolution, AdmissionResolution: admissionResolution}, err
 	}
-	if _, err = coordinator.Journal.CommitClaimAdmission(agreementDigest, ingressReceipt, admissionReceipt, preview); err != nil {
-		// A commit that lost its sync is committed: the result returned with
-		// that error is the complete one a repeated call returns.
-		return GuarantorClaimAdmissionResult{ClaimDigest: claimDigest, IngressReceipt: ingressReceipt,
-			AdmissionReceipt: admissionReceipt, IngressResolution: ingressResolution,
-			AdmissionResolution: admissionResolution}, err
-	}
-	return GuarantorClaimAdmissionResult{ClaimDigest: claimDigest, IngressReceipt: ingressReceipt,
+	// A commit that lost its sync is committed, so the result returned with
+	// the commit's error is the complete one a repeated call returns.
+	_, err = coordinator.Journal.CommitClaimAdmission(agreementDigest, ingressReceipt, admissionReceipt, preview)
+	return GuarantorClaimAdmissionResult{
+		ClaimDigest: claimDigest, IngressReceipt: ingressReceipt,
 		AdmissionReceipt: admissionReceipt, IngressResolution: ingressResolution,
-		AdmissionResolution: admissionResolution}, nil
+		AdmissionResolution: admissionResolution,
+	}, err
 }
 
 type GuarantorApplyDecisionInput struct {
@@ -1430,7 +1431,8 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 	if err != nil {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
 	}
-	admissionDomainID, err := guarantor.CoverageAcceptanceAdmissionDomainIDV1(bound.AdmissionStateDomainDigest, input.Offer.Body.OfferID)
+	admissionDomainID, err := guarantor.CoverageAcceptanceAdmissionDomainIDV1(bound.AdmissionStateDomainDigest,
+		input.Offer.Body.OfferID)
 	if err != nil {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
 	}

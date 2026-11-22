@@ -283,7 +283,7 @@ func openGuarantorJournalSyncedBy(directory, ownerID, agentID string, readOnly b
 		return nil, errors.New("open Guarantor journal directory")
 	}
 	if readOnly {
-		if _, err := root.Lstat(guarantorJournalFile); err != nil {
+		if _, statErr := root.Lstat(guarantorJournalFile); statErr != nil {
 			_ = root.Close()
 			return nil, errors.New("Guarantor journal does not exist or cannot be inspected")
 		}
@@ -309,8 +309,9 @@ func openGuarantorJournalSyncedBy(directory, ownerID, agentID string, readOnly b
 	}
 	// A journal inspected read-only may have no evidence directory yet; the
 	// load then refuses any record that names a receipt.
-	if info, err := root.Lstat(guarantorEvidenceDirectory); (err != nil && (!readOnly || !errors.Is(err, os.ErrNotExist))) ||
-		(err == nil && (!info.IsDir() || info.Mode().Perm()&0o077 != 0)) {
+	evidenceInfo, evidenceErr := root.Lstat(guarantorEvidenceDirectory)
+	if (evidenceErr != nil && (!readOnly || !errors.Is(evidenceErr, os.ErrNotExist))) ||
+		(evidenceErr == nil && (!evidenceInfo.IsDir() || evidenceInfo.Mode().Perm()&0o077 != 0)) {
 		_ = releaseAuthorityLock(lock)
 		_ = domainLock.Close()
 		_ = root.Close()
@@ -2221,7 +2222,9 @@ var ErrGuarantorJournalCommittedNotSynced = errors.New("Guarantor journal docume
 // ErrGuarantorJournalCommittedNotSynced it says nothing was committed by this
 // call. The call can be repeated; once the document is confirmed, repeating
 // the call that committed it returns its committed result without writing.
-var ErrGuarantorJournalDurabilityUnconfirmed = errors.New("Guarantor journal holds a commit whose durability is not confirmed")
+var ErrGuarantorJournalDurabilityUnconfirmed = errors.New(
+	"Guarantor journal holds a commit whose durability is not confirmed",
+)
 
 // errGuarantorJournalReadOnly refuses a write to a journal opened for
 // inspection.
@@ -2232,7 +2235,8 @@ var errGuarantorJournalReadOnly = errors.New("Guarantor journal is open read-onl
 // earlier one, and nil for any other error. A caller that otherwise ignores
 // or replaces a journal error uses it so that this one is never lost.
 func guarantorJournalDurabilityError(err error) error {
-	if errors.Is(err, ErrGuarantorJournalCommittedNotSynced) || errors.Is(err, ErrGuarantorJournalDurabilityUnconfirmed) {
+	if errors.Is(err, ErrGuarantorJournalCommittedNotSynced) ||
+		errors.Is(err, ErrGuarantorJournalDurabilityUnconfirmed) {
 		return err
 	}
 	return nil

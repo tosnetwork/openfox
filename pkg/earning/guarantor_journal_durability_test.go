@@ -632,8 +632,10 @@ func TestOpeningAGuarantorJournalSweepsCrashLeftovers(t *testing.T) {
 	if err := os.Symlink(file("README"), file(hexName("2"))); err != nil {
 		t.Fatal(err)
 	}
-	removed := []string{file(strings.TrimPrefix(uncommitted, "sha256:")), file(hexName("f")),
-		interruptedReceipt, interruptedDocument}
+	removed := []string{
+		file(strings.TrimPrefix(uncommitted, "sha256:")), file(hexName("f")),
+		interruptedReceipt, interruptedDocument,
+	}
 	kept := []string{file(strings.TrimPrefix(named, "sha256:")), file("README"), file(".tmp-notes"),
 		file(hexName("a")[:63]), file(hexName("1")), file(hexName("2")),
 		filepath.Join(directory, guarantorJournalFile)}

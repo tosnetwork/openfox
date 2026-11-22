@@ -135,7 +135,8 @@ func TestJournalResolverForwardsExactlyTheVerifiersTheOperatorProvides(t *testin
 			CollateralFinalityVerifier: test.configured}
 		for kind, resolver := range map[string]guarantor.AuthorityKeyResolver{
 			"journal resolver": coordinator.resolverFor(agreement),
-			"pending resolver": coordinator.pendingResolverFor(agreement, map[string]GuarantorStoredEvidence{})} {
+			"pending resolver": coordinator.pendingResolverFor(agreement, map[string]GuarantorStoredEvidence{}),
+		} {
 			if _, serves := resolver.(guarantor.ImmutableEvidenceResolver); !serves {
 				t.Errorf("%s, %s: the resolver does not serve immutable evidence", name, kind)
 			}
@@ -184,7 +185,9 @@ func TestTheConfiguredFinalityVerifierAnswersAheadOfTheResolversOwn(t *testing.T
 	agreement := "sha256:" + strings.Repeat("c", 64)
 	base := newGuarantorPinnedResolver(nil)
 	configuredReference, ownReference := "sha256:"+strings.Repeat("d", 64), "sha256:"+strings.Repeat("e", 64)
-	configured := &pinnedCollateralFinality{finalized: []finalizedCollateralTransition{{reference: configuredReference}}}
+	configured := &pinnedCollateralFinality{
+		finalized: []finalizedCollateralTransition{{reference: configuredReference}},
+	}
 	own := &pinnedCollateralFinality{finalized: []finalizedCollateralTransition{{reference: ownReference}}}
 	accepts := func(verifier guarantor.CollateralAdapterFinalityVerifier, reference string) bool {
 		return verifier.VerifyCollateralAdapterFinalityV1(guarantor.CollateralAdapterRequestV1{},
@@ -197,15 +200,20 @@ func TestTheConfiguredFinalityVerifierAnswersAheadOfTheResolversOwn(t *testing.T
 		answers    string
 	}{
 		"a resolver that is a finality verifier, another one configured": {
-			operatorWithFinality{base, own}, configured, configuredReference},
+			operatorWithFinality{base, own}, configured, configuredReference,
+		},
 		"a resolver that is a finality verifier, none configured": {
-			operatorWithFinality{base, own}, nil, ownReference},
+			operatorWithFinality{base, own}, nil, ownReference,
+		},
 		"an evidence-serving resolver that is a finality verifier, another one configured": {
-			operatorServingEvidenceWithFinality{operatorServingEvidence{base}, own}, configured, configuredReference},
+			operatorServingEvidenceWithFinality{operatorServingEvidence{base}, own}, configured, configuredReference,
+		},
 		"an evidence-serving resolver that is a finality verifier, none configured": {
-			operatorServingEvidenceWithFinality{operatorServingEvidence{base}, own}, nil, ownReference},
+			operatorServingEvidenceWithFinality{operatorServingEvidence{base}, own}, nil, ownReference,
+		},
 		"an evidence-serving resolver, one configured": {
-			operatorServingEvidence{base}, configured, configuredReference},
+			operatorServingEvidence{base}, configured, configuredReference,
+		},
 	} {
 		coordinator := GuarantorProviderCoordinator{Resolver: test.operator, Journal: journal}
 		if test.configured != nil {
@@ -213,7 +221,8 @@ func TestTheConfiguredFinalityVerifierAnswersAheadOfTheResolversOwn(t *testing.T
 		}
 		for kind, resolver := range map[string]guarantor.AuthorityKeyResolver{
 			"journal resolver": coordinator.resolverFor(agreement),
-			"pending resolver": coordinator.pendingResolverFor(agreement, map[string]GuarantorStoredEvidence{})} {
+			"pending resolver": coordinator.pendingResolverFor(agreement, map[string]GuarantorStoredEvidence{}),
+		} {
 			if _, serves := resolver.(guarantor.ImmutableEvidenceResolver); !serves {
 				t.Errorf("%s, %s: the resolver does not serve immutable evidence", name, kind)
 			}
@@ -224,7 +233,8 @@ func TestTheConfiguredFinalityVerifierAnswersAheadOfTheResolversOwn(t *testing.T
 			}
 			for _, reference := range []string{configuredReference, ownReference} {
 				if got, want := accepts(exposed, reference), reference == test.answers; got != want {
-					t.Errorf("%s, %s: the exposed finality verifier accepts %s: %v, want %v", name, kind, reference, got, want)
+					t.Errorf("%s, %s: the exposed finality verifier accepts %s: %v, want %v",
+						name, kind, reference, got, want)
 				}
 			}
 		}

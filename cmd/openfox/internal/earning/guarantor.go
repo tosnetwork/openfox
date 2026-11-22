@@ -84,12 +84,25 @@ func guarantorStatusCommand() *cobra.Command {
 			if profile.ProviderAgentID != cfg.Earning.AgentID {
 				return errors.New("configured Guarantor profile belongs to another Agent")
 			}
-			report := guarantorStatusReport{Enabled: true, Role: settings.Role, ProfileID: profile.ProfileID,
-				ProfileRevision: profile.Revision, ProfileDigest: profileDigest, ProviderAgentID: profile.ProviderAgentID,
-				AssuranceLevels: append([]string(nil), settings.AssuranceLevels...),
-				OfferCounts:     map[string]uint64{}, CoverageCounts: map[string]uint64{}, ClaimCounts: map[string]uint64{},
-				PaidAtomicByAsset: map[string]string{}, SideEffectsReady: false,
-				BlockedCapabilities: []string{"configured-provider-coordinator", "collateral-attested", "independently-enforceable"}}
+			report := guarantorStatusReport{
+				Enabled:           true,
+				Role:              settings.Role,
+				ProfileID:         profile.ProfileID,
+				ProfileRevision:   profile.Revision,
+				ProfileDigest:     profileDigest,
+				ProviderAgentID:   profile.ProviderAgentID,
+				AssuranceLevels:   append([]string(nil), settings.AssuranceLevels...),
+				OfferCounts:       map[string]uint64{},
+				CoverageCounts:    map[string]uint64{},
+				ClaimCounts:       map[string]uint64{},
+				PaidAtomicByAsset: map[string]string{},
+				SideEffectsReady:  false,
+				BlockedCapabilities: []string{
+					"configured-provider-coordinator",
+					"collateral-attested",
+					"independently-enforceable",
+				},
+			}
 			if err := summarizeGuarantorJournal(settings.JournalDirectory, cfg.Earning.OwnerID, cfg.Earning.AgentID,
 				&report); err != nil {
 				return err
@@ -157,7 +170,8 @@ type guarantorEvidenceVerification struct {
 }
 
 func guarantorVerifyEvidenceCommand() *cobra.Command {
-	return &cobra.Command{Use: "verify-evidence",
+	return &cobra.Command{
+		Use:   "verify-evidence",
 		Short: "Read and hash every receipt the Guarantor journal stores; changes nothing and fails on the first bad receipt",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
@@ -170,7 +184,8 @@ func guarantorVerifyEvidenceCommand() *cobra.Command {
 			}
 			return verifyGuarantorJournalEvidence(cfg.Earning.AgentGuarantor.JournalDirectory, cfg.Earning.OwnerID,
 				cfg.Earning.AgentID, command.OutOrStdout())
-		}}
+		},
+	}
 }
 
 // verifyGuarantorJournalEvidence opens the journal read-only, checks every
@@ -199,6 +214,8 @@ func verifyGuarantorJournalEvidence(directory, ownerID, agentID string, output i
 	}
 	encoder := json.NewEncoder(output)
 	encoder.SetIndent("", "  ")
-	return encoder.Encode(guarantorEvidenceVerification{Verified: true, JournalRevision: revision,
-		Receipts: report.Receipts, Bytes: report.Bytes})
+	return encoder.Encode(guarantorEvidenceVerification{
+		Verified: true, JournalRevision: revision,
+		Receipts: report.Receipts, Bytes: report.Bytes,
+	})
 }

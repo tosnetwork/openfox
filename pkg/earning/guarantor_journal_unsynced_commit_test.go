@@ -104,7 +104,8 @@ func TestOpeningAGuarantorJournalConfirmsWhatItLoads(t *testing.T) {
 	}
 	open := func(readOnly bool) (*GuarantorJournal, error) {
 		synced = nil
-		return openGuarantorJournalSyncedBy(fixture.directory, "owner:guarantor", "agent:guarantor", readOnly, syncDirectory)
+		return openGuarantorJournalSyncedBy(fixture.directory, "owner:guarantor", "agent:guarantor", readOnly,
+			syncDirectory)
 	}
 	everySync := []string{".", guarantorEvidenceDirectory}
 	for _, failing := range everySync {
@@ -214,7 +215,8 @@ func (fault *journalSyncLossFault) install(journal *GuarantorJournal) func() {
 // call returns success although a commit inside it lost its sync, goes on to
 // commit more after one did, or fails for another reason.
 func repeatUntilTestGuarantorCommitsAreSynced(t *testing.T, fault *journalSyncLossFault, name string,
-	call func() error) int {
+	call func() error,
+) int {
 	t.Helper()
 	for stops := 0; stops < 32; stops++ {
 		lostBefore := fault.lost
@@ -268,12 +270,13 @@ func (authority *rejectionGrantingAuthority) Transition(stableActionID, exactReq
 	state commerce.ActionResolutionState, sinkReference string, evidenceRefs []string,
 ) (commerce.ActionResolution, error) {
 	if state != commerce.ActionRejected {
-		return authority.EconomicAuthority.Transition(stableActionID, exactRequestDigest, state, sinkReference, evidenceRefs)
+		return authority.EconomicAuthority.Transition(stableActionID, exactRequestDigest, state, sinkReference,
+			evidenceRefs)
 	}
 	authority.granted++
 	return commerce.ActionResolution{
-		StableActionID: stableActionID, ExactRequestDigest: exactRequestDigest,
-		State: commerce.ActionRejected, StateRevision: 1 << 20, SinkReference: sinkReference, EvidenceRefs: evidenceRefs,
+		StableActionID: stableActionID, ExactRequestDigest: exactRequestDigest, State: commerce.ActionRejected,
+		StateRevision: 1 << 20, SinkReference: sinkReference, EvidenceRefs: evidenceRefs,
 	}, nil
 }
 
@@ -369,9 +372,11 @@ type rejectionCountingAuthority struct {
 }
 
 func (authority *rejectionCountingAuthority) Transition(stableActionID, exactRequestDigest string,
-	state commerce.ActionResolutionState, sinkReference string, evidenceRefs []string) (commerce.ActionResolution, error) {
+	state commerce.ActionResolutionState, sinkReference string, evidenceRefs []string,
+) (commerce.ActionResolution, error) {
 	if state == commerce.ActionRejected {
 		authority.rejections++
 	}
-	return authority.EconomicAuthority.Transition(stableActionID, exactRequestDigest, state, sinkReference, evidenceRefs)
+	return authority.EconomicAuthority.Transition(stableActionID, exactRequestDigest, state, sinkReference,
+		evidenceRefs)
 }

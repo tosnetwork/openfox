@@ -957,7 +957,8 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	closeStops := repeatUntilTestGuarantorCommitsAreSynced(t, closeSyncLoss, "closing the expired offer", func() error {
 		var closeErr error
 		expiredClosed, closeErr = coordinator.CloseExpiredOffer(context.Background(), GuarantorCloseExpiredOfferInput{
-			Offer: expiringOffer}, fence)
+			Offer: expiringOffer,
+		}, fence)
 		return closeErr
 	})
 	removeCloseSyncLoss()
@@ -1154,13 +1155,17 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	// done, and nothing is sent.
 	_, removeFailingWrites := scriptTestGuarantorDocumentWrites(journal, "fail", "fail", "fail", "fail", "fail", "fail")
 	replayedAcceptanceErr := providerRuntime.Handler.HandleGuarantorProfileEvent(context.Background(),
-		&ClaimedCommerceProfileEvent{SenderAgentID: "agent:covered", ProfileEvent: acceptanceEvent,
-			CanonicalObjectBytes: acceptanceCanonical})
+		&ClaimedCommerceProfileEvent{
+			SenderAgentID: "agent:covered", ProfileEvent: acceptanceEvent,
+			CanonicalObjectBytes: acceptanceCanonical,
+		})
 	_, _, unreadActivationErr := coordinator.ActivateCoverage(context.Background(), activationInput, fence)
 	_, unreadPortfolioErr := coordinator.portfolioFor("agent:covered", terms.CoverageAsset)
 	removeFailingWrites()
-	for name, unreadErr := range map[string]error{"a replayed acceptance": replayedAcceptanceErr,
-		"an activation": unreadActivationErr, "a portfolio": unreadPortfolioErr} {
+	for name, unreadErr := range map[string]error{
+		"a replayed acceptance": replayedAcceptanceErr,
+		"an activation":         unreadActivationErr, "a portfolio": unreadPortfolioErr,
+	} {
 		if !errors.Is(unreadErr, ErrGuarantorJournalDurabilityUnconfirmed) {
 			t.Errorf("%s on a journal whose commit cannot be confirmed: got %v, want the unconfirmed-durability error",
 				name, unreadErr)
@@ -2257,8 +2262,10 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	acceptStops := repeatUntilTestGuarantorCommitsAreSynced(t, acceptSyncLoss, "accepting the coverage", func() error {
 		var acceptErr error
 		nonActivationReceipt, nonActivationResolution, acceptErr = coordinator.AcceptCoverage(context.Background(),
-			GuarantorAcceptCoverageInput{Offer: nonActivationOffer, Request: nonActivationAcceptance,
-				CoverageObligationID: "obligation:coverage", ReceivedAtUnix: uint64(now.Add(30 * time.Second).Unix())}, fence)
+			GuarantorAcceptCoverageInput{
+				Offer: nonActivationOffer, Request: nonActivationAcceptance,
+				CoverageObligationID: "obligation:coverage", ReceivedAtUnix: uint64(now.Add(30 * time.Second).Unix()),
+			}, fence)
 		if acceptErr != nil && nonActivationReceipt.Body.SchemaVersion != 0 {
 			unsyncedAcceptances = append(unsyncedAcceptances, nonActivationReceipt)
 		}
@@ -2267,15 +2274,16 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	removeAcceptSyncLoss()
 	coordinator.Authority = rejections.EconomicAuthority
 	if acceptStops != 3 || acceptSyncLoss.lost != 3 || rejections.rejections != 0 {
-		t.Fatalf("accepting the coverage stopped %d times for %d commits that lost their sync and asked for %d rejections, want 3, 3 and none",
-			acceptStops, acceptSyncLoss.lost, rejections.rejections)
+		t.Fatalf("accepting the coverage stopped %d times for %d commits that lost their sync and asked for "+
+			"%d rejections, want 3, 3 and none", acceptStops, acceptSyncLoss.lost, rejections.rejections)
 	}
 	// The acceptance was reported with its receipt when its own commit lost
 	// its sync and again when recording the terminal result did; both are the
 	// receipt finally returned.
 	if len(unsyncedAcceptances) != 2 || !sameJSON(unsyncedAcceptances[0], nonActivationReceipt) ||
 		!sameJSON(unsyncedAcceptances[1], nonActivationReceipt) {
-		t.Fatalf("the acceptance reported with a lost sync is not the one returned: %d reported", len(unsyncedAcceptances))
+		t.Fatalf("the acceptance reported with a lost sync is not the one returned: %d reported",
+			len(unsyncedAcceptances))
 	}
 	if nonActivationResolution.State != commerce.ActionTerminal {
 		t.Fatalf("accept non-activation coverage: state=%s", nonActivationResolution.State)

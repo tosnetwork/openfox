@@ -32,8 +32,10 @@ type inspectTestJournal struct {
 
 func newInspectTestJournal(t *testing.T) inspectTestJournal {
 	t.Helper()
-	fixture := inspectTestJournal{directory: filepath.Join(t.TempDir(), "guarantor"),
-		receipt: "sha256:" + strings.Repeat("d", 64), wire: []byte("a stored receipt")}
+	fixture := inspectTestJournal{
+		directory: filepath.Join(t.TempDir(), "guarantor"),
+		receipt:   "sha256:" + strings.Repeat("d", 64), wire: []byte("a stored receipt"),
+	}
 	if err := os.Mkdir(fixture.directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +43,7 @@ func newInspectTestJournal(t *testing.T) inspectTestJournal {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := journal.Close(); err != nil {
+	if err = journal.Close(); err != nil {
 		t.Fatal(err)
 	}
 	// The coverage and its receipt record are written into the document by
@@ -52,7 +54,7 @@ func newInspectTestJournal(t *testing.T) inspectTestJournal {
 		t.Fatal(err)
 	}
 	var document map[string]any
-	if err := json.Unmarshal(raw, &document); err != nil {
+	if err = json.Unmarshal(raw, &document); err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(fixture.wire)
@@ -89,10 +91,14 @@ func newInspectTestJournal(t *testing.T) inspectTestJournal {
 	}
 	evidence := filepath.Join(fixture.directory, "immutable-evidence")
 	fixture.receiptFile = filepath.Join(evidence, strings.TrimPrefix(fixture.receipt, "sha256:"))
-	for path, content := range map[string][]byte{fixture.receiptFile: fixture.wire,
-		filepath.Join(evidence, strings.Repeat("f", 64)):                           []byte("a receipt no record names"),
-		filepath.Join(evidence, ".tmp-4242-1700000000000000000-0123456789abcdef"):  []byte("an interrupted receipt write"),
-		filepath.Join(fixture.directory, ".tmp-4242-17000000000-00ff00ff00ff00ff"): []byte("an interrupted document write")} {
+	interruptedReceipt := filepath.Join(evidence, ".tmp-4242-1700000000000000000-0123456789abcdef")
+	interruptedDocument := filepath.Join(fixture.directory, ".tmp-4242-17000000000-00ff00ff00ff00ff")
+	for path, content := range map[string][]byte{
+		fixture.receiptFile: fixture.wire,
+		filepath.Join(evidence, strings.Repeat("f", 64)): []byte("a receipt no record names"),
+		interruptedReceipt:  []byte("an interrupted receipt write"),
+		interruptedDocument: []byte("an interrupted document write"),
+	} {
 		if err := os.WriteFile(path, content, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -155,8 +161,10 @@ func TestGuarantorStatusReadsTheJournalWithoutChangingIt(t *testing.T) {
 	// The Provider opened the journal once, so its lock file exists; taking
 	// the lock creates nothing.
 	before := fixture.listing(t)
-	report := guarantorStatusReport{OfferCounts: map[string]uint64{}, CoverageCounts: map[string]uint64{},
-		ClaimCounts: map[string]uint64{}, PaidAtomicByAsset: map[string]string{}}
+	report := guarantorStatusReport{
+		OfferCounts: map[string]uint64{}, CoverageCounts: map[string]uint64{},
+		ClaimCounts: map[string]uint64{}, PaidAtomicByAsset: map[string]string{},
+	}
 	if err := summarizeGuarantorJournal(fixture.directory, inspectTestOwner, inspectTestAgent, &report); err != nil {
 		t.Fatalf("summarize the journal: %v", err)
 	}
@@ -222,16 +230,20 @@ func TestGuarantorVerifyEvidenceFailsOnAnyBadReceiptAndChangesNothing(t *testing
 	}
 
 	// A journal that cannot be opened is a failure too.
-	for name, directory := range map[string]string{"no directory configured": "",
+	for name, directory := range map[string]string{
+		"no directory configured":         "",
 		"a directory that does not exist": filepath.Join(fixture.directory, "missing"),
-		"a directory holding no journal":  filepath.Join(fixture.directory, "immutable-evidence")} {
+		"a directory holding no journal":  filepath.Join(fixture.directory, "immutable-evidence"),
+	} {
 		var printed bytes.Buffer
 		if err := verifyGuarantorJournalEvidence(directory, inspectTestOwner, inspectTestAgent, &printed); err == nil ||
 			printed.Len() != 0 {
 			t.Errorf("%s: the integrity check returned %v and printed %q", name, err, printed.String())
 		}
 	}
-	if err := verifyGuarantorJournalEvidence(fixture.directory, inspectTestOwner, "agent:another", new(bytes.Buffer)); err == nil {
+	otherAgentErr := verifyGuarantorJournalEvidence(fixture.directory, inspectTestOwner, "agent:another",
+		new(bytes.Buffer))
+	if otherAgentErr == nil {
 		t.Error("another Agent's journal passed the integrity check")
 	}
 }

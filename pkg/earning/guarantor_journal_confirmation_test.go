@@ -91,24 +91,27 @@ func TestRetriedGuarantorEvidenceWriteSyncsItsDirectory(t *testing.T) {
 	}
 	documentUnchanged := func(when string) {
 		t.Helper()
-		now, err := os.ReadFile(documentFile)
-		if err != nil || !bytes.Equal(now, before) {
-			t.Fatalf("%s: the document was written although its receipt's directory entry is not durable: %v", when, err)
+		now, readErr := os.ReadFile(documentFile)
+		if readErr != nil || !bytes.Equal(now, before) {
+			t.Fatalf("%s: the document was written although its receipt's directory entry is not durable: %v",
+				when, readErr)
 		}
 	}
 
 	// The first attempt renames the receipt file into place and loses the sync.
-	if err := commitTestGuarantorEvidence(t, journal, agreement, receipt, wire); !errors.Is(err, fileutil.ErrReplacedNotSynced) {
+	err = commitTestGuarantorEvidence(t, journal, agreement, receipt, wire)
+	if !errors.Is(err, fileutil.ErrReplacedNotSynced) {
 		t.Fatalf("the first attempt: got %v, want the failed directory sync", err)
 	}
 	documentUnchanged("after the first attempt")
-	if stored, err := os.ReadFile(receiptFile); err != nil || !bytes.Equal(stored, wire) {
-		t.Fatalf("the first attempt did not leave the receipt file in place: %v", err)
+	if stored, readErr := os.ReadFile(receiptFile); readErr != nil || !bytes.Equal(stored, wire) {
+		t.Fatalf("the first attempt did not leave the receipt file in place: %v", readErr)
 	}
 
 	// The retry finds the file and must sync its directory; that sync fails.
 	steps, failEvidenceSync, failDirectorySync = nil, false, true
-	if err := commitTestGuarantorEvidence(t, journal, agreement, receipt, wire); !errors.Is(err, errInjectedJournalWrite) {
+	err = commitTestGuarantorEvidence(t, journal, agreement, receipt, wire)
+	if !errors.Is(err, errInjectedJournalWrite) {
 		t.Fatalf("the retry with a failing directory sync: got %v, want the injected failure; steps %v", err, steps)
 	}
 	documentUnchanged("after the retry whose directory sync failed")
@@ -122,7 +125,8 @@ func TestRetriedGuarantorEvidenceWriteSyncsItsDirectory(t *testing.T) {
 		t.Fatalf("the retry: %v", err)
 	}
 	if want := []string{"sync " + guarantorEvidenceDirectory, "write " + guarantorJournalFile}; !sameJSON(steps, want) {
-		t.Fatalf("the retry did %v, want %v: the evidence directory is synced before the document is written", steps, want)
+		t.Fatalf("the retry did %v, want %v: the evidence directory is synced before the document is written",
+			steps, want)
 	}
 	assertGuarantorJournalMemoryIsOnDisk(t, journal, directory, "after the retry")
 	if _, err := journal.VerifyStoredEvidence(); err != nil {
@@ -135,8 +139,10 @@ func TestRetriedGuarantorEvidenceWriteSyncsItsDirectory(t *testing.T) {
 	if err := commitTestGuarantorEvidence(t, journal, agreement, other, []byte("a receipt written once")); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"write " + filepath.Join(guarantorEvidenceDirectory, strings.TrimPrefix(other, "sha256:")),
-		"write " + guarantorJournalFile}; !sameJSON(steps, want) {
+	if want := []string{
+		"write " + filepath.Join(guarantorEvidenceDirectory, strings.TrimPrefix(other, "sha256:")),
+		"write " + guarantorJournalFile,
+	}; !sameJSON(steps, want) {
 		t.Fatalf("a first write did %v, want %v", steps, want)
 	}
 }
@@ -158,9 +164,11 @@ func TestInspectingAGuarantorJournalChangesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	evidence := filepath.Join(directory, guarantorEvidenceDirectory)
-	leftovers := []string{filepath.Join(evidence, strings.Repeat("f", 64)),
+	leftovers := []string{
+		filepath.Join(evidence, strings.Repeat("f", 64)),
 		filepath.Join(evidence, ".tmp-4242-1700000000000000000-0123456789abcdef"),
-		filepath.Join(directory, ".tmp-4242-1700-00ff00ff00ff00ff")}
+		filepath.Join(directory, ".tmp-4242-1700-00ff00ff00ff00ff"),
+	}
 	for _, leftover := range leftovers {
 		if err := os.WriteFile(leftover, []byte("leftover"), 0o600); err != nil {
 			t.Fatal(err)
@@ -177,17 +185,19 @@ func TestInspectingAGuarantorJournalChangesNothing(t *testing.T) {
 	if revision != 2 || len(coverages) != 1 {
 		t.Fatalf("the journal opened read-only holds revision %d and %d coverages", revision, len(coverages))
 	}
-	if report, err := inspected.VerifyStoredEvidence(); err != nil || report.Receipts != 1 || report.Bytes != uint64(len(wire)) {
+	report, err := inspected.VerifyStoredEvidence()
+	if err != nil || report.Receipts != 1 || report.Bytes != uint64(len(wire)) {
 		t.Fatalf("the integrity check of a journal opened read-only: report=%#v err=%v", report, err)
 	}
-	if err := commitTestGuarantorEvidence(t, inspected, agreement, digest("e"), []byte("another receipt")); !errors.Is(err, errGuarantorJournalReadOnly) {
+	err = commitTestGuarantorEvidence(t, inspected, agreement, digest("e"), []byte("another receipt"))
+	if !errors.Is(err, errGuarantorJournalReadOnly) {
 		t.Fatalf("a commit to a journal opened read-only: got %v, want its refusal", err)
 	}
-	if _, err := inspected.BeginAdmission(digest("8"), digest("1"), digest("2"),
+	if _, err = inspected.BeginAdmission(digest("8"), digest("1"), digest("2"),
 		time.Unix(2_000_000_000, 0).UTC()); !errors.Is(err, errGuarantorJournalReadOnly) {
 		t.Fatalf("an admission in a journal opened read-only: got %v, want its refusal", err)
 	}
-	if err := inspected.Close(); err != nil {
+	if err = inspected.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if after := listTestDirectory(t, directory); !sameJSON(after, before) {
@@ -233,7 +243,8 @@ func TestAnUnconfirmedGuarantorJournalDoesNothingElse(t *testing.T) {
 	operations := fixture.operations(t)
 	refused := func(when string, err error) {
 		t.Helper()
-		if !errors.Is(err, ErrGuarantorJournalDurabilityUnconfirmed) || errors.Is(err, ErrGuarantorJournalCommittedNotSynced) {
+		if !errors.Is(err, ErrGuarantorJournalDurabilityUnconfirmed) ||
+			errors.Is(err, ErrGuarantorJournalCommittedNotSynced) {
 			t.Fatalf("%s: got %v, want only the error that says nothing was done", when, err)
 		}
 		now, readErr := os.ReadFile(documentFile)

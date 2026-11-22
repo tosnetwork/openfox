@@ -151,11 +151,11 @@ func serviceServeCommand() *cobra.Command {
 			carried := make(chan error, 1)
 			relayCtx, stopRelay := context.WithCancel(ctx)
 			defer stopRelay()
-			if node.Relay != nil && node.Relay.Chat != nil {
+			if chat := servicebridge.ChatLaneOf(node.Relay); chat != nil {
 				// The chat carrier socket the Messenger daemon deposits
 				// through; it is opened before anything runs, so a socket
 				// that cannot be served stops the node.
-				serveCarrier, listenErr := node.Relay.Chat.ListenCarrier(node.Config.Chat.CarrierSocket)
+				serveCarrier, listenErr := chat.ListenCarrier(servicebridge.ChatSection(node.Config).CarrierSocket)
 				if listenErr != nil {
 					shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()

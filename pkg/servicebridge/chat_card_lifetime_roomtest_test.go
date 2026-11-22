@@ -18,7 +18,8 @@ func TestARoomtestBuildBoundsTheChatTestCardLifetime(t *testing.T) {
 		if err := validateChatConfig(config); err != nil {
 			t.Fatalf("%d s: %v", seconds, err)
 		}
-		if lifetime, err := config.Chat.cardLifetime(); err != nil || lifetime != time.Duration(seconds)*time.Second {
+		lifetime, err := ChatSection(config).cardLifetime()
+		if err != nil || lifetime != time.Duration(seconds)*time.Second {
 			t.Fatalf("%d s: read as %v, %v", seconds, lifetime, err)
 		}
 	}

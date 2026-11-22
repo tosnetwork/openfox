@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tosnetwork/ai/messenger/pkg/relayframe"
 	"github.com/tosnetwork/ai/protocol/pkg/agentpacketrelay"
 	"github.com/tosnetwork/ai/protocol/pkg/agentpacketseal"
 )
@@ -79,10 +78,10 @@ type relayOutboxRecord struct {
 	Schema         string `json:"schema"`
 	Recipient      string `json:"recipient"`
 	IdempotencyKey string `json:"idempotency_key"`
-	// FrameKind is the relay frame kind of a chat packet (zero on the rail).
-	// It is set when the record is created, kept across every reseal and
-	// withdrawal, and present while the record holds no envelope, so the
-	// per-peer kind-3 count never decodes a packet.
+	// FrameKind is the relay frame kind of a second lane's packet (zero on
+	// the rail). It is set when the record is created, kept across every
+	// reseal and withdrawal, and present while the record holds no envelope,
+	// so a per-peer count by kind never decodes a packet.
 	FrameKind uint8 `json:"frame_kind,omitempty"`
 	// KeyID, Relays, EnvelopeID, EnvelopeBase64, ExpiresAtUnix, AckSecret
 	// and CardNotAfterUnix describe the current envelope; they are empty
@@ -287,7 +286,8 @@ var relayOutboxFilePattern = regexp.MustCompile(`^[0-9a-f]{64}\.json$`)
 type RelayTransport struct {
 	directory string
 	// maxPacket bounds the packet JSON this instance seals: the rail keeps
-	// the receiver's bound, chat carriage the sealed packet bound.
+	// the receiver's bound, a second lane may raise it to the sealed packet
+	// bound.
 	maxPacket int
 	cards     *PeerCards
 	pool      *relayPool
@@ -316,14 +316,20 @@ type RelayTransport struct {
 	onUnreadable func(name string, err error)
 	// refreshBeforeTTL deposits an accepted envelope the recipient has not
 	// acknowledged again, under a fresh seal, before the smallest relay TTL
-	// of its card runs out (the rail; chat generations are the daemon's).
+	// of its card runs out (the rail; a second lane decides for itself).
 	refreshBeforeTTL bool
 	// onQuarantined receives the name of each unreadable journal file moved
 	// to the quarantine directory.
 	onQuarantined func(name string)
 	// pace, when set, decides whether one deposit of a frame kind may go to
-	// a relay now and takes its token: the chat lane paces kind 3.
+	// a relay now and takes its token; the rail paces nothing.
 	pace func(relay string, kind uint8) bool
+	// maxFrameKind is the highest relay frame kind this instance journals
+	// and reads back, and unreadableKind the kind an unreadable journal
+	// record counts as. Both are zero on the rail, which carries no relay
+	// frames; a second lane sets them with setFrameKinds.
+	maxFrameKind   uint8
+	unreadableKind uint8
 }
 
 // ErrRelayRecordTooLarge refuses a journal record above the bound the
@@ -453,6 +459,21 @@ func (t *RelayTransport) setPacketBound(bound int) error {
 	return nil
 }
 
+// setFrameKinds lets this instance journal relay frame kinds up to highest
+// and makes an unreadable journal record count as kind unreadable.
+func (t *RelayTransport) setFrameKinds(highest, unreadable uint8) error {
+	if t == nil || unreadable > highest {
+		return errors.New("servicebridge: invalid relay frame kinds")
+	}
+	t.maxFrameKind, t.unreadableKind = highest, unreadable
+	return nil
+}
+
+// ErrRelayFrameKind refuses a packet whose relay frame kind is above what
+// the transport's journal reads back, so the node never writes a record it
+// cannot read. The rail's transport takes kind zero only.
+var ErrRelayFrameKind = errors.New("servicebridge: the packet's relay frame kind is not carried by this transport")
+
 // Reaches reports whether a card of the recipient is held.
 func (t *RelayTransport) Reaches(recipient string) bool {
 	return t != nil && t.cards.Has(recipient)
@@ -485,6 +506,9 @@ func (t *RelayTransport) Send(ctx context.Context, packet OutboundPacket) error 
 	}
 	if len(packet.JSON) > bound || len(packet.JSON) > agentpacketseal.MaxPacketJSONBytes {
 		return ErrRelayPacketTooLarge
+	}
+	if packet.FrameKind > t.maxFrameKind {
+		return ErrRelayFrameKind
 	}
 	unlock := t.lock(packet.IdempotencyKey)
 	defer unlock()
@@ -737,7 +761,7 @@ func (t *RelayTransport) load(path string) (relayOutboxRecord, bool, error) {
 		!idempotencyKeyPattern.MatchString(record.IdempotencyKey) || t.recordPath(record.IdempotencyKey) != path ||
 		(record.AckSecret != "" && !hex64Pattern.MatchString(record.AckSecret)) ||
 		len(record.Withdrawals) > maxRelayWithdrawals || record.Residual.Count < 0 ||
-		record.Residual.Count > maxRelayResidual || record.FrameKind > relayframe.KindEvidence {
+		record.Residual.Count > maxRelayResidual || record.FrameKind > t.maxFrameKind {
 		return relayOutboxRecord{}, false, errors.New("servicebridge: invalid relay envelope journal record")
 	}
 	for _, withdrawal := range record.Withdrawals {
@@ -1317,7 +1341,7 @@ type storedEnvelope struct {
 	// answered yet: a later deposit may still store it there.
 	Pending bool
 	// FrameKind is the frame kind its record journals; an unreadable record
-	// counts as kind 3, the kind with the tighter cap.
+	// counts as the transport's unreadableKind.
 	FrameKind uint8
 }
 
@@ -1358,10 +1382,12 @@ func (r relayOutboxRecord) storedEnvelopes(now uint64) []storedEnvelope {
 }
 
 // unreadableStored is how an unreadable journal record counts for every
-// peer: one envelope, never taken for gone, of the kind with the tighter cap.
-func unreadableStored(name string) storedEnvelope {
+// peer: one envelope, never taken for gone, of the transport's
+// unreadableKind (for a lane with per-kind caps, the kind with the tighter
+// cap).
+func (t *RelayTransport) unreadableStored(name string) storedEnvelope {
 	return storedEnvelope{
-		IdempotencyKey: "idem_" + strings.TrimSuffix(name, ".json"), Pending: true, FrameKind: relayframe.KindRoom,
+		IdempotencyKey: "idem_" + strings.TrimSuffix(name, ".json"), Pending: true, FrameKind: t.unreadableKind,
 	}
 }
 
@@ -1396,7 +1422,7 @@ func (t *RelayTransport) storedFor(recipient string) ([]storedEnvelope, error) {
 			if t.handleUnreadable(entry.Name(), err) {
 				continue
 			}
-			out = append(out, unreadableStored(entry.Name()))
+			out = append(out, t.unreadableStored(entry.Name()))
 			continue
 		}
 		if !found || record.Recipient != recipient {
@@ -1407,89 +1433,14 @@ func (t *RelayTransport) storedFor(recipient string) ([]storedEnvelope, error) {
 	return out, nil
 }
 
-// PeerEnvelopeCount is what the envelope journal says a relay may still
-// hold for one peer: every chat envelope and the kind-3 ones among them,
-// beside their caps. It counts from the journal alone; the carrier also
-// drops envelopes no relay lists any more when a count reaches its cap.
-type PeerEnvelopeCount struct {
-	AgentID           string `json:"agent_id"`
-	Envelopes         int    `json:"envelopes"`
-	EnvelopeCap       int    `json:"envelope_cap"`
-	RoomEnvelopes     int    `json:"room_envelopes"`
-	RoomEnvelopeCap   int    `json:"room_envelope_cap"`
-	UnreadableCounted int    `json:"unreadable_counted,omitempty"`
-}
-
-// ReadPeerEnvelopeCounts counts a journal's stored envelopes per peer
-// without taking ownership of it or moving anything: an unreadable record
-// counts once for every peer, as the carrier counts it.
-func ReadPeerEnvelopeCounts(directory string, now time.Time) ([]PeerEnvelopeCount, error) {
-	entries, err := os.ReadDir(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, errors.New("servicebridge: read the relay envelope journal")
-	}
-	reader := &RelayTransport{directory: directory}
-	at := uint64(0)
-	if unix := now.Unix(); unix > 0 {
-		at = uint64(unix)
-	}
-	counts := map[string]*PeerEnvelopeCount{}
-	unreadable := 0
-	for _, entry := range entries {
-		if !relayOutboxFilePattern.MatchString(entry.Name()) {
-			continue
-		}
-		record, found, err := reader.load(filepath.Join(directory, entry.Name()))
-		if err != nil {
-			unreadable++
-			continue
-		}
-		if !found {
-			continue
-		}
-		stored := record.storedEnvelopes(at)
-		if len(stored) == 0 {
-			continue
-		}
-		count := counts[record.Recipient]
-		if count == nil {
-			count = &PeerEnvelopeCount{AgentID: record.Recipient}
-			counts[record.Recipient] = count
-		}
-		for _, envelope := range stored {
-			count.Envelopes++
-			if envelope.FrameKind == relayframe.KindRoom {
-				count.RoomEnvelopes++
-			}
-		}
-	}
-	agents := make([]string, 0, len(counts))
-	for agent := range counts {
-		agents = append(agents, agent)
-	}
-	slices.Sort(agents)
-	out := make([]PeerEnvelopeCount, 0, len(agents))
-	for _, agent := range agents {
-		count := *counts[agent]
-		count.Envelopes, count.RoomEnvelopes = count.Envelopes+unreadable, count.RoomEnvelopes+unreadable
-		count.EnvelopeCap, count.RoomEnvelopeCap = ChatPeerEnvelopeCap, ChatPeerRoomEnvelopeCap
-		count.UnreadableCounted = unreadable
-		out = append(out, count)
-	}
-	return out, nil
-}
-
 // RelayOutboxView summarizes one journaled envelope for status.
 type RelayOutboxView struct {
 	// Unreadable names a journal file that failed to load; the other
 	// fields are then empty.
 	Unreadable string `json:"unreadable,omitempty"`
 	Recipient  string `json:"recipient"`
-	// FrameKind is the relay frame kind a chat record carries (zero on the
-	// rail).
+	// FrameKind is the relay frame kind a second lane's record carries (zero
+	// on the rail).
 	FrameKind     uint8    `json:"frame_kind,omitempty"`
 	EnvelopeID    string   `json:"envelope_id"`
 	KeyID         string   `json:"recipient_key_id"`
@@ -1519,8 +1470,16 @@ type RelayWithdrawalView struct {
 	Unconfirmed []string `json:"unconfirmed,omitempty"`
 }
 
-// ReadRelayOutbox lists the envelope journal without taking ownership of it.
+// ReadRelayOutbox lists the rail's envelope journal without taking
+// ownership of it.
 func ReadRelayOutbox(directory string) ([]RelayOutboxView, error) {
+	return ReadRelayOutboxOfKinds(directory, 0)
+}
+
+// ReadRelayOutboxOfKinds lists an envelope journal whose records carry
+// relay frame kinds up to highest, without taking ownership of it. A record
+// of a higher kind is listed as unreadable.
+func ReadRelayOutboxOfKinds(directory string, highest uint8) ([]RelayOutboxView, error) {
 	entries, err := os.ReadDir(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -1528,7 +1487,7 @@ func ReadRelayOutbox(directory string) ([]RelayOutboxView, error) {
 	if err != nil {
 		return nil, errors.New("servicebridge: read the relay envelope journal")
 	}
-	reader := &RelayTransport{directory: directory}
+	reader := &RelayTransport{directory: directory, maxFrameKind: highest}
 	var out []RelayOutboxView
 	for _, entry := range entries {
 		if !relayOutboxFilePattern.MatchString(entry.Name()) {

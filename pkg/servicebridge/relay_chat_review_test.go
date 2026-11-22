@@ -155,7 +155,7 @@ func TestTheHeldChatCardIsThePublishedOneWhenAFreshInitHoldsTwoKeys(t *testing.T
 		}
 		config := NodeConfig{
 			AgentID: testSeller, StateDir: dir, RelayURLs: relays,
-			Chat: &ChatConfig{CardPath: cardPath},
+			Chat: NewChatSection(&ChatConfig{CardPath: cardPath}),
 		}
 		held, published, err := heldChatCard(config, clock.Now())
 		if err != nil {
@@ -355,16 +355,16 @@ func TestAKilledCarrierReusesItsJournaledEnvelopeAfterRestart(t *testing.T) {
 func TestTheCarrierTimeoutIsBoundedLikeTheDaemons(t *testing.T) {
 	base := NodeConfig{
 		RelayURLs: []string{"https://relay.example"}, ReceiverSocket: "/state/rail.sock",
-		Chat: &ChatConfig{
+		Chat: NewChatSection(&ChatConfig{
 			CarrierSocket: "/state/chat.sock", MessengerCarrierSocket: "/run/m/carrier.sock",
 			CardPath: "/state/relay/chat-card.json",
-		},
+		}),
 	}
 	for seconds, valid := range map[uint64]bool{0: true, 1: true, 300: true, 301: false, 1 << 40: false} {
 		config := base
-		chat := *base.Chat
+		chat := *ChatSection(base)
 		chat.TimeoutSeconds = seconds
-		config.Chat = &chat
+		config.Chat = NewChatSection(&chat)
 		if err := validateChatConfig(config); (err == nil) != valid {
 			t.Fatalf("timeout_seconds %d: %v", seconds, err)
 		}

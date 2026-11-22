@@ -474,6 +474,10 @@ func openChatTestNodeIn(t *testing.T, dir, sockets string, clock *relayClock, ag
 	}
 	signer := testSigner(t, agent)
 	signer.now = clock.Now
+	lane := chatLaneConfig{
+		Relays: relays, CardPath: node.daemon.cardPath, Signer: signer, Daemon: client,
+		CardLifetime: chatTestCardLifetime,
+	}
 	node.carrier, err = OpenRelayCarrier(RelayCarrierConfig{
 		StateDir: dir, AgentID: agent, Relays: relays, Signer: signer, Cards: railCards, Receiver: receiver,
 		Now: clock.Now, Report: func(stage string, err error) {
@@ -481,13 +485,12 @@ func openChatTestNodeIn(t *testing.T, dir, sockets string, clock *relayClock, ag
 			node.reports = append(node.reports, stage+": "+err.Error())
 			node.mutex.Unlock()
 		},
-		Chat: &chatLaneConfig{Relays: relays, CardPath: node.daemon.cardPath, Signer: signer, Daemon: client,
-			CardLifetime: chatTestCardLifetime},
+		Lane: lane.open,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	node.chat = node.carrier.Chat
+	node.chat = ChatLaneOf(node.carrier)
 	if _, err = node.chat.Republish(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1052,7 +1055,7 @@ func TestAPreDepositedJunkIDAtOneRelayIsAbandonedThereAndTheOtherDelivers(t *tes
 	event := chatEventID("race")
 	requireResult(t, a.daemon.carry(b.agent, event, 1), carrierapi.ResultCarried, "")
 	a.redeposit()
-	views, err := ReadRelayOutbox(filepath.Join(a.dir, relayStateDir, relayChatOutboxDir))
+	views, err := ReadChatOutbox(filepath.Join(a.dir, relayStateDir, relayChatOutboxDir))
 	if err != nil || len(views) != 1 {
 		t.Fatalf("chat outbox: %d, %v", len(views), err)
 	}
@@ -1232,29 +1235,30 @@ func TestChatContactImportVerifiesBeforeWritingAnything(t *testing.T) {
 func TestChatConfigurationIsValidatedAgainstTheNode(t *testing.T) {
 	base := NodeConfig{
 		RelayURLs: []string{"https://relay.example"}, ReceiverSocket: "/state/rail.sock",
-		Chat: &ChatConfig{
+		Chat: NewChatSection(&ChatConfig{
 			CarrierSocket: "/state/chat.sock", MessengerCarrierSocket: "/run/m/carrier.sock",
 			CardPath: "/state/relay/chat-card.json",
-		},
+		}),
 	}
 	if err := validateChatConfig(base); err != nil {
 		t.Fatal(err)
 	}
+	section := func(c *NodeConfig) *ChatConfig { return ChatSection(*c) }
 	mutations := map[string]func(*NodeConfig){
 		"messenger transport": func(c *NodeConfig) { c.MessengerSocket = "/run/m/local.sock" },
 		"no rail relays":      func(c *NodeConfig) { c.RelayURLs = nil },
-		"same sockets":        func(c *NodeConfig) { c.Chat.MessengerCarrierSocket = c.Chat.CarrierSocket },
-		"receiver socket":     func(c *NodeConfig) { c.Chat.CarrierSocket = c.ReceiverSocket },
-		"relative card":       func(c *NodeConfig) { c.Chat.CardPath = "chat-card.json" },
-		"empty carrier":       func(c *NodeConfig) { c.Chat.CarrierSocket = "" },
-		"bad chat relay":      func(c *NodeConfig) { c.Chat.RelayURLs = []string{"http://relay.example"} },
-		"long socket":         func(c *NodeConfig) { c.Chat.CarrierSocket = "/" + strings.Repeat("s", 120) },
-		"relative contacts":   func(c *NodeConfig) { c.Chat.ContactDir = "contacts" },
+		"same sockets":        func(c *NodeConfig) { section(c).MessengerCarrierSocket = section(c).CarrierSocket },
+		"receiver socket":     func(c *NodeConfig) { section(c).CarrierSocket = c.ReceiverSocket },
+		"relative card":       func(c *NodeConfig) { section(c).CardPath = "chat-card.json" },
+		"empty carrier":       func(c *NodeConfig) { section(c).CarrierSocket = "" },
+		"bad chat relay":      func(c *NodeConfig) { section(c).RelayURLs = []string{"http://relay.example"} },
+		"long socket":         func(c *NodeConfig) { section(c).CarrierSocket = "/" + strings.Repeat("s", 120) },
+		"relative contacts":   func(c *NodeConfig) { section(c).ContactDir = "contacts" },
 	}
 	for name, mutate := range mutations {
 		config := base
-		chat := *base.Chat
-		config.Chat = &chat
+		chat := *ChatSection(base)
+		config.Chat = NewChatSection(&chat)
 		mutate(&config)
 		if err := validateChatConfig(config); err == nil {
 			t.Fatalf("%s: accepted", name)
@@ -1385,11 +1389,11 @@ func TestChatContactExportCarriesTheCurrentCardAndStatusShowsIt(t *testing.T) {
 	config := NodeConfig{
 		AgentID: node.agent, StateDir: node.dir, RelayURLs: []string{relay.URL},
 		ReceiverSocket: filepath.Join(node.dir, "rail.sock"),
-		Chat: &ChatConfig{
+		Chat: NewChatSection(&ChatConfig{
 			CarrierSocket:          filepath.Join(node.sockets, "c.sock"),
 			MessengerCarrierSocket: filepath.Join(node.sockets, "d.sock"), CardPath: node.daemon.cardPath,
 			EvidenceExportDir: export,
-		},
+		}),
 	}
 	configPath := filepath.Join(t.TempDir(), "rail.json")
 	if err := writeNodeConfig(configPath, config); err != nil {

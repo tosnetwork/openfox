@@ -40,13 +40,11 @@ const (
 	maxRelayKeys = 16
 )
 
-// Key file schemas. A key file names its purpose, so a chat key file
-// copied into the rail key directory (or the reverse) is refused at load:
-// no key ever serves both purposes.
-const (
-	relayKeySchema     = "tos.openfox.relay-key.v1"
-	relayChatKeySchema = "tos.openfox.relay-chat-key.v1"
-)
+// relayKeySchema is the key file schema of the rail. A key file names its
+// purpose, so a key file of another purpose copied into the rail key
+// directory (or the reverse) is refused at load: no key ever serves two
+// purposes.
+const relayKeySchema = "tos.openfox.relay-key.v1"
 
 // relayKeyRecord is one owner-only private key file. It is the only place
 // the seed exists outside process memory, and it is never logged.
@@ -95,8 +93,7 @@ type RelayKeys struct {
 	now       func() time.Time
 	// schema is the purpose of every key file here; empty is the rail's.
 	schema string
-	// lifetime, when set, is the fixed card lifetime of the chat test
-	// setting: see SetCardLifetime.
+	// lifetime, when set, is a fixed card lifetime: see SetCardLifetime.
 	lifetime time.Duration
 	mutex    sync.Mutex
 	keys     []OwnRelayKey
@@ -104,10 +101,10 @@ type RelayKeys struct {
 
 // SetCardLifetime makes every card of this set last d from its issue and be
 // replaced once less than half of it is left, whatever cover a caller asks
-// for; a held card with a longer window is not handed out. It is the chat
-// test card lifetime (ChatConfig.TestCardLifetimeSeconds); zero keeps the
-// production rotation. Keys are still kept for RelayKeyRetention after their
-// card expired, so at most maxRelayKeys cards are issued in that time.
+// for; a held card with a longer window is not handed out. It serves a
+// lane's test card lifetime; zero keeps the production rotation. Keys are
+// still kept for RelayKeyRetention after their card expired, so at most
+// maxRelayKeys cards are issued in that time.
 func (k *RelayKeys) SetCardLifetime(d time.Duration) {
 	k.mutex.Lock()
 	defer k.mutex.Unlock()
@@ -130,12 +127,17 @@ func OpenRelayKeys(directory, agentID string, relays []string, signer cardSigner
 	return openRelayKeys(directory, agentID, relays, signer, now, relayKeySchema)
 }
 
-// OpenChatRelayKeys opens the chat key set: its own directory and its own
-// key file schema, never derived from or shared with the rail keys.
-func OpenChatRelayKeys(directory, agentID string, relays []string, signer cardSigner,
-	now func() time.Time,
+// OpenRelayKeysFor opens the key set of another purpose than the rail: its
+// own directory and its own key file schema, which names the purpose. The
+// set is never derived from or shared with the rail keys, so the rail's own
+// schema is refused.
+func OpenRelayKeysFor(directory, agentID string, relays []string, signer cardSigner,
+	now func() time.Time, schema string,
 ) (*RelayKeys, error) {
-	return openRelayKeys(directory, agentID, relays, signer, now, relayChatKeySchema)
+	if schema == "" || schema == relayKeySchema {
+		return nil, errors.New("servicebridge: a key set of another purpose needs its own key file schema")
+	}
+	return openRelayKeys(directory, agentID, relays, signer, now, schema)
 }
 
 func openRelayKeys(directory, agentID string, relays []string, signer cardSigner,

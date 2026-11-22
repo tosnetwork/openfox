@@ -113,7 +113,7 @@ func serviceInitCommand() *cobra.Command {
 					"allow-list")
 			}
 			if chat.MessengerCarrierSocket != "" {
-				in.Chat = &chat
+				in.Chat = servicebridge.NewChatSection(&chat)
 			} else if len(chat.RelayURLs) > 0 || chat.CarrierSocket != "" || chat.CardPath != "" ||
 				chat.EvidenceExportDir != "" || chat.ContactDir != "" || chat.TimeoutSeconds != 0 {
 				return errors.New("the chat section needs --messenger-carrier-socket")

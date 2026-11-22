@@ -1806,6 +1806,13 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 			return guarantor.AuthorizedFirmCoverageOfferV1{}, priorResolution, err
 		}
 	}
+	// A completed issuance leaves no plan. The same request then names an
+	// offer the journal already holds: it is returned as issued, never issued
+	// a second time under the portfolio revision of this later call.
+	if issued, issuedResolution, replayed, replayErr := coordinator.issuedFirmOffer(instance.AuthorityInstanceID,
+		input, issuedAt); replayErr != nil || replayed {
+		return issued, issuedResolution, replayErr
+	}
 	descriptorDigest, err := guarantor.ExposureAdmissionDescriptorDigestV1(descriptor)
 	if err != nil {
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
@@ -1978,13 +1985,22 @@ func (coordinator *GuarantorProviderCoordinator) validateAssuranceDeployment(ter
 func (coordinator *GuarantorProviderCoordinator) resumeFirmOfferIssuancePlan(plan GuarantorFirmOfferIssuancePlan,
 	resolution commerce.ActionResolution) (guarantor.AuthorizedFirmCoverageOfferV1, commerce.ActionResolution, error) {
 	if resolution.State == commerce.ActionPrepared {
-		if err := coordinator.Journal.ReserveUnsignedOffer(plan.Position); err != nil {
+		// The run that stored the plan may have stopped with the offer not yet
+		// reserved, reserved, or already issued in the journal. An issued offer
+		// no longer equals the plan's unsigned position, so it is recognized by
+		// its exact envelope and neither reserved nor issued a second time.
+		issued, err := coordinator.plannedFirmOfferIsIssued(plan)
+		if err != nil {
 			return guarantor.AuthorizedFirmCoverageOfferV1{}, resolution, err
 		}
-		if _, err := coordinator.Journal.CommitFirmOffer(plan.AuthorityInstanceID, plan.OfferDigest); err != nil {
-			return guarantor.AuthorizedFirmCoverageOfferV1{}, resolution, err
+		if !issued {
+			if err = coordinator.Journal.ReserveUnsignedOffer(plan.Position); err != nil {
+				return guarantor.AuthorizedFirmCoverageOfferV1{}, resolution, err
+			}
+			if _, err = coordinator.Journal.CommitFirmOffer(plan.AuthorityInstanceID, plan.OfferDigest); err != nil {
+				return guarantor.AuthorizedFirmCoverageOfferV1{}, resolution, err
+			}
 		}
-		var err error
 		resolution, err = coordinator.Authority.Transition(plan.Action.StableActionID, plan.Action.ExactRequestDigest,
 			commerce.ActionTerminal, plan.OfferDigest, sortedGuarantorEvidence(plan.ReceiptDigest, plan.OfferDigest))
 		if err != nil {
@@ -2001,6 +2017,64 @@ func (coordinator *GuarantorProviderCoordinator) resumeFirmOfferIssuancePlan(pla
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, resolution, err
 	}
 	return plan.Offer, resolution, nil
+}
+
+// issuedFirmOffer returns the offer the journal holds as issued under
+// authorityInstanceID, with the terminal resolution of its issuance action,
+// and whether there is one. The authority derives that identity from the
+// request, so the stored offer is the answer to a repeated request; it is
+// returned only if it still verifies against the request and Agreement of
+// this call and its issuance is terminal at the authority.
+func (coordinator *GuarantorProviderCoordinator) issuedFirmOffer(authorityInstanceID string,
+	input GuarantorIssueOfferInput, issuedAt time.Time,
+) (guarantor.AuthorizedFirmCoverageOfferV1, commerce.ActionResolution, bool, error) {
+	_, offers, _, err := coordinator.Journal.Snapshot()
+	if err != nil {
+		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, false, err
+	}
+	for _, position := range offers {
+		if position.Record.OfferID != authorityInstanceID || position.OfferEnvelopeDigest == "" ||
+			position.AuthorizedFirmOffer == nil {
+			continue
+		}
+		offer := *position.AuthorizedFirmOffer
+		digest, digestErr := guarantor.FirmOfferDigest(offer)
+		if digestErr != nil || digest != position.OfferEnvelopeDigest {
+			return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, false,
+				errors.New("stored Guarantor firm offer differs from its recorded envelope")
+		}
+		resolution := coordinator.Authority.Resolve(offer.ExposureAdmissionReceipt.Body.StableActionID,
+			offer.ExposureAdmissionReceipt.Body.ExactRequestDigest)
+		if resolution.State != commerce.ActionTerminal {
+			return guarantor.AuthorizedFirmCoverageOfferV1{}, resolution, false,
+				errors.New("stored Guarantor firm offer has no terminal issuance")
+		}
+		if err := guarantor.VerifyFirmOffer(offer, input.Request, input.Agreement, coordinator.Resolver,
+			coordinator.PublicationResolver, coordinator.UnderlyingAgreementResolver,
+			coordinator.AgreementVerifier, issuedAt); err != nil {
+			return guarantor.AuthorizedFirmCoverageOfferV1{}, resolution, false,
+				fmt.Errorf("stored Guarantor firm offer no longer verifies for this request: %w", err)
+		}
+		return offer, resolution, true, nil
+	}
+	return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, false, nil
+}
+
+// plannedFirmOfferIsIssued reports whether the journal already holds the
+// plan's offer as issued: stored under the plan's identity with the plan's
+// exact envelope. An offer stored under that envelope digest that is not the
+// plan's offer is a conflict, never a reason to issue again.
+func (coordinator *GuarantorProviderCoordinator) plannedFirmOfferIsIssued(
+	plan GuarantorFirmOfferIssuancePlan,
+) (bool, error) {
+	stored, found, err := coordinator.Journal.FirmOfferByDigest(plan.OfferDigest)
+	if err != nil || !found {
+		return false, err
+	}
+	if stored.Body.OfferID != plan.AuthorityInstanceID || !sameJSON(stored, plan.Offer) {
+		return false, errors.New("Guarantor journal holds another offer under the planned firm offer's digest")
+	}
+	return true, nil
 }
 
 // portfolioFor sums the exposure an underwriting decision is made against. A
@@ -2048,20 +2122,31 @@ func (coordinator *GuarantorProviderCoordinator) portfolioFor(counterparty strin
 			coverage.Record.CoverageStatus == guarantor.CoverageDefaulted
 		if !terminalCoverage && coverage.Terms.CoverageAsset == asset {
 			activeCoverages++
-			activeClaims += uint32(len(coverage.Claims))
+			activeClaims, err = addGuarantorClaimCount(activeClaims, uint64(len(coverage.Claims)))
+			if err != nil {
+				return GuarantorPortfolioSnapshot{}, err
+			}
 		}
 		// A released reservation may still have consumed realized loss or a
 		// retained default liability. Those buckets remain part of aggregate
 		// underwriting exposure even though the unused residual was returned.
+		// An amount that does not parse is an unknown exposure, not none: the
+		// portfolio fails instead of counting it as zero.
 		if reservationReleased[coverage.Record.ReservationID] && coverage.Terms.CoverageAsset == asset {
 			paid, paidErr := nonnegativeBig(coverage.PaidAtomic)
+			if paidErr != nil {
+				return GuarantorPortfolioSnapshot{}, fmt.Errorf("Guarantor coverage %s paid amount: %w",
+					coverage.Record.CoverageAgreementBodyDigest, paidErr)
+			}
 			defaulted, defaultedErr := nonnegativeBig(coverage.DefaultedAtomic)
-			if paidErr == nil && defaultedErr == nil {
-				consumed := new(big.Int).Add(paid, defaulted)
-				aggregate.Add(aggregate, consumed)
-				if coveredPartyByReservation[coverage.Record.ReservationID] == counterparty {
-					party.Add(party, consumed)
-				}
+			if defaultedErr != nil {
+				return GuarantorPortfolioSnapshot{}, fmt.Errorf("Guarantor coverage %s defaulted amount: %w",
+					coverage.Record.CoverageAgreementBodyDigest, defaultedErr)
+			}
+			consumed := new(big.Int).Add(paid, defaulted)
+			aggregate.Add(aggregate, consumed)
+			if coveredPartyByReservation[coverage.Record.ReservationID] == counterparty {
+				party.Add(party, consumed)
 			}
 		}
 	}
@@ -2069,6 +2154,16 @@ func (coordinator *GuarantorProviderCoordinator) portfolioFor(counterparty strin
 		AggregateReservedAtomic: aggregate.String(), CounterpartyReservedAtomic: party.String(),
 		ActiveOffers: activeOffers, ActiveCoverages: activeCoverages, ActiveClaims: activeClaims,
 	}, nil
+}
+
+// addGuarantorClaimCount adds one coverage's claim count to a portfolio's
+// total. The total is compared with a policy limit, so a count that does not
+// fit is an error, never a wrapped smaller number.
+func addGuarantorClaimCount(total uint32, claims uint64) (uint32, error) {
+	if claims > math.MaxUint32 || uint64(total) > math.MaxUint32-claims {
+		return 0, errors.New("Guarantor portfolio claim count exceeds its range")
+	}
+	return total + uint32(claims), nil
 }
 
 func firstError(primary, fallback error) error {

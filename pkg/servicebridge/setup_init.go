@@ -52,9 +52,9 @@ type InitInput struct {
 	RelaySystemRoots bool `json:"relay_system_roots"`
 	// Buyer, when set, becomes the buyer section.
 	Buyer *BuyerNode `json:"buyer"`
-	// Chat, when set, becomes the chat carriage section; empty socket and
-	// card paths take their defaults below the state directory.
-	Chat *ChatConfig `json:"chat"`
+	// Chat, when set, becomes the chat section; the registered lane fills
+	// what it leaves empty with defaults below the state directory.
+	Chat *LaneSection `json:"chat"`
 	// Yes confirms the previewed actions.
 	Yes bool `json:"yes"`
 }
@@ -152,6 +152,9 @@ func (in InitInput) validate() error {
 	}
 	if in.MessengerSocket != "" && !cleanAbsolute(in.MessengerSocket) {
 		problems = append(problems, "the messenger socket must be an absolute clean path")
+	}
+	if err := checkFallbackSocket(in.MessengerSocket); err != nil {
+		problems = append(problems, strings.TrimPrefix(err.Error(), "servicebridge: "))
 	}
 	if len(in.ReceiverSocket) > maxUnixSocketPath {
 		problems = append(problems, fmt.Sprintf("the receiver socket path exceeds %d bytes", maxUnixSocketPath))
@@ -397,13 +400,7 @@ func normalizeConfig(config NodeConfig) NodeConfig {
 	if len(config.RelayURLs) == 0 {
 		config.RelayURLs = nil
 	}
-	if config.Chat != nil {
-		chat := *config.Chat
-		if len(chat.RelayURLs) == 0 {
-			chat.RelayURLs = nil
-		}
-		config.Chat = &chat
-	}
+	config.Chat = config.Chat.normalized()
 	if config.Buyer != nil {
 		buyer := *config.Buyer
 		if len(buyer.Policy.AllowedProviders) == 0 {
@@ -464,15 +461,12 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 		in.Chat = &kept
 	}
 	if in.Chat != nil {
-		chat := *in.Chat
-		if chat.CarrierSocket == "" {
-			chat.CarrierSocket = filepath.Join(in.StateDir, "chat-carrier.sock")
+		handler := registeredRelayLane()
+		if handler == nil {
+			return result, ErrNoRelayLane
 		}
-		if chat.CardPath == "" {
-			chat.CardPath = filepath.Join(in.StateDir, relayStateDir, "chat-card.json")
-		}
-		in.Chat = &chat
-		if err := validateChatConfig(NodeConfig{
+		in.Chat = handler.InitSection(in.Chat, in.StateDir)
+		if err := validateLaneSection(NodeConfig{
 			MessengerSocket: in.MessengerSocket, RelayURLs: in.RelayURLs, ReceiverSocket: in.ReceiverSocket,
 			Chat: in.Chat,
 		}); err != nil {
@@ -730,9 +724,8 @@ func RunInit(ctx context.Context, in InitInput, env SetupEnv) (*InitResult, erro
 		"provider: openfox earning service offer --rail-config " + in.RailConfigPath + " --price <TOS> ...",
 		"buyer: openfox earning service buy --rail-config " + in.RailConfigPath + " --offer <file> --source <archive>",
 	}
-	if config.Chat != nil {
-		result.NextSteps = append(result.NextSteps,
-			"chat: openfox earning chat init --rail-config "+in.RailConfigPath+" (issues the chat key and card)")
+	if handler := registeredRelayLane(); config.Chat != nil && handler != nil {
+		result.NextSteps = append(result.NextSteps, handler.InitNextStep(in.RailConfigPath))
 	}
 	// Two nodes that reach each other directly each need the other's Agent
 	// id, which exists only after that node's own init. A node may therefore

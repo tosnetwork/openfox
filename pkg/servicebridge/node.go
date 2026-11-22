@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"github.com/tosnetwork/ai/execution/pkg/railgate"
-	"github.com/tosnetwork/ai/messenger/pkg/carrierapi"
-	"github.com/tosnetwork/ai/messenger/pkg/localapi"
 	nativev1 "github.com/tosnetwork/ai/protocol/gen/tos/service/v1"
 	"github.com/tosnetwork/ai/protocol/pkg/buyersdk"
 	"github.com/tosnetwork/ai/protocol/pkg/mldsa44"
@@ -46,12 +44,14 @@ type NodeConfig struct {
 	TOSCTL           TOSCTLConfig `json:"tosctl"`
 	WalletName       string       `json:"wallet_name"`
 	WalletAddress    string       `json:"wallet_address"`
-	// MessengerSocket is the local Messenger daemon. It may be empty only
-	// when DirectPeers is not: then every packet needs a direct route.
+	// MessengerSocket is the socket of the fallback packet transport, which
+	// the embedding program registers. It may be empty only when
+	// DirectPeers or RelayURLs is not: then every packet needs one of those
+	// routes.
 	MessengerSocket string `json:"messenger_socket,omitempty"`
 	// DirectPeers maps a recipient Agent id to the receiver Unix socket of
 	// its node on this host. A packet to a listed Agent is posted to that
-	// socket instead of going through the Messenger.
+	// socket instead of going through the fallback transport.
 	DirectPeers map[string]string `json:"direct_peers,omitempty"`
 	// RelayURLs are the Agent Packet Relay base URLs this node publishes in
 	// its encryption key card and polls. With them a packet to a peer whose
@@ -69,9 +69,9 @@ type NodeConfig struct {
 	Provider       *ProviderNode   `json:"provider,omitempty"`
 	Buyer          *BuyerNode      `json:"buyer,omitempty"`
 	MaxAssemblies  *AssemblyBounds `json:"max_assemblies,omitempty"`
-	// Chat carries the local Messenger daemon's private chat over the
-	// relays, with its own key, card and journal.
-	Chat *ChatConfig `json:"chat,omitempty"`
+	// Chat configures the second relay lane, with its own key, card and
+	// journal. The registered lane decodes and validates it.
+	Chat *LaneSection `json:"chat,omitempty"`
 }
 
 // NetworkConfig is the network domain.
@@ -213,11 +213,10 @@ type NodeOptions struct {
 	ExecutorService ExecutorService
 	// RelayDial replaces the relay HTTP client, for tests.
 	RelayDial relayDialer
-	// ChatDaemon replaces the client of the Messenger carrier socket, for
-	// tests.
-	ChatDaemon chatDaemon
-	Report     func(stage string, err error)
-	Now        func() time.Time
+	// Lane is handed to the registered relay lane when it opens, for tests.
+	Lane   any
+	Report func(stage string, err error)
+	Now    func() time.Time
 }
 
 // Node is one assembled rail node.
@@ -354,16 +353,15 @@ func openServiceActorReader(
 	})
 }
 
-func newMessengerClient(socket string) (*localapi.Client, error) {
-	return localapi.NewClient(socket, 30*time.Second)
-}
-
 // OpenNode validates the configuration and assembles the node.
 func OpenNode(ctx context.Context, config NodeConfig, options NodeOptions) (*Node, error) {
 	if config.Provider == nil && config.Buyer == nil && config.Chat == nil {
 		return nil, errors.New("servicebridge: the node needs a provider, a buyer or a chat section")
 	}
-	if err := validateChatConfig(config); err != nil {
+	if err := validateLaneSection(config); err != nil {
+		return nil, err
+	}
+	if err := checkFallbackSocket(config.MessengerSocket); err != nil {
 		return nil, err
 	}
 	if err := config.Provider.checkGatewayCardConfig(config.RelayURLs); err != nil {
@@ -525,36 +523,19 @@ func (n *Node) openRelay(signer *PacketSigner, agents FinalizedAgents, options N
 			return err
 		}
 	}
-	var chat *chatLaneConfig
+	var lane RelayLaneOpener
 	if n.Config.Chat != nil {
-		relays, relaysErr := chatRelays(n.Config)
-		if relaysErr != nil {
-			return relaysErr
+		handler := registeredRelayLane()
+		if handler == nil {
+			return ErrNoRelayLane
 		}
-		timeout, timeoutErr := n.Config.Chat.timeout()
-		if timeoutErr != nil {
-			return timeoutErr
-		}
-		daemon := options.ChatDaemon
-		if daemon == nil {
-			client, clientErr := carrierapi.NewClient(n.Config.Chat.MessengerCarrierSocket, timeout)
-			if clientErr != nil {
-				return fmt.Errorf("servicebridge: the Messenger carrier socket: %w", clientErr)
-			}
-			daemon = client
-		}
-		lifetime, lifetimeErr := n.Config.Chat.cardLifetime()
-		if lifetimeErr != nil {
-			return lifetimeErr
-		}
-		chat = &chatLaneConfig{
-			Relays: relays, CardPath: n.Config.Chat.CardPath, Signer: signer, Daemon: daemon, Timeout: timeout,
-			CardLifetime: lifetime,
+		if lane, err = handler.Opener(n.Config, signer, options.Lane); err != nil {
+			return err
 		}
 	}
 	carrier, err := OpenRelayCarrier(RelayCarrierConfig{
 		StateDir: n.Config.StateDir, AgentID: n.Config.AgentID, Relays: n.Config.RelayURLs, Signer: signer,
-		Cards: cards, Receiver: n.Receiver, Dial: dial, Now: options.Now, Report: report, Chat: chat,
+		Cards: cards, Receiver: n.Receiver, Dial: dial, Now: options.Now, Report: report, Lane: lane,
 	})
 	if err != nil {
 		return err

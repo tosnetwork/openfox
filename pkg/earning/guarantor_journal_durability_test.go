@@ -282,6 +282,7 @@ func newJournalDurabilityFixture(t *testing.T) journalDurabilityFixture {
 			fixture.undecidedClaim: {Epoch: 1, State: revisionEpochOpen, StateRevision: 1}}
 		undecided.Claims[fixture.undecidedClaim] = guarantor.ClaimRecord{ClaimID: fixture.undecidedClaim,
 			ClaimRevision: 1, ClaimStateRevision: 2, ClaimStatus: guarantor.ClaimAdmitted}
+		undecided.Record.CoverageAgreementBodyDigest = fixture.undecided
 		doc.Coverages[fixture.undecided] = undecided
 
 		expired := testExpiredGuarantorOffer(fixture.offerID)
@@ -578,6 +579,7 @@ func commitTestGuarantorEvidence(t *testing.T, journal *GuarantorJournal, agreem
 	if !found {
 		claimID := "sha256:" + strings.Repeat("b", 64)
 		position = testCoverageWithClaim(claimID)
+		position.Record.CoverageAgreementBodyDigest = agreement
 		position.RevisionEpochs = map[string]GuarantorRevisionEpochState{claimID: testFrozenEpoch()}
 	}
 	if err := storeImmutableWire(&position, guarantorDecisionAdmissionMediaType, digest, wire); err != nil {

@@ -205,13 +205,16 @@ type failBeforeTerminalEconomicAuthority struct {
 	failOnce bool
 }
 
-func (authority *failBeforeTerminalEconomicAuthority) Transition(stableActionID, exactRequestDigest string,
-	state commerce.ActionResolutionState, sinkReference string, evidenceRefs []string) (commerce.ActionResolution, error) {
+func (authority *failBeforeTerminalEconomicAuthority) Transition(
+	stableActionID, exactRequestDigest string, state commerce.ActionResolutionState, sinkReference string,
+	evidenceRefs []string,
+) (commerce.ActionResolution, error) {
 	if authority.failOnce && state == commerce.ActionTerminal {
 		authority.failOnce = false
 		return commerce.ActionResolution{}, errors.New("injected crash before the terminal authority transition")
 	}
-	return authority.EconomicAuthority.Transition(stableActionID, exactRequestDigest, state, sinkReference, evidenceRefs)
+	return authority.EconomicAuthority.Transition(stableActionID, exactRequestDigest, state, sinkReference,
+		evidenceRefs)
 }
 
 // requireTestFirmOfferIssuedWithAPreparedPlan requires the journal to hold
@@ -239,7 +242,8 @@ func requireTestFirmOfferIssuedWithAPreparedPlan(t *testing.T, journal *Guaranto
 	if err != nil || !found || !sameJSON(issued, plan.Offer) {
 		t.Fatalf("the journal has not issued the planned offer: found=%v err=%v", found, err)
 	}
-	if state := authority.Resolve(plan.Action.StableActionID, plan.Action.ExactRequestDigest).State; state != commerce.ActionPrepared {
+	state := authority.Resolve(plan.Action.StableActionID, plan.Action.ExactRequestDigest).State
+	if state != commerce.ActionPrepared {
 		t.Fatalf("the planned issuance action is %s at the authority, want prepared", state)
 	}
 	return issued
@@ -985,9 +989,13 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	terms2.QuoteRequestDigest = mustGuarantorQuoteDigest(t, quote2)
 	terms2.CoverageStateDomainDigest = digest("0")
 	expiringInput := GuarantorIssueOfferInput{
-		Request: quote2, ProfileArtifact: profileArtifact, Agreement: agreement2, Terms: terms2, CoverageObligationID: "obligation:coverage",
-		IssuedAtUnix: uint64(now.Add(time.Second).Unix()), AcceptByUnix: uint64(now.Add(2 * time.Minute).Unix()),
-		ReservationExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(15 * time.Minute).Unix())}
+		Request: quote2, ProfileArtifact: profileArtifact, Agreement: agreement2, Terms: terms2,
+		CoverageObligationID:     "obligation:coverage",
+		IssuedAtUnix:             uint64(now.Add(time.Second).Unix()),
+		AcceptByUnix:             uint64(now.Add(2 * time.Minute).Unix()),
+		ReservationExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix()),
+		ExpiresAtUnix:            uint64(now.Add(15 * time.Minute).Unix()),
+	}
 	// This issuance stops after the journal has issued the offer and before
 	// the authority's terminal transition: the plan is stored, the offer is
 	// issued, the action is still prepared. The process restarts, and the
@@ -1004,10 +1012,11 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	if scenario == guarantorNoFallback {
 		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
 	}
-	expiringOffer, expiringResolution, issueErr := coordinator.IssueFirmOffer(context.Background(), expiringInput, fence)
+	expiringOffer, expiringResolution, issueErr := coordinator.IssueFirmOffer(context.Background(), expiringInput,
+		fence)
 	if issueErr != nil || expiringResolution.State != commerce.ActionTerminal {
-		t.Fatalf("issue expiring offer after a stop between its journal commit and its terminal transition: state=%s err=%v",
-			expiringResolution.State, issueErr)
+		t.Fatalf("issue expiring offer after a stop between its journal commit and its terminal transition: "+
+			"state=%s err=%v", expiringResolution.State, issueErr)
 	}
 	if !sameJSON(expiringOffer, issuedBeforeTerminal) {
 		t.Fatal("the resumed issuance returned another offer than the one the journal had issued")

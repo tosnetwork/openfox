@@ -38,8 +38,10 @@ func TestGuarantorPortfolioFailsOnAnAmountItCannotRead(t *testing.T) {
 			journal.mu.Lock()
 			journal.doc.Coverages[agreement] = position
 			journal.mu.Unlock()
-			coordinator := GuarantorProviderCoordinator{Journal: journal, Authority: guarantorSnapshotAuthority{
-				reservations: []ExposureReservation{{ReservationID: reservation, MaximumLossAtomic: 100, Released: true}}}}
+			authority := guarantorSnapshotAuthority{reservations: []ExposureReservation{
+				{ReservationID: reservation, MaximumLossAtomic: 100, Released: true},
+			}}
+			coordinator := GuarantorProviderCoordinator{Journal: journal, Authority: authority}
 			snapshot, err := coordinator.portfolioFor("agent:party", asset)
 			if test.want == "" {
 				if err == nil {
@@ -97,8 +99,10 @@ func TestGuarantorJournalRefusesACoverageStoredUnderAnotherIdentity(t *testing.T
 // argument, which a caller would not retry.
 func TestGuarantorJournalReportsADetachedJournalAsThat(t *testing.T) {
 	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
-	resolution := commerce.ActionResolution{StableActionID: digest("1"), ExactRequestDigest: digest("2"),
-		State: commerce.ActionTerminal, StateRevision: 2}
+	resolution := commerce.ActionResolution{
+		StableActionID: digest("1"), ExactRequestDigest: digest("2"),
+		State: commerce.ActionTerminal, StateRevision: 2,
+	}
 	calls := map[string]func(journal *GuarantorJournal) error{
 		"resolve an admission": func(journal *GuarantorJournal) error {
 			_, err := journal.ResolveAdmission(digest("8"), resolution)

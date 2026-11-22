@@ -1920,15 +1920,14 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		DecisionReason: decisionReason, DecisionEvidenceSet: decisionEvidence,
 		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{decisionAuthorization}}
 	authority.now = func() time.Time { return decisionAdmittedAt }
+	decisionInput := GuarantorAdmitDecisionInput{AgreementDigest: agreementDigest, Decision: decision}
 	decisionAdmission := requireCommittedGuarantorReceiptReplays(t, "admitting the claim decision", &coordinator,
 		authority, restartWriter, 1, func() (GuarantorDecisionAdmissionResult, error) {
-			return coordinator.AdmitClaimDecision(context.Background(), GuarantorAdmitDecisionInput{
-				AgreementDigest: agreementDigest, Decision: decision}, fence)
+			return coordinator.AdmitClaimDecision(context.Background(), decisionInput, fence)
 		}, func() error {
-			other := decision
-			other.Body.DecidedAtUnix++
-			_, otherErr := coordinator.AdmitClaimDecision(context.Background(), GuarantorAdmitDecisionInput{
-				AgreementDigest: agreementDigest, Decision: other}, fence)
+			other := decisionInput
+			other.Decision.Body.DecidedAtUnix++
+			_, otherErr := coordinator.AdmitClaimDecision(context.Background(), other, fence)
 			return otherErr
 		})
 	wantAdmittedState := "approved"
@@ -2095,15 +2094,17 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		return
 	}
 	authority.now = func() time.Time { return now.Add(5 * time.Minute) }
+	closeInput := GuarantorTransitionClaimInput{
+		AgreementDigest: agreementDigest, DecisionAdmissionReceipt: decisionAdmission.Receipt,
+		TransitionKind: "challenge_close",
+	}
 	terminalTransition := requireCommittedGuarantorReceiptReplays(t, "closing the claim challenge", &coordinator,
 		authority, restartWriter, 1, func() (GuarantorClaimTransitionResult, error) {
-			return coordinator.TransitionClaimDecision(context.Background(), GuarantorTransitionClaimInput{
-				AgreementDigest: agreementDigest, DecisionAdmissionReceipt: decisionAdmission.Receipt,
-				TransitionKind: "challenge_close"}, fence)
+			return coordinator.TransitionClaimDecision(context.Background(), closeInput, fence)
 		}, func() error {
-			_, otherErr := coordinator.TransitionClaimDecision(context.Background(), GuarantorTransitionClaimInput{
-				AgreementDigest: agreementDigest, DecisionAdmissionReceipt: decisionAdmission.Receipt,
-				TransitionKind: "challenge_admission"}, fence)
+			other := closeInput
+			other.TransitionKind = "challenge_admission"
+			_, otherErr := coordinator.TransitionClaimDecision(context.Background(), other, fence)
 			return otherErr
 		})
 	if terminalTransition.Resolution.State != commerce.ActionTerminal ||
@@ -2117,11 +2118,13 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		t.Fatalf("encode portable Guarantor decision: %v %v", admissionErr, transitionErr)
 	}
 	t.Logf("portable Guarantor decision admission=%d transition=%d bytes", len(admissionWire), len(transitionWire))
+	applyInput := GuarantorApplyDecisionInput{
+		AgreementDigest: agreementDigest, DecisionAdmissionReceipt: decisionAdmission.Receipt,
+		TerminalTransitionReceipt: terminalTransition.Receipt,
+	}
 	application := requireCommittedGuarantorReceiptReplays(t, "applying the claim decision", &coordinator,
 		authority, restartWriter, 1, func() (GuarantorDecisionApplicationResult, error) {
-			return coordinator.ApplyClaimDecision(context.Background(), GuarantorApplyDecisionInput{
-				AgreementDigest: agreementDigest, DecisionAdmissionReceipt: decisionAdmission.Receipt,
-				TerminalTransitionReceipt: terminalTransition.Receipt}, fence)
+			return coordinator.ApplyClaimDecision(context.Background(), applyInput, fence)
 		}, nil)
 	payouts, resolution := application.Payouts, application.Resolution
 	if resolution.State != commerce.ActionTerminal || len(payouts.Obligations) != 1 ||

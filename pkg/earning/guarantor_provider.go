@@ -858,16 +858,14 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, AdmissionReceipt: admissionReceipt,
 			IngressResolution: ingressResolution, AdmissionResolution: admissionResolution}, err
 	}
-	if _, err = coordinator.Journal.CommitClaimAdmission(agreementDigest, ingressReceipt, admissionReceipt, preview); err != nil {
-		// A commit that lost its sync is committed: the result returned with
-		// that error is the complete one a repeated call returns.
-		return GuarantorClaimAdmissionResult{ClaimDigest: claimDigest, IngressReceipt: ingressReceipt,
-			AdmissionReceipt: admissionReceipt, IngressResolution: ingressResolution,
-			AdmissionResolution: admissionResolution}, err
-	}
-	return GuarantorClaimAdmissionResult{ClaimDigest: claimDigest, IngressReceipt: ingressReceipt,
+	// A commit that lost its sync is committed, so the result returned with
+	// the commit's error is the complete one a repeated call returns.
+	_, err = coordinator.Journal.CommitClaimAdmission(agreementDigest, ingressReceipt, admissionReceipt, preview)
+	return GuarantorClaimAdmissionResult{
+		ClaimDigest: claimDigest, IngressReceipt: ingressReceipt,
 		AdmissionReceipt: admissionReceipt, IngressResolution: ingressResolution,
-		AdmissionResolution: admissionResolution}, nil
+		AdmissionResolution: admissionResolution,
+	}, err
 }
 
 type GuarantorApplyDecisionInput struct {

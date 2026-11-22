@@ -54,7 +54,7 @@ func (coordinator *GuarantorProviderCoordinator) ReleaseNonActivatedExposure(ctx
 	// one step, which moves the portfolio revision the request names. A call
 	// that stopped after that step resumes from its plan: with the plan's
 	// action, fence and time, and the portfolio revision its request named.
-	planned, err := coordinator.plannedAction(guarantorPlanNonActivationRelease, agreementDigest, "")
+	planned, err := coordinator.plannedAction(guarantorPlanNonActivationRelease, agreementDigest, "", fence, now)
 	if err != nil {
 		return guarantor.AuthorizedNonActivationExposureReleaseReceiptV1{}, commerce.ActionResolution{}, err
 	}

@@ -83,7 +83,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 	// plan: with the plan's action, fence and time it rebuilds the receipt the
 	// first call would have committed.
 	planned, err := coordinator.plannedAction(guarantorPlanDecisionAdmission, input.AgreementDigest,
-		input.Decision.Body.ClaimID)
+		input.Decision.Body.ClaimID, fence, now)
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
@@ -353,7 +353,8 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	}
 	// A call that stopped after preparing this transition resumes from its
 	// plan, as a decision admission does.
-	planned, err := coordinator.plannedAction(guarantorPlanClaimTransition, input.AgreementDigest, claimID)
+	planned, err := coordinator.plannedAction(guarantorPlanClaimTransition, input.AgreementDigest, claimID, fence,
+		now)
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err
 	}

@@ -69,11 +69,11 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 	// their receipt is committed, and each has its own plan. A call that
 	// stopped after preparing either resumes that step with its plan's
 	// action, fence and time; a step without a plan runs under this call's.
-	filingPlan, err := coordinator.plannedAction(guarantorPlanClaimFilingClose, agreementDigest, "")
+	filingPlan, err := coordinator.plannedAction(guarantorPlanClaimFilingClose, agreementDigest, "", fence, now)
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, err
 	}
-	closurePlan, err := coordinator.plannedAction(guarantorPlanCoverageClosure, agreementDigest, "")
+	closurePlan, err := coordinator.plannedAction(guarantorPlanCoverageClosure, agreementDigest, "", fence, now)
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, err
 	}

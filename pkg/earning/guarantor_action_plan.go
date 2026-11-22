@@ -275,25 +275,70 @@ func (journal *GuarantorJournal) DiscardRejectedActionPlan(kind, scopeID, subjec
 	return journal.commit(next)
 }
 
+// ReauthorizeActionPlan replaces the authorization of a stored action plan
+// whose action the authority holds as prepared: the same action, authorized
+// again under a newer writer fence at a later time. The kind, the head, the
+// stable identity and the request stay exactly as stored, so a newer writer
+// finishes the prepared action instead of creating a second one.
+func (journal *GuarantorJournal) ReauthorizeActionPlan(plan GuarantorActionPlan) error {
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if err := journal.ensureAttached(); err != nil {
+		return err
+	}
+	next, err := journal.workingCopy()
+	if err != nil {
+		return err
+	}
+	key := guarantorActionPlanKey(plan.Kind, plan.ScopeID, plan.SubjectID)
+	current, found := next.ActionPlans[key]
+	if !found {
+		return errors.New("Guarantor action plan reauthorization has no stored plan")
+	}
+	// The reauthorized plan is checked exactly as a load checks it.
+	if err = validateGuarantorActionPlan(next, key, plan); err != nil {
+		return err
+	}
+	if current.Action.StableActionID != plan.Action.StableActionID ||
+		current.Action.ExactRequestDigest != plan.Action.ExactRequestDigest ||
+		!sameJSON(current.CanonicalRequest, plan.CanonicalRequest) ||
+		plan.Action.WriterGeneration <= current.Action.WriterGeneration ||
+		plan.PreparedAtUnix < current.PreparedAtUnix {
+		return errors.New("Guarantor action plan reauthorization changes the action or goes back in time")
+	}
+	next.ActionPlans[key] = plan
+	next.Revision++
+	return journal.commit(next)
+}
+
 // guarantorPlannedAction is one head's action inside a coordinator call: the
 // plan a repeated call resumes from, or nothing for a first call.
 type guarantorPlannedAction struct {
 	kind, scopeID, subjectID string
 	// resume is the stored plan whose action the authority already knows.
 	resume *GuarantorActionPlan
+	// reauthorize is set for a stored plan whose action is only prepared and
+	// was authorized under an older writer generation. Nothing is bound to
+	// that authorization yet, so the call authorizes the same action again
+	// under its own fence and time, as a newer writer does for every plan.
+	reauthorize bool
+	// now is the time of the call that looked the plan up.
+	now time.Time
 }
 
 // resuming reports whether the call continues a stored plan.
 func (planned guarantorPlannedAction) resuming() bool { return planned.resume != nil }
 
-// plannedAction looks up the action plan of one head for a coordinator call.
-// A plan whose action the authority never saw is discarded: nothing was done
-// under it, and the call starts again as a first call. A plan whose action is
-// prepared or terminal at the authority is returned to be resumed. Any other
-// authority state has no receipt to recover and is an error.
+// plannedAction looks up the action plan of one head for a coordinator call
+// made under fence at now. A plan whose action the authority never saw is
+// discarded: nothing was done under it, and the call starts again as a first
+// call. A plan whose action is prepared or terminal at the authority is
+// returned to be resumed. Any other authority state has no receipt to recover
+// and is an error.
 func (coordinator *GuarantorProviderCoordinator) plannedAction(kind, scopeID, subjectID string,
+	fence commerce.WriterFence, now time.Time,
 ) (guarantorPlannedAction, error) {
-	planned := guarantorPlannedAction{kind: kind, scopeID: scopeID, subjectID: subjectID}
+	planned := guarantorPlannedAction{kind: kind, scopeID: scopeID, subjectID: subjectID, now: now}
 	plan, found, err := coordinator.Journal.ActionPlan(kind, scopeID, subjectID)
 	if err != nil || !found {
 		return planned, err
@@ -310,6 +355,13 @@ func (coordinator *GuarantorProviderCoordinator) plannedAction(kind, scopeID, su
 		if !validGuarantorUnix(plan.PreparedAtUnix) {
 			return planned, errors.New("stored Guarantor action plan has an invalid time")
 		}
+		if resolution.State == commerce.ActionPrepared &&
+			plan.Action.WriterGeneration != fence.Body.WriterGeneration {
+			if fence.Body.WriterGeneration < plan.Action.WriterGeneration {
+				return planned, errors.New("stale writer cannot recover a prepared Guarantor action")
+			}
+			planned.reauthorize = true
+		}
 		planned.resume = &plan
 		return planned, nil
 	default:
@@ -318,19 +370,33 @@ func (coordinator *GuarantorProviderCoordinator) plannedAction(kind, scopeID, su
 	}
 }
 
-// at returns the time a call uses: the plan's when it resumes one, so that
-// the receipt is the one the first call would have built, and now otherwise.
+// keepsPlan reports whether the call uses the stored plan's authorization and
+// time: it resumes a plan and does not authorize its action again.
+func (planned guarantorPlannedAction) keepsPlan() bool {
+	return planned.resume != nil && !planned.reauthorize
+}
+
+// at returns the time a call uses: the plan's when it keeps one, so that the
+// receipt is the one the first call would have built, and now otherwise.
 func (planned guarantorPlannedAction) at(now time.Time) time.Time {
-	if planned.resume != nil {
+	if planned.keepsPlan() {
 		return time.Unix(int64(planned.resume.PreparedAtUnix), 0).UTC()
 	}
 	return now
 }
 
+// atUnix is at for a call whose time is a Unix second in its input.
+func (planned guarantorPlannedAction) atUnix(now uint64) uint64 {
+	if planned.keepsPlan() {
+		return planned.resume.PreparedAtUnix
+	}
+	return now
+}
+
 // fence returns the writer fence the call's action is authorized under: the
-// plan's when it resumes one, and the caller's current fence otherwise.
+// plan's when it keeps one, and the caller's current fence otherwise.
 func (planned guarantorPlannedAction) fence(current commerce.WriterFence) commerce.WriterFence {
-	if planned.resume != nil {
+	if planned.keepsPlan() {
 		return planned.resume.WriterFence
 	}
 	return current
@@ -367,7 +433,31 @@ func (coordinator *GuarantorProviderCoordinator) authorizePlannedAction(planned 
 		return commerce.AuthorizedAction{}, errors.New(
 			"Guarantor request conflicts with the action already prepared for its head; repeat that request first")
 	}
-	return stored, nil
+	if !planned.reauthorize {
+		return stored, nil
+	}
+	// The prepared action is authorized again under this call's fence. It is
+	// the same action: same identity, same request. The plan is replaced
+	// before anything is built on the new authorization.
+	action, err := commerce.BuildAuthorizedAction(ownerID, agentID, actionKind, fields, request, fence,
+		coordinator.PolicyRevision, coordinator.MandateDigest, stored.ApprovalDigest, stored.ExpectedPriorState,
+		expiresAtUnix)
+	if err == nil {
+		action, err = coordinator.Authority.SignAction(action, fence)
+	}
+	if err != nil {
+		return commerce.AuthorizedAction{}, fmt.Errorf("reauthorize the prepared Guarantor action: %w", err)
+	}
+	if action.StableActionID != stored.StableActionID || action.ExactRequestDigest != stored.ExactRequestDigest ||
+		planned.now.Unix() <= 0 {
+		return commerce.AuthorizedAction{}, errors.New("Guarantor action reauthorization changed its identity")
+	}
+	next := *planned.resume
+	next.Action, next.WriterFence, next.PreparedAtUnix = action, fence, uint64(planned.now.Unix())
+	if err = coordinator.Journal.ReauthorizeActionPlan(next); err != nil {
+		return commerce.AuthorizedAction{}, err
+	}
+	return action, nil
 }
 
 // admitPlannedAction makes the authority know the call's action. A first call

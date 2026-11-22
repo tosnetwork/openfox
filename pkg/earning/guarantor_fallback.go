@@ -42,7 +42,8 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 	// A fallback is a decision admission for the claim's head and shares that
 	// head's plan: a call that stopped after preparing it resumes with the
 	// plan's action, fence and time.
-	planned, err := coordinator.plannedAction(guarantorPlanDecisionAdmission, input.AgreementDigest, input.ClaimID)
+	planned, err := coordinator.plannedAction(guarantorPlanDecisionAdmission, input.AgreementDigest, input.ClaimID,
+		fence, now)
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}

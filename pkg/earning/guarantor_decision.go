@@ -73,6 +73,12 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
+	// A decision repeated after its admission was committed gets the committed
+	// receipt: the head it was admitted against no longer exists.
+	if committed, replayed, replayErr := coordinator.committedDecisionAdmission(position,
+		input.Decision); replayErr != nil || replayed {
+		return committed, replayErr
+	}
 	claim, found := position.ClaimEnvelopes[input.Decision.Body.ClaimID]
 	record, recordFound := position.Claims[input.Decision.Body.ClaimID]
 	claimAdmission, admissionFound := position.ClaimAdmissionReceipts[guarantorClaimRevisionKey(
@@ -331,45 +337,29 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 		return GuarantorClaimTransitionResult{}, errors.New("Guarantor late-recovery successor cannot be challenged: the late-recovery path allows one challenge round")
 	}
 	claimID := decisionAdmission.Body.ClaimID
+	decisionAdmissionDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(decisionAdmission)
+	if err != nil {
+		return GuarantorClaimTransitionResult{}, err
+	}
+	// A transition repeated after it was committed gets the committed receipt:
+	// the claim state it started from no longer exists.
+	if committed, replayed, replayErr := coordinator.committedClaimTransition(position, input, claimID,
+		decisionAdmissionDigest); replayErr != nil || replayed {
+		return committed, replayErr
+	}
 	record, found := position.Claims[claimID]
 	if !found || !sameJSON(position.DecisionAdmissionReceipts[claimID], decisionAdmission) ||
 		record.ClaimStateRevision != decisionAdmission.Body.AdmittedClaimStateRevision {
 		return GuarantorClaimTransitionResult{}, errors.New("Guarantor claim transition has no current decision head")
 	}
-	decisionAdmissionDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(decisionAdmission)
-	if err != nil {
-		return GuarantorClaimTransitionResult{}, err
-	}
 	decisionProof, err := coordinator.sealDecisionAdmissionProof(decisionAdmission, position.Terms, now)
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err
 	}
-	evidenceSet := input.TransitionEvidenceSet
-	if len(evidenceSet.Items) == 0 {
-		admissionBytes, marshalErr := guarantor.Canonical(decisionAdmission)
-		if marshalErr != nil {
-			return GuarantorClaimTransitionResult{}, marshalErr
-		}
-		evidenceSet = guarantor.CanonicalGuarantorEvidenceSetV1{SchemaVersion: 1,
-			Purpose: "claim-" + input.TransitionKind, ContextDigest: decisionAdmissionDigest,
-			Items: []guarantor.CanonicalGuarantorEvidenceItemV1{{ContentType: "application/vnd.tos.service.agent-guarantor-claim-decision-admission.v1+cbor",
-				EvidenceProfileDigest:  position.Terms.DecisionAdmissionProfile.ProfileDigest,
-				EvidenceEnvelopeDigest: decisionAdmissionDigest, Representation: "content_addressed",
-				ImmutableDescriptor: &guarantor.ImmutableEvidenceDescriptorV1{ContentType: "application/vnd.tos.service.agent-guarantor-claim-decision-admission.v1+cbor",
-					ContentDigest: decisionAdmissionDigest, ContentSize: uint64(len(admissionBytes)),
-					RetrievalPolicyDigest: position.Terms.DecisionAdmissionProfile.ProfileDigest}}}}
+	evidenceSet, err := claimTransitionEvidenceSet(input, position.Terms, decisionAdmissionDigest)
+	if err != nil {
+		return GuarantorClaimTransitionResult{}, err
 	}
-	switch input.TransitionKind {
-	case "challenge_close":
-		evidenceSet.Purpose = "claim-challenge-close"
-	case "challenge_admission":
-		evidenceSet.Purpose = "claim-challenge-admission"
-	case "nonterminal_response_admission":
-		evidenceSet.Purpose = "claim-nonterminal-response-admission"
-	default:
-		return GuarantorClaimTransitionResult{}, errors.New("Guarantor claim transition kind is unknown")
-	}
-	evidenceSet.ContextDigest = decisionAdmissionDigest
 	evidenceSetDigest, err := guarantor.CanonicalGuarantorEvidenceSetDigestV1(evidenceSet)
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err

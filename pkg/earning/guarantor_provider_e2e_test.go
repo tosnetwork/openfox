@@ -1342,8 +1342,23 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		OtherRecoveryDeclaration: recovery,
 		Authorizations:           []guarantor.ProfileQualifiedObjectAuthorizationV1{claimAuthorization},
 	}
-	claimResult, err := coordinator.AdmitClaim(context.Background(), agreementDigest, claim, fence)
-	if err != nil || claimResult.IngressResolution.State != commerce.ActionTerminal ||
+	// The claim is admitted by a caller that never sees the return: its three
+	// commits each lose their sync, it is repeated, and it is repeated again
+	// after a restart. Every repetition returns the committed receipts.
+	claimResult := requireCommittedGuarantorReceiptReplays(t, "admitting the claim", &coordinator, journalDirectory, 3,
+		func() (GuarantorClaimAdmissionResult, error) {
+			return coordinator.AdmitClaim(context.Background(), agreementDigest, claim, fence)
+		}, func() error {
+			other := claim
+			other.Body.CreatedAtUnix++
+			_, otherErr := coordinator.AdmitClaim(context.Background(), agreementDigest, other, fence)
+			return otherErr
+		})
+	journal = coordinator.Journal
+	if scenario == guarantorNoFallback {
+		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
+	}
+	if claimResult.IngressResolution.State != commerce.ActionTerminal ||
 		claimResult.AdmissionResolution.State != commerce.ActionTerminal {
 		t.Fatalf("admit claim: result=%#v err=%v", claimResult, err)
 	}
@@ -1953,8 +1968,20 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		DecisionReason: decisionReason, DecisionEvidenceSet: decisionEvidence,
 		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{decisionAuthorization}}
 	authority.now = func() time.Time { return decisionAdmittedAt }
-	decisionAdmission, err := coordinator.AdmitClaimDecision(context.Background(), GuarantorAdmitDecisionInput{
-		AgreementDigest: agreementDigest, Decision: decision}, fence)
+	decisionInput := GuarantorAdmitDecisionInput{AgreementDigest: agreementDigest, Decision: decision}
+	decisionAdmission := requireCommittedGuarantorReceiptReplays(t, "admitting the claim decision", &coordinator,
+		journalDirectory, 1, func() (GuarantorDecisionAdmissionResult, error) {
+			return coordinator.AdmitClaimDecision(context.Background(), decisionInput, fence)
+		}, func() error {
+			other := decisionInput
+			other.Decision.Body.DecidedAtUnix++
+			_, otherErr := coordinator.AdmitClaimDecision(context.Background(), other, fence)
+			return otherErr
+		})
+	journal = coordinator.Journal
+	if scenario == guarantorNoFallback {
+		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
+	}
 	wantAdmittedState := "approved"
 	if disputed {
 		wantAdmittedState = "disputed"
@@ -2119,10 +2146,24 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		return
 	}
 	authority.now = func() time.Time { return now.Add(5 * time.Minute) }
-	terminalTransition, err := coordinator.TransitionClaimDecision(context.Background(), GuarantorTransitionClaimInput{
+	closeInput := GuarantorTransitionClaimInput{
 		AgreementDigest: agreementDigest, DecisionAdmissionReceipt: decisionAdmission.Receipt,
-		TransitionKind: "challenge_close"}, fence)
-	if err != nil || terminalTransition.Resolution.State != commerce.ActionTerminal ||
+		TransitionKind: "challenge_close",
+	}
+	terminalTransition := requireCommittedGuarantorReceiptReplays(t, "closing the claim challenge", &coordinator,
+		journalDirectory, 1, func() (GuarantorClaimTransitionResult, error) {
+			return coordinator.TransitionClaimDecision(context.Background(), closeInput, fence)
+		}, func() error {
+			other := closeInput
+			other.TransitionKind = "challenge_admission"
+			_, otherErr := coordinator.TransitionClaimDecision(context.Background(), other, fence)
+			return otherErr
+		})
+	journal = coordinator.Journal
+	if scenario == guarantorNoFallback {
+		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
+	}
+	if terminalTransition.Resolution.State != commerce.ActionTerminal ||
 		terminalTransition.Receipt.Body.ResultingClaimState != "final_approved" {
 		t.Fatalf("close claim challenge: result=%#v err=%v", terminalTransition, err)
 	}
@@ -2133,11 +2174,20 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		t.Fatalf("encode portable Guarantor decision: %v %v", admissionErr, transitionErr)
 	}
 	t.Logf("portable Guarantor decision admission=%d transition=%d bytes", len(admissionWire), len(transitionWire))
-	application, err := coordinator.ApplyClaimDecision(context.Background(), GuarantorApplyDecisionInput{
+	applyInput := GuarantorApplyDecisionInput{
 		AgreementDigest: agreementDigest, DecisionAdmissionReceipt: decisionAdmission.Receipt,
-		TerminalTransitionReceipt: terminalTransition.Receipt}, fence)
+		TerminalTransitionReceipt: terminalTransition.Receipt,
+	}
+	application := requireCommittedGuarantorReceiptReplays(t, "applying the claim decision", &coordinator,
+		journalDirectory, 1, func() (GuarantorDecisionApplicationResult, error) {
+			return coordinator.ApplyClaimDecision(context.Background(), applyInput, fence)
+		}, nil)
+	journal = coordinator.Journal
+	if scenario == guarantorNoFallback {
+		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
+	}
 	payouts, resolution := application.Payouts, application.Resolution
-	if err != nil || resolution.State != commerce.ActionTerminal || len(payouts.Obligations) != 1 ||
+	if resolution.State != commerce.ActionTerminal || len(payouts.Obligations) != 1 ||
 		payouts.Obligations[0].Amount.AmountAtomic != "400" || application.Receipt.Body.ResultingApplicationTokenState != "consumed" {
 		t.Fatalf("apply claim decision: result=%#v err=%v", application, err)
 	}

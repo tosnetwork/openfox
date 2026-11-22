@@ -573,10 +573,11 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	base := t.TempDir()
-	// run starts the ordinal-th process on directory to run steps calls, with
+	// run starts the ordinal-th process on directory, given steps calls, with
 	// a kill point or none. It kills a process that reports its kill point
-	// and returns whether it did, with the process's output.
-	run := func(directory string, ordinal, steps int, point string) (bool, string) {
+	// and fails t unless the process ended as it should: by SIGKILL at its
+	// kill point, or with success when it has none.
+	run := func(t *testing.T, directory string, ordinal, steps int, point string) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
@@ -623,9 +624,8 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 			t.Fatalf("process %d on %s was to be killed at %s: reached=%v killed by SIGKILL=%v wait=%v\n%s", ordinal,
 				filepath.Base(directory), point, reached, killed, waitErr, output.String())
 		}
-		return killed, output.String()
 	}
-	results := func(directory string) map[string]string {
+	results := func(t *testing.T, directory string) map[string]string {
 		t.Helper()
 		raw, readErr := os.ReadFile(filepath.Join(directory, guarantorKillResultsFile))
 		if readErr != nil {
@@ -652,13 +652,13 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 		} else {
 			copyGuarantorKillTestTree(t, prefixes[steps-1], prefixes[steps])
 		}
-		run(prefixes[steps], steps+1, steps, "")
+		run(t, prefixes[steps], steps+1, steps, "")
 	}
 	// reference returns what an uninterrupted run returns for the call of
 	// step when the authorizer-th process after the prefix makes it: the
 	// first, or the second after a first that only repeated the call before.
 	references := map[string]map[string]string{}
-	reference := func(step, authorizer int) map[string]string {
+	reference := func(t *testing.T, step, authorizer int) map[string]string {
 		t.Helper()
 		key := strconv.Itoa(step) + "/" + strconv.Itoa(authorizer)
 		if cached, found := references[key]; found {
@@ -668,10 +668,10 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 		copyGuarantorKillTestTree(t, prefixes[step], directory)
 		ordinal := step + 2
 		for ; ordinal < step+1+authorizer; ordinal++ {
-			run(directory, ordinal, step, "")
+			run(t, directory, ordinal, step, "")
 		}
-		run(directory, ordinal, step+1, "")
-		references[key] = results(directory)
+		run(t, directory, ordinal, step+1, "")
+		references[key] = results(t, directory)
 		wantGeneration := strconv.Itoa(ordinal)
 		for name, value := range references[key] {
 			if strings.HasPrefix(name, guarantorKillStepResult[step]) && strings.HasSuffix(name, "writer generation") &&
@@ -686,7 +686,7 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 		t.Run(point.name, func(t *testing.T) {
 			directory := filepath.Join(base, "killed-"+strconv.Itoa(index))
 			copyGuarantorKillTestTree(t, prefixes[point.step], directory)
-			run(directory, point.step+2, point.step+1, point.point)
+			run(t, directory, point.step+2, point.step+1, point.point)
 			journalDirectory := filepath.Join(directory, "guarantor")
 			if left := guarantorKillTestTemporaries(t, journalDirectory); (len(left) != 0) != point.leavesTemporary {
 				t.Fatalf("the killed process left the temporary files %v, want some: %v", left, point.leavesTemporary)
@@ -696,9 +696,9 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 			}
 			// A fresh process opens what the killed one left and makes the
 			// same call.
-			run(directory, point.step+3, point.step+1, "")
-			resumed := results(directory)
-			want := reference(point.step, point.authorizer)
+			run(t, directory, point.step+3, point.step+1, "")
+			resumed := results(t, directory)
+			want := reference(t, point.step, point.authorizer)
 			if !reflect.DeepEqual(resumed, want) {
 				t.Fatalf("the process resumed after the kill returned\n%v\nan uninterrupted run returns\n%v", resumed,
 					want)

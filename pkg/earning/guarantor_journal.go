@@ -1899,8 +1899,9 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 	if err := decoder.Decode(&doc); err != nil {
 		return fmt.Errorf("Guarantor journal document is invalid: %w", err)
 	}
-	if decoder.Decode(&struct{}{}) != io.EOF || doc.Schema != guarantorJournalSchema || doc.OwnerID != ownerID || doc.AgentID != agentID ||
-		doc.Revision == 0 || doc.Offers == nil || doc.Coverages == nil || doc.ClaimToCoverage == nil || doc.AdmissionLogs == nil {
+	if decoder.Decode(&struct{}{}) != io.EOF || doc.Schema != guarantorJournalSchema || doc.OwnerID != ownerID ||
+		doc.AgentID != agentID || doc.Revision == 0 || doc.Offers == nil || doc.Coverages == nil ||
+		doc.ClaimToCoverage == nil || doc.AdmissionLogs == nil {
 		return errors.New("Guarantor journal document is invalid")
 	}
 	// Checked before any default is filled in below: doc is still exactly what
@@ -2143,7 +2144,7 @@ func (journal *GuarantorJournal) workingCopy() (guarantorJournalDocument, error)
 // value that cannot be encoded equals nothing, itself included: every caller
 // treats "not the same" as the refusing answer, so an encoding failure
 // refuses instead of comparing two empty results as equal.
-func sameJSON(left, right interface{}) bool {
+func sameJSON(left, right any) bool {
 	l, leftErr := json.Marshal(left)
 	r, rightErr := json.Marshal(right)
 	if leftErr != nil || rightErr != nil {
@@ -2213,7 +2214,9 @@ func validateGuarantorOffers(doc guarantorJournalDocument) error {
 		if position.PreAcceptanceReleaseReceipt == nil {
 			return fmt.Errorf("Guarantor offer %s is released without a release receipt", offerID)
 		}
-		receiptDigest, err := guarantor.PreAcceptanceExposureReleaseReceiptDigestV1(*position.PreAcceptanceReleaseReceipt)
+		receiptDigest, err := guarantor.PreAcceptanceExposureReleaseReceiptDigestV1(
+			*position.PreAcceptanceReleaseReceipt,
+		)
 		if err != nil || receiptDigest != position.Record.LastEvidenceDigest {
 			return fmt.Errorf("Guarantor offer %s is released by another receipt than the stored one", offerID)
 		}

@@ -194,7 +194,8 @@ func TestJournalRefusesTheRetiredSchemaAndMissingEpochs(t *testing.T) {
 	rewriteTestGuarantorJournal(t, journal, func(doc *guarantorJournalDocument) {
 		doc.Schema = retiredGuarantorJournalSchemaV3
 	})
-	if err := openTestGuarantorJournalErr(t, directory); err == nil || !strings.Contains(err.Error(), "retired v3 schema") {
+	err := openTestGuarantorJournalErr(t, directory)
+	if err == nil || !strings.Contains(err.Error(), "retired v3 schema") {
 		t.Fatalf("a v3 journal was not refused with its reason: %v", err)
 	}
 

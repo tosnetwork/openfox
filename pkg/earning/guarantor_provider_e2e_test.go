@@ -2341,7 +2341,8 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	resolutionCrash := &oneShotGuarantorClosureFailure{target: "coverage_resolution_plan_prepared"}
 	coordinator.ClosureFailureInjector = resolutionCrash
 	if _, crashErr := coordinator.CloseCoverage(context.Background(), GuarantorCloseCoverageInput{
-		Offer: cancellationOffer, ActivationEvidence: cancellationActivation, CancellationReceipt: &cancelReceipt},
+		Offer: cancellationOffer, ActivationEvidence: cancellationActivation, CancellationReceipt: &cancelReceipt,
+	},
 		fence); crashErr == nil || !resolutionCrash.fired {
 		t.Fatalf("the closure did not stop at its stored coverage-resolution plan: %v", crashErr)
 	}
@@ -2366,7 +2367,8 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		cancelledClose.FilingCloseReceipt.Body.IncidentEligibilityEndsAtUnix != cancelReceipt.Body.IncidentEligibilityEndsAtUnix {
 		t.Fatalf("close cancelled coverage: result=%#v err=%v", cancelledClose, err)
 	}
-	if resolved := cancelledClose.CoverageResolution.Body; resolved.TerminalState != "cancelled" ||
+	cancelledState := string(guarantor.CoverageCancelled)
+	if resolved := cancelledClose.CoverageResolution.Body; resolved.TerminalState != cancelledState ||
 		resolved.StableActionID != frozenResolutionPlan.Action.StableActionID ||
 		resolved.ExactRequestDigest != frozenResolutionPlan.Action.ExactRequestDigest ||
 		resolved.PriorCoverageRevision != frozenResolutionPlan.RequestBody.ExpectedRevision ||

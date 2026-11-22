@@ -19,34 +19,44 @@ import (
 func testExpiredGuarantorOffer(offerID string) GuarantorOfferPosition {
 	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
 	evidence := guarantor.AuthorizedOfferNonAcceptanceEvidenceV1{
-		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{{AuthoritySubject: "agent:guarantor"}}}
+		Authorizations: []guarantor.ProfileQualifiedObjectAuthorizationV1{{AuthoritySubject: "agent:guarantor"}},
+	}
 	evidence.Body.SchemaVersion, evidence.Body.AuthorityInstanceID = 1, offerID
 	evidence.Body.AuthorizedFirmOfferEnvelopeDigest, evidence.Body.AcceptanceAdmissionLogRoot = digest("1"), digest("2")
 	evidence.Body.AuthorizedActionDigest, evidence.Body.StableActionID = digest("3"), digest("4")
 	evidence.Body.ExactRequestDigest, evidence.Body.WriterFenceDigest = digest("5"), digest("6")
 	evidence.Body.PriorOfferStateRevision, evidence.Body.ResolvedOfferStateRevision = 3, 4
-	return GuarantorOfferPosition{QuoteRequestDigest: digest("3"), NonAcceptanceEvidence: &evidence,
-		Record: guarantor.OfferRecord{OfferID: offerID, ReservationID: digest("a"), Status: guarantor.OfferExpired,
-			StateRevision: 4}}
+	return GuarantorOfferPosition{
+		QuoteRequestDigest: digest("3"), NonAcceptanceEvidence: &evidence,
+		Record: guarantor.OfferRecord{
+			OfferID: offerID, ReservationID: digest("a"), Status: guarantor.OfferExpired,
+			StateRevision: 4,
+		},
+	}
 }
 
 // testGuarantorOfferReleasePlan is the release plan a coordinator prepares for
 // an expired offer: its semantic fields derive its stable action identity and
 // name the offer's reservation and stored non-acceptance evidence.
 func testGuarantorOfferReleasePlan(t *testing.T, position GuarantorOfferPosition,
-	basePortfolioRevision uint64) GuarantorPreAcceptanceReleasePlan {
+	basePortfolioRevision uint64,
+) GuarantorPreAcceptanceReleasePlan {
 	t.Helper()
 	evidenceDigest, err := guarantor.Digest(guarantor.OfferNonAcceptanceDomain, *position.NonAcceptanceEvidence)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fields := map[string]commerce.SemanticValue{"owner_id": commerce.ID("owner:guarantor"),
+	fields := map[string]commerce.SemanticValue{
+		"owner_id": commerce.ID("owner:guarantor"),
 		"agent_id": commerce.ID("agent:guarantor"), "reservation_id": commerce.Digest32(position.Record.ReservationID),
 		"target_revision":              commerce.U64(basePortfolioRevision + 1),
-		"terminal_evidence_set_digest": commerce.Digest32(evidenceDigest)}
-	body := guarantor.PreAcceptanceExposureReleaseActionBodyV1{SchemaVersion: 1, ReleaseVariant: "pre_acceptance",
+		"terminal_evidence_set_digest": commerce.Digest32(evidenceDigest),
+	}
+	body := guarantor.PreAcceptanceExposureReleaseActionBodyV1{
+		SchemaVersion: 1, ReleaseVariant: "pre_acceptance",
 		AuthorizedNonAcceptanceEvidence: *position.NonAcceptanceEvidence,
-		ExpectedPortfolioRevision:       basePortfolioRevision, TargetPortfolioRevision: basePortfolioRevision + 1}
+		ExpectedPortfolioRevision:       basePortfolioRevision, TargetPortfolioRevision: basePortfolioRevision + 1,
+	}
 	request, err := guarantor.Canonical(body)
 	if err != nil {
 		t.Fatal(err)
@@ -59,11 +69,15 @@ func testGuarantorOfferReleasePlan(t *testing.T, position GuarantorOfferPosition
 	if err != nil {
 		t.Fatal(err)
 	}
-	return GuarantorPreAcceptanceReleasePlan{Action: commerce.AuthorizedAction{SchemaVersion: 1,
-		OwnerID: "owner:guarantor", AgentID: "agent:guarantor", ActionKind: "portfolio.release",
-		StableActionID: stableActionID, ExactRequestDigest: requestDigest, WriterGeneration: 1}, Fields: fields,
+	return GuarantorPreAcceptanceReleasePlan{
+		Action: commerce.AuthorizedAction{
+			SchemaVersion: 1,
+			OwnerID:       "owner:guarantor", AgentID: "agent:guarantor", ActionKind: "portfolio.release",
+			StableActionID: stableActionID, ExactRequestDigest: requestDigest, WriterGeneration: 1,
+		}, Fields: fields,
 		CanonicalRequest: request, RequestBody: body, BasePortfolioRevision: basePortfolioRevision,
-		TargetPortfolioRevision: basePortfolioRevision + 1, ReleasedAtUnix: 2_000_000_000}
+		TargetPortfolioRevision: basePortfolioRevision + 1, ReleasedAtUnix: 2_000_000_000,
+	}
 }
 
 // reopenTestGuarantorJournal closes journal and opens its directory again, as
@@ -89,7 +103,8 @@ func storedTestOfferReleasePlan(t *testing.T, journal *GuarantorJournal) Guarant
 // reauthorizes the plan under the next writer generation. It returns the
 // identity and the plan as stored afterwards.
 func resumeTestOfferReleasePlan(t *testing.T, journal *GuarantorJournal, offerID string,
-	writerGeneration uint64) (string, GuarantorPreAcceptanceReleasePlan) {
+	writerGeneration uint64,
+) (string, GuarantorPreAcceptanceReleasePlan) {
 	t.Helper()
 	plan := storedTestOfferReleasePlan(t, journal)
 	stableActionID, _, err := commerce.DeriveStableActionID(plan.Action.ActionKind, plan.Fields)
@@ -135,7 +150,8 @@ func TestGuarantorJournalPlanResumesAfterARestart(t *testing.T) {
 	journal, _, plan := build()
 	wantIdentity, wantPlan := resumeTestOfferReleasePlan(t, journal, offerID, 2)
 	if wantIdentity != plan.Action.StableActionID {
-		t.Fatalf("the plan resumed without a restart has identity %s, want %s", wantIdentity, plan.Action.StableActionID)
+		t.Fatalf("the plan resumed without a restart has identity %s, want %s",
+			wantIdentity, plan.Action.StableActionID)
 	}
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
@@ -150,7 +166,7 @@ func TestGuarantorJournalPlanResumesAfterARestart(t *testing.T) {
 	}
 	gotIdentity, gotPlan := resumeTestOfferReleasePlan(t, journal, offerID, 2)
 	if gotIdentity != wantIdentity || !reflect.DeepEqual(gotPlan, wantPlan) {
-		t.Fatalf("the plan resumed after a restart differs from the plan resumed without one:\n got %s %#v\nwant %s %#v",
+		t.Fatalf("the plan resumed after a restart differs from the one resumed without one:\n got %s %#v\nwant %s %#v",
 			gotIdentity, gotPlan, wantIdentity, wantPlan)
 	}
 	// And once more across a second restart.
@@ -178,7 +194,8 @@ func TestSameJSONFailsClosed(t *testing.T) {
 // nextTestWriterGeneration is action and fence moved to the next writer
 // generation, as a takeover reauthorizes them.
 func nextTestWriterGeneration(action commerce.AuthorizedAction, fence commerce.WriterFence) (commerce.AuthorizedAction,
-	commerce.WriterFence) {
+	commerce.WriterFence,
+) {
 	action.WriterGeneration++
 	fence.Body.WriterGeneration = action.WriterGeneration
 	return action, fence
@@ -189,7 +206,8 @@ func nextTestWriterGeneration(action commerce.AuthorizedAction, fence commerce.W
 // changed and with the request changed. Both name the stored action under a
 // newer writer generation, as a takeover does; neither may be stored.
 func requireExposureReleaseReauthorizationRefusesAChangedPlan(t *testing.T, journal *GuarantorJournal,
-	agreementDigest string) {
+	agreementDigest string,
+) {
 	t.Helper()
 	revision, stored := storedTestCoveragePosition(t, journal, agreementDigest)
 	if stored.ExposureReleasePlan == nil {
@@ -198,14 +216,20 @@ func requireExposureReleaseReauthorizationRefusesAChangedPlan(t *testing.T, jour
 	// Each changed plan is made from its own private copy of the position.
 	_, first := storedTestCoveragePosition(t, journal, agreementDigest)
 	changedField := *first.ExposureReleasePlan
-	changedField.Action, changedField.WriterFence = nextTestWriterGeneration(changedField.Action, changedField.WriterFence)
+	changedField.Action, changedField.WriterFence = nextTestWriterGeneration(
+		changedField.Action,
+		changedField.WriterFence,
+	)
 	changedField.Fields["target_revision"] = commerce.U64(changedField.RequestBody.TargetPortfolioRevision + 1)
 	if _, err := journal.ReauthorizeExposureReleasePlan(agreementDigest, changedField); err == nil {
 		t.Error("an exposure-release plan was reauthorized with a changed semantic field")
 	}
 	_, again := storedTestCoveragePosition(t, journal, agreementDigest)
 	changedRequest := *again.ExposureReleasePlan
-	changedRequest.Action, changedRequest.WriterFence = nextTestWriterGeneration(changedRequest.Action, changedRequest.WriterFence)
+	changedRequest.Action, changedRequest.WriterFence = nextTestWriterGeneration(
+		changedRequest.Action,
+		changedRequest.WriterFence,
+	)
 	changedRequest.RequestBody.TargetPortfolioRevision++
 	request, err := guarantor.Canonical(changedRequest.RequestBody)
 	if err != nil {
@@ -221,7 +245,8 @@ func requireExposureReleaseReauthorizationRefusesAChangedPlan(t *testing.T, jour
 // requireCoverageResolutionReauthorizationRefusesAChangedPlan is the same for
 // the stored coverage-resolution plan of agreementDigest.
 func requireCoverageResolutionReauthorizationRefusesAChangedPlan(t *testing.T, journal *GuarantorJournal,
-	agreementDigest string) {
+	agreementDigest string,
+) {
 	t.Helper()
 	revision, stored := storedTestCoveragePosition(t, journal, agreementDigest)
 	if stored.CoverageResolutionPlan == nil {
@@ -230,14 +255,20 @@ func requireCoverageResolutionReauthorizationRefusesAChangedPlan(t *testing.T, j
 	// Each changed plan is made from its own private copy of the position.
 	_, first := storedTestCoveragePosition(t, journal, agreementDigest)
 	changedField := *first.CoverageResolutionPlan
-	changedField.Action, changedField.WriterFence = nextTestWriterGeneration(changedField.Action, changedField.WriterFence)
+	changedField.Action, changedField.WriterFence = nextTestWriterGeneration(
+		changedField.Action,
+		changedField.WriterFence,
+	)
 	changedField.Fields["expected_state_revision"] = commerce.U64(changedField.RequestBody.ExpectedRevision + 1)
 	if _, err := journal.ReauthorizeCoverageResolutionPlan(agreementDigest, changedField); err == nil {
 		t.Error("a coverage-resolution plan was reauthorized with a changed semantic field")
 	}
 	_, again := storedTestCoveragePosition(t, journal, agreementDigest)
 	changedRequest := *again.CoverageResolutionPlan
-	changedRequest.Action, changedRequest.WriterFence = nextTestWriterGeneration(changedRequest.Action, changedRequest.WriterFence)
+	changedRequest.Action, changedRequest.WriterFence = nextTestWriterGeneration(
+		changedRequest.Action,
+		changedRequest.WriterFence,
+	)
 	changedRequest.RequestBody.ExpectedRevision++
 	changedRequest.RequestBody.TargetRevision++
 	request, err := guarantor.Canonical(changedRequest.RequestBody)
@@ -254,7 +285,8 @@ func requireCoverageResolutionReauthorizationRefusesAChangedPlan(t *testing.T, j
 // storedTestCoveragePosition returns the journal's revision and a private copy
 // of the coverage position of agreementDigest.
 func storedTestCoveragePosition(t *testing.T, journal *GuarantorJournal, agreementDigest string) (uint64,
-	GuarantorCoveragePosition) {
+	GuarantorCoveragePosition,
+) {
 	t.Helper()
 	revision, _, coverages := journal.Snapshot()
 	for _, coverage := range coverages {
@@ -269,7 +301,8 @@ func storedTestCoveragePosition(t *testing.T, journal *GuarantorJournal, agreeme
 // requireTestCoveragePositionUnchanged fails unless the journal is still at
 // revision and holds want for agreementDigest.
 func requireTestCoveragePositionUnchanged(t *testing.T, journal *GuarantorJournal, agreementDigest string,
-	revision uint64, want GuarantorCoveragePosition) {
+	revision uint64, want GuarantorCoveragePosition,
+) {
 	t.Helper()
 	gotRevision, got := storedTestCoveragePosition(t, journal, agreementDigest)
 	if gotRevision != revision || !sameJSON(got, want) {
@@ -286,7 +319,8 @@ func tamperedTestFirmOfferIssuancePlan(t *testing.T) map[string]func(doc map[str
 	planOf := func(doc map[string]any) map[string]any {
 		plans, found := doc["firm_offer_issuance_plans"].(map[string]any)
 		if !found || len(plans) != 1 {
-			t.Fatalf("the document does not hold exactly one firm-offer issuance plan: %v", doc["firm_offer_issuance_plans"])
+			t.Fatalf("the document does not hold exactly one firm-offer issuance plan: %v",
+				doc["firm_offer_issuance_plans"])
 		}
 		for _, plan := range plans {
 			return plan.(map[string]any)
@@ -349,7 +383,8 @@ func tamperedTestFirmOfferIssuancePlan(t *testing.T) map[string]func(doc map[str
 // holds exactly one firm-offer issuance plan: every tampered document is
 // refused, and the journal opened from disk holds the plan as it was stored.
 func restartTestGuarantorJournalHoldingAFirmOfferPlan(t *testing.T, journal *GuarantorJournal,
-	directory string) *GuarantorJournal {
+	directory string,
+) *GuarantorJournal {
 	t.Helper()
 	journal.mu.Lock()
 	identities := make([]string, 0, len(journal.doc.FirmOfferIssuancePlans))
@@ -464,7 +499,7 @@ func TestGuarantorJournalStoresOnlyAPlanItWouldLoad(t *testing.T) {
 	} {
 		plan := testGuarantorOfferReleasePlan(t, position, 6)
 		change(&plan)
-		if _, err := journal.StoreOfferReleasePlan(offerID, plan); err == nil {
+		if _, storeErr := journal.StoreOfferReleasePlan(offerID, plan); storeErr == nil {
 			t.Fatalf("a release plan with %s was stored", name)
 		}
 	}
@@ -515,7 +550,8 @@ func editTestGuarantorJournalFile(t *testing.T, directory string, original []byt
 // variant of it in turn, changed in the coverage position of agreementDigest,
 // and requires the journal to refuse every one of them.
 func restartTestGuarantorJournal(t *testing.T, journal *GuarantorJournal, directory, agreementDigest string,
-	tampered map[string]func(coverage map[string]any)) *GuarantorJournal {
+	tampered map[string]func(coverage map[string]any),
+) *GuarantorJournal {
 	t.Helper()
 	documents := make(map[string]func(doc map[string]any), len(tampered))
 	for name, change := range tampered {
@@ -533,7 +569,8 @@ func restartTestGuarantorJournal(t *testing.T, journal *GuarantorJournal, direct
 // restartTestGuarantorJournalDocuments is restartTestGuarantorJournal for
 // changes made anywhere in the document.
 func restartTestGuarantorJournalDocuments(t *testing.T, journal *GuarantorJournal, directory string,
-	tampered map[string]func(doc map[string]any)) *GuarantorJournal {
+	tampered map[string]func(doc map[string]any),
+) *GuarantorJournal {
 	t.Helper()
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
@@ -545,13 +582,13 @@ func restartTestGuarantorJournalDocuments(t *testing.T, journal *GuarantorJourna
 	}
 	for name, change := range tampered {
 		editTestGuarantorJournalFile(t, directory, original, change)
-		opened, err := OpenGuarantorJournal(directory, "owner:guarantor", "agent:guarantor")
-		if err == nil {
+		opened, openErr := OpenGuarantorJournal(directory, "owner:guarantor", "agent:guarantor")
+		if openErr == nil {
 			_ = opened.Close()
 			t.Errorf("a journal whose plan was tampered with (%s) was loaded", name)
 		}
 	}
-	if err := os.WriteFile(file, original, 0o600); err != nil {
+	if err = os.WriteFile(file, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := OpenGuarantorJournal(directory, "owner:guarantor", "agent:guarantor")
@@ -578,7 +615,8 @@ func tamperedTestPlanFields(t *testing.T, planMember, numberField string) map[st
 		"a semantic field value changed": func(coverage map[string]any) {
 			fields, stored := planOf(coverage)["semantic_fields"].([]any)
 			if !stored {
-				t.Fatalf("the plan's semantic field values are not in the document: %v", planOf(coverage)["semantic_fields"])
+				t.Fatalf("the plan's semantic field values are not in the document: %v",
+					planOf(coverage)["semantic_fields"])
 			}
 			for _, field := range fields {
 				if value := field.(map[string]any); value["name"] == numberField {
@@ -604,7 +642,8 @@ func tamperedTestPlanFields(t *testing.T, planMember, numberField string) map[st
 			planOf(coverage)["semantic_fields"] = emptied
 		},
 		"the writer fence given another generation": func(coverage map[string]any) {
-			planOf(coverage)["writer_fence"].(map[string]any)["body"].(map[string]any)["writer_generation"] = json.Number("4611686018427387904")
+			fence := planOf(coverage)["writer_fence"].(map[string]any)["body"].(map[string]any)
+			fence["writer_generation"] = json.Number("4611686018427387904")
 		},
 		"the canonical request changed": func(coverage map[string]any) {
 			planOf(coverage)["canonical_request"] = "cmVsZWFzZS1zb21ldGhpbmctZWxzZQ=="
@@ -619,7 +658,8 @@ func tamperedTestExposureReleasePlan(t *testing.T) map[string]func(coverage map[
 	t.Helper()
 	tampered := tamperedTestPlanFields(t, "exposure_release_plan", "target_revision")
 	tampered["the planned target revision changed"] = func(coverage map[string]any) {
-		coverage["exposure_release_plan"].(map[string]any)["request_body"].(map[string]any)["target_portfolio_revision"] = json.Number("4611686018427387904")
+		request := coverage["exposure_release_plan"].(map[string]any)["request_body"].(map[string]any)
+		request["target_portfolio_revision"] = json.Number("4611686018427387904")
 	}
 	tampered["the stored terminal claim set changed"] = func(coverage map[string]any) {
 		coverage["terminal_claim_set"].(map[string]any)["body"].(map[string]any)["created_at_unix"] = json.Number("1")
@@ -636,17 +676,22 @@ func tamperedTestExposureReleasePlan(t *testing.T) map[string]func(coverage map[
 // tamperedTestCoverageResolutionPlan are the changes to a coverage holding a
 // coverage-resolution plan that a load must refuse: the plan itself changed,
 // or the exposure release it resolves from.
-func tamperedTestCoverageResolutionPlan(t *testing.T, otherTargetState string) map[string]func(coverage map[string]any) {
+func tamperedTestCoverageResolutionPlan(
+	t *testing.T,
+	otherTargetState string,
+) map[string]func(coverage map[string]any) {
 	t.Helper()
 	tampered := tamperedTestPlanFields(t, "coverage_resolution_plan", "expected_state_revision")
 	tampered["the planned target state changed"] = func(coverage map[string]any) {
 		coverage["coverage_resolution_plan"].(map[string]any)["target_state"] = otherTargetState
 	}
 	tampered["the planned expected revision changed"] = func(coverage map[string]any) {
-		coverage["coverage_resolution_plan"].(map[string]any)["request_body"].(map[string]any)["expected_coverage_revision"] = json.Number("4611686018427387904")
+		request := coverage["coverage_resolution_plan"].(map[string]any)["request_body"].(map[string]any)
+		request["expected_coverage_revision"] = json.Number("4611686018427387904")
 	}
 	tampered["the stored exposure release changed"] = func(coverage map[string]any) {
-		coverage["exposure_release_receipt"].(map[string]any)["body"].(map[string]any)["released_at_unix"] = json.Number("1")
+		receipt := coverage["exposure_release_receipt"].(map[string]any)["body"].(map[string]any)
+		receipt["released_at_unix"] = json.Number("1")
 	}
 	tampered["the stored exposure release removed"] = func(coverage map[string]any) {
 		delete(coverage, "exposure_release_receipt")
@@ -668,10 +713,10 @@ func TestGuarantorJournalRefusesATamperedPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeGuarantorJournalOnCleanup(t, journal)
-	if _, err := journal.StoreOfferReleasePlan(offerID, testGuarantorOfferReleasePlan(t, position, 6)); err != nil {
+	if _, err = journal.StoreOfferReleasePlan(offerID, testGuarantorOfferReleasePlan(t, position, 6)); err != nil {
 		t.Fatal(err)
 	}
-	if err := journal.Close(); err != nil {
+	if err = journal.Close(); err != nil {
 		t.Fatal(err)
 	}
 	original, err := os.ReadFile(filepath.Join(directory, guarantorJournalFile))
@@ -724,9 +769,11 @@ func TestGuarantorJournalRefusesATamperedPlan(t *testing.T) {
 			delete(planOf(t, doc), "semantic_fields")
 		},
 		"the semantic fields emptied": func(t *testing.T, doc map[string]any) {
-			planOf(t, doc)["semantic_fields"] = map[string]any{"owner_id": map[string]any{}, "agent_id": map[string]any{},
+			planOf(t, doc)["semantic_fields"] = map[string]any{
+				"owner_id": map[string]any{}, "agent_id": map[string]any{},
 				"reservation_id": map[string]any{}, "target_revision": map[string]any{},
-				"terminal_evidence_set_digest": map[string]any{}}
+				"terminal_evidence_set_digest": map[string]any{},
+			}
 		},
 		"the stable action identity changed": func(t *testing.T, doc map[string]any) {
 			planOf(t, doc)["authorized_action"].(map[string]any)["stable_action_id"] = digest("c")
@@ -802,7 +849,7 @@ func TestGuarantorJournalRefusesATamperedPlan(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			editTestGuarantorJournalFile(t, directory, original, func(doc map[string]any) { change(t, doc) })
-			if err := openTestGuarantorJournalErr(t, directory); err == nil {
+			if openErr := openTestGuarantorJournalErr(t, directory); openErr == nil {
 				// The journal opened holds the process-wide domain lock.
 				t.Error("a journal with a tampered plan was loaded")
 			}
@@ -828,10 +875,11 @@ func TestGuarantorJournalRefusesATamperedPlan(t *testing.T) {
 		"two offers of one identity in the offers": insertBefore(t, `"`+offerID+`":{`, `"`+offerID+`":null,`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := os.WriteFile(filepath.Join(directory, guarantorJournalFile), edited, 0o600); err != nil {
-				t.Fatal(err)
+			writeErr := os.WriteFile(filepath.Join(directory, guarantorJournalFile), edited, 0o600)
+			if writeErr != nil {
+				t.Fatal(writeErr)
 			}
-			if err := openTestGuarantorJournalErr(t, directory); err == nil {
+			if openErr := openTestGuarantorJournalErr(t, directory); openErr == nil {
 				t.Error("a journal with a member written twice was loaded")
 			}
 		})

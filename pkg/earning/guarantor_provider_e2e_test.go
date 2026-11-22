@@ -1486,6 +1486,14 @@ func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackSce
 	// and coverage closure.
 	exerciseFallback := func(fallbackAt time.Time, wantPath string) guarantor.AuthorizedClaimDecisionAdmissionReceiptV1 {
 		authority.now = func() time.Time { return fallbackAt }
+		// The fallback is first admitted by a process that dies after its
+		// terminal transition and restarts under a new writer generation.
+		stopTestGuarantorCallAfterEachTerminalTransition(t, "admitting the fallback decision", &coordinator,
+			restartWriter, 1, func() error {
+				_, stopErr := coordinator.AdmitInitialFallbackDecision(context.Background(),
+					GuarantorAdmitInitialFallbackInput{AgreementDigest: agreementDigest, ClaimID: claimID}, fence)
+				return stopErr
+			})
 		fallbackAdmission, err := coordinator.AdmitInitialFallbackDecision(context.Background(),
 			GuarantorAdmitInitialFallbackInput{AgreementDigest: agreementDigest, ClaimID: claimID}, fence)
 		if err != nil || fallbackAdmission.Resolution.State != commerce.ActionTerminal ||
@@ -1525,6 +1533,16 @@ func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackSce
 		// claim set, whose verifier checks it against the fallback authority set.
 		closeCoverageAt := now.Add(45 * time.Minute)
 		authority.now = func() time.Time { return closeCoverageAt }
+		// The closure is first run by a process that dies after the terminal
+		// transition of the filing close, and by one that dies after that of
+		// the closure, each restarting under a new writer generation.
+		stopTestGuarantorCallAfterEachTerminalTransition(t, "closing the coverage", &coordinator, restartWriter, 2,
+			func() error {
+				_, stopErr := coordinator.CloseCoverage(context.Background(), GuarantorCloseCoverageInput{
+					Offer: offer, ActivationEvidence: activation,
+				}, fence)
+				return stopErr
+			})
 		closedCoverage, err := coordinator.CloseCoverage(context.Background(), GuarantorCloseCoverageInput{Offer: offer,
 			ActivationEvidence: activation}, fence)
 		if err != nil || closedCoverage.CoverageResolution.Body.TerminalState != "closed" ||
@@ -2491,8 +2509,19 @@ func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackSce
 	if _, _, crashErr := coordinator.ConfirmActivationWindowExpired(context.Background(), nonActivationInput, fence); crashErr == nil {
 		t.Fatal("non-activation did not surface the injected post-terminal crash")
 	}
+	// The process restarts under a new writer generation and the confirmation
+	// is repeated a second later: it is resolved from its plan, at the time
+	// the stopped call resolved it.
+	coordinator.Authority = baseAuthority
+	restartWriter()
+	laterNonActivationInput := nonActivationInput
+	laterNonActivationInput.ResolvedAtUnix++
 	nonActivationEvidence, nonActivationResolution, err := coordinator.ConfirmActivationWindowExpired(context.Background(),
-		nonActivationInput, fence)
+		laterNonActivationInput, fence)
+	if err == nil && nonActivationEvidence.Body.ResolvedAtUnix != nonActivationInput.ResolvedAtUnix {
+		t.Fatalf("the resumed non-activation was resolved at %d, want the stopped call's %d",
+			nonActivationEvidence.Body.ResolvedAtUnix, nonActivationInput.ResolvedAtUnix)
+	}
 	if err != nil || nonActivationResolution.State != commerce.ActionTerminal ||
 		nonActivationEvidence.Body.Reason != "activation_window_expired" || nonActivationEvidence.Body.ActivationAdmissionHighWater != 0 {
 		t.Fatalf("confirm non-activation: state=%s body=%#v err=%v", nonActivationResolution.State, nonActivationEvidence.Body, err)
@@ -2511,6 +2540,17 @@ func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackSce
 	if !foundNonActivation {
 		t.Fatal("non-activated coverage was not durably projected")
 	}
+	// The release is first made by a process that dies after the authority
+	// released the reservation, which also moved the portfolio revision the
+	// release names. The process restarts under a new writer generation and
+	// the repeated release completes from its plan.
+	coordinator.Authority = &failAfterReleaseEconomicAuthority{EconomicAuthority: baseAuthority, failOnce: true}
+	if _, _, crashErr := coordinator.ReleaseNonActivatedExposure(context.Background(), nonActivationOffer,
+		nonActivationEvidence, fence); crashErr == nil {
+		t.Fatal("the non-activation release did not surface the injected stop after the authority's release")
+	}
+	coordinator.Authority = baseAuthority
+	restartWriter()
 	nonActivationRelease, nonActivationReleaseResolution, err := coordinator.ReleaseNonActivatedExposure(
 		context.Background(), nonActivationOffer, nonActivationEvidence, fence)
 	if err != nil || nonActivationReleaseResolution.State != commerce.ActionTerminal ||
@@ -2612,7 +2652,16 @@ func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackSce
 	if _, _, crashErr := coordinator.CancelCoverage(context.Background(), cancelInput, fence); crashErr == nil {
 		t.Fatal("cancellation did not surface the injected post-terminal crash")
 	}
-	cancelReceipt, cancellationResolution, err := coordinator.CancelCoverage(context.Background(), cancelInput, fence)
+	// The process restarts under a new writer generation and the cancellation
+	// is repeated a second later, as the event handler repeats it with its own
+	// clock: it is admitted from its plan, at the time the stopped call
+	// admitted it, which the assertion below on the eligibility end checks.
+	coordinator.Authority = baseAuthority
+	restartWriter()
+	laterCancelInput := cancelInput
+	laterCancelInput.AdmittedAtUnix++
+	cancelReceipt, cancellationResolution, err := coordinator.CancelCoverage(context.Background(), laterCancelInput,
+		fence)
 	if err != nil || cancellationResolution.State != commerce.ActionTerminal || cancelReceipt.Body.State != "coverage_ended" ||
 		cancelReceipt.Body.IncidentEligibilityEndsAtUnix != uint64(cancelCreated.Add(5*time.Second).Unix()) {
 		t.Fatalf("cancel active coverage: state=%s body=%#v err=%v", cancellationResolution.State, cancelReceipt.Body, err)
@@ -2733,8 +2782,11 @@ func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackSce
 	}
 	closeGuarantorJournalOnCleanup(t, reopened)
 	_, _, recovered := testGuarantorSnapshot(t, reopened)
-	if len(recovered) != 3 {
-		t.Fatalf("unexpected recovered Guarantor coverage count: %#v", recovered)
+	// The main coverage, the one never activated, the one ended by its
+	// cancellation and the one whose acceptance was resumed after its commit
+	// failed.
+	if len(recovered) != 4 {
+		t.Fatalf("unexpected recovered Guarantor coverage count: %d", len(recovered))
 	}
 	var recoveredTerminal bool
 	for _, candidate := range recovered {

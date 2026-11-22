@@ -1,0 +1,368 @@
+package earning
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
+	guarantor "github.com/tosnetwork/ai/protocol/pkg/agentguarantor"
+)
+
+// actionPlanTestAgreement is the coverage Agreement of the fixture's coverage.
+var actionPlanTestAgreement = "sha256:" + strings.Repeat("c", 64)
+
+// actionPlanFixture is a journal holding one coverage, beside a real
+// authority that issues the writer fences and signs the actions of the plans
+// a test stores.
+type actionPlanFixture struct {
+	journal   *GuarantorJournal
+	directory string
+	authority *PersonalAuthority
+	fence     commerce.WriterFence
+	scope     []string
+}
+
+func newActionPlanFixture(t *testing.T) *actionPlanFixture {
+	t.Helper()
+	journal, directory := openTestGuarantorJournal(t)
+	claimID := "sha256:" + strings.Repeat("b", 64)
+	rewriteTestGuarantorJournal(t, journal, func(doc *guarantorJournalDocument) {
+		position := testCoverageWithClaim(claimID)
+		position.RevisionEpochs = map[string]GuarantorRevisionEpochState{claimID: testFrozenEpoch()}
+		position.Record.CoverageAgreementBodyDigest = actionPlanTestAgreement
+		position.Record.ReservationID = "sha256:" + strings.Repeat("2", 64)
+		doc.Coverages[actionPlanTestAgreement] = position
+	})
+	journal, err := OpenGuarantorJournal(directory, "owner:guarantor", "agent:guarantor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeGuarantorJournalOnCleanup(t, journal)
+	authorityDirectory := filepath.Join(t.TempDir(), "authority")
+	if err = os.Mkdir(authorityDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:guarantor", "agent:guarantor", "authority:owner",
+		testAuthorityKeys(), PortfolioLimits{MaximumLossAtomic: 10_000, LockedCapitalAtomic: 10_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = authority.Close() })
+	fixture := &actionPlanFixture{
+		journal: journal, directory: directory, authority: authority,
+		scope: []string{"conditional.obligation.transition", "portfolio.release"},
+	}
+	sort.Strings(fixture.scope)
+	fixture.fence = fixture.nextFence(t)
+	return fixture
+}
+
+// nextFence takes the next writer generation.
+func (fixture *actionPlanFixture) nextFence(t *testing.T) commerce.WriterFence {
+	t.Helper()
+	fence, err := fixture.authority.AcquireWriter(context.Background(), "instance:test", fixture.scope, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fence
+}
+
+// plan returns a cancellation plan for the fixture's coverage, authorized
+// under fence, whose request is request.
+func (fixture *actionPlanFixture) plan(t *testing.T, fence commerce.WriterFence, request string,
+) GuarantorActionPlan {
+	t.Helper()
+	fields := map[string]commerce.SemanticValue{
+		"owner_id": commerce.ID("owner:guarantor"), "agent_id": commerce.ID("agent:guarantor"),
+		"agreement_body_digest":   commerce.Digest32(actionPlanTestAgreement),
+		"obligation_id":           commerce.ID("obligation:coverage"),
+		"expected_state_revision": commerce.U64(1), "target_state": commerce.State("coverage_ended"),
+		"evidence_set_digest": commerce.Digest32("sha256:" + strings.Repeat("e", 64)),
+	}
+	canonical, err := guarantor.Canonical(struct {
+		Request string `json:"request"`
+	}{request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	action, err := commerce.BuildAuthorizedAction("owner:guarantor", "agent:guarantor",
+		"conditional.obligation.transition", fields, canonical, fence, 1, "sha256:"+strings.Repeat("5", 64), "",
+		"sha256:"+strings.Repeat("a", 64), fence.Body.ExpiresAtUnix)
+	if err == nil {
+		action, err = fixture.authority.SignAction(action, fence)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return GuarantorActionPlan{
+		Kind: guarantorPlanCoverageCancellation, ScopeID: actionPlanTestAgreement, Action: action, WriterFence: fence,
+		Fields: fields, CanonicalRequest: canonical, PreparedAtUnix: 2_000_000_000,
+	}
+}
+
+func (fixture *actionPlanFixture) revision(t *testing.T) uint64 {
+	t.Helper()
+	revision, _, _ := testGuarantorSnapshot(t, fixture.journal)
+	return revision
+}
+
+// TestGuarantorJournalStoresOnlyAnActionPlanItWouldLoad: an action plan is
+// stored once per head, read back with its semantic fields, kept across a
+// restart, and refused when it is not one a load would accept or when its
+// head already holds another.
+func TestGuarantorJournalStoresOnlyAnActionPlanItWouldLoad(t *testing.T) {
+	fixture := newActionPlanFixture(t)
+	plan := fixture.plan(t, fixture.fence, "cancel")
+	before := fixture.revision(t)
+	for name, change := range map[string]func(plan *GuarantorActionPlan){
+		"an unknown kind":            func(plan *GuarantorActionPlan) { plan.Kind = "coverage_revival" },
+		"a kind with another action": func(plan *GuarantorActionPlan) { plan.Kind = guarantorPlanClaimIngress },
+		"a scope that is no digest":  func(plan *GuarantorActionPlan) { plan.ScopeID = "coverage" },
+		"a coverage the journal does not hold": func(plan *GuarantorActionPlan) {
+			plan.ScopeID = "sha256:" + strings.Repeat("d", 64)
+		},
+		"no time":                   func(plan *GuarantorActionPlan) { plan.PreparedAtUnix = 0 },
+		"another owner's action":    func(plan *GuarantorActionPlan) { plan.Action.OwnerID = "owner:other" },
+		"another stable identity":   func(plan *GuarantorActionPlan) { plan.Action.StableActionID = plan.ScopeID },
+		"another request":           func(plan *GuarantorActionPlan) { plan.CanonicalRequest = []byte{0xa0} },
+		"another writer generation": func(plan *GuarantorActionPlan) { plan.Action.WriterGeneration++ },
+		"another writer fence":      func(plan *GuarantorActionPlan) { plan.WriterFence.Body.LeaseID = "lease:other" },
+		"fields for another coverage": func(plan *GuarantorActionPlan) {
+			fields := map[string]commerce.SemanticValue{}
+			for field, value := range plan.Fields {
+				fields[field] = value
+			}
+			fields["agreement_body_digest"] = commerce.Digest32("sha256:" + strings.Repeat("d", 64))
+			plan.Fields = fields
+		},
+	} {
+		changed := plan
+		change(&changed)
+		if err := fixture.journal.PrepareActionPlan(changed); err == nil {
+			t.Errorf("an action plan with %s was stored", name)
+		}
+	}
+	if after := fixture.revision(t); after != before {
+		t.Fatalf("refused action plans changed the journal: revision %d, want %d", after, before)
+	}
+	if err := fixture.journal.PrepareActionPlan(plan); err != nil {
+		t.Fatalf("store a valid action plan: %v", err)
+	}
+	if err := fixture.journal.PrepareActionPlan(plan); err != nil || fixture.revision(t) != before+1 {
+		t.Fatalf("storing the same action plan again: revision %d, want %d, err=%v", fixture.revision(t), before+1, err)
+	}
+	if err := fixture.journal.PrepareActionPlan(fixture.plan(t, fixture.fence, "another")); err == nil ||
+		!strings.Contains(err.Error(), "conflicts with the plan stored") {
+		t.Fatalf("a second action plan for a head that holds one: got %v", err)
+	}
+	requireStored := func(journal *GuarantorJournal, when string) {
+		t.Helper()
+		stored, found, err := journal.ActionPlan(plan.Kind, plan.ScopeID, plan.SubjectID)
+		if err != nil || !found || !sameJSON(stored, plan) || !reflect.DeepEqual(stored.Fields, plan.Fields) {
+			t.Fatalf("the action plan %s: found=%v err=%v, or it is not the plan stored", when, found, err)
+		}
+	}
+	requireStored(fixture.journal, "read back")
+	fixture.journal = reopenTestGuarantorJournal(t, fixture.journal, fixture.directory)
+	requireStored(fixture.journal, "loaded from disk")
+	if _, found, err := fixture.journal.ActionPlan(guarantorPlanCoverageActivation, plan.ScopeID, ""); err != nil ||
+		found {
+		t.Fatalf("a head without a plan returned one: found=%v err=%v", found, err)
+	}
+}
+
+// TestGuarantorJournalRefusesATamperedActionPlan: a document whose action
+// plan was changed on disk is refused at load; the same document written back
+// unchanged loads.
+func TestGuarantorJournalRefusesATamperedActionPlan(t *testing.T) {
+	fixture := newActionPlanFixture(t)
+	plan := fixture.plan(t, fixture.fence, "cancel")
+	if err := fixture.journal.PrepareActionPlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(filepath.Join(fixture.directory, guarantorJournalFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := guarantorActionPlanKey(plan.Kind, plan.ScopeID, plan.SubjectID)
+	stored := func(doc map[string]any) map[string]any {
+		entry, found := doc["action_plans"].(map[string]any)[key].(map[string]any)
+		if !found {
+			t.Fatalf("the document holds no action plan under %s", key)
+		}
+		return entry
+	}
+	action := func(doc map[string]any) map[string]any {
+		entry, found := stored(doc)["authorized_action"].(map[string]any)
+		if !found {
+			t.Fatal("the stored action plan has no action object")
+		}
+		return entry
+	}
+	other := "sha256:" + strings.Repeat("d", 64)
+	for name, change := range map[string]func(doc map[string]any){
+		"its kind":              func(doc map[string]any) { stored(doc)["kind"] = guarantorPlanNonActivation },
+		"an unknown kind":       func(doc map[string]any) { stored(doc)["kind"] = "coverage_revival" },
+		"its scope":             func(doc map[string]any) { stored(doc)["scope_id"] = other },
+		"its subject":           func(doc map[string]any) { stored(doc)["subject_id"] = "claim" },
+		"its time removed":      func(doc map[string]any) { stored(doc)["prepared_at_unix"] = 0 },
+		"its stable identity":   func(doc map[string]any) { action(doc)["stable_action_id"] = other },
+		"its request digest":    func(doc map[string]any) { action(doc)["exact_request_digest"] = other },
+		"its action's owner":    func(doc map[string]any) { action(doc)["owner_id"] = "owner:other" },
+		"its writer generation": func(doc map[string]any) { action(doc)["writer_generation"] = 99 },
+		"its request":           func(doc map[string]any) { stored(doc)["canonical_request"] = "oA==" },
+		"its fields removed":    func(doc map[string]any) { delete(stored(doc), "semantic_fields") },
+		"an unknown member":     func(doc map[string]any) { stored(doc)["note"] = "x" },
+		"its key": func(doc map[string]any) {
+			plans := doc["action_plans"].(map[string]any)
+			plans[guarantorActionPlanKey(plan.Kind, other, "")] = plans[key]
+			delete(plans, key)
+		},
+		"its coverage removed": func(doc map[string]any) { doc["coverages"] = map[string]any{} },
+		"an empty plan map":    func(doc map[string]any) { doc["action_plans"] = map[string]any{} },
+	} {
+		editTestGuarantorJournalFile(t, fixture.directory, original, change)
+		if loadErr := openTestGuarantorJournalErr(t, fixture.directory); loadErr == nil {
+			t.Errorf("a journal whose action plan has %s changed was loaded", name)
+		}
+	}
+	editTestGuarantorJournalFile(t, fixture.directory, original, func(map[string]any) {})
+	if loadErr := openTestGuarantorJournalErr(t, fixture.directory); loadErr != nil {
+		t.Fatalf("the unchanged journal with its action plan was refused: %v", loadErr)
+	}
+}
+
+// TestGuarantorActionPlanIsDiscardedOrReauthorizedByWhatTheAuthorityHolds: a
+// plan whose action the authority never saw is discarded and the head is
+// free; a plan whose action is prepared is kept by its own writer generation
+// and authorized again, as the same action at a later time, by a newer one;
+// a plan whose action is terminal is kept as stored by any generation.
+func TestGuarantorActionPlanIsDiscardedOrReauthorizedByWhatTheAuthorityHolds(t *testing.T) {
+	fixture := newActionPlanFixture(t)
+	coordinator := &GuarantorProviderCoordinator{
+		OwnerID: "owner:guarantor", AgentID: "agent:guarantor", PolicyRevision: 1,
+		MandateDigest: "sha256:" + strings.Repeat("5", 64), Authority: fixture.authority, Journal: fixture.journal,
+	}
+	kind, scope := guarantorPlanCoverageCancellation, actionPlanTestAgreement
+	first := time.Unix(2_000_000_000, 0).UTC()
+	fixture.authority.now = func() time.Time { return first }
+	fixture.fence = fixture.nextFence(t)
+	plan := fixture.plan(t, fixture.fence, "cancel")
+	lookup := func(fence commerce.WriterFence, at time.Time) guarantorPlannedAction {
+		t.Helper()
+		planned, err := coordinator.plannedAction(kind, scope, "", fence, at)
+		if err != nil {
+			t.Fatalf("look the action plan up: %v", err)
+		}
+		return planned
+	}
+	authorize := func(planned guarantorPlannedAction, fence commerce.WriterFence, request []byte,
+	) (commerce.AuthorizedAction, error) {
+		return coordinator.authorizePlannedAction(planned, "owner:guarantor", "agent:guarantor",
+			"conditional.obligation.transition", plan.Fields, request, fence, plan.Action.ExpectedPriorState,
+			fence.Body.ExpiresAtUnix)
+	}
+
+	// Never admitted: discarded.
+	if err := fixture.journal.PrepareActionPlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	if planned := lookup(fixture.fence, first); planned.resuming() {
+		t.Fatal("a plan whose action the authority never saw is resumed")
+	}
+	if _, found, err := fixture.journal.ActionPlan(kind, scope, ""); err != nil || found {
+		t.Fatalf("a plan whose action the authority never saw was kept: found=%v err=%v", found, err)
+	}
+
+	// Prepared: the first call stores the plan and admits the action.
+	planned := lookup(fixture.fence, first)
+	action, err := authorize(planned, fixture.fence, plan.CanonicalRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, request := plan.Fields, plan.CanonicalRequest
+	resolution, err := coordinator.admitPlannedAction(planned, action, fields, request, fixture.fence, first)
+	if err != nil || resolution.State != commerce.ActionPrepared {
+		t.Fatalf("admit the planned action: state=%s err=%v", resolution.State, err)
+	}
+	// Its own generation keeps the plan, its fence and its time.
+	later := first.Add(time.Minute)
+	same := lookup(fixture.fence, later)
+	if !same.keepsPlan() || !same.at(later).Equal(first) || !sameJSON(same.fence(fixture.fence), fixture.fence) {
+		t.Fatalf("the plan's own generation does not keep the prepared plan: %#v", same)
+	}
+	// A different request for the head is refused.
+	if _, err = authorize(same, fixture.fence, []byte{0xa0}); err == nil ||
+		!strings.Contains(err.Error(), "conflicts with the action already prepared") {
+		t.Fatalf("a different request for a head with a prepared plan: got %v", err)
+	}
+	// A newer generation authorizes the same action again, at its own time.
+	fixture.authority.now = func() time.Time { return later }
+	newer := fixture.nextFence(t)
+	reauthorized := lookup(newer, later)
+	if !reauthorized.resuming() || reauthorized.keepsPlan() || !reauthorized.at(later).Equal(later) {
+		t.Fatalf("a newer generation keeps the authorization of a prepared plan: %#v", reauthorized)
+	}
+	again, err := authorize(reauthorized, newer, plan.CanonicalRequest)
+	if err != nil || again.StableActionID != action.StableActionID ||
+		again.ExactRequestDigest != action.ExactRequestDigest || again.WriterGeneration != newer.Body.WriterGeneration {
+		t.Fatalf("reauthorize the prepared action: generation %d err=%v", again.WriterGeneration, err)
+	}
+	stored, found, err := fixture.journal.ActionPlan(kind, scope, "")
+	if err != nil || !found || !sameJSON(stored.Action, again) || !sameJSON(stored.WriterFence, newer) ||
+		stored.PreparedAtUnix != uint64(later.Unix()) {
+		t.Fatalf("the reauthorized plan is not the one stored: found=%v err=%v", found, err)
+	}
+	if _, staleErr := coordinator.plannedAction(kind, scope, "", fixture.fence, later); staleErr == nil ||
+		!strings.Contains(staleErr.Error(), "stale writer") {
+		t.Fatalf("an older generation looked a newer generation's prepared plan up: %v", staleErr)
+	}
+	backwards := stored
+	backwards.PreparedAtUnix--
+	if err = fixture.journal.ReauthorizeActionPlan(backwards); err == nil {
+		t.Fatal("a plan was reauthorized without a newer generation, back in time")
+	}
+
+	// Terminal: any generation keeps the plan as stored, and the result the
+	// authority recorded must be the one the call rebuilds.
+	sink := "sha256:" + strings.Repeat("7", 64)
+	resolution, err = coordinator.settlePlannedAction(resolution, again, sink, []string{sink})
+	if err != nil || resolution.State != commerce.ActionTerminal {
+		t.Fatalf("settle the planned action: state=%s err=%v", resolution.State, err)
+	}
+	newest := fixture.nextFence(t)
+	terminal := lookup(newest, later.Add(time.Minute))
+	if !terminal.keepsPlan() || !terminal.at(later.Add(time.Minute)).Equal(later) ||
+		!sameJSON(terminal.fence(newest), newer) {
+		t.Fatalf("a terminal plan is not kept as stored by a newer generation: %#v", terminal)
+	}
+	if _, err = coordinator.settlePlannedAction(resolution, again, sink, []string{sink}); err != nil {
+		t.Fatalf("settling a terminal action with the result it has: %v", err)
+	}
+	otherSink := "sha256:" + strings.Repeat("8", 64)
+	if _, err = coordinator.settlePlannedAction(resolution, again, otherSink, []string{otherSink}); err == nil ||
+		!strings.Contains(err.Error(), "conflicts with the receipt rebuilt") {
+		t.Fatalf("settling a terminal action with another result: got %v", err)
+	}
+	if err = fixture.journal.DiscardUnadmittedActionPlan(kind, scope, "", fixture.authority); err == nil {
+		t.Fatal("a plan whose action is terminal was discarded")
+	}
+	// An action the authority knows without a plan is not built on.
+	fixture.journal.mu.Lock()
+	delete(fixture.journal.doc.ActionPlans, guarantorActionPlanKey(kind, scope, ""))
+	fixture.journal.mu.Unlock()
+	orphan := lookup(newest, later)
+	_, err = coordinator.admitPlannedAction(orphan, again, fields, request, newest, later)
+	if err == nil || !strings.Contains(err.Error(), "holds no plan for it") {
+		t.Fatalf("admitting an action the authority holds as terminal without a plan: got %v", err)
+	}
+}

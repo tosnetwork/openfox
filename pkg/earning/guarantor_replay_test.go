@@ -14,13 +14,11 @@ import (
 // terminal transitions: the authority has made the action terminal and the
 // call returns before it commits anything for it. After each stop the process
 // restarts, which restart does: the journal is opened from disk and the
-// writer takes a new generation, and the authority's clock has moved on. The
-// call is then made again. Each stopped call must fail with the injected
-// stop, leave an action plan in the journal and leave the authority holding
-// a plan's action as terminal.
+// writer takes a new generation. The call is then made again. Each stopped
+// call must fail with the injected stop, leave an action plan in the journal
+// and leave the authority holding a plan's action as terminal.
 func stopTestGuarantorCallAfterEachTerminalTransition(t *testing.T, name string,
-	coordinator *GuarantorProviderCoordinator, authority *PersonalAuthority, restart func(), stops int,
-	call func() error,
+	coordinator *GuarantorProviderCoordinator, restart func(), stops int, call func() error,
 ) {
 	t.Helper()
 	base := coordinator.Authority
@@ -47,8 +45,6 @@ func stopTestGuarantorCallAfterEachTerminalTransition(t *testing.T, name string,
 				"want a plan whose action is terminal", name, stop, stops, plans, terminal)
 		}
 		restart()
-		later := authority.now
-		authority.now = func() time.Time { return later().Add(time.Second) }
 	}
 }
 
@@ -69,18 +65,24 @@ func stopTestGuarantorCallAfterEachTerminalTransition(t *testing.T, name string,
 // Every repetition must return what the completing call returned with its
 // error and must commit nothing, and no action plan is left. different, when
 // given, makes a different request for the same head and must be refused as a
-// conflict. The authority's clock is as it was when this returns.
+// conflict.
+//
+// The call that completes, and every repetition, runs with the authority's
+// clock a second later than the stopped calls ran: the receipt is the one the
+// stopped call prepared, at that call's time. The clock is as it was when
+// this returns.
 func requireCommittedGuarantorReceiptReplays[Result any](t *testing.T, name string,
 	coordinator *GuarantorProviderCoordinator, authority *PersonalAuthority, restart func(), stops int,
 	call func() (Result, error), different func() error,
 ) Result {
 	t.Helper()
-	clock := authority.now
-	defer func() { authority.now = clock }()
-	stopTestGuarantorCallAfterEachTerminalTransition(t, name, coordinator, authority, restart, stops, func() error {
+	stopTestGuarantorCallAfterEachTerminalTransition(t, name, coordinator, restart, stops, func() error {
 		_, err := call()
 		return err
 	})
+	clock := authority.now
+	defer func() { authority.now = clock }()
+	authority.now = func() time.Time { return clock().Add(time.Second) }
 	fault := &journalSyncLossFault{remaining: 1}
 	remove := fault.install(coordinator.Journal)
 	committed, err := call()

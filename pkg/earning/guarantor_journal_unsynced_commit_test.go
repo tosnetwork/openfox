@@ -303,11 +303,11 @@ func scriptTestGuarantorDocumentWrites(journal *GuarantorJournal, outcomes ...st
 // not lost: the process restarts, the acceptance is repeated at a later time
 // and completes from its plan, received when the stopped call received it.
 //
-// The second acceptance arrives after its offer's cutoff, inside the
-// processing grace the protocol allows, so the journal refuses it. The
-// coordinator learns that while the action is only prepared and rejects it:
-// the authority holds the rejection, the admission log records it, and the
-// commit that records it loses its sync and is reported with the refusal.
+// The second acceptance is one the journal refuses although the signed offer
+// allows it. The coordinator learns that while the action is only prepared
+// and rejects it: the authority holds the rejection, the admission log
+// records it, and the commit that records it loses its sync and is reported
+// with the refusal.
 func requireAcceptanceIsRejectedOnlyWhilePrepared(t *testing.T, coordinator *GuarantorProviderCoordinator,
 	restart func(), fence func() commerce.WriterFence,
 	issue func(name string, issuedAt time.Time, coverageID, stateDomain string) (commerce.AgentAgreementBody,
@@ -372,12 +372,30 @@ func requireAcceptanceIsRejectedOnlyWhilePrepared(t *testing.T, coordinator *Gua
 			len(coveragesBefore)+1)
 	}
 
+	// The first offer is now an accepted coverage and still counts against
+	// the covered party's limit, which the lifecycle's policy sets to three
+	// coverages. The second offer is issued under room for one more.
+	perCounterparty := coordinator.Policy.MaximumPerCounterpartyAtomic
+	coordinator.Policy.MaximumPerCounterpartyAtomic = "4000"
 	agreement, offer = issue("refused-acceptance", now.Add(5*time.Second), digest("6"), digest("7"))
+	coordinator.Policy.MaximumPerCounterpartyAtomic = perCounterparty
 	request = sign(agreement, offer)
+	// Every reason the journal has to refuse an acceptance is also checked
+	// before the action is admitted, from the signed offer. To reach the
+	// journal's own refusal, the journal's projection of this offer is
+	// rewritten on disk to close its acceptance window at issuance, and the
+	// journal is opened again: the signed offer is still open, the journal's
+	// record of it is not.
+	rewriteTestGuarantorJournal(t, coordinator.Journal, func(doc *guarantorJournalDocument) {
+		position := doc.Offers[offer.Body.OfferID]
+		position.AcceptByUnix = uint64(now.Unix())
+		doc.Offers[offer.Body.OfferID] = position
+	})
+	restart()
 	// The admission and the plan are written; the recorded rejection is
 	// written and loses its sync.
 	writes, removeScript = scriptTestGuarantorDocumentWrites(coordinator.Journal, "", "", "unsynced")
-	receipt, resolution, err = accept(offer, request, now.Add(70*time.Second))
+	receipt, resolution, err = accept(offer, request, receivedAt)
 	removeScript()
 	if *writes != 3 || counting.rejections != 1 || resolution.State != commerce.ActionRejected ||
 		receipt.Body.SchemaVersion != 0 {
@@ -398,7 +416,7 @@ func requireAcceptanceIsRejectedOnlyWhilePrepared(t *testing.T, coordinator *Gua
 	}
 	// The stopped call left its plan. The repeated request finds the action
 	// rejected, removes the plan and is refused; it is not rejected twice.
-	_, resolution, err = accept(offer, request, now.Add(70*time.Second))
+	_, resolution, err = accept(offer, request, receivedAt)
 	if err == nil || resolution.State != commerce.ActionRejected || counting.rejections != 1 || planned(offer) {
 		t.Fatalf("the refused acceptance repeated: state %s, %d rejections, err=%v; want it refused as rejected "+
 			"once, with no plan left", resolution.State, counting.rejections, err)

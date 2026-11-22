@@ -9,6 +9,24 @@ import (
 	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 )
 
+// failAfterReleaseEconomicAuthority fails one release of a reservation after
+// the authority underneath has made it, as a process that stops there does.
+type failAfterReleaseEconomicAuthority struct {
+	EconomicAuthority
+	failOnce bool
+}
+
+func (authority *failAfterReleaseEconomicAuthority) ReleaseReservation(action commerce.AuthorizedAction,
+	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence,
+) (commerce.ActionResolution, error) {
+	resolution, err := authority.EconomicAuthority.ReleaseReservation(action, fields, request, fence)
+	if err == nil && authority.failOnce {
+		authority.failOnce = false
+		return resolution, errors.New("injected crash after the authority released the reservation")
+	}
+	return resolution, err
+}
+
 // stopTestGuarantorCallAfterEachTerminalTransition makes one coordinator call
 // stop the way a process that dies does, once after each of its stops
 // terminal transitions: the authority has made the action terminal and the

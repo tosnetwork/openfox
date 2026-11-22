@@ -64,6 +64,21 @@ func createTemporaryFile(dir string, create func(name string) (*os.File, error))
 	return nil, "", lastErr
 }
 
+// CreateTemporaryFileRoot creates the temporary file of an atomic write in dir,
+// a directory inside root, for a caller that does the rest of the write
+// itself. The name is the one WriteFileAtomicRoot would choose, and a name that
+// is taken is replaced by another instead of failing. It returns the open file
+// and its name relative to root; the caller closes the file and renames or
+// removes it.
+func CreateTemporaryFileRoot(root *os.Root, dir string, perm os.FileMode) (*os.File, string, error) {
+	if root == nil || dir == "" || filepath.IsAbs(dir) {
+		return nil, "", errors.New("invalid rooted temporary-file directory")
+	}
+	return createTemporaryFile(dir, func(name string) (*os.File, error) {
+		return root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	})
+}
+
 // IsAtomicWriteTemporaryName reports whether name, a file name without its
 // directory, has the shape of the temporary file of an atomic write:
 // ".tmp-<process>-<nanoseconds>-<random>", the first two parts decimal and the

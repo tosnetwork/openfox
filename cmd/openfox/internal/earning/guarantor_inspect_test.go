@@ -81,7 +81,14 @@ func newInspectTestJournal(t *testing.T) inspectTestJournal {
 	} {
 		coverage[member] = value
 	}
-	document["coverages"] = map[string]any{"sha256:" + strings.Repeat("c", 64): coverage}
+	// A coverage loads only under the coverage Agreement its record names.
+	agreement := "sha256:" + strings.Repeat("c", 64)
+	record, isRecord := coverage["record"].(map[string]any)
+	if !isRecord {
+		t.Fatalf("an empty coverage has no record object: %T", coverage["record"])
+	}
+	record["coverage_agreement_body_digest"] = agreement
+	document["coverages"] = map[string]any{agreement: coverage}
 	edited, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)

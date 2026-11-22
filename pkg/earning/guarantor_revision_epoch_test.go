@@ -160,10 +160,24 @@ func rewriteTestGuarantorJournal(t *testing.T, journal *GuarantorJournal, change
 	}
 }
 
+// testCoverageAgreement is the coverage Agreement testCoverageWithClaim's
+// record names, and so the key such a coverage is stored under.
+var testCoverageAgreement = "sha256:" + strings.Repeat("c", 64)
+
 // testCoverageWithClaim is a minimal loadable coverage position holding one
 // claim whose current decision admission froze epoch 1 with
-// testFrozenCut; its epoch record is left for the test to set.
+// testFrozenCut; its epoch record is left for the test to set. Its record
+// names testCoverageAgreement; a test that stores it under another key sets
+// the record to that key, as a load requires.
 func testCoverageWithClaim(claimID string) GuarantorCoveragePosition {
+	position := testCoverageProjectionWithClaim(claimID)
+	position.Record.CoverageAgreementBodyDigest = testCoverageAgreement
+	return position
+}
+
+// testCoverageProjectionWithClaim is testCoverageWithClaim's position before
+// its record names a coverage Agreement.
+func testCoverageProjectionWithClaim(claimID string) GuarantorCoveragePosition {
 	decision := revisionEpochTestAdmission(testFrozenCut)
 	decision.Body.ClaimID = claimID
 	return GuarantorCoveragePosition{

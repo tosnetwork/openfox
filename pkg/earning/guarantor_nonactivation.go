@@ -37,6 +37,18 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 	if coordinator.Authority.ConfirmCurrentWriterFence(fence, now) != nil {
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, errors.New("Guarantor non-activation writer is stale")
 	}
+	// A call that stopped after preparing this confirmation resumes from its
+	// plan: it is resolved at the plan's time, under the plan's fence,
+	// whatever time and fence the repeated call arrives with.
+	planned, err := coordinator.plannedAction(guarantorPlanNonActivation,
+		input.AcceptanceReceipt.Body.CoverageAgreementBodyDigest, "")
+	if err != nil {
+		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, err
+	}
+	if planned.resuming() {
+		input.ResolvedAtUnix = planned.resume.PreparedAtUnix
+	}
+	fence, now = planned.fence(fence), planned.at(now)
 	terms := input.Offer.CoverageTerms
 	if err := guarantor.VerifyFirmOffer(input.Offer, input.Offer.AuthorizedQuoteRequest,
 		input.AcceptanceReceipt.AuthorizedAcceptanceRequest.CoverageAgreementBody, coordinator.Resolver,
@@ -132,12 +144,9 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 		"agreement_body_digest": commerce.Digest32(agreementDigest), "obligation_id": commerce.ID(position.Record.CoverageObligationID),
 		"expected_state_revision": commerce.U64(position.Record.CoverageRevision), "target_state": commerce.State("not_activated_confirmed"),
 		"evidence_set_digest": commerce.Digest32(projectionDigest)}
-	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.obligation.transition",
-		fields, canonicalRequest, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", position.Record.LastEvidenceDigest,
+	action, err := coordinator.authorizePlannedAction(planned, coordinator.OwnerID, coordinator.AgentID,
+		"conditional.obligation.transition", fields, canonicalRequest, fence, position.Record.LastEvidenceDigest,
 		fence.Body.ExpiresAtUnix)
-	if err == nil {
-		action, err = coordinator.Authority.SignAction(action, fence)
-	}
 	if err != nil {
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
@@ -151,10 +160,9 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 	if err != nil {
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
-	resolution, err := coordinator.Authority.Admit(action, fields, canonicalRequest, fence, nil)
-	if err != nil || resolution.State != commerce.ActionPrepared && resolution.State != commerce.ActionTerminal {
-		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, resolution,
-			firstError(err, errors.New("Guarantor non-activation action did not resolve safely"))
+	resolution, err := coordinator.admitPlannedAction(planned, action, fields, canonicalRequest, fence, now)
+	if err != nil {
+		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, resolution, err
 	}
 	actionDigest, _ := commerce.AuthorizedActionDigest(action)
 	rawProof, err := coordinator.Eligibility.FreshEligibilityProofSet(ctx, "coverage-non-activation",
@@ -186,16 +194,9 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 		ResultingClaimFilingStateRevision: position.Record.FilingStateRevision, ResolvedAtUnix: input.ResolvedAtUnix,
 		AuthorityAdmissionEligibilityProofSetDigest: eligibilityDigest}
 	bodyDigest, _ := guarantor.Digest("tos.service.agent-guarantor-non-activation-evidence-body.v1", body)
-	if resolution.State == commerce.ActionPrepared {
-		resolution, err = coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-			commerce.ActionTerminal, bodyDigest, []string{bodyDigest})
-		if err != nil {
-			return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, resolution, err
-		}
-	}
-	if resolution.State != commerce.ActionTerminal || resolution.SinkReference != bodyDigest {
-		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, resolution,
-			errors.New("Guarantor non-activation terminal result conflicts with the reconstructed evidence")
+	resolution, err = coordinator.settlePlannedAction(resolution, action, bodyDigest, []string{bodyDigest})
+	if err != nil {
+		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, resolution, err
 	}
 	if _, err = coordinator.Journal.ResolveAdmission(actionDomainID, resolution); err != nil {
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, resolution, err

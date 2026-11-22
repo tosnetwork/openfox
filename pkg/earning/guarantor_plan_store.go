@@ -603,5 +603,10 @@ func validateGuarantorPlans(doc guarantorJournalDocument) error {
 			}
 		}
 	}
+	for key, plan := range doc.ActionPlans {
+		if err := validateGuarantorActionPlan(doc, key, plan); err != nil {
+			return fmt.Errorf("action plan %s: %w", key, err)
+		}
+	}
 	return nil
 }

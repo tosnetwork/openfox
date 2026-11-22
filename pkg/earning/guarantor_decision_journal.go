@@ -351,6 +351,7 @@ func (journal *GuarantorJournal) CommitDecisionAdmission(agreementDigest string,
 		position.DecisionApplicationTokens[body.ClaimID] = *body.ResultingApplicationToken
 	}
 	next.Coverages[agreementDigest] = position
+	next.dropActionPlan(guarantorPlanDecisionAdmission, agreementDigest, body.ClaimID)
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return guarantor.ClaimRecord{}, err
@@ -430,6 +431,7 @@ func (journal *GuarantorJournal) CommitClaimStateTransition(agreementDigest stri
 	position.ChallengeRoundsUsed[body.ClaimID] = body.ChallengeRoundsUsedAfter
 	position.NonterminalRoundsUsed[body.ClaimID] = body.NonterminalRoundsUsedAfter
 	next.Coverages[agreementDigest] = position
+	next.dropActionPlan(guarantorPlanClaimTransition, agreementDigest, body.ClaimID)
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return guarantor.ClaimRecord{}, err
@@ -511,6 +513,7 @@ func (journal *GuarantorJournal) CommitDecisionApplication(agreementDigest strin
 	position.MaterializedPayouts[body.ClaimID] = receipt.MaterializedPayoutObligationSet
 	position.DecisionApplicationReceipts[body.ClaimID] = receipt
 	next.Coverages[agreementDigest] = position
+	next.dropActionPlan(guarantorPlanDecisionApplication, agreementDigest, body.ClaimID)
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return guarantor.ClaimRecord{}, err

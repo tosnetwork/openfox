@@ -39,6 +39,14 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
+	// A fallback is a decision admission for the claim's head and shares that
+	// head's plan: a call that stopped after preparing it resumes with the
+	// plan's action, fence and time.
+	planned, err := coordinator.plannedAction(guarantorPlanDecisionAdmission, input.AgreementDigest, input.ClaimID)
+	if err != nil {
+		return GuarantorDecisionAdmissionResult{}, err
+	}
+	fence, now = planned.fence(fence), planned.at(now)
 	fallback := position.Terms.ClaimClosureCapacity.TerminalFallback
 	if fallback.OutcomeRule != "deny_zero" {
 		return GuarantorDecisionAdmissionResult{}, errors.New("OpenFox has no released total-function evaluator for this fallback profile")
@@ -257,9 +265,8 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 		return GuarantorDecisionAdmissionResult{}, err
 	}
 	fields := guarantor.DecisionAdmissionSemanticFieldsV1(bound, actionBody, decision, headDigest, identityDigest)
-	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID,
-		"conditional.claim-decision.admit", fields, request, fence, coordinator.PolicyRevision, coordinator.MandateDigest,
-		"", record.LastEvidenceDigest, func() uint64 {
+	action, err := coordinator.authorizePlannedAction(planned, coordinator.OwnerID, coordinator.AgentID,
+		"conditional.claim-decision.admit", fields, request, fence, record.LastEvidenceDigest, func() uint64 {
 			if lateRecovery {
 				return position.Terms.LateIngressRecoveryDeadlineUnix
 			}
@@ -271,15 +278,12 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 			}
 			return position.Terms.TerminalResolutionDeadlineUnix
 		}())
-	if err == nil {
-		action, err = coordinator.Authority.SignAction(action, fence)
-	}
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
-	resolution, err := coordinator.Authority.Admit(action, fields, request, fence, nil)
-	if err != nil || resolution.State != commerce.ActionPrepared {
-		return GuarantorDecisionAdmissionResult{Resolution: resolution}, firstError(err, errors.New("Guarantor fallback was not prepared"))
+	resolution, err := coordinator.admitPlannedAction(planned, action, fields, request, fence, now)
+	if err != nil {
+		return GuarantorDecisionAdmissionResult{Resolution: resolution}, err
 	}
 	rawEligibility, err := coordinator.Eligibility.FreshEligibilityProofSet(ctx, "claim-decision-fallback-admission",
 		position.Terms.DecisionAdmissionAuthoritySubjects, now)
@@ -360,8 +364,8 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{Resolution: resolution}, err
 	}
-	resolution, err = coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-		commerce.ActionTerminal, bodyDigest, sortedGuarantorEvidence(decisionDigest, bodyDigest))
+	resolution, err = coordinator.settlePlannedAction(resolution, action, bodyDigest,
+		sortedGuarantorEvidence(decisionDigest, bodyDigest))
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{Resolution: resolution}, err
 	}

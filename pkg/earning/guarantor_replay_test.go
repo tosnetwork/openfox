@@ -4,39 +4,99 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	commerce "github.com/tosnetwork/ai/protocol/pkg/agentcommerce"
 )
+
+// stopTestGuarantorCallAfterEachTerminalTransition makes one coordinator call
+// stop the way a process that dies does, once after each of its stops
+// terminal transitions: the authority has made the action terminal and the
+// call returns before it commits anything for it. After each stop the process
+// restarts, which restart does: the journal is opened from disk and the
+// writer takes a new generation, and the authority's clock has moved on. The
+// call is then made again. Each stopped call must fail with the injected
+// stop, leave an action plan in the journal and leave the authority holding
+// a plan's action as terminal.
+func stopTestGuarantorCallAfterEachTerminalTransition(t *testing.T, name string,
+	coordinator *GuarantorProviderCoordinator, authority *PersonalAuthority, restart func(), stops int,
+	call func() error,
+) {
+	t.Helper()
+	base := coordinator.Authority
+	for stop := 1; stop <= stops; stop++ {
+		coordinator.Authority = &failAfterTerminalEconomicAuthority{EconomicAuthority: base, failOnce: true}
+		err := call()
+		coordinator.Authority = base
+		if err == nil || !strings.Contains(err.Error(), "injected crash after terminal authority commit") {
+			t.Fatalf("%s, stop %d of %d after a terminal transition: got %v, want the injected stop", name, stop,
+				stops, err)
+		}
+		terminal := 0
+		coordinator.Journal.mu.Lock()
+		plans := len(coordinator.Journal.doc.ActionPlans)
+		for _, plan := range coordinator.Journal.doc.ActionPlans {
+			state := base.Resolve(plan.Action.StableActionID, plan.Action.ExactRequestDigest).State
+			if state == commerce.ActionTerminal {
+				terminal++
+			}
+		}
+		coordinator.Journal.mu.Unlock()
+		if plans == 0 || terminal == 0 {
+			t.Fatalf("%s, stop %d of %d: the journal holds %d action plans, %d of them terminal at the authority; "+
+				"want a plan whose action is terminal", name, stop, stops, plans, terminal)
+		}
+		restart()
+		later := authority.now
+		authority.now = func() time.Time { return later().Add(time.Second) }
+	}
+}
 
 // requireCommittedGuarantorReceiptReplays makes one coordinator call the way
 // a caller that never sees its return does, and requires the committed
 // receipt every time:
 //
-//   - the call's last commit, the one that stores its receipt, loses its
-//     directory sync: the call returns the committed-but-not-synced error and
-//     the head the request was made against is gone. commits is how many
-//     commits the call makes; the ones before the last are left alone;
+//   - the call first stops once after each of its stops terminal transitions,
+//     with the authority terminal and nothing committed for it, and the
+//     process restarts under a new writer generation and a later clock;
+//   - the call that then completes loses the directory sync of its commit,
+//     the one that stores its receipt: it returns the committed-but-not-synced
+//     error with the receipt, and the head the request was made against is
+//     gone;
 //   - the same request is made again on the same journal;
-//   - the process restarts, the journal is opened from disk, and the same
-//     request is made once more.
+//   - the process restarts once more and the same request is made again.
 //
-// Every repetition must return what the stopped call returned with its error
-// and must commit nothing. different, when given, makes a different request
-// for the same head and must be refused as a conflict. The coordinator is left
-// with the journal opened from disk.
+// Every repetition must return what the completing call returned with its
+// error and must commit nothing, and no action plan is left. different, when
+// given, makes a different request for the same head and must be refused as a
+// conflict. The authority's clock is as it was when this returns.
 func requireCommittedGuarantorReceiptReplays[Result any](t *testing.T, name string,
-	coordinator *GuarantorProviderCoordinator, directory string, commits int,
+	coordinator *GuarantorProviderCoordinator, authority *PersonalAuthority, restart func(), stops int,
 	call func() (Result, error), different func() error,
 ) Result {
 	t.Helper()
-	fault := &journalSyncLossFault{skip: commits - 1, remaining: 1}
+	clock := authority.now
+	defer func() { authority.now = clock }()
+	stopTestGuarantorCallAfterEachTerminalTransition(t, name, coordinator, authority, restart, stops, func() error {
+		_, err := call()
+		return err
+	})
+	fault := &journalSyncLossFault{remaining: 1}
 	remove := fault.install(coordinator.Journal)
 	committed, err := call()
 	remove()
-	if !errors.Is(err, ErrGuarantorJournalCommittedNotSynced) || fault.lost != 1 || fault.skip != 0 {
-		t.Fatalf("%s with its last of %d commits losing its sync: lost=%d skipped all but %d err=%v", name, commits,
-			fault.lost, fault.skip, err)
+	if !errors.Is(err, ErrGuarantorJournalCommittedNotSynced) || fault.lost != 1 {
+		t.Fatalf("%s resumed after %d stops, with its commit losing its sync: lost=%d err=%v", name, stops,
+			fault.lost, err)
 	}
 	if err = coordinator.Journal.ConfirmDurable(); err != nil {
 		t.Fatalf("confirm the commit of %s: %v", name, err)
+	}
+	coordinator.Journal.mu.Lock()
+	plans := len(coordinator.Journal.doc.ActionPlans)
+	coordinator.Journal.mu.Unlock()
+	if plans != 0 {
+		t.Fatalf("%s committed its receipt and left %d action plans", name, plans)
 	}
 	revision, _, _ := testGuarantorSnapshot(t, coordinator.Journal)
 	requireSame := func(when string) {
@@ -53,7 +113,7 @@ func requireCommittedGuarantorReceiptReplays[Result any](t *testing.T, name stri
 		}
 	}
 	requireSame("on the same journal")
-	coordinator.Journal = reopenTestGuarantorJournal(t, coordinator.Journal, directory)
+	restart()
 	requireSame("after a restart")
 	if different != nil {
 		err = different()

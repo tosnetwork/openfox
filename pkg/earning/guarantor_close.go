@@ -65,6 +65,19 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 	if position.TerminalClaimSet != nil {
 		return coordinator.resumeCoverageClosureFromTerminalSet(ctx, input, position, fence)
 	}
+	// The filing close and the closure each make an action terminal before
+	// their receipt is committed, and each has its own plan. A call that
+	// stopped after preparing either resumes that step with its plan's
+	// action, fence and time; a step without a plan runs under this call's.
+	filingPlan, err := coordinator.plannedAction(guarantorPlanClaimFilingClose, agreementDigest, "")
+	if err != nil {
+		return GuarantorCloseCoverageResult{}, err
+	}
+	closurePlan, err := coordinator.plannedAction(guarantorPlanCoverageClosure, agreementDigest, "")
+	if err != nil {
+		return GuarantorCloseCoverageResult{}, err
+	}
+	callFence, callNow := fence, now
 	filingCutoff := position.Terms.ClaimFilingEndsAtUnix
 	incidentEnd := position.Terms.CoverageEndsAtUnix
 	filingReason, endReason, priorState := "normal", "normal_expiry", "active"
@@ -104,6 +117,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 			return GuarantorCloseCoverageResult{}, errors.New("persisted Guarantor filing-close lineage conflicts with closure input")
 		}
 	} else {
+		fence, now = filingPlan.fence(callFence), filingPlan.at(callNow)
 		wantStatus := guarantor.CoverageActive
 		if input.CancellationReceipt != nil {
 			wantStatus = guarantor.CoverageEnded
@@ -178,18 +192,16 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 				return GuarantorCloseCoverageResult{}, errors.New("Guarantor late filing-close recovery deadline elapsed")
 			}
 		}
-		filingAction, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.claim-filing.close",
-			filingFields, canonicalFiling, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", position.Record.LastEvidenceDigest,
+		filingAction, err := coordinator.authorizePlannedAction(filingPlan, coordinator.OwnerID, coordinator.AgentID,
+			"conditional.claim-filing.close", filingFields, canonicalFiling, fence, position.Record.LastEvidenceDigest,
 			minUint64(filingActionDeadline, fence.Body.ExpiresAtUnix))
-		if err == nil {
-			filingAction, err = coordinator.Authority.SignAction(filingAction, fence)
-		}
 		if err != nil {
 			return GuarantorCloseCoverageResult{}, err
 		}
-		filingResolution, err := coordinator.Authority.Admit(filingAction, filingFields, canonicalFiling, fence, nil)
-		if err != nil || (filingResolution.State != commerce.ActionPrepared && filingResolution.State != commerce.ActionTerminal) {
-			return GuarantorCloseCoverageResult{}, firstError(err, errors.New("Guarantor filing-close action was not prepared"))
+		filingResolution, err := coordinator.admitPlannedAction(filingPlan, filingAction, filingFields, canonicalFiling,
+			fence, now)
+		if err != nil {
+			return GuarantorCloseCoverageResult{}, err
 		}
 		filingActionDigest, _ := commerce.AuthorizedActionDigest(filingAction)
 		frozenRecord, err := guarantor.FreezeClaimFiling(position.Record, position.Record.CoverageRevision,
@@ -199,12 +211,10 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 			return GuarantorCloseCoverageResult{}, err
 		}
 		frozen.Record = frozenRecord
-		if filingResolution.State != commerce.ActionTerminal {
-			filingResolution, err = coordinator.Authority.Transition(filingAction.StableActionID, filingAction.ExactRequestDigest,
-				commerce.ActionTerminal, filingActionDigest, []string{filingActionDigest})
-			if err != nil {
-				return GuarantorCloseCoverageResult{}, err
-			}
+		filingResolution, err = coordinator.settlePlannedAction(filingResolution, filingAction, filingActionDigest,
+			[]string{filingActionDigest})
+		if err != nil {
+			return GuarantorCloseCoverageResult{}, err
 		}
 		filingStage, err := coordinator.buildGuarantorStage(position.Terms, "filing_close",
 			"application/vnd.tos.service.agent-guarantor-claim-filing-close-action.v1+cbor", canonicalFiling, filingAction,
@@ -259,6 +269,7 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		}
 	}
 
+	fence, now = closurePlan.fence(callFence), closurePlan.at(callNow)
 	bundles, approved, paid, defaulted, err := terminalClaimBundles(coordinator, frozen, now)
 	if err != nil {
 		return GuarantorCloseCoverageResult{FilingCloseReceipt: filingReceipt}, err
@@ -383,18 +394,16 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 		"agreement_body_digest": commerce.Digest32(agreementDigest), "obligation_id": commerce.ID(position.Record.CoverageObligationID),
 		"expected_state_revision": commerce.U64(frozen.Record.CoverageRevision), "target_state": commerce.State("release_pending"),
 		"evidence_set_digest": commerce.Digest32(closureEvidenceSetDigest)}
-	closureAction, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.obligation.transition",
-		closureFields, canonicalClosure, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", filingReceiptDigest,
+	closureAction, err := coordinator.authorizePlannedAction(closurePlan, coordinator.OwnerID, coordinator.AgentID,
+		"conditional.obligation.transition", closureFields, canonicalClosure, fence, filingReceiptDigest,
 		minUint64(guarantorClosureActionDeadline(frozen), fence.Body.ExpiresAtUnix))
-	if err == nil {
-		closureAction, err = coordinator.Authority.SignAction(closureAction, fence)
-	}
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, err
 	}
-	closureResolution, err := coordinator.Authority.Admit(closureAction, closureFields, canonicalClosure, fence, nil)
-	if err != nil || closureResolution.State != commerce.ActionPrepared {
-		return GuarantorCloseCoverageResult{}, firstError(err, errors.New("Guarantor coverage-closure action was not prepared"))
+	closureResolution, err := coordinator.admitPlannedAction(closurePlan, closureAction, closureFields,
+		canonicalClosure, fence, now)
+	if err != nil {
+		return GuarantorCloseCoverageResult{}, err
 	}
 	closureActionDigest, _ := commerce.AuthorizedActionDigest(closureAction)
 	releasePendingRecord, err := guarantor.TransitionCoverage(frozen.Record, frozen.Record.CoverageRevision,
@@ -404,8 +413,8 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 	}
 	releasePending := frozen
 	releasePending.Record = releasePendingRecord
-	closureResolution, err = coordinator.Authority.Transition(closureAction.StableActionID, closureAction.ExactRequestDigest,
-		commerce.ActionTerminal, closureActionDigest, []string{closureActionDigest})
+	closureResolution, err = coordinator.settlePlannedAction(closureResolution, closureAction, closureActionDigest,
+		[]string{closureActionDigest})
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, err
 	}
@@ -460,6 +469,13 @@ func (coordinator *GuarantorProviderCoordinator) CloseCoverage(ctx context.Conte
 	releasePending, err = coordinator.Journal.CommitTerminalClaimSet(agreementDigest, terminalSet)
 	if err != nil {
 		return GuarantorCloseCoverageResult{}, err
+	}
+	if closurePlan.resuming() {
+		// The closure was resumed under an earlier call's fence and time. The
+		// release and the resolution are this call's own: they go on from the
+		// committed terminal claim set under the caller's current fence, as
+		// every call does that finds the set already committed.
+		return coordinator.resumeCoverageClosureFromTerminalSet(ctx, input, releasePending, callFence)
 	}
 	if coordinator.ClosureFailureInjector != nil {
 		if err := coordinator.ClosureFailureInjector.GuarantorClosureCheckpoint("terminal_claim_set_committed"); err != nil {

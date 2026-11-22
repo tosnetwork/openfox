@@ -158,6 +158,17 @@ type guarantorJournalDocument struct {
 	ClaimToCoverage        map[string]string                         `json:"claim_to_coverage"`
 	AdmissionLogs          map[string]GuarantorAdmissionLog          `json:"admission_logs"`
 	FirmOfferIssuancePlans map[string]GuarantorFirmOfferIssuancePlan `json:"firm_offer_issuance_plans"`
+	// ActionPlans holds, by head, the action a coordinator call prepared and
+	// has not yet committed the receipt of. It is written only while it holds
+	// a plan, so a journal without one reads as it did before plans existed.
+	ActionPlans map[string]GuarantorActionPlan `json:"action_plans,omitempty"`
+}
+
+// dropActionPlan removes the action plan of one head from a working copy. The
+// commit that stores a call's receipt calls it, so the receipt and the end of
+// its plan are one document write.
+func (doc *guarantorJournalDocument) dropActionPlan(kind, scopeID, subjectID string) {
+	delete(doc.ActionPlans, guarantorActionPlanKey(kind, scopeID, subjectID))
 }
 
 type GuarantorAdmissionEntry = guarantor.GuarantorAdmissionLogEntryV1
@@ -855,11 +866,35 @@ func (journal *GuarantorJournal) AcceptOffer(offerID, agreementDigest string, te
 	position.DefaultedByObligation = map[string]string{}
 	offer.Record = accepted
 	next.Offers[offerID], next.Coverages[agreementDigest] = offer, position
+	next.dropActionPlan(guarantorPlanCoverageAcceptance, offerID, "")
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return GuarantorCoveragePosition{}, err
 	}
 	return position, nil
+}
+
+// CheckOfferAcceptance reports why AcceptOffer would refuse to accept offerID
+// for agreementDigest at receivedAt, or nil when the offer is issued, open at
+// that time, made for that coverage Agreement and not accepted yet. It reads
+// only. A coordinator asks before it makes the acceptance action terminal,
+// while the authority can still reject it. An error may also mean the journal
+// could not be read; either way the acceptance is not made terminal.
+func (journal *GuarantorJournal) CheckOfferAcceptance(offerID, agreementDigest string, receivedAt time.Time) error {
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if err := journal.readable(); err != nil {
+		return err
+	}
+	offer, found := journal.doc.Offers[offerID]
+	if !found || receivedAt.IsZero() || offer.Record.Status != guarantor.OfferIssued ||
+		uint64(receivedAt.UTC().Unix()) > offer.AcceptByUnix || offer.Record.AgreementDigest != agreementDigest {
+		return errors.New("Guarantor offer is not eligible for acceptance")
+	}
+	if _, found := journal.doc.Coverages[agreementDigest]; found {
+		return errors.New("Guarantor accepted coverage identity conflicts")
+	}
+	return nil
 }
 
 func (journal *GuarantorJournal) TransitionCoverage(agreementDigest string, expectedRevision uint64,
@@ -961,6 +996,7 @@ func (journal *GuarantorJournal) CommitActivationEvidence(agreementDigest string
 	}
 	position.Record, position.ActivationEvidence = updated, &evidence
 	next.Coverages[agreementDigest] = position
+	next.dropActionPlan(guarantorPlanCoverageActivation, agreementDigest, "")
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return GuarantorCoveragePosition{}, err
@@ -996,6 +1032,7 @@ func (journal *GuarantorJournal) ConfirmNonActivation(agreementDigest string, ex
 	}
 	position.Record, position.NonActivationEvidence = updated, &evidence
 	next.Coverages[agreementDigest] = position
+	next.dropActionPlan(guarantorPlanNonActivation, agreementDigest, "")
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return GuarantorCoveragePosition{}, err
@@ -1028,6 +1065,7 @@ func (journal *GuarantorJournal) CommitNonActivationRelease(agreementDigest stri
 	position.NonActivationReleaseReceipt = &receipt
 	position.Record.LastEvidenceDigest = digest
 	next.Coverages[agreementDigest] = position
+	next.dropActionPlan(guarantorPlanNonActivationRelease, agreementDigest, "")
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return GuarantorCoveragePosition{}, err
@@ -1063,6 +1101,7 @@ func (journal *GuarantorJournal) ApplyCancellation(agreementDigest string, expec
 	}
 	position.Record, position.CancellationReceipt = updated, &receipt
 	next.Coverages[agreementDigest] = position
+	next.dropActionPlan(guarantorPlanCoverageCancellation, agreementDigest, "")
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return GuarantorCoveragePosition{}, err
@@ -1250,6 +1289,8 @@ func (journal *GuarantorJournal) CommitClaimAdmission(agreementDigest string,
 	position.ClaimRevisionLogRoot[claim.Body.ClaimID] = preview.AdmittedClaimRevisionLogRoot
 	next.Coverages[agreementDigest] = position
 	next.ClaimToCoverage[claim.Body.ClaimID] = agreementDigest
+	next.dropActionPlan(guarantorPlanClaimIngress, agreementDigest, key)
+	next.dropActionPlan(guarantorPlanClaimAdmission, agreementDigest, key)
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return guarantor.ClaimRecord{}, err
@@ -1475,6 +1516,7 @@ func (journal *GuarantorJournal) CommitClaimFilingCloseReceipt(agreementDigest s
 	}
 	position.FilingCloseReceipt = &receipt
 	next.Coverages[agreementDigest] = position
+	next.dropActionPlan(guarantorPlanClaimFilingClose, agreementDigest, "")
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return GuarantorCoveragePosition{}, err
@@ -1513,6 +1555,7 @@ func (journal *GuarantorJournal) CommitTerminalClaimSet(agreementDigest string,
 	}
 	position.TerminalClaimSet = &evidence
 	next.Coverages[agreementDigest] = position
+	next.dropActionPlan(guarantorPlanCoverageClosure, agreementDigest, "")
 	next.Revision++
 	if err := journal.commit(next); err != nil {
 		return GuarantorCoveragePosition{}, err

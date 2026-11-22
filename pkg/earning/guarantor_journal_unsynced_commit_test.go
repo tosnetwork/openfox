@@ -244,47 +244,19 @@ func repeatUntilTestGuarantorCommitsAreSynced(t *testing.T, fault *journalSyncLo
 	return 0
 }
 
-var errInjectedAuthority = errors.New("injected authority failure")
-
-// terminalAdmitFailingAuthority fails an admission the authority underneath
-// resolved terminally, and still returns that resolution with the failure.
-type terminalAdmitFailingAuthority struct {
+// admissionCountingAuthority counts the admissions a coordinator asks its
+// authority for.
+type admissionCountingAuthority struct {
 	EconomicAuthority
-	failed int
+	admitted int
 }
 
-func (authority *terminalAdmitFailingAuthority) Admit(action commerce.AuthorizedAction,
+func (authority *admissionCountingAuthority) Admit(action commerce.AuthorizedAction,
 	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence,
 	reservation *ExposureReservation,
 ) (commerce.ActionResolution, error) {
-	resolution, err := authority.EconomicAuthority.Admit(action, fields, request, fence, reservation)
-	if err == nil && isGuarantorAdmissionTerminal(resolution.State) {
-		authority.failed++
-		return resolution, errInjectedAuthority
-	}
-	return resolution, err
-}
-
-// rejectionGrantingAuthority answers a transition to rejected with a rejected
-// resolution of its own, without asking the authority underneath, which
-// refuses one for an action that is already terminal.
-type rejectionGrantingAuthority struct {
-	EconomicAuthority
-	granted int
-}
-
-func (authority *rejectionGrantingAuthority) Transition(stableActionID, exactRequestDigest string,
-	state commerce.ActionResolutionState, sinkReference string, evidenceRefs []string,
-) (commerce.ActionResolution, error) {
-	if state != commerce.ActionRejected {
-		return authority.EconomicAuthority.Transition(stableActionID, exactRequestDigest, state, sinkReference,
-			evidenceRefs)
-	}
-	authority.granted++
-	return commerce.ActionResolution{
-		StableActionID: stableActionID, ExactRequestDigest: exactRequestDigest, State: commerce.ActionRejected,
-		StateRevision: 1 << 20, SinkReference: sinkReference, EvidenceRefs: evidenceRefs,
-	}, nil
+	authority.admitted++
+	return authority.EconomicAuthority.Admit(action, fields, request, fence, reservation)
 }
 
 // scriptTestGuarantorDocumentWrites makes journal's next document writes end
@@ -320,17 +292,24 @@ func scriptTestGuarantorDocumentWrites(journal *GuarantorJournal, outcomes ...st
 	}
 }
 
-// requireUnrecordedAcceptanceReportsItsRejectionsLostSync accepts a newly
-// issued offer while the journal refuses the acceptance's own commit. The
-// coordinator then asks the authority for a rejection and records it, and
-// that commit loses its directory sync: the acceptance must fail with the
-// journal's refusal and report the unconfirmed commit with it. issue issues an
-// offer of its own Agreement and sign signs its acceptance request.
+// requireAcceptanceIsRejectedOnlyWhilePrepared accepts two newly issued offers
+// against the real authority, which rejects only an action it has not made
+// terminal. issue issues an offer of its own Agreement, open for one minute
+// from now, and sign signs its acceptance request; restart restarts the
+// writer and fence returns its current fence.
 //
-// The offer is used for nothing else: the authority really holds its
-// acceptance action as terminal, so it cannot be accepted afterwards.
-func requireUnrecordedAcceptanceReportsItsRejectionsLostSync(t *testing.T, coordinator *GuarantorProviderCoordinator,
-	journal *GuarantorJournal, fence commerce.WriterFence,
+// The first acceptance's own commit fails after the authority made its action
+// terminal. It is not rejected, which the authority would refuse, and it is
+// not lost: the process restarts, the acceptance is repeated at a later time
+// and completes from its plan, received when the stopped call received it.
+//
+// The second acceptance arrives after its offer's cutoff, inside the
+// processing grace the protocol allows, so the journal refuses it. The
+// coordinator learns that while the action is only prepared and rejects it:
+// the authority holds the rejection, the admission log records it, and the
+// commit that records it loses its sync and is reported with the refusal.
+func requireAcceptanceIsRejectedOnlyWhilePrepared(t *testing.T, coordinator *GuarantorProviderCoordinator,
+	restart func(), fence func() commerce.WriterFence,
 	issue func(name string, issuedAt time.Time, coverageID, stateDomain string) (commerce.AgentAgreementBody,
 		guarantor.AuthorizedFirmCoverageOfferV1),
 	sign func(commerce.AgentAgreementBody,
@@ -339,35 +318,93 @@ func requireUnrecordedAcceptanceReportsItsRejectionsLostSync(t *testing.T, coord
 ) {
 	t.Helper()
 	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
+	base := coordinator.Authority
+	counting := &rejectionCountingAuthority{EconomicAuthority: base}
+	coordinator.Authority = counting
+	defer func() { coordinator.Authority = base }()
+	accept := func(offer guarantor.AuthorizedFirmCoverageOfferV1,
+		request guarantor.AuthorizedCoverageAcceptanceRequestV1, receivedAt time.Time,
+	) (guarantor.AuthorizedCoverageAcceptanceReceiptV1, commerce.ActionResolution, error) {
+		return coordinator.AcceptCoverage(context.Background(), GuarantorAcceptCoverageInput{
+			Offer: offer, Request: request, CoverageObligationID: "obligation:coverage",
+			ReceivedAtUnix: uint64(receivedAt.Unix()),
+		}, fence())
+	}
+	planned := func(offer guarantor.AuthorizedFirmCoverageOfferV1) bool {
+		_, found, err := coordinator.Journal.ActionPlan(guarantorPlanCoverageAcceptance, offer.Body.OfferID, "")
+		if err != nil {
+			t.Fatalf("read the acceptance plan: %v", err)
+		}
+		return found
+	}
+
 	agreement, offer := issue("unrecorded-acceptance", now.Add(4*time.Second), digest("2"), digest("3"))
 	request := sign(agreement, offer)
-	_, _, coveragesBefore := testGuarantorSnapshot(t, journal)
-	authority := coordinator.Authority
-	granting := &rejectionGrantingAuthority{EconomicAuthority: authority}
-	coordinator.Authority = granting
-	// The admission is written; the acceptance's own commit fails and writes
-	// nothing; the recorded rejection is written and loses its sync.
-	writes, removeScript := scriptTestGuarantorDocumentWrites(journal, "", "fail", "unsynced")
-	receipt, resolution, err := coordinator.AcceptCoverage(context.Background(), GuarantorAcceptCoverageInput{
-		Offer: offer, Request: request, CoverageObligationID: "obligation:coverage",
-		ReceivedAtUnix: uint64(now.Add(30 * time.Second).Unix()),
-	}, fence)
+	_, _, coveragesBefore := testGuarantorSnapshot(t, coordinator.Journal)
+	receivedAt := now.Add(30 * time.Second)
+	// The admission and the plan are written; the acceptance's own commit
+	// fails and writes nothing.
+	writes, removeScript := scriptTestGuarantorDocumentWrites(coordinator.Journal, "", "", "fail")
+	receipt, resolution, err := accept(offer, request, receivedAt)
 	removeScript()
-	coordinator.Authority = authority
-	if *writes != 3 || granting.granted != 1 || resolution.State != commerce.ActionRejected ||
-		receipt.Body.SchemaVersion != 0 {
-		t.Fatalf("the acceptance the journal refused: %d document writes, %d rejections, state %s, err=%v; "+
-			"want three writes, one rejection and no receipt", *writes, granting.granted, resolution.State, err)
+	if *writes != 3 || counting.rejections != 0 || resolution.State != commerce.ActionTerminal ||
+		receipt.Body.SchemaVersion != 0 || !errors.Is(err, errInjectedJournalWrite) {
+		t.Fatalf("the acceptance whose commit failed: %d document writes, %d rejections, state %s, err=%v; "+
+			"want three writes, no rejection, a terminal action and the write failure", *writes,
+			counting.rejections, resolution.State, err)
 	}
-	if !errors.Is(err, errInjectedJournalWrite) || !errors.Is(err, ErrGuarantorJournalCommittedNotSynced) {
+	if _, _, coverages := testGuarantorSnapshot(t, coordinator.Journal); len(coverages) != len(coveragesBefore) ||
+		!planned(offer) {
+		t.Fatalf("the acceptance whose commit failed left %d coverages, want %d and its plan", len(coverages),
+			len(coveragesBefore))
+	}
+	restart()
+	receipt, resolution, err = accept(offer, request, receivedAt.Add(10*time.Second))
+	if err != nil || resolution.State != commerce.ActionTerminal || counting.rejections != 0 ||
+		receipt.Body.ReceivedAtUnix != uint64(receivedAt.Unix()) {
+		t.Fatalf("the acceptance repeated after a restart: state %s, %d rejections, received at %d, err=%v; "+
+			"want it completed as received at %d", resolution.State, counting.rejections,
+			receipt.Body.ReceivedAtUnix, err, receivedAt.Unix())
+	}
+	if _, _, coverages := testGuarantorSnapshot(t, coordinator.Journal); len(coverages) != len(coveragesBefore)+1 ||
+		planned(offer) {
+		t.Fatalf("the resumed acceptance left %d coverages, want %d and no plan", len(coverages),
+			len(coveragesBefore)+1)
+	}
+
+	agreement, offer = issue("refused-acceptance", now.Add(5*time.Second), digest("6"), digest("7"))
+	request = sign(agreement, offer)
+	// The admission and the plan are written; the recorded rejection is
+	// written and loses its sync.
+	writes, removeScript = scriptTestGuarantorDocumentWrites(coordinator.Journal, "", "", "unsynced")
+	receipt, resolution, err = accept(offer, request, now.Add(70*time.Second))
+	removeScript()
+	if *writes != 3 || counting.rejections != 1 || resolution.State != commerce.ActionRejected ||
+		receipt.Body.SchemaVersion != 0 {
+		t.Fatalf("the acceptance the journal refuses: %d document writes, %d rejections, state %s, err=%v; "+
+			"want three writes, one rejection and no receipt", *writes, counting.rejections, resolution.State, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "not eligible for acceptance") ||
+		!errors.Is(err, ErrGuarantorJournalCommittedNotSynced) {
 		t.Fatalf("the acceptance whose recorded rejection lost its sync: got %v, want the journal's refusal "+
 			"and the commit whose durability is unconfirmed", err)
 	}
-	if err = journal.ConfirmDurable(); err != nil {
+	if state := base.Resolve(resolution.StableActionID, resolution.ExactRequestDigest).State; state !=
+		commerce.ActionRejected {
+		t.Fatalf("the refused acceptance is %s at the authority, want rejected", state)
+	}
+	if err = coordinator.Journal.ConfirmDurable(); err != nil {
 		t.Fatalf("confirm the recorded rejection: %v", err)
 	}
-	if _, _, coveragesAfter := testGuarantorSnapshot(t, journal); len(coveragesAfter) != len(coveragesBefore) {
-		t.Fatalf("the refused acceptance left %d coverages, want %d", len(coveragesAfter), len(coveragesBefore))
+	// The stopped call left its plan. The repeated request finds the action
+	// rejected, removes the plan and is refused; it is not rejected twice.
+	_, resolution, err = accept(offer, request, now.Add(70*time.Second))
+	if err == nil || resolution.State != commerce.ActionRejected || counting.rejections != 1 || planned(offer) {
+		t.Fatalf("the refused acceptance repeated: state %s, %d rejections, err=%v; want it refused as rejected "+
+			"once, with no plan left", resolution.State, counting.rejections, err)
+	}
+	if _, _, coverages := testGuarantorSnapshot(t, coordinator.Journal); len(coverages) != len(coveragesBefore)+1 {
+		t.Fatalf("the refused acceptance left %d coverages, want %d", len(coverages), len(coveragesBefore)+1)
 	}
 }
 

@@ -50,6 +50,24 @@ func (coordinator *GuarantorProviderCoordinator) ReleaseNonActivatedExposure(ctx
 	}
 	nonActivationDigest, _ := guarantor.CoverageNonActivationEvidenceDigestV1(evidence)
 	portfolioRevision, _, _ := coordinator.Authority.Snapshot()
+	// The authority releases the reservation and makes the action terminal in
+	// one step, which moves the portfolio revision the request names. A call
+	// that stopped after that step resumes from its plan: with the plan's
+	// action, fence and time, and the portfolio revision its request named.
+	planned, err := coordinator.plannedAction(guarantorPlanNonActivationRelease, agreementDigest, "")
+	if err != nil {
+		return guarantor.AuthorizedNonActivationExposureReleaseReceiptV1{}, commerce.ActionResolution{}, err
+	}
+	fence, now = planned.fence(fence), planned.at(now)
+	if planned.resuming() {
+		var plannedRequest guarantor.ExposureReleaseActionBodyV1
+		if err = guarantor.Unmarshal(planned.resume.CanonicalRequest, &plannedRequest); err != nil ||
+			plannedRequest.TargetPortfolioRevision == 0 {
+			return guarantor.AuthorizedNonActivationExposureReleaseReceiptV1{}, commerce.ActionResolution{},
+				errors.New("planned Guarantor non-activation release request is invalid")
+		}
+		portfolioRevision = plannedRequest.TargetPortfolioRevision - 1
+	}
 	requestBody := guarantor.ExposureReleaseActionBodyV1{ReservationID: position.Record.ReservationID,
 		AgreementDigest: agreementDigest, TargetPortfolioRevision: portfolioRevision + 1,
 		TerminalEvidenceSetDigest: nonActivationDigest}
@@ -63,16 +81,15 @@ func (coordinator *GuarantorProviderCoordinator) ReleaseNonActivatedExposure(ctx
 		"target_revision":              commerce.U64(portfolioRevision + 1),
 		"terminal_evidence_set_digest": commerce.Digest32(nonActivationDigest),
 	}
-	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "portfolio.release",
-		fields, request, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", nonActivationDigest,
-		fence.Body.ExpiresAtUnix)
-	if err == nil {
-		action, err = coordinator.Authority.SignAction(action, fence)
-	}
+	action, err := coordinator.authorizePlannedAction(planned, coordinator.OwnerID, coordinator.AgentID,
+		"portfolio.release", fields, request, fence, nonActivationDigest, fence.Body.ExpiresAtUnix)
 	if err != nil {
 		return guarantor.AuthorizedNonActivationExposureReleaseReceiptV1{}, commerce.ActionResolution{}, err
 	}
-	resolution, err := coordinator.Authority.ReleaseReservation(action, fields, request, fence)
+	resolution, err := coordinator.admitPlannedActionBy(planned, action, fields, request, fence, now,
+		func() (commerce.ActionResolution, error) {
+			return coordinator.Authority.ReleaseReservation(action, fields, request, fence)
+		})
 	if err != nil || resolution.State != commerce.ActionTerminal {
 		return guarantor.AuthorizedNonActivationExposureReleaseReceiptV1{}, resolution,
 			firstError(err, errors.New("Guarantor non-activation exposure release is not terminal"))

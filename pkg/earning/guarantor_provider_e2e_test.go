@@ -883,6 +883,17 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		t.Fatal("firm-offer issuance did not surface the injected post-reservation crash")
 	}
 	coordinator.Authority = authority
+	// The process restarts after the crash, with the firm-offer issuance plan
+	// stored and the offer not yet reserved in the journal. The journal opened
+	// from disk holds that plan, and the issuance below resumes from it: it
+	// reserves the plan's position. A document whose plan names another
+	// position, reservation or admission domain than its offer derives is
+	// refused.
+	journal = restartTestGuarantorJournalHoldingAFirmOfferPlan(t, journal, journalDirectory)
+	coordinator.Journal = journal
+	if scenario == guarantorNoFallback {
+		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
+	}
 	offer, resolution, err := coordinator.IssueFirmOffer(context.Background(), issueInput, fence)
 	if err != nil || resolution.State != commerce.ActionTerminal {
 		t.Fatalf("issue offer: state=%s err=%v", resolution.State, err)
@@ -2067,6 +2078,8 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	if scenario == guarantorNoFallback {
 		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
 	}
+	// A reauthorization may replace only the authorization of the stored plan.
+	requireExposureReleaseReauthorizationRefusesAChangedPlan(t, journal, agreementDigest)
 	// A different writer generation takes over after the crash. Recovery must
 	// reauthorize the exact same release/resolution semantics rather than mint a
 	// successor identity or relying on the predecessor writer lease.
@@ -2378,7 +2391,8 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	resolutionCrash := &oneShotGuarantorClosureFailure{target: "coverage_resolution_plan_prepared"}
 	coordinator.ClosureFailureInjector = resolutionCrash
 	if _, crashErr := coordinator.CloseCoverage(context.Background(), GuarantorCloseCoverageInput{
-		Offer: cancellationOffer, ActivationEvidence: cancellationActivation, CancellationReceipt: &cancelReceipt},
+		Offer: cancellationOffer, ActivationEvidence: cancellationActivation, CancellationReceipt: &cancelReceipt,
+	},
 		fence); crashErr == nil || !resolutionCrash.fired {
 		t.Fatalf("the closure did not stop at its stored coverage-resolution plan: %v", crashErr)
 	}
@@ -2396,13 +2410,15 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	journal = restartTestGuarantorJournal(t, journal, journalDirectory, cancellationAgreementDigest,
 		tamperedTestCoverageResolutionPlan(t, "closed"))
 	coordinator.Journal = journal
+	requireCoverageResolutionReauthorizationRefusesAChangedPlan(t, journal, cancellationAgreementDigest)
 	cancelledClose, err := coordinator.CloseCoverage(context.Background(), GuarantorCloseCoverageInput{
 		Offer: cancellationOffer, ActivationEvidence: cancellationActivation, CancellationReceipt: &cancelReceipt}, fence)
 	if err != nil || cancelledClose.TerminalClaimSet.Body.CoverageClosureReason != "accepted_cancellation" ||
 		cancelledClose.FilingCloseReceipt.Body.IncidentEligibilityEndsAtUnix != cancelReceipt.Body.IncidentEligibilityEndsAtUnix {
 		t.Fatalf("close cancelled coverage: result=%#v err=%v", cancelledClose, err)
 	}
-	if resolved := cancelledClose.CoverageResolution.Body; resolved.TerminalState != "cancelled" ||
+	cancelledState := string(guarantor.CoverageCancelled)
+	if resolved := cancelledClose.CoverageResolution.Body; resolved.TerminalState != cancelledState ||
 		resolved.StableActionID != frozenResolutionPlan.Action.StableActionID ||
 		resolved.ExactRequestDigest != frozenResolutionPlan.Action.ExactRequestDigest ||
 		resolved.PriorCoverageRevision != frozenResolutionPlan.RequestBody.ExpectedRevision ||

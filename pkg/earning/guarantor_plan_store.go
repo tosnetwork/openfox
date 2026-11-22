@@ -32,7 +32,7 @@ func encodeGuarantorPlan(plan any, actionKind string, fields map[string]commerce
 		return nil, err
 	}
 	var members map[string]json.RawMessage
-	if err := json.Unmarshal(object, &members); err != nil {
+	if err = json.Unmarshal(object, &members); err != nil {
 		return nil, err
 	}
 	encodedFields, err := json.Marshal(wire)
@@ -80,7 +80,10 @@ func decodeGuarantorPlan(raw []byte, plan any) ([]commerce.SemanticFieldValue, e
 
 // importGuarantorPlanFields rebuilds a plan's semantic fields from their
 // transport form for the plan's own action kind.
-func importGuarantorPlanFields(actionKind string, wire []commerce.SemanticFieldValue) (map[string]commerce.SemanticValue, error) {
+func importGuarantorPlanFields(
+	actionKind string,
+	wire []commerce.SemanticFieldValue,
+) (map[string]commerce.SemanticValue, error) {
 	fields, err := commerce.ImportSemanticFields(actionKind, wire)
 	if err != nil {
 		return nil, fmt.Errorf("import Guarantor plan semantic fields: %w", err)
@@ -197,7 +200,8 @@ func (values guarantorPlanFieldValues) number(name string, want uint64) bool {
 // identity, and its canonical request has the action's exact request digest.
 // It returns the fields in transport form.
 func validateGuarantorPlanAction(ownerID, agentID, actionKind string, action commerce.AuthorizedAction,
-	fields map[string]commerce.SemanticValue, canonicalRequest []byte) (guarantorPlanFieldValues, error) {
+	fields map[string]commerce.SemanticValue, canonicalRequest []byte,
+) (guarantorPlanFieldValues, error) {
 	if action.ActionKind != actionKind || action.OwnerID != ownerID || action.AgentID != agentID {
 		return nil, errors.New("Guarantor plan action has another kind, owner or Agent")
 	}
@@ -241,7 +245,8 @@ func validateGuarantorPlanFence(action commerce.AuthorizedAction, fence commerce
 // the release is for, the reservation it releases and, once released, the
 // stored release receipt.
 func validatePreAcceptanceReleasePlan(ownerID, agentID string, position GuarantorOfferPosition,
-	plan GuarantorPreAcceptanceReleasePlan) error {
+	plan GuarantorPreAcceptanceReleasePlan,
+) error {
 	values, err := validateGuarantorPlanAction(ownerID, agentID, "portfolio.release", plan.Action, plan.Fields,
 		plan.CanonicalRequest)
 	if err != nil {
@@ -261,7 +266,15 @@ func validatePreAcceptanceReleasePlan(ownerID, agentID string, position Guaranto
 	plannedDigest, err := guarantor.Digest(guarantor.OfferNonAcceptanceDomain,
 		plan.RequestBody.AuthorizedNonAcceptanceEvidence)
 	if err != nil || plannedDigest != evidenceDigest {
-		return errors.New("Guarantor pre-acceptance release plan is for other non-acceptance evidence than the stored one")
+		return errors.New(
+			"Guarantor pre-acceptance release plan is for other non-acceptance evidence than the stored one",
+		)
+	}
+	// The request body is what a resume reads; the canonical request is what
+	// the action's digest covers. They must be the same request.
+	request, err := guarantor.Canonical(plan.RequestBody)
+	if err != nil || !bytes.Equal(request, plan.CanonicalRequest) {
+		return errors.New("Guarantor pre-acceptance release plan request body differs from its canonical request")
 	}
 	target, overflow := addUint64(plan.BasePortfolioRevision, 1)
 	if overflow || plan.TargetPortfolioRevision != target || plan.ReleasedAtUnix == 0 ||
@@ -291,13 +304,14 @@ func validatePreAcceptanceReleasePlan(ownerID, agentID string, position Guaranto
 // release is for, the reservation it releases and, once released, the stored
 // release receipt.
 func validateExposureReleasePlan(ownerID, agentID, agreementDigest string, position GuarantorCoveragePosition,
-	plan GuarantorExposureReleasePlan) error {
+	plan GuarantorExposureReleasePlan,
+) error {
 	values, err := validateGuarantorPlanAction(ownerID, agentID, "portfolio.release", plan.Action, plan.Fields,
 		plan.CanonicalRequest)
 	if err != nil {
 		return err
 	}
-	if err := validateGuarantorPlanFence(plan.Action, plan.WriterFence); err != nil {
+	if err = validateGuarantorPlanFence(plan.Action, plan.WriterFence); err != nil {
 		return err
 	}
 	if position.TerminalClaimSet == nil || plan.CreatedAtUnix == 0 || plan.RequestBody.TargetPortfolioRevision == 0 {
@@ -337,23 +351,28 @@ func validateExposureReleasePlan(ownerID, agentID, agreementDigest string, posit
 // resolution is for, the terminal state the stored terminal claim set names
 // and, once resolved, the stored coverage resolution.
 func validateCoverageResolutionPlan(ownerID, agentID, agreementDigest string, position GuarantorCoveragePosition,
-	plan GuarantorCoverageResolutionPlan) error {
+	plan GuarantorCoverageResolutionPlan,
+) error {
 	values, err := validateGuarantorPlanAction(ownerID, agentID, "conditional.obligation.transition", plan.Action,
 		plan.Fields, plan.CanonicalRequest)
 	if err != nil {
 		return err
 	}
-	if err := validateGuarantorPlanFence(plan.Action, plan.WriterFence); err != nil {
+	if err = validateGuarantorPlanFence(plan.Action, plan.WriterFence); err != nil {
 		return err
 	}
 	if position.ExposureReleaseReceipt == nil || position.TerminalClaimSet == nil || plan.CreatedAtUnix == 0 {
-		return errors.New("Guarantor coverage-resolution plan has no stored exposure release, terminal claim set or time")
+		return errors.New(
+			"Guarantor coverage-resolution plan has no stored exposure release, terminal claim set or time",
+		)
 	}
 	releaseDigest, err := guarantor.ExposureReleaseReceiptDigestV1(*position.ExposureReleaseReceipt)
 	if err != nil {
 		return fmt.Errorf("Guarantor coverage-resolution plan: stored exposure release: %w", err)
 	}
-	targetStatus, targetState, err := guarantorTerminalCoverageTarget(position.TerminalClaimSet.Body.ResolutionTargetTerminalState)
+	targetStatus, targetState, err := guarantorTerminalCoverageTarget(
+		position.TerminalClaimSet.Body.ResolutionTargetTerminalState,
+	)
 	if err != nil || plan.TargetStatus != targetStatus || plan.TargetState != targetState {
 		return errors.New("Guarantor coverage-resolution plan targets another state than the stored terminal claim set")
 	}
@@ -373,7 +392,9 @@ func validateCoverageResolutionPlan(ownerID, agentID, agreementDigest string, po
 	resolution := position.CoverageResolution
 	if resolution == nil {
 		if position.Record.CoverageRevision != plan.RequestBody.ExpectedRevision {
-			return errors.New("Guarantor coverage-resolution plan expects another coverage revision than the stored one")
+			return errors.New(
+				"Guarantor coverage-resolution plan expects another coverage revision than the stored one",
+			)
 		}
 		return nil
 	}
@@ -392,7 +413,8 @@ func validateCoverageResolutionPlan(ownerID, agentID, agreementDigest string, po
 // offer and exposure admission receipt it carries and, once the offer is
 // reserved, against the stored offer position.
 func validateFirmOfferIssuancePlan(ownerID, agentID string, plan GuarantorFirmOfferIssuancePlan,
-	stored *GuarantorOfferPosition) error {
+	stored *GuarantorOfferPosition,
+) error {
 	if !canonicalSHA256(plan.AuthorityInstanceID) || !canonicalSHA256(plan.AdmissionDomainID) ||
 		!canonicalSHA256(plan.OfferDigest) || !canonicalSHA256(plan.ReceiptDigest) ||
 		plan.Reservation.ReservationID == "" {
@@ -424,21 +446,127 @@ func validateFirmOfferIssuancePlan(ownerID, agentID string, plan GuarantorFirmOf
 	if plan.Position.AuthorizedFirmOffer == nil {
 		return errors.New("Guarantor firm-offer issuance plan position has no offer")
 	}
-	if digest, err := guarantor.FirmOfferDigest(*plan.Position.AuthorizedFirmOffer); err != nil || digest != plan.OfferDigest {
+	positionOfferDigest, err := guarantor.FirmOfferDigest(*plan.Position.AuthorizedFirmOffer)
+	if err != nil || positionOfferDigest != plan.OfferDigest {
 		return errors.New("Guarantor firm-offer issuance plan position carries another offer")
 	}
+	// A resume reserves the plan's offer position, resolves the plan's
+	// admission domain and, at the authority, holds the plan's reservation.
+	// All three follow from the offer the plan carries, so each must be exactly
+	// what that offer derives: no exposure, cutoff, covered party, maximum loss
+	// or admission domain can differ from the signed offer.
+	admissionDomainID, reservation, position, err := firmOfferIssuanceBindings(plan.Offer)
+	if err != nil {
+		return fmt.Errorf("Guarantor firm-offer issuance plan offer derives no reservation: %w", err)
+	}
+	if plan.AdmissionDomainID != admissionDomainID || !sameJSON(plan.Reservation, reservation) ||
+		!sameJSON(plan.Position, position) {
+		return errors.New(
+			"Guarantor firm-offer issuance plan position, reservation or admission domain differs from its offer",
+		)
+	}
+	// The exposure admission receipt inside the offer names the digest of the
+	// action it was issued under, which fixes this plan's whole action.
+	actionDigest, err := commerce.AuthorizedActionDigest(plan.Action)
+	if err != nil || actionDigest != plan.Offer.ExposureAdmissionReceipt.Body.AuthorizedActionDigest {
+		return errors.New("Guarantor firm-offer issuance plan action differs from the one its offer was admitted under")
+	}
 	if stored != nil && stored.AuthorizedFirmOffer != nil {
-		if digest, err := guarantor.FirmOfferDigest(*stored.AuthorizedFirmOffer); err != nil || digest != plan.OfferDigest {
+		storedOfferDigest, digestErr := guarantor.FirmOfferDigest(*stored.AuthorizedFirmOffer)
+		if digestErr != nil || storedOfferDigest != plan.OfferDigest {
 			return errors.New("Guarantor firm-offer issuance plan differs from the stored offer")
 		}
 	}
 	return nil
 }
 
+// guarantorFirmOfferAdmissionDomain is the digest domain of the admission log
+// a firm offer's issuance is recorded in.
+const guarantorFirmOfferAdmissionDomain = "tos.service.agent-guarantor-firm-offer-admission-domain.v1"
+
+// firmOfferAdmissionDomainID is the admission domain of the firm offer issued
+// under authorityInstanceID.
+func firmOfferAdmissionDomainID(authorityInstanceID string) (string, error) {
+	return guarantor.Digest(guarantorFirmOfferAdmissionDomain, struct {
+		AuthorityInstanceID string `json:"authority_instance_id"`
+	}{authorityInstanceID})
+}
+
+// firmOfferIssuanceBindings derives, from a firm offer alone, the admission
+// domain its issuance is recorded in, the exposure reservation the authority
+// holds for it and the unsigned offer position the journal reserves for it.
+// The gross exposure is the requested aggregate payout of the quote request
+// the offer carries; issuance admits only an offer whose net exposure equals
+// its gross exposure and fits the authority's 64-bit reservation.
+func firmOfferIssuanceBindings(offer guarantor.AuthorizedFirmCoverageOfferV1) (string, ExposureReservation,
+	GuarantorOfferPosition, error,
+) {
+	admissionDomainID, err := firmOfferAdmissionDomainID(offer.Body.OfferID)
+	if err != nil {
+		return "", ExposureReservation{}, GuarantorOfferPosition{}, err
+	}
+	requestDigest, err := guarantor.QuoteRequestDigest(offer.AuthorizedQuoteRequest)
+	if err != nil {
+		return "", ExposureReservation{}, GuarantorOfferPosition{}, err
+	}
+	gross, err := positiveBig(offer.AuthorizedQuoteRequest.RequestedTerms.RequestedAggregatePayout.AmountAtomic)
+	if err != nil {
+		return "", ExposureReservation{}, GuarantorOfferPosition{}, err
+	}
+	if !gross.IsUint64() {
+		return "", ExposureReservation{}, GuarantorOfferPosition{}, errors.New(
+			"Guarantor firm offer exposure exceeds 64 bits",
+		)
+	}
+	asset := offer.CoverageTerms.CoverageAsset
+	reservation := ExposureReservation{
+		ReservationID:   offer.Body.ReservationID,
+		AgreementDigest: offer.Body.CoverageAgreementBodyDigest, Asset: &asset, MaximumLossAtomic: gross.Uint64(),
+	}
+	position := GuarantorOfferPosition{
+		QuoteRequestDigest:  requestDigest,
+		CoveredPartyAgentID: offer.CoverageTerms.CoveredPartyAgentID, CoverageAsset: offer.CoverageTerms.CoverageAsset,
+		GrossExposureAtomic: gross.String(), NetExposureAtomic: gross.String(), AcceptByUnix: offer.Body.AcceptByUnix,
+		ReservationExpiresAt: offer.ExposureAdmissionReceipt.Body.ExpiresAtUnix, AuthorizedFirmOffer: &offer,
+		Record: guarantor.OfferRecord{
+			OfferID: offer.Body.OfferID, ReservationID: offer.Body.ReservationID,
+			AgreementDigest: offer.Body.CoverageAgreementBodyDigest, Status: guarantor.OfferReservedUnsigned,
+			StateRevision:      guarantorReservedUnsignedOfferRevision,
+			LastEvidenceDigest: offer.ExposureAdmissionReceipt.Body.DescriptorDigest,
+		},
+	}
+	return admissionDomainID, reservation, position, nil
+}
+
+// guarantorReservedUnsignedOfferRevision is the state revision of an offer
+// record when its exposure is reserved and it is not yet issued: the third
+// state of an offer, after requested and allocated.
+const guarantorReservedUnsignedOfferRevision = 3
+
 // validateGuarantorPlans checks every plan in a document against the objects
 // stored beside it. A journal loads only when all of them pass, so a plan that
 // was changed on disk, or that no longer belongs to its stored receipts, is
 // refused before anything can resume from it.
+//
+// Not bound at load. A plan is checked against what the document itself
+// holds, and the document holds nothing that fixes these members, so a change
+// to one of them on disk is not detected here:
+//   - a plan's own times before its receipt exists: released_at_unix of a
+//     pre-acceptance release plan, created_at_unix of an exposure-release and
+//     a coverage-resolution plan;
+//   - the authorization metadata of a plan's action that is not part of its
+//     stable identity or request digest: policy_revision, mandate_digest,
+//     authority_id, expires_at_unix and writer_generation. A plan that
+//     carries a writer fence must agree with that fence, but nothing stored
+//     fixes the pair;
+//   - an exposure-release plan's disposition before its receipt exists.
+//
+// These are checked where the plan is used, not here: the economic authority
+// verifies an action's authorization proof against its fence when the resumed
+// action is admitted, which the journal has no key to do, and the coordinator
+// recomputes an exposure-release disposition before it resumes one. A
+// firm-offer issuance plan is the exception: its offer's exposure admission
+// receipt names the action's digest, so its whole action is bound.
 func validateGuarantorPlans(doc guarantorJournalDocument) error {
 	for offerID, position := range doc.Offers {
 		if position.PreAcceptanceReleasePlan == nil {

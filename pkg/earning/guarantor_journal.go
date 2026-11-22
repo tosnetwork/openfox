@@ -447,8 +447,9 @@ func (journal *GuarantorJournal) ReserveUnsignedOffer(position GuarantorOfferPos
 func (journal *GuarantorJournal) SaveFirmOfferIssuancePlan(plan GuarantorFirmOfferIssuancePlan) error {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
+	// A closed or detached journal is reported as that, not as an invalid plan.
 	if err := journal.ensureAttached(); err != nil {
-		return errors.New("Guarantor firm-offer issuance plan is invalid")
+		return err
 	}
 	// A replayed plan returns below without a working copy, so an unconfirmed
 	// commit is confirmed here first.
@@ -1882,7 +1883,12 @@ func (journal *GuarantorJournal) beginAdmission(domainID, rootDomain, stableActi
 func (journal *GuarantorJournal) ResolveAdmission(domainID string, resolution commerce.ActionResolution) (GuarantorAdmissionEntry, error) {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	if err := journal.ensureAttached(); err != nil || !canonicalSHA256(domainID) || commerce.ValidateActionResolution(resolution) != nil {
+	// A closed or detached journal is reported as that, not as an invalid
+	// resolution: the caller retries the one and must not retry the other.
+	if err := journal.ensureAttached(); err != nil {
+		return GuarantorAdmissionEntry{}, err
+	}
+	if !canonicalSHA256(domainID) || commerce.ValidateActionResolution(resolution) != nil {
 		return GuarantorAdmissionEntry{}, errors.New("Guarantor admission resolution is invalid")
 	}
 	next, copyErr := journal.workingCopy()
@@ -2070,6 +2076,11 @@ func (journal *GuarantorJournal) load(ownerID, agentID string) error {
 		}
 	}
 	for key, coverage := range doc.Coverages {
+		// A coverage is found by its key and summed by its record, so the two
+		// must name one coverage Agreement.
+		if !canonicalSHA256(key) || key != coverage.Record.CoverageAgreementBodyDigest {
+			return fmt.Errorf("Guarantor coverage %s is stored under another identity", key)
+		}
 		if coverage.Claims == nil || coverage.Decisions == nil || coverage.MaterializedPayouts == nil || coverage.PayoutEvidence == nil || coverage.PayoutRequests == nil || coverage.PaidByObligation == nil ||
 			coverage.ClaimAdmissionSequence == nil || !canonicalSHA256(coverage.ClaimAdmissionLogRoot) {
 			return errors.New("Guarantor coverage projection is incomplete")

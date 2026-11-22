@@ -198,6 +198,57 @@ type failAfterReservationEconomicAuthority struct {
 	failOnce bool
 }
 
+// failBeforeTerminalEconomicAuthority fails one terminal transition without
+// making it, as a process that stops just before asking the authority does.
+type failBeforeTerminalEconomicAuthority struct {
+	EconomicAuthority
+	failOnce bool
+}
+
+func (authority *failBeforeTerminalEconomicAuthority) Transition(
+	stableActionID, exactRequestDigest string, state commerce.ActionResolutionState, sinkReference string,
+	evidenceRefs []string,
+) (commerce.ActionResolution, error) {
+	if authority.failOnce && state == commerce.ActionTerminal {
+		authority.failOnce = false
+		return commerce.ActionResolution{}, errors.New("injected crash before the terminal authority transition")
+	}
+	return authority.EconomicAuthority.Transition(stableActionID, exactRequestDigest, state, sinkReference,
+		evidenceRefs)
+}
+
+// requireTestFirmOfferIssuedWithAPreparedPlan requires the journal to hold
+// exactly one firm-offer issuance plan whose offer the journal has already
+// issued while the authority still holds the plan's action as prepared, and
+// returns that offer.
+func requireTestFirmOfferIssuedWithAPreparedPlan(t *testing.T, journal *GuarantorJournal,
+	authority EconomicAuthority,
+) guarantor.AuthorizedFirmCoverageOfferV1 {
+	t.Helper()
+	journal.mu.Lock()
+	identities := make([]string, 0, len(journal.doc.FirmOfferIssuancePlans))
+	for identity := range journal.doc.FirmOfferIssuancePlans {
+		identities = append(identities, identity)
+	}
+	journal.mu.Unlock()
+	if len(identities) != 1 {
+		t.Fatalf("the journal holds %d firm-offer issuance plans, want one", len(identities))
+	}
+	plan, found, err := journal.FirmOfferIssuancePlan(identities[0])
+	if err != nil || !found {
+		t.Fatalf("the journal does not return its firm-offer issuance plan: %v", err)
+	}
+	issued, found, err := journal.FirmOfferByDigest(plan.OfferDigest)
+	if err != nil || !found || !sameJSON(issued, plan.Offer) {
+		t.Fatalf("the journal has not issued the planned offer: found=%v err=%v", found, err)
+	}
+	state := authority.Resolve(plan.Action.StableActionID, plan.Action.ExactRequestDigest).State
+	if state != commerce.ActionPrepared {
+		t.Fatalf("the planned issuance action is %s at the authority, want prepared", state)
+	}
+	return issued
+}
+
 func (authority *failAfterReservationEconomicAuthority) Admit(action commerce.AuthorizedAction,
 	fields map[string]commerce.SemanticValue, request []byte, fence commerce.WriterFence,
 	reservation *ExposureReservation) (commerce.ActionResolution, error) {
@@ -937,12 +988,46 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	terms2.CoverageID = digest("e")
 	terms2.QuoteRequestDigest = mustGuarantorQuoteDigest(t, quote2)
 	terms2.CoverageStateDomainDigest = digest("0")
-	expiringOffer, expiringResolution, issueErr := coordinator.IssueFirmOffer(context.Background(), GuarantorIssueOfferInput{
-		Request: quote2, ProfileArtifact: profileArtifact, Agreement: agreement2, Terms: terms2, CoverageObligationID: "obligation:coverage",
-		IssuedAtUnix: uint64(now.Add(time.Second).Unix()), AcceptByUnix: uint64(now.Add(2 * time.Minute).Unix()),
-		ReservationExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(15 * time.Minute).Unix())}, fence)
+	expiringInput := GuarantorIssueOfferInput{
+		Request: quote2, ProfileArtifact: profileArtifact, Agreement: agreement2, Terms: terms2,
+		CoverageObligationID:     "obligation:coverage",
+		IssuedAtUnix:             uint64(now.Add(time.Second).Unix()),
+		AcceptByUnix:             uint64(now.Add(2 * time.Minute).Unix()),
+		ReservationExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix()),
+		ExpiresAtUnix:            uint64(now.Add(15 * time.Minute).Unix()),
+	}
+	// This issuance stops after the journal has issued the offer and before
+	// the authority's terminal transition: the plan is stored, the offer is
+	// issued, the action is still prepared. The process restarts, and the
+	// repeated issuance must recognize the issued offer and finish, with the
+	// offer the plan carries.
+	coordinator.Authority = &failBeforeTerminalEconomicAuthority{EconomicAuthority: authority, failOnce: true}
+	if _, _, crashErr := coordinator.IssueFirmOffer(context.Background(), expiringInput, fence); crashErr == nil {
+		t.Fatal("firm-offer issuance did not surface the injected crash before its terminal transition")
+	}
+	coordinator.Authority = authority
+	issuedBeforeTerminal := requireTestFirmOfferIssuedWithAPreparedPlan(t, journal, authority)
+	journal = reopenTestGuarantorJournal(t, journal, journalDirectory)
+	coordinator.Journal = journal
+	if scenario == guarantorNoFallback {
+		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
+	}
+	expiringOffer, expiringResolution, issueErr := coordinator.IssueFirmOffer(context.Background(), expiringInput,
+		fence)
 	if issueErr != nil || expiringResolution.State != commerce.ActionTerminal {
-		t.Fatalf("issue expiring offer: state=%s err=%v", expiringResolution.State, issueErr)
+		t.Fatalf("issue expiring offer after a stop between its journal commit and its terminal transition: "+
+			"state=%s err=%v", expiringResolution.State, issueErr)
+	}
+	if !sameJSON(expiringOffer, issuedBeforeTerminal) {
+		t.Fatal("the resumed issuance returned another offer than the one the journal had issued")
+	}
+	if _, found, planErr := journal.FirmOfferIssuancePlan(expiringOffer.Body.OfferID); planErr != nil || found {
+		t.Fatalf("the completed issuance left its plan: found=%v err=%v", found, planErr)
+	}
+	if replayed, replayedResolution, replayErr := coordinator.IssueFirmOffer(context.Background(), expiringInput,
+		fence); replayErr != nil || replayedResolution.State != commerce.ActionTerminal ||
+		!sameJSON(replayed, expiringOffer) {
+		t.Fatalf("repeating the completed issuance: state=%s err=%v", replayedResolution.State, replayErr)
 	}
 	late := now.Add(4 * time.Minute)
 	authority.now = func() time.Time { return late }

@@ -584,10 +584,21 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 	if err != nil {
 		return GuarantorClaimAdmissionResult{}, err
 	}
-	if _, err = coordinator.Journal.BeginClaimIngressAdmission(ingressLogID, ingressAction.StableActionID,
-		ingressAction.ExactRequestDigest, now); err != nil {
+	// The ingress log is the one record of when the claim was received: its
+	// root, which the receipt binds, covers the time of the entry. A call
+	// repeated after the entry was written, even one that starts again
+	// because its plan never reached the authority, gets the entry it
+	// wrote, and the receipt takes its time from that entry, not from the
+	// call. The stage admission keeps the call's own time, inside its fence.
+	ingressEntry, err := coordinator.Journal.BeginClaimIngressAdmission(ingressLogID, ingressAction.StableActionID,
+		ingressAction.ExactRequestDigest, now)
+	if err != nil {
 		return GuarantorClaimAdmissionResult{}, err
 	}
+	if !validGuarantorUnix(ingressEntry.ReceivedAtUnix) {
+		return GuarantorClaimAdmissionResult{}, errors.New("Guarantor claim ingress log entry has an invalid time")
+	}
+	ingressReceivedAt := time.Unix(int64(ingressEntry.ReceivedAtUnix), 0).UTC()
 	ingressResolution, err := coordinator.admitPlannedAction(ingressPlan, ingressAction, ingressFields, canonicalClaim,
 		fence, now)
 	if err != nil {
@@ -611,14 +622,14 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
 	}
 	rawIngressEligibility, err := coordinator.Eligibility.FreshEligibilityProofSet(ctx, "claim-submission-ingress",
-		coverage.Terms.ClaimIngressAuthoritySubjects, now)
+		coverage.Terms.ClaimIngressAuthoritySubjects, ingressReceivedAt)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
 	}
 	ingressEligibility, err := buildGuarantorEligibilityProofSet(rawIngressEligibility, ingressAction, claimDigest,
 		coverage.Terms.ClaimIngressAuthoritySubjects, "claim-ingress-receipt", claimDigest,
 		coverage.Terms.ClaimIngressProfile.ProfileDigest, coverage.Terms.ClaimIngressProfile,
-		ingressLogID, ingressSequence, uint64(now.Unix()))
+		ingressLogID, ingressSequence, ingressEntry.ReceivedAtUnix)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
 	}
@@ -655,6 +666,8 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		StableActionID: ingressAction.StableActionID, ExactRequestDigest: ingressAction.ExactRequestDigest,
 		WriterGeneration: ingressAction.WriterGeneration, WriterFenceDigest: ingressAction.WriterFenceDigest,
 		ReceivedAtUnix: uint64(now.Unix()), AuthorityAdmissionEligibilityProofSetDigest: ingressEligibilityDigest}
+	// Received when its log entry says, as the log roots above bind.
+	ingressBody.ReceivedAtUnix = ingressEntry.ReceivedAtUnix
 	ingressBodyDigest, err := guarantor.Digest("tos.service.agent-guarantor-claim-ingress-receipt-body.v1", ingressBody)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
@@ -903,6 +916,23 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	transition := input.TerminalTransitionReceipt
 	decision := admission.AuthorizedClaimDecision
 	claimID := decision.Body.ClaimID
+	admissionEnvelopeDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(admission)
+	if err != nil {
+		return GuarantorDecisionApplicationResult{}, err
+	}
+	transitionDigest, err := guarantor.ClaimStateTransitionReceiptDigestV1(transition)
+	if err != nil {
+		return GuarantorDecisionApplicationResult{}, err
+	}
+	// An application repeated after it was committed gets the committed
+	// receipt: its token is consumed and cannot be applied again. It is found
+	// by the envelope digests of the receipts it names, which were verified
+	// before it was committed, so it is returned whatever time the call has:
+	// later, those receipts may no longer verify.
+	if committed, replayed, replayErr := coordinator.committedDecisionApplication(coverage, claimID,
+		admissionEnvelopeDigest, transitionDigest); replayErr != nil || replayed {
+		return committed, replayErr
+	}
 	// A call that stopped after preparing this application resumes from its
 	// plan: with the plan's action, fence and time it checks the receipts it
 	// starts from and rebuilds the receipt the first call would have
@@ -912,28 +942,17 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 		return GuarantorDecisionApplicationResult{}, err
 	}
 	fence, now = planned.fence(fence), planned.at(now)
-	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(admission, coverage.Terms, coordinator.AgreementVerifier,
-		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
+	resolver := coordinator.resolverFor(input.AgreementDigest)
+	if err = guarantor.VerifyClaimDecisionAdmissionReceiptV1(admission, coverage.Terms, coordinator.AgreementVerifier,
+		resolver, coordinator.Authority, now); err != nil {
 		return GuarantorDecisionApplicationResult{}, err
 	}
-	admissionEnvelopeDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(admission)
-	if err != nil {
-		return GuarantorDecisionApplicationResult{}, err
-	}
-	if err := guarantor.VerifyClaimStateTransitionReceiptV1(transition, coverage.Terms, coordinator.AgreementVerifier,
-		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil || transition.Body.TransitionKind != "challenge_close" ||
+	transitionErr := guarantor.VerifyClaimStateTransitionReceiptV1(transition, coverage.Terms,
+		coordinator.AgreementVerifier, resolver, coordinator.Authority, now)
+	if transitionErr != nil || transition.Body.TransitionKind != "challenge_close" ||
 		transition.DecisionAdmissionProof.ReceiptEnvelopeDigest != admissionEnvelopeDigest {
-		return GuarantorDecisionApplicationResult{}, errors.New("Guarantor decision application lacks the exact terminal challenge close")
-	}
-	transitionDigest, err := guarantor.ClaimStateTransitionReceiptDigestV1(transition)
-	if err != nil {
-		return GuarantorDecisionApplicationResult{}, err
-	}
-	// An application repeated after it was committed gets the committed
-	// receipt: its token is consumed and cannot be applied again.
-	if committed, replayed, replayErr := coordinator.committedDecisionApplication(coverage, claimID,
-		admissionEnvelopeDigest, transitionDigest); replayErr != nil || replayed {
-		return committed, replayErr
+		return GuarantorDecisionApplicationResult{}, errors.New(
+			"Guarantor decision application lacks the exact terminal challenge close")
 	}
 	claim, claimFound := coverage.ClaimEnvelopes[claimID]
 	record, recordFound := coverage.Claims[claimID]

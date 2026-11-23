@@ -245,6 +245,18 @@ func requireCommittedGuarantorReceiptReplays[Result any](t *testing.T, name stri
 	requireSame("on the same journal")
 	restart()
 	requireSame("after a restart")
+	// The same request repeated much later, by a writer that took its lease
+	// then, when what the receipt was built from may no longer verify, gets
+	// the committed receipt too. The writer after that is taken at the clock
+	// the steps after this one run at.
+	committedClock := authority.now
+	for _, later := range []time.Duration{10 * time.Minute, 2 * time.Hour} {
+		authority.now = func() time.Time { return committedClock().Add(later) }
+		restart()
+		requireSame(fmt.Sprintf("%s later under a writer taken then", later))
+	}
+	authority.now = committedClock
+	restart()
 	// A committed receipt whose action the authority does not hold as terminal
 	// is not returned: the authority store is damaged or foreign.
 	for _, state := range []commerce.ActionResolutionState{commerce.ActionPrepared, commerce.ActionUnknown} {

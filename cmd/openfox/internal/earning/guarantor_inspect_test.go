@@ -211,6 +211,15 @@ func TestGuarantorAbandonPlanRefusesAHeadWithoutAPlan(t *testing.T) {
 	if after := fixture.listing(t); strings.Join(after, "\n") != strings.Join(before, "\n") {
 		t.Fatalf("abandoning a head without a plan changed the journal directory:\n got %v\nwant %v", after, before)
 	}
+	// Without the head's kind and scope the command refuses before it reads
+	// any configuration.
+	command := guarantorAbandonPlanCommand()
+	command.SetArgs([]string{"--scope", "x"})
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "needs --kind and --scope") {
+		t.Fatalf("abandon-plan without --kind: got %v", err)
+	}
 	if err := abandonGuarantorActionPlan(guarantorAbandonPlanCommand(), "", inspectTestOwner, inspectTestAgent,
 		unusedTestAuthority{}, "instance:test", "coverage_cancellation", "x", "", false); err == nil {
 		t.Fatal("abandon-plan ran without a journal directory")

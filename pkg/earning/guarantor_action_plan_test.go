@@ -494,6 +494,10 @@ func TestGuarantorActionPlanIsKeptWhileItsAuthorityCannotBeReached(t *testing.T)
 		stored.Action.ExactRequestDigest).State; state == commerce.ActionUnknown {
 		t.Fatal("an authority that cannot be reached reports the action unknown")
 	}
+	if _, err := ResolveGuarantorAction(unreachable, stored.Action.StableActionID,
+		stored.Action.ExactRequestDigest); err == nil {
+		t.Fatal("an authority that cannot be reached is reported with a state of the action")
+	}
 	coordinator.Authority = unreachable
 	if _, err := coordinator.plannedAction(stored.Kind, stored.ScopeID, "", fixture.fence); err == nil {
 		t.Fatal("a plan was looked up while its authority could not be reached")

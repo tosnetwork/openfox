@@ -574,7 +574,7 @@ func guarantorKillResumeLater(authorizer int) time.Duration {
 var guarantorKillPoints = []guarantorKillPoint{
 	{"issue: inside its first document write", 0, "during-write:1", 2, true, false, false},
 	{"issue: plan stored, authority not asked", 0, "after-write:2", 2, false, false, false},
-	{"issue: offer issued in the journal, before the terminal transition", 0, "before-terminal:1", 1, false, false, false},
+	{"issue: offer issued, before the terminal transition", 0, "before-terminal:1", 1, false, false, false},
 	{"issue: authority terminal, before the journal records it", 0, "after-terminal:1", 1, false, false, false},
 	{"issue: last commit made, before the offer is returned", 0, "after-write:6", 1, false, false, false},
 	{"accept: plan stored, authority not asked", 1, "after-write:2", 2, false, false, false},
@@ -766,8 +766,10 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 				}
 			} else if point.ingressFixed {
 				resumer := strconv.Itoa(point.step + 3)
-				for _, name := range []string{"claim ingress", "claim ingress writer generation",
-					"claim ingress received at"} {
+				ingressResults := []string{
+					"claim ingress", "claim ingress writer generation", "claim ingress received at",
+				}
+				for _, name := range ingressResults {
 					if resumed[name] != want[name] {
 						t.Fatalf("the resumed claim's %s is %s, want the killed process's %s", name, resumed[name],
 							want[name])

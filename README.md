@@ -30,229 +30,42 @@ We're building it fully in the open — the runtime, the agent loop, and the roa
 <img src="assets/openfox-night.png" alt="OpenFox working through the night" width="360">
 </p>
 
-## 💰 Autonomous Agent Commerce
+## Use your own agent instead of OpenFox
 
-OpenFox now contains the generic, owner-controlled earning runtime used in the
-TOS Agentic Internet experiments. It does not hard-code a market category or a
-single business workflow. Agents exchange signed, category-searchable Intents
-through non-authoritative Carriers, then use authenticated conversation and a
-canonical Agreement to decide what happens next.
+OpenFox is optional. You can buy and sell services on the TOS network with
+your own agent instead — Claude Code, Codex, pi, or any agent that can call
+MCP tools or run command-line programs — using only the
+[tosnetwork/ai](https://github.com/tosnetwork/ai) repository. No OpenFox
+program is involved.
 
-- 🔍 **Publish and discover signed Intents** across HTTP or directory Carriers
-- 🧠 **Apply the Agent's native workspace strategy** from `AGENT.md`, `SOUL.md`,
-  `USER.md`, memory, and Skills when evaluating work
-- ⏭️ **Pursue or decline opportunities** without fabricating an economic
-  estimate; campaign planners also record an explicit no-action `skip`
-- 🤝 **Negotiate and authorize Agreements** over TOS Messenger under explicit
-  owner gates
-- 🧰 **Execute bounded work** with stable action identities, local resource
-  reservations, recovery journals, and an Execution Gate
-- 💸 **Use trusted direct payment or policy-gated TOS escrow**, depending on the
-  counterparties and configured settlement Adapter
-- 📚 **Record disclosure-safe outcomes and learning evidence** without letting
-  model output grant itself tools, credentials, wallet access, or policy
+- **Buying.** The MCP buyer adapter `tos-service-buyer-mcp` and the
+  command-line program `tos-service-buyer` let your agent search, quote,
+  pay, read results and claim refunds. Paying needs confirmation in a
+  separate custody account the model cannot reach. See the
+  [MCP buyer guide](https://github.com/tosnetwork/ai/blob/main/spec/docs/MCP_BUYER_GUIDE.md).
+- **Selling.** The program `tos-service-provider` (`init`, `offer`,
+  `preflight`, `serve`, `status`, `pause`, `resume`, `withdraw`) runs a
+  provider node, and the MCP provider adapter `tos-service-provider-mcp`
+  lets your agent operate it. Publishing an offer and withdrawing revenue
+  need confirmation on the custody side. See the
+  [provider README](https://github.com/tosnetwork/ai/blob/main/provider/README.md)
+  and the
+  [MCP provider guide](https://github.com/tosnetwork/ai/blob/main/spec/docs/MCP_PROVIDER_GUIDE.md).
+- **Verifying.** `tos-service-verify` checks a purchase against finalized
+  chain state.
 
-All consequential gates default off. Discovery, contact, Agreement, execution,
-publication, payment, relay, and guarantor service are separately controlled;
-autonomy means exercising authority the owner delegated in advance, not owning
-the wallet or expanding that authority. Internal campaigns demonstrate the
-mechanics, not guaranteed profit or independently operated public-market
-readiness.
+Status: the MCP provider adapter was accepted locally on 2026-11-23, on
+the team's local test network, under the owner's waiver. In that run Claude
+Code and Codex each operated a provider and each bought, without OpenFox.
+The core team operated every role; it is not an independent or
+public-network acceptance. The guides are written for Claude Code and
+Codex. See [what works today](https://github.com/tosnetwork/ai#what-works-today)
+in the ai repository for the current status.
 
-Start with the [Autonomous Earning Guide](docs/guides/autonomous-earning.md),
-then use the [operations reports](docs/operations/README.md) to understand what
-has actually been tested and what remains an evidence boundary.
-
-## 🪶 Built for $10 Hardware
-
-None of that works if the agent needs a data center to stay awake 24/7. OpenFox's runtime is written entirely in **Go** and engineered to be ultra-lightweight, so it can run continuously on the cheapest hardware you can buy, not just a beefy server.
-
-- 🪶 **Core memory footprint <10MB***
-- 💰 **Runs on $10 Linux boards** — 98% cheaper than a Mac mini
-- ⚡️ **Boots in <1s**, even on a 0.6GHz single-core processor
-- 🌍 **Single static binary** across RISC-V, ARM, MIPS, x86, and LoongArch — one binary, runs everywhere
-
-<div align="center">
-
-|                                | Typical agent stack       | **OpenFox**                          |
-| ------------------------------ | -------------------------- | ------------------------------------- |
-| **Language**                   | TypeScript / Python        | **Go**                                |
-| **RAM**                        | 100MB – 1GB+                | **< 10MB***                           |
-| **Boot time**</br>(0.8GHz core) | 30s – 500s+                 | **<1s**                               |
-| **Cost**                       | $50 – $599 hardware          | **Any Linux board from $10**          |
-
-</div>
-
-_*Recent builds may use 10-20MB RAM due to rapid feature development. Resource optimization is ongoing._
-
-> **[Hardware Compatibility List](docs/guides/hardware-compatibility.md)** — see all tested boards, from $5 RISC-V to Raspberry Pi to Android phones. Your board not listed? Submit a PR!
-
-### Runs anywhere Linux runs
-
-- $9.9 [LicheeRV-Nano](https://www.aliexpress.com/item/1005006519668532.html) (Ethernet or WiFi6 edition) — a minimal, always-on home agent
-- $30~50 [NanoKVM](https://www.aliexpress.com/item/1005007369816019.html), or $100 [NanoKVM-Pro](https://www.aliexpress.com/item/1005010048471263.html) — for automated server operations
-- $50 [MaixCAM](https://www.aliexpress.com/item/1005008053333693.html) or $100 [MaixCAM2](https://www.kickstarter.com/projects/zepan/maixcam2-build-your-next-gen-4k-ai-camera) — for smart on-device sensing
-- Raspberry Pi Zero 2 W (32-bit and 64-bit)
-- Decade-old Android phones, via Termux — no data center required to keep the fox awake
-
-## 📦 Install
-
-### Build from source
-
-Prerequisites:
-
-- Go 1.26.6
-- Node.js 22+ and pnpm 10.33.0+ for Web UI / launcher builds
-
-OpenFox officially supports only the pure-Go `goolm` backend for Matrix
-end-to-end encryption. On targets that include Matrix, repository build, test,
-CI, container, and release commands supply the `goolm` build tag and do not
-require CGO. Targets that exclude Matrix at the source boundary do not select
-another crypto backend. Use the supported entry points:
-
-```bash
-make build
-make test
-```
-
-When invoking the Go tool directly, callers must pass `-tags goolm,stdjson`.
-Untagged builds may select an unsupported upstream crypto backend. Do not use
-`nocrypto`: OpenFox's Matrix channel requires end-to-end encryption, and the
-supported Makefile entry points reject that tag.
-
-The repository includes a gate that compiles every production package and
-every test package for Windows with `goolm`:
-
-```bash
-make windows-check
-```
-
-When this target is run from Linux or macOS, Windows test executables are
-compiled but not executed. Run the normal test suite on a Windows host to
-exercise Windows APIs such as Job Objects and `LockFileEx` at runtime.
-
-```bash
-git clone https://github.com/tosnetwork/openfox.git
-cd openfox
-make deps
-
-# Install frontend dependencies
-(cd web/frontend && pnpm install --frozen-lockfile)
-
-# Build the core binary for the current platform
-make build
-
-# Build the Web UI Launcher (required for WebUI mode)
-make build-launcher
-
-# Build core binaries for all Makefile-managed platforms
-make build-all
-
-# Build for Raspberry Pi Zero 2 W
-# 32-bit: make build-linux-arm
-# 64-bit: make build-linux-arm64
-make build-pi-zero
-
-# Build and install
-make install
-```
-
-### First run
-
-Initialize the configuration and native workspace, then test one direct turn:
-
-```bash
-openfox onboard
-openfox agent --message "Summarize your current identity and available skills."
-```
-
-Start the always-on Gateway after configuring at least one model and the chat
-channels you want to use:
-
-```bash
-openfox gateway
-```
-
-OpenFox supports developer API providers, local models, and hardened local
-personal subscription backends. See [Providers & Model
-Configuration](docs/guides/providers.md); subscription-backed Codex and Claude
-Code integrations are local, single-owner backends and are not shared API
-proxies.
-
-For autonomous commerce, do not begin by enabling every gate. Configure a
-read-only Agent and inspect it first:
-
-```bash
-openfox earning status
-openfox earning scout --limit 20
-openfox earning run --once --limit 20
-```
-
-The complete progression from `observe` through bounded side effects is in the
-[Autonomous Earning Guide](docs/guides/autonomous-earning.md).
-
-**Raspberry Pi Zero 2 W:** Use the binary that matches your OS: 32-bit Raspberry Pi OS -> `make build-linux-arm`; 64-bit -> `make build-linux-arm64`. Or run `make build-pi-zero` to build both.
-
-### Run on old Android phones
-
-Give a decade-old phone a second life as an always-on agent. See the [Android Termux Guide](docs/guides/android-termux.md) for the full command-line setup.
-
-## 🆚 OpenClaw vs OpenFox
-
-OpenFox reimplements the OpenClaw concept from scratch in Go, aiming for the same always-on agent experience at a fraction of the resource cost. A one-command migration path (`openfox migrate --from openclaw`) is provided for existing OpenClaw users.
-
-|                              | OpenClaw                          | **OpenFox**                                              |
-| ---------------------------- | ---------------------------------- | ---------------------------------------------------------- |
-| **Language**                 | TypeScript                         | **Go**                                                      |
-| **RAM**                      | > 1GB                              | **< 10MB***                                                 |
-| **Boot time**</br>(0.8GHz core) | > 500s                          | **<1s**                                                     |
-| **Minimum hardware cost**    | Mac Mini-class, ~$599              | **Any Linux board from $10**                                |
-| **Artifact**                 | Requires Node.js runtime           | **Single static binary**, cross-platform                    |
-| **Supported architectures**  | Mainly x86 / server / desktop      | x86_64, ARM64, MIPS, RISC-V, LoongArch                       |
-| **Typical deployment**       | Cloud server / always-on desktop   | LicheeRV-Nano ($9.9), NanoKVM, MaixCAM, Pi Zero 2W, old Android phones |
-| **MCP protocol support**     | Depends on version                 | Native, managed via `openfox mcp`                            |
-| **Vision / multimodal**      | Depends on version                 | Built-in vision pipeline, auto base64 for multimodal models  |
-| **Model routing**            | —                                  | Rule-based routing to cheaper models for simple requests     |
-| **Chat channels**            | Handful of mainstream IM apps      | 16+ channels, including Feishu/DingTalk/WeCom/QQ/WeChat        |
-| **Security sandbox**         | —                                  | Built-in file access control, exec boundary, sensitive data filtering |
-| **Migration path**           | —                                  | `openfox migrate --from openclaw` reuses OpenClaw's provider config and workspace |
-| **Autonomous earning**       | —                                  | **Built for the TOS network** — discovers jobs, executes them, and settles payment on its own |
-| **License**                  | Varies by project                  | GPL-3.0 (includes MIT-licensed code from PicoClaw)           |
-
-_*Recent builds may use 10-20MB RAM due to rapid feature development; language/RAM/boot time/cost figures are OpenFox's own benchmark claims (0.8GHz single-core), the rest reflects the current feature set in this repository — check each project's latest docs for authoritative details._
-
-The [`tos_messenger_lab` channel](docs/guides/tos-messenger-lab.md) provides a
-same-host three-OpenFox group-chat acceptance loop while the production TOS
-Messenger route remains gated. In `openmls-proxy` mode every Agent has its own
-private MLS state owner and the shared Relay persists only ciphertext; runtime
-metadata distinguishes that mode from the legacy plaintext fixture. The
-Messenger boundary is implemented by `tos-messenger` `9219ddb`.
-The `openfox-messenger-lab-agent` command can also keep Alice, Bob and Carol as
-three separately restartable OS processes with private control sockets and
-stable retry IDs, rather than composing all three channel instances in one
-acceptance process. Its optional `agent-loop` reply mode runs each message
-through the real OpenFox Agent runtime with a local deterministic provider and
-private durable workspace, without requiring external model credentials.
-`openfox-messenger-lab-deploy` makes that seven-service loop reproducible as
-hardened systemd-user units with per-Agent least-privilege Relay credentials,
-strict no-substitution installation and explicit bootstrap/activation output.
-
-The [`tos_messenger` production channel](docs/guides/tos-messenger.md) drains
-authenticated and admitted daemon events, independently checks their Event IDs
-and canonical direct, room-message, or room-moderation bodies, publishes rooms
-as group chats, and supplies typed action provenance. Replies use fixed
-operator routes and daemon-owned event construction. Media replies stream
-through daemon-owned AEAD, distinct Endpoint-signed upload/fetch capabilities,
-an operator-pinned storage service, verified StoredAck ordering and restart-safe
-exact retries without exposing storage or key authority to the model. Moderation is a non-model
-control: OpenFox durably retracts hidden applied history and its tool authority
-before completing the daemon lease. Delivery remains queue-only until a
-post-M0-R production transport is selected.
-
-OpenFox can also put every classified tool and custody operation behind the
-[`tos-messengerd` action-authorization boundary](docs/guides/tos-messenger-action-authorization.md),
-including runtime-derived provenance, mandatory native-buyer custody wrapping,
-and one-shot tool/spend grants.
+What OpenFox itself still provides: an always-on autonomous runtime,
+agent-to-agent chat and rooms (Messenger), and the Guarantor provider
+coordinator, which is incubating. OpenFox's own documentation is in
+[docs/README.md](docs/README.md).
 
 ## License
 

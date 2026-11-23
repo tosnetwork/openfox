@@ -41,7 +41,7 @@ func (coordinator *GuarantorProviderCoordinator) ConfirmActivationWindowExpired(
 	// plan: it is resolved at the plan's time, under the plan's fence,
 	// whatever time and fence the repeated call arrives with.
 	planned, err := coordinator.plannedAction(guarantorPlanNonActivation,
-		input.AcceptanceReceipt.Body.CoverageAgreementBodyDigest, "", fence, now)
+		input.AcceptanceReceipt.Body.CoverageAgreementBodyDigest, "", fence)
 	if err != nil {
 		return guarantor.AuthorizedCoverageNonActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}

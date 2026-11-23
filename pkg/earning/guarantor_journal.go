@@ -609,7 +609,14 @@ func (journal *GuarantorJournal) DiscardUnadmittedFirmOfferIssuancePlan(authorit
 	if !found {
 		return nil
 	}
-	if authority.Resolve(plan.Action.StableActionID, plan.Action.ExactRequestDigest).State != commerce.ActionUnknown {
+	// An authority that cannot answer says nothing about the action: the plan
+	// is kept, as it is for an action the authority holds.
+	resolution, err := resolveGuarantorAction(authority, plan.Action.StableActionID, plan.Action.ExactRequestDigest)
+	if err != nil {
+		return fmt.Errorf("Guarantor firm-offer plan is kept while its authority cannot say whether it holds the "+
+			"action: %w", err)
+	}
+	if resolution.State != commerce.ActionUnknown {
 		return errors.New("an admitted Guarantor firm-offer plan cannot be discarded")
 	}
 	next, err := journal.workingCopy()

@@ -32,11 +32,42 @@ type guarantorStatusReport struct {
 	PaidAtomicByAsset   map[string]string `json:"paid_atomic_by_asset"`
 	SideEffectsReady    bool              `json:"side_effects_ready"`
 	BlockedCapabilities []string          `json:"blocked_capabilities"`
+	// ActionPlans are the actions coordinator calls prepared and have not
+	// committed a receipt for, one per head. Each holds its head until its
+	// request is repeated or the plan is abandoned.
+	ActionPlans []guarantorActionPlanStatus `json:"action_plans"`
+}
+
+// guarantorActionPlanStatus is what status shows of one stored action plan:
+// the head it holds and the action it prepared, without its request.
+type guarantorActionPlanStatus struct {
+	Kind               string `json:"kind"`
+	ScopeID            string `json:"scope_id"`
+	SubjectID          string `json:"subject_id,omitempty"`
+	ActionKind         string `json:"action_kind"`
+	StableActionID     string `json:"stable_action_id"`
+	ExactRequestDigest string `json:"exact_request_digest"`
+	WriterGeneration   uint64 `json:"writer_generation"`
+	PreparedAtUnix     uint64 `json:"prepared_at_unix"`
+}
+
+// guarantorActionPlanStatuses lists stored action plans for status, in the
+// order given. The list is empty, never absent, when there is none.
+func guarantorActionPlanStatuses(plans []openfoxearning.GuarantorActionPlan) []guarantorActionPlanStatus {
+	statuses := make([]guarantorActionPlanStatus, 0, len(plans))
+	for _, plan := range plans {
+		statuses = append(statuses, guarantorActionPlanStatus{
+			Kind: plan.Kind, ScopeID: plan.ScopeID, SubjectID: plan.SubjectID, ActionKind: plan.Action.ActionKind,
+			StableActionID: plan.Action.StableActionID, ExactRequestDigest: plan.Action.ExactRequestDigest,
+			WriterGeneration: plan.Action.WriterGeneration, PreparedAtUnix: plan.PreparedAtUnix,
+		})
+	}
+	return statuses
 }
 
 func guarantorCommand() *cobra.Command {
 	command := &cobra.Command{Use: "guarantor", Short: "Inspect the owner-gated Agent Guarantor runtime", Args: cobra.NoArgs}
-	command.AddCommand(guarantorStatusCommand(), guarantorVerifyEvidenceCommand())
+	command.AddCommand(guarantorStatusCommand(), guarantorVerifyEvidenceCommand(), guarantorAbandonPlanCommand())
 	return command
 }
 
@@ -136,6 +167,11 @@ func summarizeGuarantorJournal(directory, ownerID, agentID string, report *guara
 		return fmt.Errorf("Agent Guarantor journal could not be read: %w", err)
 	}
 	report.JournalRevision = revision
+	plans, err := journal.ActionPlans()
+	if err != nil {
+		return fmt.Errorf("Agent Guarantor journal action plans could not be read: %w", err)
+	}
+	report.ActionPlans = guarantorActionPlanStatuses(plans)
 	for _, offer := range offers {
 		report.OfferCounts[string(offer.Record.Status)]++
 	}
@@ -218,4 +254,128 @@ func verifyGuarantorJournalEvidence(directory, ownerID, agentID string, output i
 		Verified: true, JournalRevision: revision,
 		Receipts: report.Receipts, Bytes: report.Bytes,
 	})
+}
+
+// guarantorPlanAbandonment is what abandon-plan prints: the plan of the head,
+// the state its action has at the authority, and whether the plan was given
+// up. Without --apply nothing is changed and Applied is false.
+type guarantorPlanAbandonment struct {
+	Applied        bool                      `json:"applied"`
+	ActionPlan     guarantorActionPlanStatus `json:"action_plan"`
+	AuthorityState string                    `json:"authority_state"`
+}
+
+// guarantorPlanAbandonmentLease is the writer lease the command takes to
+// abandon a plan. It only has to outlast the rejection and the discard.
+const guarantorPlanAbandonmentLease = 10 * time.Minute
+
+func guarantorAbandonPlanCommand() *cobra.Command {
+	var kind, scopeID, subjectID string
+	var apply bool
+	command := &cobra.Command{
+		Use: "abandon-plan",
+		Short: "Show the prepared action plan of one head, or with --apply give it up: the authority rejects " +
+			"its action, then the journal discards the plan",
+		Long: "A prepared action plan holds its head until its request is repeated. abandon-plan shows the plan " +
+			"and its action's state at the authority, and changes nothing. With --apply it takes the writer, " +
+			"which fences out a running Provider, has the authority reject the prepared action and then discards " +
+			"the plan. The rejection is final: the same request cannot be admitted again for that head. A plan " +
+			"whose action is terminal is refused; repeat its request to commit its receipt instead.",
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			cfg, err := internal.LoadConfig()
+			if err != nil {
+				return err
+			}
+			if err = cfg.Earning.Validate(); err != nil {
+				return err
+			}
+			if !cfg.Earning.AgentGuarantor.Enabled || !cfg.Earning.Gates.AgentGuarantor {
+				return errors.New("Agent Guarantor owner gate is disabled")
+			}
+			authority, closeAuthority, err := openConfiguredAuthority(cfg.Earning, false)
+			if err != nil {
+				return err
+			}
+			defer closeAuthority()
+			return abandonGuarantorActionPlan(command, cfg.Earning.AgentGuarantor.JournalDirectory,
+				cfg.Earning.OwnerID, cfg.Earning.AgentID, authority,
+				authorityInstanceID(cfg.Earning, "guarantor-plan-abandonment"), kind, scopeID, subjectID, apply)
+		},
+	}
+	command.Flags().StringVar(&kind, "kind", "", "action plan kind, as status lists it")
+	command.Flags().StringVar(&scopeID, "scope", "", "action plan scope ID, as status lists it")
+	command.Flags().StringVar(&subjectID, "subject", "", "action plan subject ID, as status lists it, if any")
+	command.Flags().BoolVar(&apply, "apply", false, "reject the prepared action and discard the plan; default shows it only")
+	_ = command.MarkFlagRequired("kind")
+	_ = command.MarkFlagRequired("scope")
+	return command
+}
+
+// abandonGuarantorActionPlan shows the action plan of one head with its
+// action's authority state, or with apply abandons it under a writer fence it
+// takes from authority. It fails when the journal holds no plan for the head,
+// when the authority cannot be asked, and, with apply, whenever the journal
+// refuses the abandonment, which leaves the plan as it was.
+func abandonGuarantorActionPlan(command *cobra.Command, directory, ownerID, agentID string,
+	authority openfoxearning.EconomicAuthority, instanceID, kind, scopeID, subjectID string, apply bool,
+) (err error) {
+	if directory == "" {
+		return errors.New("Agent Guarantor journal directory is not configured")
+	}
+	// The plan is looked up read-only, so a head without one changes nothing.
+	plan, found, err := inspectGuarantorActionPlan(directory, ownerID, agentID, kind, scopeID, subjectID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("Agent Guarantor journal holds no action plan for that head")
+	}
+	if authority == nil {
+		return errors.New("Agent Guarantor action authority is unavailable")
+	}
+	report := guarantorPlanAbandonment{ActionPlan: guarantorActionPlanStatuses(
+		[]openfoxearning.GuarantorActionPlan{plan})[0]}
+	if !apply {
+		report.AuthorityState = string(authority.Resolve(plan.Action.StableActionID,
+			plan.Action.ExactRequestDigest).State)
+	} else {
+		journal, openErr := openfoxearning.OpenGuarantorJournal(directory, ownerID, agentID)
+		if openErr != nil {
+			return openErr
+		}
+		defer func() { err = errors.Join(err, journal.Close()) }()
+		fence, acquireErr := authority.AcquireWriter(command.Context(), instanceID, []string{plan.Action.ActionKind},
+			guarantorPlanAbandonmentLease)
+		if acquireErr != nil {
+			return acquireErr
+		}
+		abandoned, resolution, abandonErr := journal.AbandonPreparedActionPlan(kind, scopeID, subjectID, authority,
+			fence, authority.AuthorityNow())
+		if abandonErr != nil {
+			return abandonErr
+		}
+		report.ActionPlan = guarantorActionPlanStatuses([]openfoxearning.GuarantorActionPlan{abandoned})[0]
+		report.Applied, report.AuthorityState = true, string(resolution.State)
+	}
+	encoder := json.NewEncoder(command.OutOrStdout())
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(report)
+}
+
+// inspectGuarantorActionPlan reads the action plan of one head from a journal
+// opened read-only.
+func inspectGuarantorActionPlan(directory, ownerID, agentID, kind, scopeID, subjectID string,
+) (plan openfoxearning.GuarantorActionPlan, found bool, err error) {
+	journal, err := inspectGuarantorJournal(directory, ownerID, agentID)
+	if err != nil {
+		return openfoxearning.GuarantorActionPlan{}, false, err
+	}
+	defer func() { err = errors.Join(err, journal.Close()) }()
+	plan, found, err = journal.ActionPlan(kind, scopeID, subjectID)
+	if err != nil {
+		return openfoxearning.GuarantorActionPlan{}, false,
+			fmt.Errorf("Agent Guarantor journal action plans could not be read: %w", err)
+	}
+	return plan, found, nil
 }

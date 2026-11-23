@@ -87,15 +87,20 @@ func testGuarantorActionPlans(journal *GuarantorJournal) map[string]GuarantorAct
 //   - the call is repeated ten minutes later and stops right after it: the
 //     action is terminal and nothing is committed for it.
 //
-// The first call of all runs at the authority's clock as it is on entry; the
-// later ones run with that clock moved forward, and call gets the same
-// offset, for a call whose time is part of its input. A restart takes its
-// writer at the entry clock. Every repetition must resume the stored plan as
-// it is: no stop may change a plan that was stored before it. The clock is as
-// it was when this returns.
+// The first call for each transition runs at the authority's clock as it is
+// on entry; the repetitions run with the clock moved forward as above, and
+// call gets the same offset, for a call whose time is part of its input. A
+// restart takes its writer at the entry clock. Every repetition must resume
+// the stored plan as it is: no stop may change a plan that was stored before
+// it. The clock is as it was when this returns.
+//
+// Without prepared, the call only stops right after each transition, at the
+// entry clock: the lifecycle scenarios that share a step with the one that
+// stops it on both sides run it this way, which keeps the package's run
+// time bounded.
 func stopTestGuarantorCallAroundEachTerminalTransition(t *testing.T, name string,
 	coordinator *GuarantorProviderCoordinator, authority *PersonalAuthority, restart func(), stops int,
-	call func(later time.Duration) error,
+	prepared bool, call func(later time.Duration) error,
 ) {
 	t.Helper()
 	base := coordinator.Authority
@@ -126,11 +131,20 @@ func stopTestGuarantorCallAroundEachTerminalTransition(t *testing.T, name string
 	}
 	const muchLater = 10 * time.Minute
 	for stop := 1; stop <= stops; stop++ {
-		// The first transition is first prepared by a call at the entry clock;
-		// each later one by a call that resumes the plans before it.
-		first := time.Duration(0)
-		if stop > 1 {
-			first = muchLater
+		// Each transition is first prepared by a call at the entry clock, which
+		// resumes the plans of the transitions before it. That call is the
+		// first for its own transition, and the steps after this call expect
+		// its receipt at the entry clock.
+		const first = time.Duration(0)
+		if !prepared {
+			step := fmt.Sprintf("stop %d of %d, after the terminal transition", stop, stops)
+			if err := run(&failAfterTerminalEconomicAuthority{EconomicAuthority: base, failOnce: true},
+				first); err == nil || !strings.Contains(err.Error(), "injected crash after terminal authority commit") {
+				t.Fatalf("%s, %s: got %v, want the injected stop", name, step, err)
+			}
+			requirePlans(step, commerce.ActionTerminal, nil)
+			restart()
+			continue
 		}
 		step := fmt.Sprintf("stop %d of %d, before the terminal transition", stop, stops)
 		if err := run(&stopBeforeTerminalEconomicAuthority{EconomicAuthority: base}, first); err == nil ||
@@ -141,7 +155,7 @@ func stopTestGuarantorCallAroundEachTerminalTransition(t *testing.T, name string
 		prepared := testGuarantorActionPlans(coordinator.Journal)
 		restart()
 		step = fmt.Sprintf("stop %d of %d, before the terminal transition, repeated a second later", stop, stops)
-		if err := run(&stopBeforeTerminalEconomicAuthority{EconomicAuthority: base}, time.Second); err == nil ||
+		if err := run(&stopBeforeTerminalEconomicAuthority{EconomicAuthority: base}, first+time.Second); err == nil ||
 			!strings.Contains(err.Error(), errTestStoppedBeforeTerminal.Error()) {
 			t.Fatalf("%s, %s under a newer writer: got %v, want the injected stop", name, step, err)
 		}
@@ -149,7 +163,7 @@ func stopTestGuarantorCallAroundEachTerminalTransition(t *testing.T, name string
 		restart()
 		step = fmt.Sprintf("stop %d of %d, after the terminal transition, repeated ten minutes later", stop, stops)
 		if err := run(&failAfterTerminalEconomicAuthority{EconomicAuthority: base, failOnce: true},
-			muchLater); err == nil || !strings.Contains(err.Error(), "injected crash after terminal authority commit") {
+			first+muchLater); err == nil || !strings.Contains(err.Error(), "injected crash after terminal authority commit") {
 			t.Fatalf("%s, %s under a newer writer: got %v, want the injected stop", name, step, err)
 		}
 		requirePlans(step, commerce.ActionTerminal, prepared)
@@ -161,8 +175,8 @@ func stopTestGuarantorCallAroundEachTerminalTransition(t *testing.T, name string
 // a caller that never sees its return does, and requires the committed
 // receipt every time:
 //
-//   - the call first stops before and after each of its stops terminal
-//     transitions (stopTestGuarantorCallAroundEachTerminalTransition), and the
+//   - the call first stops before, if prepared, and after each of its stops
+//     terminal transitions (stopTestGuarantorCallAroundEachTerminalTransition), and the
 //     process restarts under a new writer generation after each stop, the
 //     repetitions running with a later clock;
 //   - the call that then completes loses the directory sync of its commit,
@@ -183,10 +197,10 @@ func stopTestGuarantorCallAroundEachTerminalTransition(t *testing.T, name string
 // this returns.
 func requireCommittedGuarantorReceiptReplays[Result any](t *testing.T, name string,
 	coordinator *GuarantorProviderCoordinator, authority *PersonalAuthority, restart func(), stops int,
-	call func() (Result, error), different func() error,
+	prepared bool, call func() (Result, error), different func() error,
 ) Result {
 	t.Helper()
-	stopTestGuarantorCallAroundEachTerminalTransition(t, name, coordinator, authority, restart, stops,
+	stopTestGuarantorCallAroundEachTerminalTransition(t, name, coordinator, authority, restart, stops, prepared,
 		func(time.Duration) error {
 			_, err := call()
 			return err

@@ -127,7 +127,7 @@ func (fixture *actionPlanFixture) prepare(t *testing.T, coordinator *GuarantorPr
 	fixture.authority.now = func() time.Time { return at }
 	fixture.fence = fixture.nextFence(t)
 	plan := fixture.plan(t, fixture.fence, "cancel")
-	planned, err := coordinator.plannedAction(plan.Kind, plan.ScopeID, "", fixture.fence, at)
+	planned, err := coordinator.plannedAction(plan.Kind, plan.ScopeID, "", fixture.fence)
 	if err != nil || planned.resuming() {
 		t.Fatalf("look up the plan of a first call: resuming=%v err=%v", planned.resuming(), err)
 	}
@@ -319,25 +319,22 @@ func TestGuarantorJournalRefusesATamperedActionPlan(t *testing.T) {
 	}
 }
 
-// TestGuarantorActionPlanIsDiscardedOrReauthorizedByWhatTheAuthorityHolds: a
-// plan whose action the authority never saw is discarded and the head is
-// free; a plan whose action is prepared is kept by its own writer generation
-// and authorized again, as the same action at a later time, by a newer one;
-// a plan whose action is terminal is kept as stored by any generation.
-func TestGuarantorActionPlanIsDiscardedOrReauthorizedByWhatTheAuthorityHolds(t *testing.T) {
+// TestGuarantorActionPlanIsDiscardedOrResumedByWhatTheAuthorityHolds: a plan
+// whose action the authority never saw is discarded and the head is free; a
+// plan whose action is prepared or terminal is resumed as stored, with its
+// action, fence and time, by its own writer generation and by a newer one,
+// and refused to an older one.
+func TestGuarantorActionPlanIsDiscardedOrResumedByWhatTheAuthorityHolds(t *testing.T) {
 	fixture := newActionPlanFixture(t)
-	coordinator := &GuarantorProviderCoordinator{
-		OwnerID: "owner:guarantor", AgentID: "agent:guarantor", PolicyRevision: 1,
-		MandateDigest: "sha256:" + strings.Repeat("5", 64), Authority: fixture.authority, Journal: fixture.journal,
-	}
+	coordinator := fixture.coordinator()
 	kind, scope := guarantorPlanCoverageCancellation, actionPlanTestAgreement
 	first := time.Unix(2_000_000_000, 0).UTC()
 	fixture.authority.now = func() time.Time { return first }
 	fixture.fence = fixture.nextFence(t)
 	plan := fixture.plan(t, fixture.fence, "cancel")
-	lookup := func(fence commerce.WriterFence, at time.Time) guarantorPlannedAction {
+	lookup := func(fence commerce.WriterFence, _ time.Time) guarantorPlannedAction {
 		t.Helper()
-		planned, err := coordinator.plannedAction(kind, scope, "", fence, at)
+		planned, err := coordinator.plannedAction(kind, scope, "", fence)
 		if err != nil {
 			t.Fatalf("look the action plan up: %v", err)
 		}
@@ -375,7 +372,7 @@ func TestGuarantorActionPlanIsDiscardedOrReauthorizedByWhatTheAuthorityHolds(t *
 	// Its own generation keeps the plan, its fence and its time.
 	later := first.Add(time.Minute)
 	same := lookup(fixture.fence, later)
-	if !same.keepsPlan() || !same.at(later).Equal(first) || !sameJSON(same.fence(fixture.fence), fixture.fence) {
+	if !same.resuming() || !same.at(later).Equal(first) || !sameJSON(same.fence(fixture.fence), fixture.fence) {
 		t.Fatalf("the plan's own generation does not keep the prepared plan: %#v", same)
 	}
 	// A different request for the head is refused.
@@ -383,31 +380,27 @@ func TestGuarantorActionPlanIsDiscardedOrReauthorizedByWhatTheAuthorityHolds(t *
 		!strings.Contains(err.Error(), "conflicts with the action already prepared") {
 		t.Fatalf("a different request for a head with a prepared plan: got %v", err)
 	}
-	// A newer generation authorizes the same action again, at its own time.
+	// A newer generation keeps it too: the stored action, its fence and time.
 	fixture.authority.now = func() time.Time { return later }
 	newer := fixture.nextFence(t)
-	reauthorized := lookup(newer, later)
-	if !reauthorized.resuming() || reauthorized.keepsPlan() || !reauthorized.at(later).Equal(later) {
-		t.Fatalf("a newer generation keeps the authorization of a prepared plan: %#v", reauthorized)
+	resumed := lookup(newer, later)
+	if !resumed.resuming() || !resumed.at(later).Equal(first) || !sameJSON(resumed.fence(newer), fixture.fence) {
+		t.Fatalf("a newer generation does not keep the prepared plan: %#v", resumed)
 	}
-	again, err := authorize(reauthorized, newer, plan.CanonicalRequest)
-	if err != nil || again.StableActionID != action.StableActionID ||
-		again.ExactRequestDigest != action.ExactRequestDigest || again.WriterGeneration != newer.Body.WriterGeneration {
-		t.Fatalf("reauthorize the prepared action: generation %d err=%v", again.WriterGeneration, err)
+	again, err := authorize(resumed, newer, plan.CanonicalRequest)
+	if err != nil || !sameJSON(again, action) {
+		t.Fatalf("a newer generation does not take the prepared action as stored: err=%v", err)
 	}
 	stored, found, err := fixture.journal.ActionPlan(kind, scope, "")
-	if err != nil || !found || !sameJSON(stored.Action, again) || !sameJSON(stored.WriterFence, newer) ||
-		stored.PreparedAtUnix != uint64(later.Unix()) {
-		t.Fatalf("the reauthorized plan is not the one stored: found=%v err=%v", found, err)
+	if err != nil || !found || !sameJSON(stored.Action, action) || !sameJSON(stored.WriterFence, fixture.fence) ||
+		stored.PreparedAtUnix != uint64(first.Unix()) {
+		t.Fatalf("the resumed plan is not the one stored: found=%v err=%v", found, err)
 	}
-	if _, staleErr := coordinator.plannedAction(kind, scope, "", fixture.fence, later); staleErr == nil ||
+	older := fixture.fence
+	older.Body.WriterGeneration--
+	if _, staleErr := coordinator.plannedAction(kind, scope, "", older); staleErr == nil ||
 		!strings.Contains(staleErr.Error(), "stale writer") {
 		t.Fatalf("an older generation looked a newer generation's prepared plan up: %v", staleErr)
-	}
-	backwards := stored
-	backwards.PreparedAtUnix--
-	if err = fixture.journal.ReauthorizeActionPlan(backwards); err == nil {
-		t.Fatal("a plan was reauthorized without a newer generation, back in time")
 	}
 
 	// Terminal: any generation keeps the plan as stored, and the result the
@@ -419,8 +412,8 @@ func TestGuarantorActionPlanIsDiscardedOrReauthorizedByWhatTheAuthorityHolds(t *
 	}
 	newest := fixture.nextFence(t)
 	terminal := lookup(newest, later.Add(time.Minute))
-	if !terminal.keepsPlan() || !terminal.at(later.Add(time.Minute)).Equal(later) ||
-		!sameJSON(terminal.fence(newest), newer) {
+	if !terminal.resuming() || !terminal.at(later.Add(time.Minute)).Equal(first) ||
+		!sameJSON(terminal.fence(newest), fixture.fence) {
 		t.Fatalf("a terminal plan is not kept as stored by a newer generation: %#v", terminal)
 	}
 	if _, err = coordinator.settlePlannedAction(resolution, again, sink, []string{sink}); err != nil {
@@ -460,7 +453,7 @@ func TestGuarantorPreparedActionPlanResumesAtItsOwnTimeUnderANewerWriter(t *test
 		later := first.Add(delay)
 		fixture.authority.now = func() time.Time { return later }
 		newer := fixture.nextFence(t)
-		resumed, err := coordinator.plannedAction(stored.Kind, stored.ScopeID, "", newer, later)
+		resumed, err := coordinator.plannedAction(stored.Kind, stored.ScopeID, "", newer)
 		if err != nil || !resumed.resuming() {
 			t.Fatalf("%s later, a newer writer looks the prepared plan up: resuming=%v err=%v", delay,
 				resumed.resuming(), err)
@@ -500,7 +493,7 @@ func TestGuarantorActionPlanIsKeptWhileItsAuthorityCannotBeReached(t *testing.T)
 		t.Fatal("an authority that cannot be reached reports the action unknown")
 	}
 	coordinator.Authority = unreachable
-	if _, err := coordinator.plannedAction(stored.Kind, stored.ScopeID, "", fixture.fence, first); err == nil {
+	if _, err := coordinator.plannedAction(stored.Kind, stored.ScopeID, "", fixture.fence); err == nil {
 		t.Fatal("a plan was looked up while its authority could not be reached")
 	}
 	if err := fixture.journal.DiscardUnadmittedActionPlan(stored.Kind, stored.ScopeID, "", unreachable); err == nil {
@@ -528,8 +521,107 @@ func TestGuarantorActionPlanIsKeptWhileItsAuthorityCannotBeReached(t *testing.T)
 			discardErr)
 	}
 	coordinator.Authority = fixture.authority
-	resumed, err := coordinator.plannedAction(stored.Kind, stored.ScopeID, "", fixture.fence, first.Add(time.Minute))
+	resumed, err := coordinator.plannedAction(stored.Kind, stored.ScopeID, "", fixture.fence)
 	if err != nil || !resumed.resuming() || !sameJSON(*resumed.resume, stored) {
 		t.Fatalf("once the authority answers, the plan is not resumed as stored: err=%v", err)
+	}
+}
+
+// TestGuarantorPreparedActionPlanIsAbandonedAtItsAuthorityFirst: a prepared
+// plan is listed, and abandoning it rejects its action at the authority and
+// then discards the plan, under the current writer only. While the authority
+// cannot be reached, or the writer is not current, nothing changes.
+func TestGuarantorPreparedActionPlanIsAbandonedAtItsAuthorityFirst(t *testing.T) {
+	fixture := newActionPlanFixture(t)
+	coordinator := fixture.coordinator()
+	first := time.Unix(2_000_000_000, 0).UTC()
+	stored := fixture.prepare(t, coordinator, first)
+	kind, scope := stored.Kind, stored.ScopeID
+	if plans, err := fixture.journal.ActionPlans(); err != nil || len(plans) != 1 || !sameJSON(plans[0], stored) {
+		t.Fatalf("the stored plans are listed as %d plans, err=%v", len(plans), err)
+	}
+	requireKept := func(when string) {
+		t.Helper()
+		kept, found, err := fixture.journal.ActionPlan(kind, scope, "")
+		if err != nil || !found || !sameJSON(kept, stored) {
+			t.Fatalf("%s, the plan is not kept: found=%v err=%v", when, found, err)
+		}
+		if state := fixture.authority.Resolve(stored.Action.StableActionID,
+			stored.Action.ExactRequestDigest).State; state != commerce.ActionPrepared {
+			t.Fatalf("%s, the action is %s at the authority, want prepared", when, state)
+		}
+	}
+	if _, _, err := fixture.journal.AbandonPreparedActionPlan(kind, scope, "", unreachableTestSharedAuthority(t),
+		fixture.fence, first); err == nil {
+		t.Fatal("a plan was abandoned while its authority could not be reached")
+	}
+	requireKept("while the authority cannot be reached")
+	stale := fixture.fence
+	current := fixture.nextFence(t)
+	if _, _, err := fixture.journal.AbandonPreparedActionPlan(kind, scope, "", fixture.authority, stale,
+		first); err == nil {
+		t.Fatal("a plan was abandoned under a writer that is not current")
+	}
+	requireKept("under a writer that is not current")
+	abandoned, resolution, err := fixture.journal.AbandonPreparedActionPlan(kind, scope, "", fixture.authority,
+		current, first)
+	if err != nil || resolution.State != commerce.ActionRejected || !sameJSON(abandoned, stored) {
+		t.Fatalf("abandon the prepared plan: state=%s err=%v", resolution.State, err)
+	}
+	if state := fixture.authority.Resolve(stored.Action.StableActionID,
+		stored.Action.ExactRequestDigest).State; state != commerce.ActionRejected {
+		t.Fatalf("the abandoned action is %s at the authority, want rejected", state)
+	}
+	if plans, err := fixture.journal.ActionPlans(); err != nil || len(plans) != 0 {
+		t.Fatalf("the abandoned plan is still listed: %d plans, err=%v", len(plans), err)
+	}
+	if _, _, err = fixture.journal.AbandonPreparedActionPlan(kind, scope, "", fixture.authority, current,
+		first); err == nil || !strings.Contains(err.Error(), "no action plan") {
+		t.Fatalf("abandoning a head without a plan: got %v", err)
+	}
+
+}
+
+// TestGuarantorActionPlanAbandonmentRefusesATerminalAction: a plan whose
+// action is terminal is completed by repeating its request, never abandoned,
+// and is kept.
+func TestGuarantorActionPlanAbandonmentRefusesATerminalAction(t *testing.T) {
+	first := time.Unix(2_000_000_000, 0).UTC()
+	kind, scope := guarantorPlanCoverageCancellation, actionPlanTestAgreement
+	terminalFixture := newActionPlanFixture(t)
+	terminalCoordinator := terminalFixture.coordinator()
+	terminal := terminalFixture.prepare(t, terminalCoordinator, first)
+	sink := "sha256:" + strings.Repeat("7", 64)
+	if _, err := terminalFixture.authority.Transition(terminal.Action.StableActionID,
+		terminal.Action.ExactRequestDigest, commerce.ActionTerminal, sink, []string{sink}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := terminalFixture.journal.AbandonPreparedActionPlan(kind, scope, "", terminalFixture.authority,
+		terminalFixture.fence, first); err == nil || !strings.Contains(err.Error(), "terminal") {
+		t.Fatalf("abandoning a plan whose action is terminal: got %v", err)
+	}
+	if kept, found, keptErr := terminalFixture.journal.ActionPlan(kind, scope, ""); keptErr != nil || !found ||
+		!sameJSON(kept, terminal) {
+		t.Fatalf("a plan whose action is terminal is not kept: found=%v err=%v", found, keptErr)
+	}
+
+}
+
+// TestGuarantorActionPlanAbandonmentDiscardsAnUnadmittedPlan: a plan whose
+// action the authority never saw is only discarded.
+func TestGuarantorActionPlanAbandonmentDiscardsAnUnadmittedPlan(t *testing.T) {
+	kind, scope := guarantorPlanCoverageCancellation, actionPlanTestAgreement
+	unadmittedFixture := newActionPlanFixture(t)
+	unadmitted := unadmittedFixture.plan(t, unadmittedFixture.fence, "cancel")
+	if err := unadmittedFixture.journal.PrepareActionPlan(unadmitted); err != nil {
+		t.Fatal(err)
+	}
+	_, resolution, err := unadmittedFixture.journal.AbandonPreparedActionPlan(kind, scope, "",
+		unadmittedFixture.authority, unadmittedFixture.fence, time.Unix(int64(unadmitted.PreparedAtUnix), 0))
+	if err != nil || resolution.State != commerce.ActionUnknown {
+		t.Fatalf("abandon a plan the authority never saw: state=%s err=%v", resolution.State, err)
+	}
+	if _, found, foundErr := unadmittedFixture.journal.ActionPlan(kind, scope, ""); foundErr != nil || found {
+		t.Fatalf("a plan the authority never saw is kept after its abandonment: found=%v err=%v", found, foundErr)
 	}
 }

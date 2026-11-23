@@ -415,6 +415,7 @@ func (process *guarantorKillProcess) drive(t *testing.T, fixture guarantorKillFi
 				admitted.IngressReceipt.Body.WriterGeneration, 10)
 			results["claim admission writer generation"] = strconv.FormatUint(
 				admitted.AdmissionReceipt.Body.WriterGeneration, 10)
+			results["claim ingress received at"] = strconv.FormatUint(admitted.IngressReceipt.Body.ReceivedAtUnix, 10)
 		},
 	}
 	if process.steps > 0 {
@@ -492,7 +493,9 @@ func signGuarantorKillTestClaim(t *testing.T, fixture guarantorKillFixture, dige
 		EvidenceManifestDigest: manifestDigest, OtherRecoveryDeclarationDigest: recoveryDigest,
 		PayoutDestinationDigest: fixture.destinationDigest,
 		CreatedAtUnix:           uint64(now.Add(3 * time.Minute).Unix()),
-		ExpiresAtUnix:           uint64(now.Add(10 * time.Minute).Unix()),
+		// The claim outlives a resume ten minutes after the call that was
+		// killed, so that resume can still prepare the claim's admission.
+		ExpiresAtUnix: uint64(now.Add(30 * time.Minute).Unix()),
 	}
 	bodyDigest, err := guarantor.ClaimBodyDigest(body)
 	if err != nil {
@@ -538,6 +541,17 @@ type guarantorKillPoint struct {
 	// leavesTemporary is set when the kill leaves the temporary file of an
 	// interrupted document write in the journal directory.
 	leavesTemporary bool
+	// receivedWhenLogged is set for a claim killed after its ingress log entry
+	// and before its ingress plan: the resuming process authorizes the claim
+	// itself, but the claim was received when the entry says, the killed
+	// process's time, so no uninterrupted run returns its receipts. They are
+	// checked for that time and the resuming process's writer generation.
+	receivedWhenLogged bool
+	// ingressFixed is set for a claim killed with its ingress prepared: the
+	// resuming process completes the killed process's ingress, whose receipt
+	// is the one an uninterrupted run by the killed process returns, and
+	// authorizes the admission itself, so the pair is checked by parts.
+	ingressFixed bool
 }
 
 // guarantorKillResumeLater is how much later than the killed process the
@@ -558,20 +572,23 @@ func guarantorKillResumeLater(authorizer int) time.Duration {
 //	activate: 1 admission, 2 plan, 3 terminal result, 4 activation
 //	claim:    1 ingress admission, 2 ingress plan, 3 ingress result, 4 admission plan, 5 claim admission
 var guarantorKillPoints = []guarantorKillPoint{
-	{"issue: inside its first document write", 0, "during-write:1", 2, true},
-	{"issue: plan stored, authority not asked", 0, "after-write:2", 2, false},
-	{"issue: offer issued in the journal, before the terminal transition", 0, "before-terminal:1", 1, false},
-	{"issue: authority terminal, before the journal records it", 0, "after-terminal:1", 1, false},
-	{"issue: last commit made, before the offer is returned", 0, "after-write:6", 1, false},
-	{"accept: plan stored, authority not asked", 1, "after-write:2", 2, false},
-	{"accept: action prepared, before the terminal transition", 1, "before-terminal:1", 1, false},
-	{"accept: authority terminal, before the journal commit", 1, "after-terminal:1", 1, false},
-	{"accept: authority terminal, inside the commit's document write", 1, "during-write:3", 1, true},
-	{"accept: journal commit made, before the receipt is returned", 1, "after-write:3", 1, false},
-	{"activate: authority terminal, before the journal commit", 2, "after-terminal:1", 1, false},
-	{"activate: journal commit made, before the evidence is returned", 2, "after-write:4", 1, false},
-	{"claim: both actions terminal, before the journal commit", 3, "after-terminal:2", 1, false},
-	{"claim: journal commit made, before the receipts are returned", 3, "after-write:5", 1, false},
+	{"issue: inside its first document write", 0, "during-write:1", 2, true, false, false},
+	{"issue: plan stored, authority not asked", 0, "after-write:2", 2, false, false, false},
+	{"issue: offer issued in the journal, before the terminal transition", 0, "before-terminal:1", 1, false, false, false},
+	{"issue: authority terminal, before the journal records it", 0, "after-terminal:1", 1, false, false, false},
+	{"issue: last commit made, before the offer is returned", 0, "after-write:6", 1, false, false, false},
+	{"accept: plan stored, authority not asked", 1, "after-write:2", 2, false, false, false},
+	{"accept: action prepared, before the terminal transition", 1, "before-terminal:1", 1, false, false, false},
+	{"accept: authority terminal, before the journal commit", 1, "after-terminal:1", 1, false, false, false},
+	{"accept: authority terminal, inside the commit's document write", 1, "during-write:3", 1, true, false, false},
+	{"accept: journal commit made, before the receipt is returned", 1, "after-write:3", 1, false, false, false},
+	{"activate: admission logged, its plan not stored", 2, "after-write:1", 2, false, false, false},
+	{"activate: authority terminal, before the journal commit", 2, "after-terminal:1", 1, false, false, false},
+	{"activate: journal commit made, before the evidence is returned", 2, "after-write:4", 1, false, false, false},
+	{"claim: ingress logged, its plan not stored", 3, "after-write:1", 2, false, true, false},
+	{"claim: ingress prepared, before its terminal transition", 3, "before-terminal:1", 1, false, false, true},
+	{"claim: both actions terminal, before the journal commit", 3, "after-terminal:2", 1, false, false, false},
+	{"claim: journal commit made, before the receipts are returned", 3, "after-write:5", 1, false, false, false},
 }
 
 // TestGuarantorCoordinatorResumesAfterBeingKilled kills a process running the
@@ -733,7 +750,34 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 			run(t, directory, point.step+3, point.step+1, "", guarantorKillResumeLater(point.authorizer))
 			resumed := results(t, directory)
 			want := reference(t, point.step, point.authorizer)
-			if !reflect.DeepEqual(resumed, want) {
+			if point.receivedWhenLogged {
+				// The claim step runs four minutes after the logical time.
+				killedAt := strconv.FormatInt(now.Add(4*time.Minute).Unix(), 10)
+				for _, name := range []string{"claim ingress writer generation", "claim admission writer generation"} {
+					if resumed[name] != want[name] {
+						t.Fatalf("the resumed claim carries %s = %s, want the resuming process's %s", name,
+							resumed[name], want[name])
+					}
+				}
+				if resumed["claim ingress received at"] != killedAt || resumed["claim ingress"] == "" ||
+					resumed["claim admission"] == "" {
+					t.Fatalf("the resumed claim was received at %s, want %s when its ingress was logged: %v",
+						resumed["claim ingress received at"], killedAt, resumed)
+				}
+			} else if point.ingressFixed {
+				resumer := strconv.Itoa(point.step + 3)
+				for _, name := range []string{"claim ingress", "claim ingress writer generation",
+					"claim ingress received at"} {
+					if resumed[name] != want[name] {
+						t.Fatalf("the resumed claim's %s is %s, want the killed process's %s", name, resumed[name],
+							want[name])
+					}
+				}
+				if resumed["claim admission writer generation"] != resumer || resumed["claim admission"] == "" {
+					t.Fatalf("the resumed claim's admission carries writer generation %s, want the resuming "+
+						"process's %s", resumed["claim admission writer generation"], resumer)
+				}
+			} else if !reflect.DeepEqual(resumed, want) {
 				t.Fatalf("the process resumed after the kill returned\n%v\nan uninterrupted run returns\n%v", resumed,
 					want)
 			}

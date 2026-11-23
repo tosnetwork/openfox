@@ -243,7 +243,7 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 	// plan: the coverage is activated at the plan's time, under the plan's
 	// fence, whatever time and fence the repeated call arrives with.
 	planned, err := coordinator.plannedAction(guarantorPlanCoverageActivation,
-		input.AcceptanceReceipt.Body.CoverageAgreementBodyDigest, "", fence, activatedAt)
+		input.AcceptanceReceipt.Body.CoverageAgreementBodyDigest, "", fence)
 	if err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
@@ -533,12 +533,11 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 	// preparing either resumes from it, with that plan's action, fence and
 	// time; an action without a plan is authorized by this call.
 	revisionKey := guarantorClaimRevisionKey(claim.Body.ClaimID, claim.Body.ClaimRevision)
-	ingressPlan, err := coordinator.plannedAction(guarantorPlanClaimIngress, agreementDigest, revisionKey, fence, now)
+	ingressPlan, err := coordinator.plannedAction(guarantorPlanClaimIngress, agreementDigest, revisionKey, fence)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{}, err
 	}
-	admissionPlan, err := coordinator.plannedAction(guarantorPlanClaimAdmission, agreementDigest, revisionKey, fence,
-		now)
+	admissionPlan, err := coordinator.plannedAction(guarantorPlanClaimAdmission, agreementDigest, revisionKey, fence)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{}, err
 	}
@@ -902,6 +901,17 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	}
 	admission := input.DecisionAdmissionReceipt
 	transition := input.TerminalTransitionReceipt
+	decision := admission.AuthorizedClaimDecision
+	claimID := decision.Body.ClaimID
+	// A call that stopped after preparing this application resumes from its
+	// plan: with the plan's action, fence and time it checks the receipts it
+	// starts from and rebuilds the receipt the first call would have
+	// committed.
+	planned, err := coordinator.plannedAction(guarantorPlanDecisionApplication, input.AgreementDigest, claimID, fence)
+	if err != nil {
+		return GuarantorDecisionApplicationResult{}, err
+	}
+	fence, now = planned.fence(fence), planned.at(now)
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(admission, coverage.Terms, coordinator.AgreementVerifier,
 		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
 		return GuarantorDecisionApplicationResult{}, err
@@ -915,8 +925,6 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 		transition.DecisionAdmissionProof.ReceiptEnvelopeDigest != admissionEnvelopeDigest {
 		return GuarantorDecisionApplicationResult{}, errors.New("Guarantor decision application lacks the exact terminal challenge close")
 	}
-	decision := admission.AuthorizedClaimDecision
-	claimID := decision.Body.ClaimID
 	transitionDigest, err := guarantor.ClaimStateTransitionReceiptDigestV1(transition)
 	if err != nil {
 		return GuarantorDecisionApplicationResult{}, err
@@ -927,15 +935,6 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 		admissionEnvelopeDigest, transitionDigest); replayErr != nil || replayed {
 		return committed, replayErr
 	}
-	// A call that stopped after preparing this application resumes from its
-	// plan: with the plan's action, fence and time it rebuilds the receipt the
-	// first call would have committed.
-	planned, err := coordinator.plannedAction(guarantorPlanDecisionApplication, input.AgreementDigest, claimID, fence,
-		now)
-	if err != nil {
-		return GuarantorDecisionApplicationResult{}, err
-	}
-	fence, now = planned.fence(fence), planned.at(now)
 	claim, claimFound := coverage.ClaimEnvelopes[claimID]
 	record, recordFound := coverage.Claims[claimID]
 	token, tokenFound := coverage.DecisionApplicationTokens[claimID]
@@ -1376,8 +1375,7 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 	// A call that stopped after preparing this acceptance resumes from its
 	// plan: the acceptance is received at the plan's time, under the plan's
 	// fence, whatever time and fence the repeated call arrives with.
-	planned, err := coordinator.plannedAction(guarantorPlanCoverageAcceptance, input.Offer.Body.OfferID, "", fence,
-		receivedAt)
+	planned, err := coordinator.plannedAction(guarantorPlanCoverageAcceptance, input.Offer.Body.OfferID, "", fence)
 	if err != nil {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
 	}
@@ -1792,7 +1790,11 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
 	}
 	if found {
-		priorResolution := coordinator.Authority.Resolve(priorPlan.Action.StableActionID, priorPlan.Action.ExactRequestDigest)
+		priorResolution, resolveErr := resolveGuarantorAction(coordinator.Authority, priorPlan.Action.StableActionID,
+			priorPlan.Action.ExactRequestDigest)
+		if resolveErr != nil {
+			return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, resolveErr
+		}
 		if priorResolution.State != commerce.ActionUnknown {
 			if err := guarantor.VerifyFirmOffer(priorPlan.Offer, input.Request, input.Agreement, coordinator.Resolver,
 				coordinator.PublicationResolver, coordinator.UnderlyingAgreementResolver,

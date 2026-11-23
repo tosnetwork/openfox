@@ -115,7 +115,7 @@ func roomCardOf(node *chatTestNode) carrierapi.RoomCard {
 
 func outboxOf(t *testing.T, node *chatTestNode) []RelayOutboxView {
 	t.Helper()
-	views, err := ReadRelayOutbox(filepath.Join(node.dir, relayStateDir, relayChatOutboxDir))
+	views, err := ReadChatOutbox(filepath.Join(node.dir, relayStateDir, relayChatOutboxDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,10 +803,10 @@ func TestStatusAndPreflightShowRoomsAndTheKind3Counters(t *testing.T) {
 	config := NodeConfig{
 		AgentID: a.agent, StateDir: a.dir, RelayURLs: []string{relay.URL},
 		ReceiverSocket: filepath.Join(a.dir, "rail.sock"),
-		Chat: &ChatConfig{
+		Chat: NewChatSection(&ChatConfig{
 			CarrierSocket:          filepath.Join(a.sockets, "c.sock"),
 			MessengerCarrierSocket: filepath.Join(a.sockets, "d.sock"), CardPath: a.daemon.cardPath,
-		},
+		}),
 	}
 	configPath := filepath.Join(t.TempDir(), "rail.json")
 	if err := writeNodeConfig(configPath, config); err != nil {

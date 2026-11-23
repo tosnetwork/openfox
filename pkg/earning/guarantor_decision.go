@@ -83,7 +83,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 	// plan: with the plan's action, fence and time it rebuilds the receipt the
 	// first call would have committed.
 	planned, err := coordinator.plannedAction(guarantorPlanDecisionAdmission, input.AgreementDigest,
-		input.Decision.Body.ClaimID, fence, now)
+		input.Decision.Body.ClaimID, fence)
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
@@ -329,6 +329,15 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 		return GuarantorClaimTransitionResult{}, err
 	}
 	decisionAdmission := input.DecisionAdmissionReceipt
+	claimID := decisionAdmission.Body.ClaimID
+	// A call that stopped after preparing this transition resumes from its
+	// plan, as a decision admission does: everything it checks and builds is
+	// at the plan's time, the decision admission it starts from included.
+	planned, err := coordinator.plannedAction(guarantorPlanClaimTransition, input.AgreementDigest, claimID, fence)
+	if err != nil {
+		return GuarantorClaimTransitionResult{}, err
+	}
+	fence, now = planned.fence(fence), planned.at(now)
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(decisionAdmission, position.Terms,
 		coordinator.AgreementVerifier, coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
 		return GuarantorClaimTransitionResult{}, fmt.Errorf("verify current Guarantor decision admission: %w", err)
@@ -340,7 +349,6 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 		(path == "successor" || path == "terminal_fallback") && decisionAdmission.Body.LateFilingCloseReceiptDigest != "" {
 		return GuarantorClaimTransitionResult{}, errors.New("Guarantor late-recovery successor cannot be challenged: the late-recovery path allows one challenge round")
 	}
-	claimID := decisionAdmission.Body.ClaimID
 	decisionAdmissionDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(decisionAdmission)
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err
@@ -351,14 +359,6 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 		decisionAdmissionDigest); replayErr != nil || replayed {
 		return committed, replayErr
 	}
-	// A call that stopped after preparing this transition resumes from its
-	// plan, as a decision admission does.
-	planned, err := coordinator.plannedAction(guarantorPlanClaimTransition, input.AgreementDigest, claimID, fence,
-		now)
-	if err != nil {
-		return GuarantorClaimTransitionResult{}, err
-	}
-	fence, now = planned.fence(fence), planned.at(now)
 	record, found := position.Claims[claimID]
 	if !found || !sameJSON(position.DecisionAdmissionReceipts[claimID], decisionAdmission) ||
 		record.ClaimStateRevision != decisionAdmission.Body.AdmittedClaimStateRevision {

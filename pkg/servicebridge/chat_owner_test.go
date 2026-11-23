@@ -180,10 +180,10 @@ func ownerTestConfig(t *testing.T, ownerSocketPath string) string {
 	config := NodeConfig{
 		AgentID: testSeller, StateDir: state, RelayURLs: []string{"https://relay.example"},
 		ReceiverSocket: filepath.Join(state, "rail.sock"),
-		Chat: &ChatConfig{
+		Chat: NewChatSection(&ChatConfig{
 			CarrierSocket: filepath.Join(state, "c.sock"), MessengerCarrierSocket: filepath.Join(state, "d.sock"),
 			CardPath: filepath.Join(state, "card.json"), OwnerSocket: ownerSocketPath,
-		},
+		}),
 	}
 	path := filepath.Join(t.TempDir(), "rail.json")
 	if err := writeNodeConfig(path, config); err != nil {

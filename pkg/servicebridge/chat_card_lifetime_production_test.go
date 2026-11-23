@@ -18,7 +18,7 @@ func TestAProductionBuildRefusesTheChatTestCardLifetime(t *testing.T) {
 		if err := validateChatConfig(config); !errors.Is(err, ErrChatTestSettingRefused) {
 			t.Fatalf("%d s: the production build accepted the test card lifetime: %v", seconds, err)
 		}
-		if _, err := config.Chat.cardLifetime(); !errors.Is(err, ErrChatTestSettingRefused) {
+		if _, err := ChatSection(config).cardLifetime(); !errors.Is(err, ErrChatTestSettingRefused) {
 			t.Fatalf("%d s: the lane read the test card lifetime: %v", seconds, err)
 		}
 	}

@@ -334,8 +334,7 @@ func TestTheNodeTransportFailsClosedWithoutARoute(t *testing.T) {
 			AgentID:     testBuyer,
 			DirectPeers: map[string]string{testSeller: "/" + strings.Repeat("a", 120)},
 		},
-		"its own Agent as a peer":     {AgentID: testBuyer, DirectPeers: map[string]string{testBuyer: socket}},
-		"a relative messenger socket": {AgentID: testBuyer, MessengerSocket: "messenger.sock"},
+		"its own Agent as a peer": {AgentID: testBuyer, DirectPeers: map[string]string{testBuyer: socket}},
 	}
 	for name, config := range cases {
 		if _, err := openPacketTransport(config, nil); err == nil {

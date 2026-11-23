@@ -38,8 +38,7 @@ func (coordinator *GuarantorProviderCoordinator) CancelCoverage(ctx context.Cont
 	// A call that stopped after preparing this cancellation resumes from its
 	// plan: the cancellation is admitted at the plan's time, under the plan's
 	// fence, whatever time and fence the repeated call arrives with.
-	planned, err := coordinator.plannedAction(guarantorPlanCoverageCancellation, agreementDigest, "", fence,
-		admittedAt)
+	planned, err := coordinator.plannedAction(guarantorPlanCoverageCancellation, agreementDigest, "", fence)
 	if err != nil {
 		return guarantor.AuthorizedCoverageCancellationReceiptV1{}, commerce.ActionResolution{}, err
 	}

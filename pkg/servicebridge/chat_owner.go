@@ -62,10 +62,11 @@ type chatOwnerCaller interface {
 
 // chatOwnerClient connects to the owner socket the configuration names.
 func chatOwnerClient(config NodeConfig) (*localapi.Client, error) {
-	if config.Chat == nil || config.Chat.OwnerSocket == "" {
+	chat := ChatSection(config)
+	if chat == nil || chat.OwnerSocket == "" {
 		return nil, errChatOwnerSocket
 	}
-	return localapi.NewClient(config.Chat.OwnerSocket, localapi.DefaultClientTimeout)
+	return localapi.NewClient(chat.OwnerSocket, localapi.DefaultClientTimeout)
 }
 
 // prepareOwnerDecision takes a fresh challenge from the owner socket and

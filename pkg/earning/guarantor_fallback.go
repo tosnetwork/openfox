@@ -43,7 +43,7 @@ func (coordinator *GuarantorProviderCoordinator) AdmitInitialFallbackDecision(ct
 	// head's plan: a call that stopped after preparing it resumes with the
 	// plan's action, fence and time.
 	planned, err := coordinator.plannedAction(guarantorPlanDecisionAdmission, input.AgreementDigest, input.ClaimID,
-		fence, now)
+		fence)
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}

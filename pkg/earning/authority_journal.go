@@ -1106,6 +1106,24 @@ func (authority *PersonalAuthority) Resolve(stableActionID, requestDigest string
 	return detachedActionResolution(resolution)
 }
 
+// ResolveChecked is Resolve for a caller that must tell an action this
+// authority does not hold from a store it cannot read: a store whose identity
+// cannot be confirmed is returned as an error and no resolution.
+func (authority *PersonalAuthority) ResolveChecked(stableActionID, requestDigest string) (commerce.ActionResolution,
+	error,
+) {
+	if authority == nil {
+		return commerce.ActionResolution{}, errors.New("action authority is unavailable")
+	}
+	authority.mu.Lock()
+	storageErr := authority.ensureStorageIdentityLocked()
+	authority.mu.Unlock()
+	if storageErr != nil {
+		return commerce.ActionResolution{}, fmt.Errorf("resolve the action at its authority: %w", storageErr)
+	}
+	return authority.Resolve(stableActionID, requestDigest), nil
+}
+
 // ResolveAuthorizedAction returns the exact signed authorization that was
 // linearized with an Action resolution. Outcome recovery uses this object to
 // reproduce the original immutable assertion after a process or writer

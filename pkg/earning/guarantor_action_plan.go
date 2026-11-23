@@ -195,6 +195,14 @@ func resolveGuarantorAction(authority EconomicAuthority, stableActionID, exactRe
 	return authority.Resolve(stableActionID, exactRequestDigest), nil
 }
 
+// ResolveGuarantorAction is resolveGuarantorAction for an operator command
+// that shows an action's state: an authority that could not answer is an
+// error, never a state.
+func ResolveGuarantorAction(authority EconomicAuthority, stableActionID, exactRequestDigest string,
+) (commerce.ActionResolution, error) {
+	return resolveGuarantorAction(authority, stableActionID, exactRequestDigest)
+}
+
 // guarantorPlanTimeInLease reports whether at, a Unix second, is a time at
 // which action under fence verifies: not earlier than the fence's issue less
 // the clock skew a verifier allows, and before both the fence's and the

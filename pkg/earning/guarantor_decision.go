@@ -330,6 +330,19 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	}
 	decisionAdmission := input.DecisionAdmissionReceipt
 	claimID := decisionAdmission.Body.ClaimID
+	decisionAdmissionDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(decisionAdmission)
+	if err != nil {
+		return GuarantorClaimTransitionResult{}, err
+	}
+	// A transition repeated after it was committed gets the committed receipt:
+	// the claim state it started from no longer exists. It is found by the
+	// envelope digest of the decision admission it names, which was verified
+	// before the transition was committed, so it is returned whatever time the
+	// call has: later, that admission may no longer verify.
+	if committed, replayed, replayErr := coordinator.committedClaimTransition(position, input, claimID,
+		decisionAdmissionDigest); replayErr != nil || replayed {
+		return committed, replayErr
+	}
 	// A call that stopped after preparing this transition resumes from its
 	// plan, as a decision admission does: everything it checks and builds is
 	// at the plan's time, the decision admission it starts from included.
@@ -348,16 +361,6 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	if path := decisionAdmission.AuthorizedClaimDecision.Body.DecisionPath; input.TransitionKind == "challenge_admission" &&
 		(path == "successor" || path == "terminal_fallback") && decisionAdmission.Body.LateFilingCloseReceiptDigest != "" {
 		return GuarantorClaimTransitionResult{}, errors.New("Guarantor late-recovery successor cannot be challenged: the late-recovery path allows one challenge round")
-	}
-	decisionAdmissionDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(decisionAdmission)
-	if err != nil {
-		return GuarantorClaimTransitionResult{}, err
-	}
-	// A transition repeated after it was committed gets the committed receipt:
-	// the claim state it started from no longer exists.
-	if committed, replayed, replayErr := coordinator.committedClaimTransition(position, input, claimID,
-		decisionAdmissionDigest); replayErr != nil || replayed {
-		return committed, replayErr
 	}
 	record, found := position.Claims[claimID]
 	if !found || !sameJSON(position.DecisionAdmissionReceipts[claimID], decisionAdmission) ||

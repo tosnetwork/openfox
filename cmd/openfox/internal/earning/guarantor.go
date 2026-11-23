@@ -283,6 +283,9 @@ func guarantorAbandonPlanCommand() *cobra.Command {
 			"whose action is terminal is refused; repeat its request to commit its receipt instead.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
+			if kind == "" || scopeID == "" {
+				return errors.New("abandon-plan needs --kind and --scope, as status lists them")
+			}
 			cfg, err := internal.LoadConfig()
 			if err != nil {
 				return err
@@ -308,8 +311,6 @@ func guarantorAbandonPlanCommand() *cobra.Command {
 	command.Flags().StringVar(&subjectID, "subject", "", "action plan subject ID, as status lists it, if any")
 	command.Flags().BoolVar(&apply, "apply", false,
 		"reject the prepared action and discard the plan; default shows it only")
-	_ = command.MarkFlagRequired("kind")
-	_ = command.MarkFlagRequired("scope")
 	return command
 }
 
@@ -338,8 +339,14 @@ func abandonGuarantorActionPlan(command *cobra.Command, directory, ownerID, agen
 	report := guarantorPlanAbandonment{ActionPlan: guarantorActionPlanStatuses(
 		[]openfoxearning.GuarantorActionPlan{plan})[0]}
 	if !apply {
-		report.AuthorityState = string(authority.Resolve(plan.Action.StableActionID,
-			plan.Action.ExactRequestDigest).State)
+		// An authority that cannot be reached is reported as such, not as a
+		// state of the action.
+		resolution, resolveErr := openfoxearning.ResolveGuarantorAction(authority, plan.Action.StableActionID,
+			plan.Action.ExactRequestDigest)
+		if resolveErr != nil {
+			return fmt.Errorf("Agent Guarantor action authority could not be asked: %w", resolveErr)
+		}
+		report.AuthorityState = string(resolution.State)
 	} else {
 		journal, openErr := openfoxearning.OpenGuarantorJournal(directory, ownerID, agentID)
 		if openErr != nil {

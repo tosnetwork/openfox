@@ -409,9 +409,25 @@ func TestGuarantorInitialFallbackIsPortableChallengeableAndApplied(t *testing.T)
 }
 
 func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScenario) {
+	runGuarantorProviderLifecycleIn(t, scenario, nil)
+}
+
+// runGuarantorProviderLifecycleIn runs the lifecycle. Given a process of the
+// kill test it instead builds the lifecycle's fixture in that process's
+// directory, at that process's fixed time, and hands it to the process's
+// driver in place of the lifecycle.
+func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackScenario, process *guarantorKillProcess) {
 	now := time.Now().UTC().Truncate(time.Second)
+	if process != nil {
+		now = process.now
+	}
 	guarantorPublic, guarantorKey, _ := ed25519.GenerateKey(rand.Reader)
 	coveredPublic, coveredKey, _ := ed25519.GenerateKey(rand.Reader)
+	if process != nil {
+		// A process of the kill test draws the two keys above from the entropy
+		// every such process shares, and everything after them from its own.
+		process.keysGenerated()
+	}
 	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
 	ref := func(ch, name string) commerce.ProfileRefV1 {
 		return commerce.ProfileRefV1{ProfileURI: "tos.test." + name + ".v1", ProfileVersion: 1, ProfileDigest: digest(ch)}
@@ -808,12 +824,16 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 			agreementExpiresAt, ref)
 	}
 	root := t.TempDir()
-	authorityDirectory, journalDirectory := filepath.Join(root, "authority"), filepath.Join(root, "guarantor")
-	if err := os.Mkdir(authorityDirectory, 0o700); err != nil {
-		t.Fatal(err)
+	if process != nil {
+		// A process of the kill test opens the stores an earlier process left.
+		root = process.directory
 	}
-	if err := os.Mkdir(journalDirectory, 0o700); err != nil {
-		t.Fatal(err)
+	authorityDirectory, journalDirectory := filepath.Join(root, "authority"), filepath.Join(root, "guarantor")
+	if mkdirErr := os.MkdirAll(authorityDirectory, 0o700); mkdirErr != nil {
+		t.Fatal(mkdirErr)
+	}
+	if mkdirErr := os.MkdirAll(journalDirectory, 0o700); mkdirErr != nil {
+		t.Fatal(mkdirErr)
 	}
 	authority, err := OpenPersonalAuthority(authorityDirectory, "owner:guarantor", "agent:guarantor", "authority:owner",
 		testAuthorityKeys(), PortfolioLimits{MaximumLossAtomic: 10_000, LockedCapitalAtomic: 10_000})
@@ -821,12 +841,19 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		t.Fatal(err)
 	}
 	defer authority.Close()
+	if process != nil {
+		// The process runs on the test's logical clock from its first
+		// authority call, so its writer fence is issued at that time too, as
+		// late as the process runs.
+		processNow := now.Add(process.later)
+		authority.now = func() time.Time { return processNow }
+	}
 	journal, err := OpenGuarantorJournal(journalDirectory, "owner:guarantor", "agent:guarantor")
 	if err != nil {
 		t.Fatal(err)
 	}
 	closeGuarantorJournalOnCleanup(t, journal)
-	if scenario == guarantorNoFallback {
+	if scenario == guarantorNoFallback && process == nil {
 		// The complete lifecycle runs every commit method with real receipts:
 		// none may change the in-memory document before its commit.
 		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
@@ -956,6 +983,16 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		ProfileArtifact: profileArtifact, Agreement: agreement, Terms: terms, CoverageObligationID: "obligation:coverage",
 		IssuedAtUnix: uint64(now.Unix()), AcceptByUnix: uint64(now.Add(5 * time.Minute).Unix()),
 		ReservationExpiresAtUnix: uint64(now.Add(6 * time.Minute).Unix()), ExpiresAtUnix: uint64(now.Add(10 * time.Minute).Unix())}
+	if process != nil {
+		process.drive(t, guarantorKillFixture{
+			now: now, coordinator: &coordinator, authority: authority, fence: fence, issueInput: issueInput,
+			agreement: agreement, agreementDigest: agreementDigest, underlying: underlying,
+			underlyingDigest: underlyingDigest, underlyingResolver: underlyingResolver,
+			agreementVerifier: baseAgreementVerifier, coveredKey: coveredKey, guarantorKey: guarantorKey,
+			terms: terms, asset: asset, destinationDigest: destinationDigest, evidenceProfile: evidence,
+		})
+		return
+	}
 	coordinator.Authority = &failAfterReservationEconomicAuthority{EconomicAuthority: authority, failOnce: true}
 	if _, _, crashErr := coordinator.IssueFirmOffer(context.Background(), issueInput, fence); crashErr == nil {
 		t.Fatal("firm-offer issuance did not surface the injected post-reservation crash")

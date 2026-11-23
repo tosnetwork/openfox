@@ -1354,6 +1354,34 @@ func addUint64(left, right uint64) (uint64, bool) {
 	return left + right, false
 }
 
+// committedOfferAcceptance finds the offer an acceptance names in a journal
+// snapshot: the offer's state revision before the acceptance, and the
+// committed acceptance receipt when the offer is already accepted. A revision
+// of zero means the journal holds no exact live or accepted offer.
+func committedOfferAcceptance(positions []GuarantorOfferPosition, coverages []GuarantorCoveragePosition,
+	offerID, offerDigest, agreementDigest string,
+) (uint64, *guarantor.AuthorizedCoverageAcceptanceReceiptV1) {
+	var priorOfferRevision uint64
+	var storedReceipt *guarantor.AuthorizedCoverageAcceptanceReceiptV1
+	for _, position := range positions {
+		if position.Record.OfferID != offerID || position.OfferEnvelopeDigest != offerDigest {
+			continue
+		}
+		if position.Record.Status == guarantor.OfferIssued {
+			priorOfferRevision = position.Record.StateRevision
+		} else if position.Record.Status == guarantor.OfferAccepted {
+			for _, coverage := range coverages {
+				if coverage.Record.CoverageAgreementBodyDigest == agreementDigest && coverage.AcceptanceReceipt != nil {
+					priorOfferRevision = coverage.AcceptanceReceipt.Body.PriorOfferStateRevision
+					receipt := *coverage.AcceptanceReceipt
+					storedReceipt = &receipt
+				}
+			}
+		}
+	}
+	return priorOfferRevision, storedReceipt
+}
+
 func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Context, input GuarantorAcceptCoverageInput,
 	fence commerce.WriterFence) (guarantor.AuthorizedCoverageAcceptanceReceiptV1, commerce.ActionResolution, error) {
 	if err := ctx.Err(); err != nil {
@@ -1381,6 +1409,25 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 	}
 	input.ReceivedAtUnix = planned.atUnix(input.ReceivedAtUnix)
 	fence, receivedAt = planned.fence(fence), planned.at(receivedAt)
+	offerDigest, _ := guarantor.FirmOfferDigest(input.Offer)
+	requestDigest, _ := guarantor.CoverageAcceptanceRequestDigestV1(input.Request)
+	agreementDigest := input.Request.Body.CoverageAgreementBodyDigest
+	// A journal that cannot be read is not a journal without the offer: the
+	// acceptance fails with the journal's error, not as an unknown offer.
+	_, positions, coverages, snapshotErr := coordinator.Journal.Snapshot()
+	if snapshotErr != nil {
+		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, snapshotErr
+	}
+	priorOfferRevision, storedReceipt := committedOfferAcceptance(positions, coverages, input.Offer.Body.OfferID,
+		offerDigest, agreementDigest)
+	// The same request repeated after its acceptance was committed is checked
+	// at the time it was received, as the committed receipt was: later, the
+	// offer and the request may no longer be valid.
+	if storedReceipt != nil && storedReceipt.Body.AuthorizedAcceptanceRequestEnvelopeDigest == requestDigest &&
+		validGuarantorUnix(storedReceipt.Body.ReceivedAtUnix) {
+		input.ReceivedAtUnix = storedReceipt.Body.ReceivedAtUnix
+		receivedAt = time.Unix(int64(input.ReceivedAtUnix), 0).UTC()
+	}
 	if err := guarantor.VerifyFirmOffer(input.Offer, input.Offer.AuthorizedQuoteRequest,
 		input.Request.CoverageAgreementBody, coordinator.Resolver, coordinator.PublicationResolver,
 		coordinator.UnderlyingAgreementResolver, coordinator.AgreementVerifier, receivedAt); err != nil {
@@ -1394,32 +1441,6 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 		[]string{input.Request.Body.AcceptingSubject, coordinator.AgentID}, receivedAt)
 	if err != nil || len(rawEligibilityProof) == 0 || len(rawEligibilityProof) > 64<<10 {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, errors.New("fresh Guarantor acceptance eligibility proof is unavailable")
-	}
-	offerDigest, _ := guarantor.FirmOfferDigest(input.Offer)
-	requestDigest, _ := guarantor.CoverageAcceptanceRequestDigestV1(input.Request)
-	agreementDigest := input.Request.Body.CoverageAgreementBodyDigest
-	var priorOfferRevision uint64
-	var storedReceipt *guarantor.AuthorizedCoverageAcceptanceReceiptV1
-	// A journal that cannot be read is not a journal without the offer: the
-	// acceptance fails with the journal's error, not as an unknown offer.
-	_, positions, coverages, snapshotErr := coordinator.Journal.Snapshot()
-	if snapshotErr != nil {
-		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, snapshotErr
-	}
-	for _, position := range positions {
-		if position.Record.OfferID == input.Offer.Body.OfferID && position.OfferEnvelopeDigest == offerDigest {
-			if position.Record.Status == guarantor.OfferIssued {
-				priorOfferRevision = position.Record.StateRevision
-			} else if position.Record.Status == guarantor.OfferAccepted {
-				for _, coverage := range coverages {
-					if coverage.Record.CoverageAgreementBodyDigest == agreementDigest && coverage.AcceptanceReceipt != nil {
-						priorOfferRevision = coverage.AcceptanceReceipt.Body.PriorOfferStateRevision
-						receipt := *coverage.AcceptanceReceipt
-						storedReceipt = &receipt
-					}
-				}
-			}
-		}
 	}
 	if priorOfferRevision == 0 {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, errors.New("Guarantor acceptance has no exact live offer")

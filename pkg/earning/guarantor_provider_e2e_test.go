@@ -2654,6 +2654,14 @@ func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackSce
 		t.Fatalf("accept cancellable coverage, resumed a second later: state=%s err=%v", cancellationResolution.State,
 			err)
 	}
+	// The same acceptance repeated ten minutes later, when the offer can no
+	// longer be accepted, gets the committed receipt.
+	lateAcceptInput := cancellationAcceptInput
+	lateAcceptInput.ReceivedAtUnix += uint64((10 * time.Minute) / time.Second)
+	lateAcceptance, _, lateAcceptErr := coordinator.AcceptCoverage(context.Background(), lateAcceptInput, fence)
+	if lateAcceptErr != nil || !sameJSON(lateAcceptance, cancellationAcceptanceReceipt) {
+		t.Fatalf("the committed acceptance repeated ten minutes later: %v", lateAcceptErr)
+	}
 	cancellationPrerequisites := activationPrerequisites
 	cancellationPrerequisites.ContextDigest = cancellationAgreementDigest
 	cancellationActivation, cancellationResolution, err := coordinator.ActivateCoverage(context.Background(),

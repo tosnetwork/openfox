@@ -79,6 +79,15 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 		input.Decision); replayErr != nil || replayed {
 		return committed, replayErr
 	}
+	// A call that stopped after preparing this admission resumes from its
+	// plan: with the plan's action, fence and time it rebuilds the receipt the
+	// first call would have committed.
+	planned, err := coordinator.plannedAction(guarantorPlanDecisionAdmission, input.AgreementDigest,
+		input.Decision.Body.ClaimID, fence)
+	if err != nil {
+		return GuarantorDecisionAdmissionResult{}, err
+	}
+	fence, now = planned.fence(fence), planned.at(now)
 	claim, found := position.ClaimEnvelopes[input.Decision.Body.ClaimID]
 	record, recordFound := position.Claims[input.Decision.Body.ClaimID]
 	claimAdmission, admissionFound := position.ClaimAdmissionReceipts[guarantorClaimRevisionKey(
@@ -153,20 +162,15 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 		return GuarantorDecisionAdmissionResult{}, err
 	}
 	fields := guarantor.DecisionAdmissionSemanticFieldsV1(bound, actionBody, input.Decision, headDigest, identityDigest)
-	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID,
-		"conditional.claim-decision.admit", fields, request, fence, coordinator.PolicyRevision, coordinator.MandateDigest,
-		"", record.LastEvidenceDigest, guarantorClosureActionDeadline(position))
+	action, err := coordinator.authorizePlannedAction(planned, coordinator.OwnerID, coordinator.AgentID,
+		"conditional.claim-decision.admit", fields, request, fence, record.LastEvidenceDigest,
+		guarantorClosureActionDeadline(position))
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{}, err
 	}
-	action, err = coordinator.Authority.SignAction(action, fence)
+	resolution, err := coordinator.admitPlannedAction(planned, action, fields, request, fence, now)
 	if err != nil {
-		return GuarantorDecisionAdmissionResult{}, err
-	}
-	resolution, err := coordinator.Authority.Admit(action, fields, request, fence, nil)
-	if err != nil || resolution.State != commerce.ActionPrepared {
-		return GuarantorDecisionAdmissionResult{Resolution: resolution},
-			firstError(err, errors.New("Guarantor decision admission action was not prepared"))
+		return GuarantorDecisionAdmissionResult{Resolution: resolution}, err
 	}
 	rawEligibility, err := coordinator.Eligibility.FreshEligibilityProofSet(ctx, "claim-decision-admission",
 		position.Terms.DecisionAdmissionAuthoritySubjects, now)
@@ -280,8 +284,8 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaimDecision(ctx context.
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{Resolution: resolution}, err
 	}
-	resolution, err = coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-		commerce.ActionTerminal, bodyDigest, sortedGuarantorEvidence(decisionDigest, bodyDigest))
+	resolution, err = coordinator.settlePlannedAction(resolution, action, bodyDigest,
+		sortedGuarantorEvidence(decisionDigest, bodyDigest))
 	if err != nil {
 		return GuarantorDecisionAdmissionResult{Resolution: resolution}, err
 	}
@@ -325,6 +329,28 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 		return GuarantorClaimTransitionResult{}, err
 	}
 	decisionAdmission := input.DecisionAdmissionReceipt
+	claimID := decisionAdmission.Body.ClaimID
+	decisionAdmissionDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(decisionAdmission)
+	if err != nil {
+		return GuarantorClaimTransitionResult{}, err
+	}
+	// A transition repeated after it was committed gets the committed receipt:
+	// the claim state it started from no longer exists. It is found by the
+	// envelope digest of the decision admission it names, which was verified
+	// before the transition was committed, so it is returned whatever time the
+	// call has: later, that admission may no longer verify.
+	if committed, replayed, replayErr := coordinator.committedClaimTransition(position, input, claimID,
+		decisionAdmissionDigest); replayErr != nil || replayed {
+		return committed, replayErr
+	}
+	// A call that stopped after preparing this transition resumes from its
+	// plan, as a decision admission does: everything it checks and builds is
+	// at the plan's time, the decision admission it starts from included.
+	planned, err := coordinator.plannedAction(guarantorPlanClaimTransition, input.AgreementDigest, claimID, fence)
+	if err != nil {
+		return GuarantorClaimTransitionResult{}, err
+	}
+	fence, now = planned.fence(fence), planned.at(now)
 	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(decisionAdmission, position.Terms,
 		coordinator.AgreementVerifier, coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
 		return GuarantorClaimTransitionResult{}, fmt.Errorf("verify current Guarantor decision admission: %w", err)
@@ -335,17 +361,6 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	if path := decisionAdmission.AuthorizedClaimDecision.Body.DecisionPath; input.TransitionKind == "challenge_admission" &&
 		(path == "successor" || path == "terminal_fallback") && decisionAdmission.Body.LateFilingCloseReceiptDigest != "" {
 		return GuarantorClaimTransitionResult{}, errors.New("Guarantor late-recovery successor cannot be challenged: the late-recovery path allows one challenge round")
-	}
-	claimID := decisionAdmission.Body.ClaimID
-	decisionAdmissionDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(decisionAdmission)
-	if err != nil {
-		return GuarantorClaimTransitionResult{}, err
-	}
-	// A transition repeated after it was committed gets the committed receipt:
-	// the claim state it started from no longer exists.
-	if committed, replayed, replayErr := coordinator.committedClaimTransition(position, input, claimID,
-		decisionAdmissionDigest); replayErr != nil || replayed {
-		return committed, replayErr
 	}
 	record, found := position.Claims[claimID]
 	if !found || !sameJSON(position.DecisionAdmissionReceipts[claimID], decisionAdmission) ||
@@ -411,20 +426,15 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 		return GuarantorClaimTransitionResult{}, err
 	}
 	fields := guarantor.ClaimStateTransitionSemanticFieldsV1(bound, requestBody, evidenceSetDigest)
-	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.claim.transition",
-		fields, request, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", record.LastEvidenceDigest,
+	action, err := coordinator.authorizePlannedAction(planned, coordinator.OwnerID, coordinator.AgentID,
+		"conditional.claim.transition", fields, request, fence, record.LastEvidenceDigest,
 		guarantorClosureActionDeadline(position))
 	if err != nil {
 		return GuarantorClaimTransitionResult{}, err
 	}
-	action, err = coordinator.Authority.SignAction(action, fence)
+	resolution, err := coordinator.admitPlannedAction(planned, action, fields, request, fence, now)
 	if err != nil {
-		return GuarantorClaimTransitionResult{}, err
-	}
-	resolution, err := coordinator.Authority.Admit(action, fields, request, fence, nil)
-	if err != nil || resolution.State != commerce.ActionPrepared {
-		return GuarantorClaimTransitionResult{Resolution: resolution},
-			firstError(err, errors.New("Guarantor claim transition was not prepared"))
+		return GuarantorClaimTransitionResult{Resolution: resolution}, err
 	}
 	rawProof, err := coordinator.Eligibility.FreshEligibilityProofSet(ctx, "claim-state-transition",
 		position.Terms.DecisionAdmissionAuthoritySubjects, now)
@@ -460,8 +470,8 @@ func (coordinator *GuarantorProviderCoordinator) TransitionClaimDecision(ctx con
 	if err != nil {
 		return GuarantorClaimTransitionResult{Resolution: resolution}, err
 	}
-	resolution, err = coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-		commerce.ActionTerminal, bodyDigest, sortedGuarantorEvidence(decisionAdmissionDigest, projectionDigest, bodyDigest))
+	resolution, err = coordinator.settlePlannedAction(resolution, action, bodyDigest,
+		sortedGuarantorEvidence(decisionAdmissionDigest, projectionDigest, bodyDigest))
 	if err != nil {
 		return GuarantorClaimTransitionResult{Resolution: resolution}, err
 	}

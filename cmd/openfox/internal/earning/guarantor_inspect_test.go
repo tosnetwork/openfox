@@ -153,10 +153,76 @@ func TestTheGuarantorCommandOffersItsInspections(t *testing.T) {
 			t.Errorf("%s takes positional arguments", child.Name())
 		}
 	}
-	for _, name := range []string{"status", "verify-evidence"} {
+	for _, name := range []string{"status", "verify-evidence", "abandon-plan"} {
 		if !names[name] {
 			t.Errorf("no %s command", name)
 		}
+	}
+}
+
+// TestGuarantorStatusListsEveryActionPlan: status lists each stored action
+// plan by its head and action, and an empty list, not an absent one, when the
+// journal holds none.
+func TestGuarantorStatusListsEveryActionPlan(t *testing.T) {
+	empty, err := json.Marshal(guarantorStatusReport{ActionPlans: guarantorActionPlanStatuses(nil)})
+	if err != nil || !strings.Contains(string(empty), `"action_plans":[]`) {
+		t.Fatalf("a status without action plans: %s err=%v", empty, err)
+	}
+	plan := openfoxearning.GuarantorActionPlan{
+		Kind:    "coverage_cancellation",
+		ScopeID: "sha256:" + strings.Repeat("c", 64), SubjectID: "claim", PreparedAtUnix: 7,
+	}
+	plan.Action.ActionKind = "conditional.obligation.transition"
+	plan.Action.StableActionID = "sha256:" + strings.Repeat("1", 64)
+	plan.Action.ExactRequestDigest, plan.Action.WriterGeneration = "sha256:"+strings.Repeat("2", 64), 3
+	statuses := guarantorActionPlanStatuses([]openfoxearning.GuarantorActionPlan{plan})
+	want := guarantorActionPlanStatus{
+		Kind: plan.Kind, ScopeID: plan.ScopeID, SubjectID: "claim",
+		ActionKind: plan.Action.ActionKind, StableActionID: plan.Action.StableActionID,
+		ExactRequestDigest: plan.Action.ExactRequestDigest, WriterGeneration: 3, PreparedAtUnix: 7,
+	}
+	if len(statuses) != 1 || statuses[0] != want {
+		t.Fatalf("the status of an action plan is %#v, want %#v", statuses, want)
+	}
+}
+
+// unusedTestAuthority fails a test that reaches its authority.
+type unusedTestAuthority struct {
+	openfoxearning.EconomicAuthority
+}
+
+// TestGuarantorAbandonPlanRefusesAHeadWithoutAPlan: abandon-plan, shown or
+// applied, fails for a head the journal holds no plan for, asks the authority
+// nothing, and leaves the journal directory as it was.
+func TestGuarantorAbandonPlanRefusesAHeadWithoutAPlan(t *testing.T) {
+	fixture := newInspectTestJournal(t)
+	before := fixture.listing(t)
+	for _, apply := range []bool{false, true} {
+		command := guarantorAbandonPlanCommand()
+		var output bytes.Buffer
+		command.SetOut(&output)
+		err := abandonGuarantorActionPlan(command, fixture.directory, inspectTestOwner, inspectTestAgent,
+			unusedTestAuthority{}, "instance:test", "coverage_cancellation", "sha256:"+strings.Repeat("c", 64), "",
+			apply)
+		if err == nil || !strings.Contains(err.Error(), "holds no action plan for that head") || output.Len() != 0 {
+			t.Fatalf("abandon a head without a plan, apply=%v: output %q err=%v", apply, output.String(), err)
+		}
+	}
+	if after := fixture.listing(t); strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Fatalf("abandoning a head without a plan changed the journal directory:\n got %v\nwant %v", after, before)
+	}
+	// Without the head's kind and scope the command refuses before it reads
+	// any configuration.
+	command := guarantorAbandonPlanCommand()
+	command.SetArgs([]string{"--scope", "x"})
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "needs --kind and --scope") {
+		t.Fatalf("abandon-plan without --kind: got %v", err)
+	}
+	if err := abandonGuarantorActionPlan(guarantorAbandonPlanCommand(), "", inspectTestOwner, inspectTestAgent,
+		unusedTestAuthority{}, "instance:test", "coverage_cancellation", "x", "", false); err == nil {
+		t.Fatal("abandon-plan ran without a journal directory")
 	}
 }
 
@@ -175,7 +241,8 @@ func TestGuarantorStatusReadsTheJournalWithoutChangingIt(t *testing.T) {
 	if err := summarizeGuarantorJournal(fixture.directory, inspectTestOwner, inspectTestAgent, &report); err != nil {
 		t.Fatalf("summarize the journal: %v", err)
 	}
-	if report.JournalRevision != 2 || len(report.CoverageCounts) != 1 || report.PaidAtomicByAsset["::"] != "7" {
+	if report.JournalRevision != 2 || len(report.CoverageCounts) != 1 || report.PaidAtomicByAsset["::"] != "7" ||
+		report.ActionPlans == nil || len(report.ActionPlans) != 0 {
 		t.Fatalf("the status summary is %#v", report)
 	}
 	if after := fixture.listing(t); strings.Join(after, "\n") != strings.Join(before, "\n") {

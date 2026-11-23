@@ -925,15 +925,35 @@ func (client *SharedAuthorityClient) Admit(action commerce.AuthorizedAction, fie
 	}{action, wireFields, request, fence, reservation}, &out)
 	return out, err
 }
+
+// Resolve asks the shared authority what it holds for an action. A call that
+// fails says nothing about the action, so it is never reported as unknown,
+// which a caller may take as "never admitted" and act on by discarding what
+// it prepared. It is reported as a conflict, as a personal authority reports
+// a store it cannot read: every caller refuses to build on a conflict, and the
+// call is repeated once the authority answers.
 func (client *SharedAuthorityClient) Resolve(id, digest string) commerce.ActionResolution {
-	var out commerce.ActionResolution
-	if client.call(context.Background(), "resolve", struct {
-		StableActionID string `json:"stable_action_id"`
-		RequestDigest  string `json:"request_digest"`
-	}{id, digest}, &out) != nil {
-		return commerce.ActionResolution{StableActionID: id, ExactRequestDigest: digest, State: commerce.ActionUnknown, StateRevision: 1}
+	out, err := client.ResolveChecked(id, digest)
+	if err != nil {
+		return commerce.ActionResolution{
+			StableActionID: id, ExactRequestDigest: digest, State: commerce.ActionConflict, StateRevision: 1,
+		}
 	}
 	return out
+}
+
+// ResolveChecked is Resolve for a caller that must tell an action the
+// authority does not hold from an authority that did not answer: a failed
+// call is returned as an error and no resolution.
+func (client *SharedAuthorityClient) ResolveChecked(id, digest string) (commerce.ActionResolution, error) {
+	var out commerce.ActionResolution
+	if err := client.call(context.Background(), "resolve", struct {
+		StableActionID string `json:"stable_action_id"`
+		RequestDigest  string `json:"request_digest"`
+	}{id, digest}, &out); err != nil {
+		return commerce.ActionResolution{}, fmt.Errorf("resolve the action at the shared authority: %w", err)
+	}
+	return out, nil
 }
 
 func (client *SharedAuthorityClient) ResolveAuthorizedAction(id, digest string) (commerce.AuthorizedAction, bool) {

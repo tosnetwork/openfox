@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -897,6 +898,32 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		coordinator.CollateralAdapterProfileDigests = []string{collateral.profile.CustodyAdapterProfile.ProfileDigest}
 		coordinator.CollateralFinalityVerifier = collateralFinality
 	}
+	// restartWriter is what a restart of the Provider process does to this
+	// lifecycle: the journal is closed and opened from disk, and the writer
+	// takes a new generation, so the fence every earlier call ran under is
+	// stale. The authority and its clock are the test's and stay.
+	restarts := 0
+	restartWriter := func() {
+		t.Helper()
+		journal = reopenTestGuarantorJournal(t, coordinator.Journal, journalDirectory)
+		coordinator.Journal = journal
+		if scenario == guarantorNoFallback {
+			checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
+		}
+		restarts++
+		var acquireErr error
+		fence, acquireErr = authority.AcquireWriter(context.Background(), fmt.Sprintf("instance:restart-%d", restarts),
+			scope, time.Hour)
+		if acquireErr != nil {
+			t.Fatalf("take a new writer generation after restart %d: %v", restarts, acquireErr)
+		}
+	}
+	// The steps every scenario shares are stopped before and after each of
+	// their terminal transitions in the scenario without a fallback, and only
+	// after them in the others; the fallback and the closure after it are
+	// stopped on both sides in the initial-fallback scenario.
+	stopsPrepared := scenario == guarantorNoFallback
+	fallbackStopsPrepared := scenario == guarantorInitialFallback
 	directTerms := terms
 	directTerms.StageActionAuthorityBinding.Stages = append([]guarantor.GuarantorStageActionAuthorityV1(nil),
 		terms.StageActionAuthorityBinding.Stages...)
@@ -1207,31 +1234,40 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		activationInput.CollateralLockEvidence, activationInput.CollateralControlEvidence = &lock, &control
 	}
 	baseAuthority := coordinator.Authority
-	coordinator.Authority = &failAfterTerminalEconomicAuthority{EconomicAuthority: baseAuthority, failOnce: true}
-	if _, _, crashErr := coordinator.ActivateCoverage(context.Background(), activationInput, fence); crashErr == nil {
-		t.Fatal("activation did not surface the injected post-terminal crash")
-	}
+	// The activation is first made by processes that die before and after its
+	// terminal transition; the later ones pass a later activation time.
+	stopTestGuarantorCallAroundEachTerminalTransition(t, "activating the coverage", &coordinator, authority,
+		restartWriter, 1, stopsPrepared, func(later time.Duration) error {
+			laterInput := activationInput
+			laterInput.ActivatedAtUnix += uint64(later / time.Second)
+			_, _, stopErr := coordinator.ActivateCoverage(context.Background(), laterInput, fence)
+			return stopErr
+		})
 	_, _, afterCrash := testGuarantorSnapshot(t, journal)
 	if len(afterCrash) != 1 || afterCrash[0].Record.CoverageStatus != guarantor.CoveragePendingAuthorization ||
 		afterCrash[0].ActivationEvidence != nil {
 		t.Fatalf("activation crash left a half-active coverage: %#v", afterCrash)
 	}
-	// The authority now fails the admission while reporting the terminal
-	// result it holds, and recording that result in the journal loses its
-	// directory sync. The activation fails with the authority's error and
-	// reports the commit whose durability is unconfirmed with it.
-	activationAuthority := coordinator.Authority
-	failingAdmit := &terminalAdmitFailingAuthority{EconomicAuthority: activationAuthority}
-	coordinator.Authority = failingAdmit
+	// The activation stopped with its action terminal at the authority and
+	// nothing in the journal but its plan. The process restarts under a new
+	// writer generation, and the activation is repeated with a later time: it
+	// resumes from the plan and asks the authority for no second admission.
+	// Its first commit, which records the terminal result in the admission
+	// log, loses its directory sync, and the activation stops with that.
+	coordinator.Authority = baseAuthority
+	restartWriter()
+	firstActivationAt := activationInput.ActivatedAtUnix
+	activationInput.ActivatedAtUnix++
+	admissions := &admissionCountingAuthority{EconomicAuthority: baseAuthority}
+	coordinator.Authority = admissions
 	activationWrites, removeActivationScript := scriptTestGuarantorDocumentWrites(journal, "unsynced")
 	_, _, failedActivationErr := coordinator.ActivateCoverage(context.Background(), activationInput, fence)
 	removeActivationScript()
-	coordinator.Authority = activationAuthority
-	if failingAdmit.failed != 1 || *activationWrites != 1 || !errors.Is(failedActivationErr, errInjectedAuthority) ||
+	if admissions.admitted != 0 || *activationWrites != 1 ||
 		!errors.Is(failedActivationErr, ErrGuarantorJournalCommittedNotSynced) {
-		t.Errorf("an activation whose failed admission's terminal result lost its sync: %d failed admissions, "+
-			"%d document writes, err=%v; want one of each and both errors", failingAdmit.failed, *activationWrites,
-			failedActivationErr)
+		t.Errorf("an activation resumed from its plan whose first commit lost its sync: %d admissions, "+
+			"%d document writes, err=%v; want no admission, one write and the unconfirmed commit",
+			admissions.admitted, *activationWrites, failedActivationErr)
 	}
 	// While that commit cannot be confirmed the journal is not read as if it
 	// held nothing: a replayed acceptance is not refused as naming an unknown
@@ -1262,6 +1298,21 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	activation, resolution, err := coordinator.ActivateCoverage(context.Background(), activationInput, fence)
 	if err != nil || resolution.State != commerce.ActionTerminal || activation.Body.ActivatedCoverageRevision != 2 {
 		t.Fatalf("activate coverage: state=%s body=%#v err=%v", resolution.State, activation.Body, err)
+	}
+	// The resumed activation is the one the stopped call prepared: activated
+	// at that call's time, under that call's writer generation, with no
+	// second admission, and its plan is gone with the commit.
+	coordinator.Authority = baseAuthority
+	activationInput.ActivatedAtUnix = firstActivationAt
+	if activation.Body.ActivatedAtUnix != firstActivationAt ||
+		activation.Body.WriterGeneration >= fence.Body.WriterGeneration || admissions.admitted != 0 {
+		t.Fatalf("the resumed activation: activated at %d under generation %d with %d admissions; want the stopped "+
+			"call's time %d, a generation before %d and no admission", activation.Body.ActivatedAtUnix,
+			activation.Body.WriterGeneration, admissions.admitted, firstActivationAt, fence.Body.WriterGeneration)
+	}
+	if _, found, planErr := journal.ActionPlan(guarantorPlanCoverageActivation, agreementDigest, ""); planErr != nil ||
+		found {
+		t.Fatalf("the committed activation left its plan: found=%v err=%v", found, planErr)
 	}
 	_, _, coverages = testGuarantorSnapshot(t, journal)
 	if coverages[0].Record.CoverageStatus != guarantor.CoverageActive || coverages[0].Record.ClaimFilingStatus != guarantor.FilingOpen {
@@ -1342,11 +1393,12 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		OtherRecoveryDeclaration: recovery,
 		Authorizations:           []guarantor.ProfileQualifiedObjectAuthorizationV1{claimAuthorization},
 	}
-	// The claim is admitted by a caller that never sees the return: its three
-	// commits each lose their sync, it is repeated, and it is repeated again
-	// after a restart. Every repetition returns the committed receipts.
-	claimResult := requireCommittedGuarantorReceiptReplays(t, "admitting the claim", &coordinator, journalDirectory, 3,
-		func() (GuarantorClaimAdmissionResult, error) {
+	// The claim is admitted by a process that dies after each of its two
+	// terminal transitions, the ingress and the admission, and restarts under
+	// a new writer generation; then by a caller that never sees the return.
+	// Every repetition returns the committed receipts.
+	claimResult := requireCommittedGuarantorReceiptReplays(t, "admitting the claim", &coordinator, authority,
+		restartWriter, 2, stopsPrepared, func() (GuarantorClaimAdmissionResult, error) {
 			return coordinator.AdmitClaim(context.Background(), agreementDigest, claim, fence)
 		}, func() error {
 			other := claim
@@ -1354,10 +1406,6 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 			_, otherErr := coordinator.AdmitClaim(context.Background(), agreementDigest, other, fence)
 			return otherErr
 		})
-	journal = coordinator.Journal
-	if scenario == guarantorNoFallback {
-		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
-	}
 	if claimResult.IngressResolution.State != commerce.ActionTerminal ||
 		claimResult.AdmissionResolution.State != commerce.ActionTerminal {
 		t.Fatalf("admit claim: result=%#v err=%v", claimResult, err)
@@ -1414,6 +1462,15 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	// and coverage closure.
 	exerciseFallback := func(fallbackAt time.Time, wantPath string) guarantor.AuthorizedClaimDecisionAdmissionReceiptV1 {
 		authority.now = func() time.Time { return fallbackAt }
+		// The fallback is first admitted by processes that die before and after
+		// its terminal transition and restart under a new writer generation, the
+		// later ones with a later clock.
+		stopTestGuarantorCallAroundEachTerminalTransition(t, "admitting the fallback decision", &coordinator,
+			authority, restartWriter, 1, fallbackStopsPrepared, func(time.Duration) error {
+				_, stopErr := coordinator.AdmitInitialFallbackDecision(context.Background(),
+					GuarantorAdmitInitialFallbackInput{AgreementDigest: agreementDigest, ClaimID: claimID}, fence)
+				return stopErr
+			})
 		fallbackAdmission, err := coordinator.AdmitInitialFallbackDecision(context.Background(),
 			GuarantorAdmitInitialFallbackInput{AgreementDigest: agreementDigest, ClaimID: claimID}, fence)
 		if err != nil || fallbackAdmission.Resolution.State != commerce.ActionTerminal ||
@@ -1453,6 +1510,16 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		// claim set, whose verifier checks it against the fallback authority set.
 		closeCoverageAt := now.Add(45 * time.Minute)
 		authority.now = func() time.Time { return closeCoverageAt }
+		// The closure is first run by processes that die before and after the
+		// terminal transition of the filing close, and before and after that of
+		// the closure, each restarting under a new writer generation.
+		stopTestGuarantorCallAroundEachTerminalTransition(t, "closing the coverage", &coordinator, authority,
+			restartWriter, 2, fallbackStopsPrepared, func(time.Duration) error {
+				_, stopErr := coordinator.CloseCoverage(context.Background(), GuarantorCloseCoverageInput{
+					Offer: offer, ActivationEvidence: activation,
+				}, fence)
+				return stopErr
+			})
 		closedCoverage, err := coordinator.CloseCoverage(context.Background(), GuarantorCloseCoverageInput{Offer: offer,
 			ActivationEvidence: activation}, fence)
 		if err != nil || closedCoverage.CoverageResolution.Body.TerminalState != "closed" ||
@@ -1970,7 +2037,7 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	authority.now = func() time.Time { return decisionAdmittedAt }
 	decisionInput := GuarantorAdmitDecisionInput{AgreementDigest: agreementDigest, Decision: decision}
 	decisionAdmission := requireCommittedGuarantorReceiptReplays(t, "admitting the claim decision", &coordinator,
-		journalDirectory, 1, func() (GuarantorDecisionAdmissionResult, error) {
+		authority, restartWriter, 1, stopsPrepared, func() (GuarantorDecisionAdmissionResult, error) {
 			return coordinator.AdmitClaimDecision(context.Background(), decisionInput, fence)
 		}, func() error {
 			other := decisionInput
@@ -1978,10 +2045,6 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 			_, otherErr := coordinator.AdmitClaimDecision(context.Background(), other, fence)
 			return otherErr
 		})
-	journal = coordinator.Journal
-	if scenario == guarantorNoFallback {
-		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
-	}
 	wantAdmittedState := "approved"
 	if disputed {
 		wantAdmittedState = "disputed"
@@ -1996,12 +2059,28 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		ctx := context.Background()
 		challengeAt := time.Unix(int64(decisionAdmission.Receipt.Body.ChallengeStartsAtUnix)+1, 0).UTC()
 		authority.now = func() time.Time { return challengeAt }
-		challenged, err := coordinator.TransitionClaimDecision(ctx, GuarantorTransitionClaimInput{
-			AgreementDigest: agreementDigest, DecisionAdmissionReceipt: decisionAdmission.Receipt,
-			TransitionKind: "challenge_admission"}, fence)
-		if err != nil || challenged.Receipt.Body.ResultingClaimState != "reviewing" {
-			t.Fatalf("challenge the ordinary decision: resolution=%#v err=%v", challenged.Resolution, err)
+		challengeInput := GuarantorTransitionClaimInput{
+			AgreementDigest:          agreementDigest,
+			DecisionAdmissionReceipt: decisionAdmission.Receipt, TransitionKind: "challenge_admission",
 		}
+		// The challenge's request names the successor's due time, which follows
+		// from the time of the call that prepared it: a repetition under a newer
+		// writer at a later time resumes it as prepared.
+		stopTestGuarantorCallAroundEachTerminalTransition(t, "admitting the challenge", &coordinator, authority,
+			restartWriter, 1, true, func(time.Duration) error {
+				_, stopErr := coordinator.TransitionClaimDecision(ctx, challengeInput, fence)
+				return stopErr
+			})
+		authority.now = func() time.Time { return challengeAt.Add(time.Second) }
+		challenged, challengeErr := coordinator.TransitionClaimDecision(ctx, challengeInput, fence)
+		if challengeErr != nil || challenged.Receipt.Body.ResultingClaimState != "reviewing" ||
+			challenged.Receipt.Body.TransitionedAtUnix != uint64(challengeAt.Unix()) ||
+			challenged.Receipt.Body.SuccessorDecisionDueAtUnix !=
+				uint64(challengeAt.Unix())+terms.SuccessorDecisionWindowSeconds {
+			t.Fatalf("challenge the ordinary decision, resumed a second later: resolution=%#v err=%v",
+				challenged.Resolution, challengeErr)
+		}
+		authority.now = func() time.Time { return challengeAt }
 		reopened, err := journal.RevisionEpoch(agreementDigest, claimID)
 		if err != nil || reopened.State != revisionEpochOpen {
 			t.Fatalf("the ordinary challenge did not reopen revision ingress: %#v err=%v", reopened, err)
@@ -2151,7 +2230,7 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		TransitionKind: "challenge_close",
 	}
 	terminalTransition := requireCommittedGuarantorReceiptReplays(t, "closing the claim challenge", &coordinator,
-		journalDirectory, 1, func() (GuarantorClaimTransitionResult, error) {
+		authority, restartWriter, 1, stopsPrepared, func() (GuarantorClaimTransitionResult, error) {
 			return coordinator.TransitionClaimDecision(context.Background(), closeInput, fence)
 		}, func() error {
 			other := closeInput
@@ -2159,10 +2238,6 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 			_, otherErr := coordinator.TransitionClaimDecision(context.Background(), other, fence)
 			return otherErr
 		})
-	journal = coordinator.Journal
-	if scenario == guarantorNoFallback {
-		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
-	}
 	if terminalTransition.Resolution.State != commerce.ActionTerminal ||
 		terminalTransition.Receipt.Body.ResultingClaimState != "final_approved" {
 		t.Fatalf("close claim challenge: result=%#v err=%v", terminalTransition, err)
@@ -2179,13 +2254,9 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		TerminalTransitionReceipt: terminalTransition.Receipt,
 	}
 	application := requireCommittedGuarantorReceiptReplays(t, "applying the claim decision", &coordinator,
-		journalDirectory, 1, func() (GuarantorDecisionApplicationResult, error) {
+		authority, restartWriter, 1, stopsPrepared, func() (GuarantorDecisionApplicationResult, error) {
 			return coordinator.ApplyClaimDecision(context.Background(), applyInput, fence)
 		}, nil)
-	journal = coordinator.Journal
-	if scenario == guarantorNoFallback {
-		checkGuarantorJournalCommitsFromACopy(t, journal, journalDirectory)
-	}
 	payouts, resolution := application.Payouts, application.Resolution
 	if resolution.State != commerce.ActionTerminal || len(payouts.Obligations) != 1 ||
 		payouts.Obligations[0].Amount.AmountAtomic != "400" || application.Receipt.Body.ResultingApplicationTokenState != "consumed" {
@@ -2382,13 +2453,15 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		commerce.ProfileRefV1{ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1,
 			ProfileDigest: agreementProfile}, underlyingResolver, baseAgreementVerifier,
 		now.Add(30*time.Second), now.Add(90*time.Second))
-	// Each of this acceptance's three journal commits loses its directory sync
-	// once: the admission, the acceptance itself and the recorded terminal
-	// result. The coordinator reports each one and stops. The acceptance that
-	// is in the journal is never rejected, the call that only records the
-	// terminal result is not returned as a plain success, and the acceptance
-	// is returned once, from the journal, when every commit is confirmed.
-	acceptSyncLoss := &journalSyncLossFault{remaining: 3}
+	// This acceptance makes four journal commits: the admission, its plan,
+	// the acceptance itself and the recorded terminal result. The first two
+	// are written undisturbed; the acceptance and the recorded result each
+	// lose their directory sync once. The coordinator reports each one and
+	// stops. The acceptance that is in the journal is never rejected, the
+	// call that only records the terminal result is not returned as a plain
+	// success, and the acceptance is returned once, from the journal, when
+	// every commit is confirmed.
+	acceptSyncLoss := &journalSyncLossFault{skip: 2, remaining: 2}
 	removeAcceptSyncLoss := acceptSyncLoss.install(journal)
 	rejections := &rejectionCountingAuthority{EconomicAuthority: coordinator.Authority}
 	coordinator.Authority = rejections
@@ -2408,9 +2481,9 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	})
 	removeAcceptSyncLoss()
 	coordinator.Authority = rejections.EconomicAuthority
-	if acceptStops != 3 || acceptSyncLoss.lost != 3 || rejections.rejections != 0 {
+	if acceptStops != 2 || acceptSyncLoss.lost != 2 || rejections.rejections != 0 {
 		t.Fatalf("accepting the coverage stopped %d times for %d commits that lost their sync and asked for "+
-			"%d rejections, want 3, 3 and none", acceptStops, acceptSyncLoss.lost, rejections.rejections)
+			"%d rejections, want 2, 2 and none", acceptStops, acceptSyncLoss.lost, rejections.rejections)
 	}
 	// The acceptance was reported with its receipt when its own commit lost
 	// its sync and again when recording the terminal result did; both are the
@@ -2425,12 +2498,26 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	}
 	nonActivationInput := GuarantorConfirmNonActivationInput{Offer: nonActivationOffer, AcceptanceReceipt: nonActivationReceipt,
 		ResolvedAtUnix: nonActivationTerms.CoverageStartsAtUnix}
-	coordinator.Authority = &failAfterTerminalEconomicAuthority{EconomicAuthority: baseAuthority, failOnce: true}
-	if _, _, crashErr := coordinator.ConfirmActivationWindowExpired(context.Background(), nonActivationInput, fence); crashErr == nil {
-		t.Fatal("non-activation did not surface the injected post-terminal crash")
-	}
+	// The confirmation is first made by processes that die before and after
+	// its terminal transition; the later ones pass a later resolution time.
+	stopTestGuarantorCallAroundEachTerminalTransition(t, "confirming the non-activation", &coordinator, authority,
+		restartWriter, 1, stopsPrepared, func(later time.Duration) error {
+			laterInput := nonActivationInput
+			laterInput.ResolvedAtUnix += uint64(later / time.Second)
+			_, _, stopErr := coordinator.ConfirmActivationWindowExpired(context.Background(), laterInput, fence)
+			return stopErr
+		})
+	// The process restarts under a new writer generation and the confirmation
+	// is repeated a second later: it is resolved from its plan, at the time
+	// the stopped call resolved it.
+	laterNonActivationInput := nonActivationInput
+	laterNonActivationInput.ResolvedAtUnix++
 	nonActivationEvidence, nonActivationResolution, err := coordinator.ConfirmActivationWindowExpired(context.Background(),
-		nonActivationInput, fence)
+		laterNonActivationInput, fence)
+	if err == nil && nonActivationEvidence.Body.ResolvedAtUnix != nonActivationInput.ResolvedAtUnix {
+		t.Fatalf("the resumed non-activation was resolved at %d, want the stopped call's %d",
+			nonActivationEvidence.Body.ResolvedAtUnix, nonActivationInput.ResolvedAtUnix)
+	}
 	if err != nil || nonActivationResolution.State != commerce.ActionTerminal ||
 		nonActivationEvidence.Body.Reason != "activation_window_expired" || nonActivationEvidence.Body.ActivationAdmissionHighWater != 0 {
 		t.Fatalf("confirm non-activation: state=%s body=%#v err=%v", nonActivationResolution.State, nonActivationEvidence.Body, err)
@@ -2449,6 +2536,17 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	if !foundNonActivation {
 		t.Fatal("non-activated coverage was not durably projected")
 	}
+	// The release is first made by a process that dies after the authority
+	// released the reservation, which also moved the portfolio revision the
+	// release names. The process restarts under a new writer generation and
+	// the repeated release completes from its plan.
+	coordinator.Authority = &failAfterReleaseEconomicAuthority{EconomicAuthority: baseAuthority, failOnce: true}
+	if _, _, crashErr := coordinator.ReleaseNonActivatedExposure(context.Background(), nonActivationOffer,
+		nonActivationEvidence, fence); crashErr == nil {
+		t.Fatal("the non-activation release did not surface the injected stop after the authority's release")
+	}
+	coordinator.Authority = baseAuthority
+	restartWriter()
 	nonActivationRelease, nonActivationReleaseResolution, err := coordinator.ReleaseNonActivatedExposure(
 		context.Background(), nonActivationOffer, nonActivationEvidence, fence)
 	if err != nil || nonActivationReleaseResolution.State != commerce.ActionTerminal ||
@@ -2499,11 +2597,35 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		commerce.ProfileRefV1{ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1,
 			ProfileDigest: agreementProfile}, underlyingResolver, baseAgreementVerifier,
 		now.Add(35*time.Second), now.Add(95*time.Second))
+	cancellationAcceptInput := GuarantorAcceptCoverageInput{
+		Offer: cancellationOffer, Request: cancellationAcceptance,
+		CoverageObligationID: "obligation:coverage", ReceivedAtUnix: uint64(now.Add(35 * time.Second).Unix()),
+	}
+	// The acceptance is first made by processes that die before and after its
+	// terminal transition; the later ones pass a later receipt time.
+	stopTestGuarantorCallAroundEachTerminalTransition(t, "accepting the cancellable coverage", &coordinator,
+		authority, restartWriter, 1, stopsPrepared, func(later time.Duration) error {
+			laterInput := cancellationAcceptInput
+			laterInput.ReceivedAtUnix += uint64(later / time.Second)
+			_, _, stopErr := coordinator.AcceptCoverage(context.Background(), laterInput, fence)
+			return stopErr
+		})
+	laterAcceptInput := cancellationAcceptInput
+	laterAcceptInput.ReceivedAtUnix++
 	cancellationAcceptanceReceipt, cancellationResolution, err := coordinator.AcceptCoverage(context.Background(),
-		GuarantorAcceptCoverageInput{Offer: cancellationOffer, Request: cancellationAcceptance,
-			CoverageObligationID: "obligation:coverage", ReceivedAtUnix: uint64(now.Add(35 * time.Second).Unix())}, fence)
-	if err != nil || cancellationResolution.State != commerce.ActionTerminal {
-		t.Fatalf("accept cancellable coverage: state=%s err=%v", cancellationResolution.State, err)
+		laterAcceptInput, fence)
+	if err != nil || cancellationResolution.State != commerce.ActionTerminal ||
+		cancellationAcceptanceReceipt.Body.ReceivedAtUnix != cancellationAcceptInput.ReceivedAtUnix {
+		t.Fatalf("accept cancellable coverage, resumed a second later: state=%s err=%v", cancellationResolution.State,
+			err)
+	}
+	// The same acceptance repeated ten minutes later, when the offer can no
+	// longer be accepted, gets the committed receipt.
+	lateAcceptInput := cancellationAcceptInput
+	lateAcceptInput.ReceivedAtUnix += uint64((10 * time.Minute) / time.Second)
+	lateAcceptance, _, lateAcceptErr := coordinator.AcceptCoverage(context.Background(), lateAcceptInput, fence)
+	if lateAcceptErr != nil || !sameJSON(lateAcceptance, cancellationAcceptanceReceipt) {
+		t.Fatalf("the committed acceptance repeated ten minutes later: %v", lateAcceptErr)
 	}
 	cancellationPrerequisites := activationPrerequisites
 	cancellationPrerequisites.ContextDigest = cancellationAgreementDigest
@@ -2546,11 +2668,23 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		CoverageAgreementBody: cancellationAgreement,
 		Authorizations:        []guarantor.ProfileQualifiedObjectAuthorizationV1{cancelAuthorization}}
 	cancelInput := GuarantorCancelCoverageInput{Request: cancelRequest, AdmittedAtUnix: uint64(cancelCreated.Add(5 * time.Second).Unix())}
-	coordinator.Authority = &failAfterTerminalEconomicAuthority{EconomicAuthority: baseAuthority, failOnce: true}
-	if _, _, crashErr := coordinator.CancelCoverage(context.Background(), cancelInput, fence); crashErr == nil {
-		t.Fatal("cancellation did not surface the injected post-terminal crash")
-	}
-	cancelReceipt, cancellationResolution, err := coordinator.CancelCoverage(context.Background(), cancelInput, fence)
+	// The cancellation is first made by processes that die before and after
+	// its terminal transition; the later ones pass a later admission time, as
+	// the event handler does with its own clock.
+	stopTestGuarantorCallAroundEachTerminalTransition(t, "ending the coverage by cancellation", &coordinator, authority,
+		restartWriter, 1, stopsPrepared, func(later time.Duration) error {
+			laterInput := cancelInput
+			laterInput.AdmittedAtUnix += uint64(later / time.Second)
+			_, _, stopErr := coordinator.CancelCoverage(context.Background(), laterInput, fence)
+			return stopErr
+		})
+	// The cancellation is repeated a second later once more: it is admitted
+	// from its plan, at the time the stopped call admitted it, which the
+	// assertion below on the eligibility end checks.
+	laterCancelInput := cancelInput
+	laterCancelInput.AdmittedAtUnix++
+	cancelReceipt, cancellationResolution, err := coordinator.CancelCoverage(context.Background(), laterCancelInput,
+		fence)
 	if err != nil || cancellationResolution.State != commerce.ActionTerminal || cancelReceipt.Body.State != "coverage_ended" ||
 		cancelReceipt.Body.IncidentEligibilityEndsAtUnix != uint64(cancelCreated.Add(5*time.Second).Unix()) {
 		t.Fatalf("cancel active coverage: state=%s body=%#v err=%v", cancellationResolution.State, cancelReceipt.Body, err)
@@ -2563,10 +2697,13 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	if cancellationActivation.Body.CoverageAgreementBodyDigest != cancellationAgreementDigest {
 		t.Fatal("cancellation activation was rebound to another Agreement")
 	}
-	// One more offer is issued only to have its acceptance refused by the
-	// journal, which is the one path on which the coordinator records a
-	// rejection: that commit loses its sync and must be reported.
-	requireUnrecordedAcceptanceReportsItsRejectionsLostSync(t, &coordinator, journal, fence, func(
+	// Two more offers are issued for their acceptances alone: one whose own
+	// commit fails after the authority made it terminal, which is resumed and
+	// never rejected, and one the journal refuses, which is rejected while
+	// the authority can still reject it.
+	requireAcceptanceIsRejectedOnlyWhilePrepared(t, &coordinator, restartWriter, func() commerce.WriterFence {
+		return fence
+	}, func(
 		name string, issuedAt time.Time, coverageID, stateDomain string,
 	) (commerce.AgentAgreementBody, guarantor.AuthorizedFirmCoverageOfferV1) {
 		body := requestBody
@@ -2668,8 +2805,11 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	}
 	closeGuarantorJournalOnCleanup(t, reopened)
 	_, _, recovered := testGuarantorSnapshot(t, reopened)
-	if len(recovered) != 3 {
-		t.Fatalf("unexpected recovered Guarantor coverage count: %#v", recovered)
+	// The main coverage, the one never activated, the one ended by its
+	// cancellation and the one whose acceptance was resumed after its commit
+	// failed.
+	if len(recovered) != 4 {
+		t.Fatalf("unexpected recovered Guarantor coverage count: %d", len(recovered))
 	}
 	var recoveredTerminal bool
 	for _, candidate := range recovered {

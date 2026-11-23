@@ -121,11 +121,12 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       # pkg/earning holds the post-quantum Guarantor end-to-end test, which
-      # signs every authorization through the helper; on a small runner the
-      # package can approach the default 10 minute limit.
+      # signs every authorization through the helper and stops and restarts the
+      # Provider around every terminal transition; it runs about twenty minutes
+      # on a development host, so the limit leaves room for a slower runner.
       - name: Run go test
         working-directory: openfox
-        run: go test -timeout 30m -tags goolm,stdjson ./...
+        run: go test -timeout 45m -tags goolm,stdjson ./...
 
   integration:
     name: Integration Tests

@@ -239,6 +239,16 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 	if err := coordinator.Authority.ConfirmCurrentWriterFence(fence, activatedAt); err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
+	// A call that stopped after preparing this activation resumes from its
+	// plan: the coverage is activated at the plan's time, under the plan's
+	// fence, whatever time and fence the repeated call arrives with.
+	planned, err := coordinator.plannedAction(guarantorPlanCoverageActivation,
+		input.AcceptanceReceipt.Body.CoverageAgreementBodyDigest, "", fence)
+	if err != nil {
+		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, err
+	}
+	input.ActivatedAtUnix = planned.atUnix(input.ActivatedAtUnix)
+	fence, activatedAt = planned.fence(fence), planned.at(activatedAt)
 	if err := guarantor.VerifyFirmOffer(input.Offer, input.Offer.AuthorizedQuoteRequest,
 		input.AcceptanceReceipt.AuthorizedAcceptanceRequest.CoverageAgreementBody, coordinator.Resolver,
 		coordinator.PublicationResolver, coordinator.UnderlyingAgreementResolver, coordinator.AgreementVerifier,
@@ -316,6 +326,12 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 			coverage = candidate
 		}
 	}
+	// An activation repeated after it was committed gets the committed
+	// evidence: the coverage is no longer pending.
+	if committed, committedResolution, replayed, replayErr := coordinator.committedCoverageActivation(coverage,
+		input); replayErr != nil || replayed {
+		return committed, committedResolution, replayErr
+	}
 	if coverage.Record.CoverageStatus != guarantor.CoveragePendingAuthorization ||
 		coverage.Record.ClaimFilingStatus != guarantor.FilingNotOpen {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, errors.New("Guarantor coverage is not pending activation")
@@ -387,12 +403,9 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 		"agreement_body_digest": commerce.Digest32(agreementDigest), "obligation_id": commerce.ID(coverage.Record.CoverageObligationID),
 		"expected_state_revision": commerce.U64(coverage.Record.CoverageRevision), "target_state": commerce.State("active"),
 		"evidence_set_digest": commerce.Digest32(projectionDigest)}
-	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.obligation.transition",
-		fields, canonicalRequest, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", coverage.Record.LastEvidenceDigest,
+	action, err := coordinator.authorizePlannedAction(planned, coordinator.OwnerID, coordinator.AgentID,
+		"conditional.obligation.transition", fields, canonicalRequest, fence, coverage.Record.LastEvidenceDigest,
 		minUint64(terms.CoverageEndsAtUnix, fence.Body.ExpiresAtUnix))
-	if err == nil {
-		action, err = coordinator.Authority.SignAction(action, fence)
-	}
 	if err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
@@ -412,9 +425,10 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 	if err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, err
 	}
-	resolution, err := coordinator.Authority.Admit(action, fields, canonicalRequest, fence, nil)
+	resolution, err := coordinator.admitPlannedAction(planned, action, fields, canonicalRequest, fence, activatedAt)
 	if err != nil {
-		if commerce.ValidateActionResolution(resolution) == nil && isGuarantorAdmissionTerminal(resolution.State) {
+		if commerce.ValidateActionResolution(resolution) == nil && resolution.State != commerce.ActionTerminal &&
+			isGuarantorAdmissionTerminal(resolution.State) {
 			// Recording the terminal result is best effort here, but a commit
 			// left without a confirmed sync is reported with the failure.
 			_, resolveErr := coordinator.Journal.ResolveAdmission(activationDomainID, resolution)
@@ -426,15 +440,9 @@ func (coordinator *GuarantorProviderCoordinator) ActivateCoverage(ctx context.Co
 	if err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution, err
 	}
-	if resolution.State == commerce.ActionPrepared {
-		resolution, err = coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-			commerce.ActionTerminal, actionDigest, []string{actionDigest})
-		if err != nil {
-			return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution, err
-		}
-	} else if resolution.State != commerce.ActionTerminal {
-		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution,
-			errors.New("Guarantor activation action did not resolve terminally")
+	resolution, err = coordinator.settlePlannedAction(resolution, action, actionDigest, []string{actionDigest})
+	if err != nil {
+		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution, err
 	}
 	if _, err = coordinator.Journal.ResolveAdmission(activationDomainID, resolution); err != nil {
 		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution, err
@@ -520,6 +528,21 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		claim); replayErr != nil || replayed {
 		return committed, replayErr
 	}
+	// A claim admission makes two actions terminal, the ingress and the
+	// admission, and each has its own plan. A call that stopped after
+	// preparing either resumes from it, with that plan's action, fence and
+	// time; an action without a plan is authorized by this call.
+	revisionKey := guarantorClaimRevisionKey(claim.Body.ClaimID, claim.Body.ClaimRevision)
+	ingressPlan, err := coordinator.plannedAction(guarantorPlanClaimIngress, agreementDigest, revisionKey, fence)
+	if err != nil {
+		return GuarantorClaimAdmissionResult{}, err
+	}
+	admissionPlan, err := coordinator.plannedAction(guarantorPlanClaimAdmission, agreementDigest, revisionKey, fence)
+	if err != nil {
+		return GuarantorClaimAdmissionResult{}, err
+	}
+	callFence, callNow := fence, now
+	fence, now = ingressPlan.fence(callFence), ingressPlan.at(callNow)
 	if coverage.Record.CoverageAgreementBodyDigest == "" ||
 		guarantor.VerifyClaim(claim, coverage.Terms, agreementDigest, coverage.Record.CoverageObligationID,
 			coordinator.Resolver, now) != nil {
@@ -545,13 +568,9 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 	ingressFields := map[string]commerce.SemanticValue{"owner_id": commerce.ID(coordinator.OwnerID), "agent_id": commerce.ID(coordinator.AgentID),
 		"agreement_body_digest": commerce.Digest32(agreementDigest), "obligation_id": commerce.ID(coverage.Record.CoverageObligationID),
 		"claim_id": commerce.ID(claim.Body.ClaimID), "claim_revision": commerce.U64(claim.Body.ClaimRevision)}
-	ingressAction, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.claim.ingress",
-		ingressFields, canonicalClaim, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "",
-		coverage.Record.LastEvidenceDigest, claim.Body.ExpiresAtUnix)
-	if err != nil {
-		return GuarantorClaimAdmissionResult{}, err
-	}
-	ingressAction, err = coordinator.Authority.SignAction(ingressAction, fence)
+	ingressAction, err := coordinator.authorizePlannedAction(ingressPlan, coordinator.OwnerID, coordinator.AgentID,
+		"conditional.claim.ingress", ingressFields, canonicalClaim, fence, coverage.Record.LastEvidenceDigest,
+		claim.Body.ExpiresAtUnix)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{}, err
 	}
@@ -565,17 +584,28 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 	if err != nil {
 		return GuarantorClaimAdmissionResult{}, err
 	}
-	if _, err = coordinator.Journal.BeginClaimIngressAdmission(ingressLogID, ingressAction.StableActionID,
-		ingressAction.ExactRequestDigest, now); err != nil {
+	// The ingress log is the one record of when the claim was received: its
+	// root, which the receipt binds, covers the time of the entry. A call
+	// repeated after the entry was written, even one that starts again
+	// because its plan never reached the authority, gets the entry it
+	// wrote, and the receipt takes its time from that entry, not from the
+	// call. The stage admission keeps the call's own time, inside its fence.
+	ingressEntry, err := coordinator.Journal.BeginClaimIngressAdmission(ingressLogID, ingressAction.StableActionID,
+		ingressAction.ExactRequestDigest, now)
+	if err != nil {
 		return GuarantorClaimAdmissionResult{}, err
 	}
-	ingressResolution, err := coordinator.Authority.Admit(ingressAction, ingressFields, canonicalClaim, fence, nil)
-	if err != nil || ingressResolution.State != commerce.ActionPrepared {
-		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution},
-			firstError(err, errors.New("Guarantor claim ingress was not prepared"))
+	if !validGuarantorUnix(ingressEntry.ReceivedAtUnix) {
+		return GuarantorClaimAdmissionResult{}, errors.New("Guarantor claim ingress log entry has an invalid time")
 	}
-	ingressResolution, err = coordinator.Authority.Transition(ingressAction.StableActionID, ingressAction.ExactRequestDigest,
-		commerce.ActionTerminal, claimDigest, []string{claimDigest})
+	ingressReceivedAt := time.Unix(int64(ingressEntry.ReceivedAtUnix), 0).UTC()
+	ingressResolution, err := coordinator.admitPlannedAction(ingressPlan, ingressAction, ingressFields, canonicalClaim,
+		fence, now)
+	if err != nil {
+		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
+	}
+	ingressResolution, err = coordinator.settlePlannedAction(ingressResolution, ingressAction, claimDigest,
+		[]string{claimDigest})
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
 	}
@@ -592,14 +622,14 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
 	}
 	rawIngressEligibility, err := coordinator.Eligibility.FreshEligibilityProofSet(ctx, "claim-submission-ingress",
-		coverage.Terms.ClaimIngressAuthoritySubjects, now)
+		coverage.Terms.ClaimIngressAuthoritySubjects, ingressReceivedAt)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
 	}
 	ingressEligibility, err := buildGuarantorEligibilityProofSet(rawIngressEligibility, ingressAction, claimDigest,
 		coverage.Terms.ClaimIngressAuthoritySubjects, "claim-ingress-receipt", claimDigest,
 		coverage.Terms.ClaimIngressProfile.ProfileDigest, coverage.Terms.ClaimIngressProfile,
-		ingressLogID, ingressSequence, uint64(now.Unix()))
+		ingressLogID, ingressSequence, ingressEntry.ReceivedAtUnix)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
 	}
@@ -636,6 +666,8 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		StableActionID: ingressAction.StableActionID, ExactRequestDigest: ingressAction.ExactRequestDigest,
 		WriterGeneration: ingressAction.WriterGeneration, WriterFenceDigest: ingressAction.WriterFenceDigest,
 		ReceivedAtUnix: uint64(now.Unix()), AuthorityAdmissionEligibilityProofSetDigest: ingressEligibilityDigest}
+	// Received when its log entry says, as the log roots above bind.
+	ingressBody.ReceivedAtUnix = ingressEntry.ReceivedAtUnix
 	ingressBodyDigest, err := guarantor.Digest("tos.service.agent-guarantor-claim-ingress-receipt-body.v1", ingressBody)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
@@ -649,6 +681,25 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 		StageActionAdmissionEvidence: ingressStage, AuthorizedClaim: claim,
 		AuthorityAdmissionEligibilityProofSet: ingressEligibility,
 		Authorizations:                        []guarantor.ProfileQualifiedObjectAuthorizationV1{ingressAuthorization}}
+	// The admission action carries the complete ingress receipt, so its
+	// identity depends on that receipt's exact bytes. A call that resumes a
+	// planned admission therefore takes the ingress receipt and the authority
+	// instance from the plan's request, not the ones rebuilt above, and only
+	// if the rebuilt receipt has the same body.
+	var plannedAdmission guarantor.ClaimSubmissionActionBodyV1
+	if admissionPlan.resuming() {
+		if err = guarantor.Unmarshal(admissionPlan.resume.CanonicalRequest, &plannedAdmission); err != nil {
+			return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution},
+				fmt.Errorf("decode the planned Guarantor claim admission request: %w", err)
+		}
+		plannedIngress := plannedAdmission.AuthorityInstanceEffect.AuthorizedClaimIngressReceipt
+		if !sameJSON(plannedIngress.Body, ingressReceipt.Body) {
+			return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution},
+				errors.New("planned Guarantor claim admission carries another ingress receipt than the one rebuilt")
+		}
+		ingressReceipt = plannedIngress
+	}
+	fence, now = admissionPlan.fence(callFence), admissionPlan.at(callNow)
 	ingressReceiptDigest, err := guarantor.ClaimIngressReceiptDigestV1(ingressReceipt)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
@@ -673,12 +724,19 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, IngressResolution: ingressResolution}, err
 	}
-	instance, err := coordinator.Authority.AllocateInstance(commerce.AuthorityInstanceAllocationRequest{OwnerID: coordinator.OwnerID,
-		AgentID: coordinator.AgentID, PurposeKind: "conditional.claim.submit", MandateDigest: coordinator.MandateDigest,
-		ApprovalDigestOrZero: zeroSHA256Digest(), DownstreamEffectDescriptorDigest: effectDigest,
-		PredecessorAuthorityInstanceID: zeroSHA256Digest()}, fence)
-	if err != nil {
-		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
+	// The instance of a planned admission is the one its request names: the
+	// authority allocates only under the current writer fence, and the plan's
+	// request digest covers the instance.
+	instance := plannedAdmission.AuthorityInstanceRecord
+	if !admissionPlan.resuming() {
+		instance, err = coordinator.Authority.AllocateInstance(commerce.AuthorityInstanceAllocationRequest{
+			OwnerID: coordinator.OwnerID, AgentID: coordinator.AgentID, PurposeKind: "conditional.claim.submit",
+			MandateDigest: coordinator.MandateDigest, ApprovalDigestOrZero: zeroSHA256Digest(),
+			DownstreamEffectDescriptorDigest: effectDigest, PredecessorAuthorityInstanceID: zeroSHA256Digest(),
+		}, fence)
+		if err != nil {
+			return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
+		}
 	}
 	admissionRequestBody := guarantor.ClaimSubmissionActionBodyV1{SchemaVersion: 1,
 		AuthorityInstanceID: instance.AuthorityInstanceID, AuthorityInstanceRecord: instance,
@@ -690,23 +748,21 @@ func (coordinator *GuarantorProviderCoordinator) AdmitClaim(ctx context.Context,
 	admissionFields := map[string]commerce.SemanticValue{"owner_id": commerce.ID(coordinator.OwnerID), "agent_id": commerce.ID(coordinator.AgentID),
 		"agreement_body_digest": commerce.Digest32(agreementDigest), "obligation_id": commerce.ID(coverage.Record.CoverageObligationID),
 		"authority_instance_id": commerce.Digest32(instance.AuthorityInstanceID), "claim_body_digest": commerce.Digest32(claimBodyDigest)}
-	admissionAction, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.claim.submit",
-		admissionFields, admissionRequest, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", ingressReceiptDigest,
+	admissionAction, err := coordinator.authorizePlannedAction(admissionPlan, coordinator.OwnerID, coordinator.AgentID,
+		"conditional.claim.submit", admissionFields, admissionRequest, fence, ingressReceiptDigest,
 		claim.Body.ExpiresAtUnix)
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
 	}
-	admissionAction, err = coordinator.Authority.SignAction(admissionAction, fence)
+	admissionResolution, err := coordinator.admitPlannedAction(admissionPlan, admissionAction, admissionFields,
+		admissionRequest, fence, now)
 	if err != nil {
-		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution}, err
+		return GuarantorClaimAdmissionResult{
+			IngressResolution: ingressResolution, AdmissionResolution: admissionResolution,
+		}, err
 	}
-	admissionResolution, err := coordinator.Authority.Admit(admissionAction, admissionFields, admissionRequest, fence, nil)
-	if err != nil || admissionResolution.State != commerce.ActionPrepared {
-		return GuarantorClaimAdmissionResult{IngressResolution: ingressResolution, AdmissionResolution: admissionResolution},
-			firstError(err, errors.New("Guarantor claim admission was not prepared"))
-	}
-	admissionResolution, err = coordinator.Authority.Transition(admissionAction.StableActionID, admissionAction.ExactRequestDigest,
-		commerce.ActionTerminal, claimDigest, []string{claimDigest})
+	admissionResolution, err = coordinator.settlePlannedAction(admissionResolution, admissionAction, claimDigest,
+		[]string{claimDigest})
 	if err != nil {
 		return GuarantorClaimAdmissionResult{IngressReceipt: ingressReceipt, IngressResolution: ingressResolution,
 			AdmissionResolution: admissionResolution}, err
@@ -858,30 +914,45 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	}
 	admission := input.DecisionAdmissionReceipt
 	transition := input.TerminalTransitionReceipt
-	if err := guarantor.VerifyClaimDecisionAdmissionReceiptV1(admission, coverage.Terms, coordinator.AgreementVerifier,
-		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil {
-		return GuarantorDecisionApplicationResult{}, err
-	}
+	decision := admission.AuthorizedClaimDecision
+	claimID := decision.Body.ClaimID
 	admissionEnvelopeDigest, err := guarantor.ClaimDecisionAdmissionReceiptDigestV1(admission)
 	if err != nil {
 		return GuarantorDecisionApplicationResult{}, err
 	}
-	if err := guarantor.VerifyClaimStateTransitionReceiptV1(transition, coverage.Terms, coordinator.AgreementVerifier,
-		coordinator.resolverFor(input.AgreementDigest), coordinator.Authority, now); err != nil || transition.Body.TransitionKind != "challenge_close" ||
-		transition.DecisionAdmissionProof.ReceiptEnvelopeDigest != admissionEnvelopeDigest {
-		return GuarantorDecisionApplicationResult{}, errors.New("Guarantor decision application lacks the exact terminal challenge close")
-	}
-	decision := admission.AuthorizedClaimDecision
-	claimID := decision.Body.ClaimID
 	transitionDigest, err := guarantor.ClaimStateTransitionReceiptDigestV1(transition)
 	if err != nil {
 		return GuarantorDecisionApplicationResult{}, err
 	}
 	// An application repeated after it was committed gets the committed
-	// receipt: its token is consumed and cannot be applied again.
+	// receipt: its token is consumed and cannot be applied again. It is found
+	// by the envelope digests of the receipts it names, which were verified
+	// before it was committed, so it is returned whatever time the call has:
+	// later, those receipts may no longer verify.
 	if committed, replayed, replayErr := coordinator.committedDecisionApplication(coverage, claimID,
 		admissionEnvelopeDigest, transitionDigest); replayErr != nil || replayed {
 		return committed, replayErr
+	}
+	// A call that stopped after preparing this application resumes from its
+	// plan: with the plan's action, fence and time it checks the receipts it
+	// starts from and rebuilds the receipt the first call would have
+	// committed.
+	planned, err := coordinator.plannedAction(guarantorPlanDecisionApplication, input.AgreementDigest, claimID, fence)
+	if err != nil {
+		return GuarantorDecisionApplicationResult{}, err
+	}
+	fence, now = planned.fence(fence), planned.at(now)
+	resolver := coordinator.resolverFor(input.AgreementDigest)
+	if err = guarantor.VerifyClaimDecisionAdmissionReceiptV1(admission, coverage.Terms, coordinator.AgreementVerifier,
+		resolver, coordinator.Authority, now); err != nil {
+		return GuarantorDecisionApplicationResult{}, err
+	}
+	transitionErr := guarantor.VerifyClaimStateTransitionReceiptV1(transition, coverage.Terms,
+		coordinator.AgreementVerifier, resolver, coordinator.Authority, now)
+	if transitionErr != nil || transition.Body.TransitionKind != "challenge_close" ||
+		transition.DecisionAdmissionProof.ReceiptEnvelopeDigest != admissionEnvelopeDigest {
+		return GuarantorDecisionApplicationResult{}, errors.New(
+			"Guarantor decision application lacks the exact terminal challenge close")
 	}
 	claim, claimFound := coverage.ClaimEnvelopes[claimID]
 	record, recordFound := coverage.Claims[claimID]
@@ -945,20 +1016,15 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	}
 	claimDigest, _ := guarantor.ClaimEnvelopeDigest(claim)
 	fields := guarantor.ClaimDecisionApplicationSemanticFieldsV1(bound, requestBody, decision, claimDigest)
-	action, err := commerce.BuildAuthorizedAction(coordinator.OwnerID, coordinator.AgentID, "conditional.claim.decide", fields,
-		canonicalRequest, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", record.LastEvidenceDigest,
+	action, err := coordinator.authorizePlannedAction(planned, coordinator.OwnerID, coordinator.AgentID,
+		"conditional.claim.decide", fields, canonicalRequest, fence, record.LastEvidenceDigest,
 		guarantorClosureActionDeadline(coverage))
 	if err != nil {
 		return GuarantorDecisionApplicationResult{}, err
 	}
-	action, err = coordinator.Authority.SignAction(action, fence)
+	resolution, err := coordinator.admitPlannedAction(planned, action, fields, canonicalRequest, fence, now)
 	if err != nil {
-		return GuarantorDecisionApplicationResult{}, err
-	}
-	resolution, err := coordinator.Authority.Admit(action, fields, canonicalRequest, fence, nil)
-	if err != nil || resolution.State != commerce.ActionPrepared {
-		return GuarantorDecisionApplicationResult{Payouts: payouts, Resolution: resolution},
-			firstError(err, errors.New("Guarantor decision application action was not prepared"))
+		return GuarantorDecisionApplicationResult{Payouts: payouts, Resolution: resolution}, err
 	}
 	tokenDigest, _ := guarantor.DecisionApplicationTokenDigestV1(token)
 	payoutDigest, _ := guarantor.Digest(guarantor.PayoutSetDomain, payouts)
@@ -1002,8 +1068,8 @@ func (coordinator *GuarantorProviderCoordinator) ApplyClaimDecision(ctx context.
 	if err != nil {
 		return GuarantorDecisionApplicationResult{Payouts: payouts, Resolution: resolution}, err
 	}
-	resolution, err = coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-		commerce.ActionTerminal, payoutDigest, sortedGuarantorEvidence(decisionDigest, admissionDigest, transitionDigest, payoutDigest, bodyDigest))
+	resolution, err = coordinator.settlePlannedAction(resolution, action, payoutDigest,
+		sortedGuarantorEvidence(decisionDigest, admissionDigest, transitionDigest, payoutDigest, bodyDigest))
 	if err != nil {
 		return GuarantorDecisionApplicationResult{Payouts: payouts, Resolution: resolution}, err
 	}
@@ -1307,6 +1373,34 @@ func addUint64(left, right uint64) (uint64, bool) {
 	return left + right, false
 }
 
+// committedOfferAcceptance finds the offer an acceptance names in a journal
+// snapshot: the offer's state revision before the acceptance, and the
+// committed acceptance receipt when the offer is already accepted. A revision
+// of zero means the journal holds no exact live or accepted offer.
+func committedOfferAcceptance(positions []GuarantorOfferPosition, coverages []GuarantorCoveragePosition,
+	offerID, offerDigest, agreementDigest string,
+) (uint64, *guarantor.AuthorizedCoverageAcceptanceReceiptV1) {
+	var priorOfferRevision uint64
+	var storedReceipt *guarantor.AuthorizedCoverageAcceptanceReceiptV1
+	for _, position := range positions {
+		if position.Record.OfferID != offerID || position.OfferEnvelopeDigest != offerDigest {
+			continue
+		}
+		if position.Record.Status == guarantor.OfferIssued {
+			priorOfferRevision = position.Record.StateRevision
+		} else if position.Record.Status == guarantor.OfferAccepted {
+			for _, coverage := range coverages {
+				if coverage.Record.CoverageAgreementBodyDigest == agreementDigest && coverage.AcceptanceReceipt != nil {
+					priorOfferRevision = coverage.AcceptanceReceipt.Body.PriorOfferStateRevision
+					receipt := *coverage.AcceptanceReceipt
+					storedReceipt = &receipt
+				}
+			}
+		}
+	}
+	return priorOfferRevision, storedReceipt
+}
+
 func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Context, input GuarantorAcceptCoverageInput,
 	fence commerce.WriterFence) (guarantor.AuthorizedCoverageAcceptanceReceiptV1, commerce.ActionResolution, error) {
 	if err := ctx.Err(); err != nil {
@@ -1325,6 +1419,34 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 	if err := coordinator.Authority.ConfirmCurrentWriterFence(fence, receivedAt); err != nil {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
 	}
+	// A call that stopped after preparing this acceptance resumes from its
+	// plan: the acceptance is received at the plan's time, under the plan's
+	// fence, whatever time and fence the repeated call arrives with.
+	planned, err := coordinator.plannedAction(guarantorPlanCoverageAcceptance, input.Offer.Body.OfferID, "", fence)
+	if err != nil {
+		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
+	}
+	input.ReceivedAtUnix = planned.atUnix(input.ReceivedAtUnix)
+	fence, receivedAt = planned.fence(fence), planned.at(receivedAt)
+	offerDigest, _ := guarantor.FirmOfferDigest(input.Offer)
+	requestDigest, _ := guarantor.CoverageAcceptanceRequestDigestV1(input.Request)
+	agreementDigest := input.Request.Body.CoverageAgreementBodyDigest
+	// A journal that cannot be read is not a journal without the offer: the
+	// acceptance fails with the journal's error, not as an unknown offer.
+	_, positions, coverages, snapshotErr := coordinator.Journal.Snapshot()
+	if snapshotErr != nil {
+		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, snapshotErr
+	}
+	priorOfferRevision, storedReceipt := committedOfferAcceptance(positions, coverages, input.Offer.Body.OfferID,
+		offerDigest, agreementDigest)
+	// The same request repeated after its acceptance was committed is checked
+	// at the time it was received, as the committed receipt was: later, the
+	// offer and the request may no longer be valid.
+	if storedReceipt != nil && storedReceipt.Body.AuthorizedAcceptanceRequestEnvelopeDigest == requestDigest &&
+		validGuarantorUnix(storedReceipt.Body.ReceivedAtUnix) {
+		input.ReceivedAtUnix = storedReceipt.Body.ReceivedAtUnix
+		receivedAt = time.Unix(int64(input.ReceivedAtUnix), 0).UTC()
+	}
 	if err := guarantor.VerifyFirmOffer(input.Offer, input.Offer.AuthorizedQuoteRequest,
 		input.Request.CoverageAgreementBody, coordinator.Resolver, coordinator.PublicationResolver,
 		coordinator.UnderlyingAgreementResolver, coordinator.AgreementVerifier, receivedAt); err != nil {
@@ -1339,32 +1461,6 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 	if err != nil || len(rawEligibilityProof) == 0 || len(rawEligibilityProof) > 64<<10 {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, errors.New("fresh Guarantor acceptance eligibility proof is unavailable")
 	}
-	offerDigest, _ := guarantor.FirmOfferDigest(input.Offer)
-	requestDigest, _ := guarantor.CoverageAcceptanceRequestDigestV1(input.Request)
-	agreementDigest := input.Request.Body.CoverageAgreementBodyDigest
-	var priorOfferRevision uint64
-	var storedReceipt *guarantor.AuthorizedCoverageAcceptanceReceiptV1
-	// A journal that cannot be read is not a journal without the offer: the
-	// acceptance fails with the journal's error, not as an unknown offer.
-	_, positions, coverages, snapshotErr := coordinator.Journal.Snapshot()
-	if snapshotErr != nil {
-		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, snapshotErr
-	}
-	for _, position := range positions {
-		if position.Record.OfferID == input.Offer.Body.OfferID && position.OfferEnvelopeDigest == offerDigest {
-			if position.Record.Status == guarantor.OfferIssued {
-				priorOfferRevision = position.Record.StateRevision
-			} else if position.Record.Status == guarantor.OfferAccepted {
-				for _, coverage := range coverages {
-					if coverage.Record.CoverageAgreementBodyDigest == agreementDigest && coverage.AcceptanceReceipt != nil {
-						priorOfferRevision = coverage.AcceptanceReceipt.Body.PriorOfferStateRevision
-						receipt := *coverage.AcceptanceReceipt
-						storedReceipt = &receipt
-					}
-				}
-			}
-		}
-	}
 	if priorOfferRevision == 0 {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, errors.New("Guarantor acceptance has no exact live offer")
 	}
@@ -1372,6 +1468,29 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 		"coverage_acceptance")
 	if err != nil {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
+	}
+	admissionDomainID, err := guarantor.CoverageAcceptanceAdmissionDomainIDV1(bound.AdmissionStateDomainDigest,
+		input.Offer.Body.OfferID)
+	if err != nil {
+		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
+	}
+	if storedReceipt != nil {
+		// The acceptance is committed: the same request gets its receipt, and
+		// another request for the accepted offer is refused. The terminal
+		// result is recorded in the admission log here if the call that
+		// committed the acceptance stopped before recording it; a commit left
+		// without a confirmed sync is returned with the receipt.
+		if storedReceipt.Body.AuthorizedAcceptanceRequestEnvelopeDigest != requestDigest {
+			return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{},
+				errors.New("Guarantor acceptance conflicts with the acceptance committed for its offer")
+		}
+		committed, resolveErr := coordinator.committedActionResolution(storedReceipt.Body.StableActionID,
+			storedReceipt.Body.ExactRequestDigest)
+		if resolveErr != nil {
+			return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, committed, resolveErr
+		}
+		_, recordErr := coordinator.Journal.ResolveAdmission(admissionDomainID, committed)
+		return *storedReceipt, committed, guarantorJournalDurabilityError(recordErr)
 	}
 	projection := guarantor.TransitionEvidenceProjectionV1{SchemaVersion: 1, Purpose: "coverage-acceptance",
 		CoverageAgreementBodyDigest: agreementDigest, ObligationID: input.CoverageObligationID, TargetState: "accepted",
@@ -1395,17 +1514,9 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 		"agreement_body_digest": commerce.Digest32(agreementDigest), "obligation_id": commerce.ID(input.CoverageObligationID),
 		"expected_state_revision": commerce.U64(priorOfferRevision), "target_state": commerce.State("accepted"),
 		"evidence_set_digest": commerce.Digest32(projectionDigest)}
-	action, err := commerce.BuildAuthorizedAction(bound.ActionOwnerID, bound.ActionAgentID, "conditional.obligation.transition", fields,
-		canonicalRequest, fence, coordinator.PolicyRevision, coordinator.MandateDigest, "", offerDigest,
+	action, err := coordinator.authorizePlannedAction(planned, bound.ActionOwnerID, bound.ActionAgentID,
+		"conditional.obligation.transition", fields, canonicalRequest, fence, offerDigest,
 		input.Request.Body.ExpiresAtUnix)
-	if err != nil {
-		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
-	}
-	action, err = coordinator.Authority.SignAction(action, fence)
-	if err != nil {
-		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
-	}
-	admissionDomainID, err := guarantor.CoverageAcceptanceAdmissionDomainIDV1(bound.AdmissionStateDomainDigest, input.Offer.Body.OfferID)
 	if err != nil {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
 	}
@@ -1422,30 +1533,30 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 	if err != nil {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, commerce.ActionResolution{}, err
 	}
-	resolution, err := coordinator.Authority.Admit(action, fields, canonicalRequest, fence, nil)
+	resolution, err := coordinator.admitPlannedAction(planned, action, fields, canonicalRequest, fence, receivedAt)
 	if err != nil {
+		if resolution.State == commerce.ActionRejected {
+			// An earlier run rejected this acceptance and stopped before
+			// recording it; the admission log must not keep it as unresolved.
+			_, recordErr := coordinator.Journal.ResolveAdmission(admissionDomainID, resolution)
+			err = errors.Join(err, guarantorJournalDurabilityError(recordErr))
+		}
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution, err
 	}
-	if isTerminalActionResolution(resolution.State) {
-		// Recording the terminal result is best effort, but a commit left
-		// without a confirmed sync is never returned as a plain success: the
-		// stored receipt comes back with that error.
-		_, resolveErr := coordinator.Journal.ResolveAdmission(admissionDomainID, resolution)
-		durabilityErr := guarantorJournalDurabilityError(resolveErr)
-		if resolution.State == commerce.ActionTerminal && storedReceipt != nil {
-			return *storedReceipt, resolution, durabilityErr
+	// An acceptance the journal would refuse is rejected here, while its
+	// action is only prepared and the authority can still reject it. Once the
+	// action is terminal the acceptance is never rejected: a commit that then
+	// fails is repeated from the plan.
+	if resolution.State == commerce.ActionPrepared {
+		if refusal := coordinator.Journal.CheckOfferAcceptance(input.Offer.Body.OfferID, agreementDigest,
+			receivedAt); refusal != nil {
+			return coordinator.rejectPlannedAcceptance(planned, action, admissionDomainID, requestDigest, resolution,
+				refusal)
 		}
-		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution, errors.Join(
-			errors.New("Guarantor acceptance was already terminal without a recoverable receipt"), durabilityErr)
-	}
-	if resolution.State != commerce.ActionPrepared {
-		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution,
-			errors.New("Guarantor acceptance action was not prepared")
 	}
 	acceptanceEvidenceRefs := []string{requestDigest, projectionDigest}
 	sort.Strings(acceptanceEvidenceRefs)
-	resolution, err = coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-		commerce.ActionTerminal, projectionDigest, acceptanceEvidenceRefs)
+	resolution, err = coordinator.settlePlannedAction(resolution, action, projectionDigest, acceptanceEvidenceRefs)
 	if err != nil {
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution, err
 	}
@@ -1493,13 +1604,8 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 		return receipt, resolution, err
 	}
 	if err != nil {
-		rejected, transitionErr := coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
-			commerce.ActionRejected, requestDigest, []string{requestDigest})
-		if transitionErr == nil {
-			_, resolveErr := coordinator.Journal.ResolveAdmission(admissionDomainID, rejected)
-			err = errors.Join(err, guarantorJournalDurabilityError(resolveErr))
-			resolution = rejected
-		}
+		// The action is terminal and the acceptance is not in the journal. The
+		// plan is: the repeated call rebuilds this receipt and commits it.
 		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution, err
 	}
 	if coverage.Record.CoverageRevision != receipt.Body.AcceptedCoverageRevision ||
@@ -1510,9 +1616,27 @@ func (coordinator *GuarantorProviderCoordinator) AcceptCoverage(ctx context.Cont
 	return receipt, resolution, err
 }
 
-func isTerminalActionResolution(state commerce.ActionResolutionState) bool {
-	return state == commerce.ActionTerminal || state == commerce.ActionRejected || state == commerce.ActionConflict ||
-		state == commerce.ActionAccepted
+// rejectPlannedAcceptance ends an acceptance the journal refuses: it makes the
+// prepared action rejected at the authority, records that in the admission
+// log and removes the plan. It returns the journal's refusal, joined with
+// whatever kept the rejection from being recorded.
+func (coordinator *GuarantorProviderCoordinator) rejectPlannedAcceptance(planned guarantorPlannedAction,
+	action commerce.AuthorizedAction, admissionDomainID, requestDigest string, resolution commerce.ActionResolution,
+	refusal error,
+) (guarantor.AuthorizedCoverageAcceptanceReceiptV1, commerce.ActionResolution, error) {
+	rejected, err := coordinator.Authority.Transition(action.StableActionID, action.ExactRequestDigest,
+		commerce.ActionRejected, requestDigest, []string{requestDigest})
+	if err != nil {
+		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, resolution, errors.Join(refusal, err)
+	}
+	if _, err = coordinator.Journal.ResolveAdmission(admissionDomainID, rejected); err != nil {
+		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, rejected, errors.Join(refusal, err)
+	}
+	if err = coordinator.Journal.DiscardRejectedActionPlan(planned.kind, planned.scopeID, planned.subjectID,
+		rejected); err != nil {
+		return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, rejected, errors.Join(refusal, err)
+	}
+	return guarantor.AuthorizedCoverageAcceptanceReceiptV1{}, rejected, refusal
 }
 
 func guarantorEvidenceSetContains(set guarantor.CanonicalGuarantorEvidenceSetV1, digest string) bool {
@@ -1706,7 +1830,11 @@ func (coordinator *GuarantorProviderCoordinator) IssueFirmOffer(ctx context.Cont
 		return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, err
 	}
 	if found {
-		priorResolution := coordinator.Authority.Resolve(priorPlan.Action.StableActionID, priorPlan.Action.ExactRequestDigest)
+		priorResolution, resolveErr := resolveGuarantorAction(coordinator.Authority, priorPlan.Action.StableActionID,
+			priorPlan.Action.ExactRequestDigest)
+		if resolveErr != nil {
+			return guarantor.AuthorizedFirmCoverageOfferV1{}, commerce.ActionResolution{}, resolveErr
+		}
 		if priorResolution.State != commerce.ActionUnknown {
 			if err := guarantor.VerifyFirmOffer(priorPlan.Offer, input.Request, input.Agreement, coordinator.Resolver,
 				coordinator.PublicationResolver, coordinator.UnderlyingAgreementResolver,

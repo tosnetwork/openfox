@@ -37,6 +37,40 @@ func (coordinator *GuarantorProviderCoordinator) committedActionResolution(stabl
 	return resolution, nil
 }
 
+// committedCoverageActivation returns the activation evidence committed for a
+// coverage when the repeated request activates the same acceptance with the
+// same prerequisite set. An activation of that coverage under another
+// acceptance receipt or another prerequisite set is a conflict.
+func (coordinator *GuarantorProviderCoordinator) committedCoverageActivation(coverage GuarantorCoveragePosition,
+	input GuarantorActivateCoverageInput,
+) (guarantor.AuthorizedCoverageActivationEvidenceV1, commerce.ActionResolution, bool, error) {
+	if coverage.ActivationEvidence == nil {
+		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, false, nil
+	}
+	stored := *coverage.ActivationEvidence
+	acceptanceDigest, err := guarantor.CoverageAcceptanceReceiptDigestV1(input.AcceptanceReceipt)
+	if err != nil {
+		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, false, err
+	}
+	prerequisiteDigest := ""
+	if input.PrerequisiteEvidenceSet != nil {
+		prerequisiteDigest, err = guarantor.CanonicalGuarantorEvidenceSetDigestV1(*input.PrerequisiteEvidenceSet)
+		if err != nil {
+			return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, false, err
+		}
+	}
+	if stored.Body.AcceptanceReceiptDigest != acceptanceDigest ||
+		stored.Body.PrerequisiteEvidenceSetDigest != prerequisiteDigest {
+		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, commerce.ActionResolution{}, false,
+			errors.New("Guarantor activation conflicts with the activation committed for its coverage")
+	}
+	resolution, err := coordinator.committedActionResolution(stored.Body.StableActionID, stored.Body.ExactRequestDigest)
+	if err != nil {
+		return guarantor.AuthorizedCoverageActivationEvidenceV1{}, resolution, false, err
+	}
+	return stored, resolution, true, nil
+}
+
 // committedClaimAdmission returns the receipts committed for claim when claim
 // is the current revision of its claim. An earlier revision is not replayed:
 // the lineage has advanced past it and the ordinary path refuses it.

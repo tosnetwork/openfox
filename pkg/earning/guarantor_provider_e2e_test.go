@@ -843,8 +843,10 @@ func runGuarantorProviderLifecycleIn(t *testing.T, scenario guarantorFallbackSce
 	defer authority.Close()
 	if process != nil {
 		// The process runs on the test's logical clock from its first
-		// authority call, so its writer fence is issued at that time too.
-		authority.now = func() time.Time { return now }
+		// authority call, so its writer fence is issued at that time too, as
+		// late as the process runs.
+		processNow := now.Add(process.later)
+		authority.now = func() time.Time { return processNow }
 	}
 	journal, err := OpenGuarantorJournal(journalDirectory, "owner:guarantor", "agent:guarantor")
 	if err != nil {

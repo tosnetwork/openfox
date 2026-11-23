@@ -49,6 +49,7 @@ const (
 	guarantorKillOrdinalEnv   = "OPENFOX_GUARANTOR_KILL_ORDINAL"
 	guarantorKillStepsEnv     = "OPENFOX_GUARANTOR_KILL_STEPS"
 	guarantorKillPointEnv     = "OPENFOX_GUARANTOR_KILL_POINT"
+	guarantorKillLaterEnv     = "OPENFOX_GUARANTOR_KILL_LATER_SECONDS"
 	// guarantorKillReached is the line a process prints when it has reached
 	// its kill point and waits to be killed.
 	guarantorKillReached = "guarantor kill point reached"
@@ -103,6 +104,10 @@ type guarantorKillProcess struct {
 	directory string
 	// now is the test's logical time; every process of one test shares it.
 	now time.Time
+	// later moves this process's clock past the test's logical time: its
+	// writer fence is issued and its call is made that much later. The
+	// fixture it builds, and what an earlier process committed, keep now.
+	later time.Duration
 	// ordinal counts the processes started on directory, from 1.
 	ordinal int
 	// steps is how many of guarantorKillSteps the process runs.
@@ -237,15 +242,17 @@ func TestGuarantorKillProcess(t *testing.T) {
 	nowUnix, nowErr := strconv.ParseInt(os.Getenv(guarantorKillNowEnv), 10, 64)
 	ordinal, ordinalErr := strconv.Atoi(os.Getenv(guarantorKillOrdinalEnv))
 	steps, stepsErr := strconv.Atoi(os.Getenv(guarantorKillStepsEnv))
-	if nowErr != nil || ordinalErr != nil || stepsErr != nil || nowUnix <= 0 || ordinal <= 0 || steps < 0 ||
-		steps > len(guarantorKillSteps) {
-		t.Fatalf("the kill test process is misconfigured: now=%v ordinal=%v steps=%v", nowErr, ordinalErr, stepsErr)
+	laterSeconds, laterErr := strconv.Atoi(os.Getenv(guarantorKillLaterEnv))
+	if nowErr != nil || ordinalErr != nil || stepsErr != nil || laterErr != nil || nowUnix <= 0 || ordinal <= 0 ||
+		steps < 0 || steps > len(guarantorKillSteps) || laterSeconds < 0 {
+		t.Fatalf("the kill test process is misconfigured: now=%v ordinal=%v steps=%v later=%v", nowErr, ordinalErr,
+			stepsErr, laterErr)
 	}
 	// Every process generates the same keys.
 	rand.Reader = newGuarantorKillEntropy("keys")
 	runGuarantorProviderLifecycleIn(t, guarantorNoFallback, &guarantorKillProcess{
-		directory: directory, now: time.Unix(nowUnix, 0).UTC(), ordinal: ordinal, steps: steps,
-		point: os.Getenv(guarantorKillPointEnv),
+		directory: directory, now: time.Unix(nowUnix, 0).UTC(), later: time.Duration(laterSeconds) * time.Second,
+		ordinal: ordinal, steps: steps, point: os.Getenv(guarantorKillPointEnv),
 	})
 }
 
@@ -267,9 +274,10 @@ func (process *guarantorKillProcess) drive(t *testing.T, fixture guarantorKillFi
 	hooks.install(coordinator.Journal)
 	ctx := context.Background()
 	digest := func(ch string) string { return "sha256:" + strings.Repeat(ch, 64) }
-	// at moves the authority's clock to the logical time of a step.
+	// at moves the authority's clock to the logical time of a step, as late
+	// as this process runs.
 	at := func(offset time.Duration) time.Time {
-		instant := fixture.now.Add(offset)
+		instant := fixture.now.Add(offset + process.later)
 		authority.now = func() time.Time { return instant }
 		return instant
 	}
@@ -338,8 +346,11 @@ func (process *guarantorKillProcess) drive(t *testing.T, fixture guarantorKillFi
 				ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1,
 				ProfileDigest: commerce.AgentSignatureProfileDigest(),
 			}
+			// The covered party signed its request once; a later process
+			// receives the same request at its own time.
 			request := signGuarantorTestAcceptance(t, fixture.agreement, offer, "agent:covered", keys, profile,
-				fixture.underlyingResolver, fixture.agreementVerifier, receivedAt, fixture.now.Add(4*time.Minute))
+				fixture.underlyingResolver, fixture.agreementVerifier, fixture.now.Add(time.Minute),
+				fixture.now.Add(4*time.Minute))
 			receipt, resolution, err := coordinator.AcceptCoverage(ctx, GuarantorAcceptCoverageInput{
 				Offer: offer, Request: request, CoverageObligationID: "obligation:coverage",
 				ReceivedAtUnix: uint64(receivedAt.Unix()),
@@ -514,14 +525,28 @@ type guarantorKillPoint struct {
 	point string
 	// authorizer says whose writer generation the step's receipts must carry:
 	// 1, the killed process's, when that process had fixed the action in a
-	// plan whose action is terminal, or in the committed receipt; 2, the
-	// resuming process's, when the killed one had fixed nothing the
-	// authority holds as terminal, so the resuming one authorizes the action
-	// itself.
+	// plan whose action the authority holds, prepared or terminal, or in the
+	// committed receipt; 2, the resuming process's, when the killed one had
+	// fixed nothing the authority holds, so the resuming one authorizes the
+	// action itself.
+	//
+	// The resuming process runs later than the killed one: ten minutes when
+	// it resumes what the killed one fixed, which must not change with the
+	// time it resumes at, and one second when it authorizes the action
+	// itself, so that the call's own deadlines still hold.
 	authorizer int
 	// leavesTemporary is set when the kill leaves the temporary file of an
 	// interrupted document write in the journal directory.
 	leavesTemporary bool
+}
+
+// guarantorKillResumeLater is how much later than the killed process the
+// resuming one runs, by whose receipts it must return.
+func guarantorKillResumeLater(authorizer int) time.Duration {
+	if authorizer == 1 {
+		return 10 * time.Minute
+	}
+	return time.Second
 }
 
 // guarantorKillPoints are the crash points of the coordinator this test
@@ -539,7 +564,7 @@ var guarantorKillPoints = []guarantorKillPoint{
 	{"issue: authority terminal, before the journal records it", 0, "after-terminal:1", 1, false},
 	{"issue: last commit made, before the offer is returned", 0, "after-write:6", 1, false},
 	{"accept: plan stored, authority not asked", 1, "after-write:2", 2, false},
-	{"accept: action prepared, before the terminal transition", 1, "before-terminal:1", 2, false},
+	{"accept: action prepared, before the terminal transition", 1, "before-terminal:1", 1, false},
 	{"accept: authority terminal, before the journal commit", 1, "after-terminal:1", 1, false},
 	{"accept: authority terminal, inside the commit's document write", 1, "during-write:3", 1, true},
 	{"accept: journal commit made, before the receipt is returned", 1, "after-write:3", 1, false},
@@ -574,10 +599,11 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	base := t.TempDir()
 	// run starts the ordinal-th process on directory, given steps calls, with
-	// a kill point or none. It kills a process that reports its kill point
-	// and fails t unless the process ended as it should: by SIGKILL at its
-	// kill point, or with success when it has none.
-	run := func(t *testing.T, directory string, ordinal, steps int, point string) {
+	// a kill point or none, running later than the test's logical time. It
+	// kills a process that reports its kill point and fails t unless the
+	// process ended as it should: by SIGKILL at its kill point, or with
+	// success when it has none.
+	run := func(t *testing.T, directory string, ordinal, steps int, point string, later time.Duration) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
@@ -586,7 +612,8 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 		command.Env = append(os.Environ(), guarantorKillDirectoryEnv+"="+directory,
 			guarantorKillNowEnv+"="+strconv.FormatInt(now.Unix(), 10),
 			guarantorKillOrdinalEnv+"="+strconv.Itoa(ordinal), guarantorKillStepsEnv+"="+strconv.Itoa(steps),
-			guarantorKillPointEnv+"="+point)
+			guarantorKillPointEnv+"="+point,
+			guarantorKillLaterEnv+"="+strconv.FormatInt(int64(later/time.Second), 10))
 		stdout, pipeErr := command.StdoutPipe()
 		if pipeErr != nil {
 			t.Fatal(pipeErr)
@@ -652,11 +679,14 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 		} else {
 			copyGuarantorKillTestTree(t, prefixes[steps-1], prefixes[steps])
 		}
-		run(t, prefixes[steps], steps+1, steps, "")
+		run(t, prefixes[steps], steps+1, steps, "", 0)
 	}
 	// reference returns what an uninterrupted run returns for the call of
 	// step when the authorizer-th process after the prefix makes it: the
 	// first, or the second after a first that only repeated the call before.
+	// The process that makes the call runs as late as the resuming process
+	// of a killed run does when that process authorizes the call itself, and
+	// at the logical time when it resumes what the killed one fixed.
 	references := map[string]map[string]string{}
 	reference := func(t *testing.T, step, authorizer int) map[string]string {
 		t.Helper()
@@ -668,9 +698,13 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 		copyGuarantorKillTestTree(t, prefixes[step], directory)
 		ordinal := step + 2
 		for ; ordinal < step+1+authorizer; ordinal++ {
-			run(t, directory, ordinal, step, "")
+			run(t, directory, ordinal, step, "", 0)
 		}
-		run(t, directory, ordinal, step+1, "")
+		later := time.Duration(0)
+		if authorizer != 1 {
+			later = guarantorKillResumeLater(authorizer)
+		}
+		run(t, directory, ordinal, step+1, "", later)
 		references[key] = results(t, directory)
 		wantGeneration := strconv.Itoa(ordinal)
 		for name, value := range references[key] {
@@ -686,7 +720,7 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 		t.Run(point.name, func(t *testing.T) {
 			directory := filepath.Join(base, "killed-"+strconv.Itoa(index))
 			copyGuarantorKillTestTree(t, prefixes[point.step], directory)
-			run(t, directory, point.step+2, point.step+1, point.point)
+			run(t, directory, point.step+2, point.step+1, point.point, 0)
 			journalDirectory := filepath.Join(directory, "guarantor")
 			if left := guarantorKillTestTemporaries(t, journalDirectory); (len(left) != 0) != point.leavesTemporary {
 				t.Fatalf("the killed process left the temporary files %v, want some: %v", left, point.leavesTemporary)
@@ -695,8 +729,8 @@ func TestGuarantorCoordinatorResumesAfterBeingKilled(t *testing.T) {
 				t.Fatal("the killed process wrote its results")
 			}
 			// A fresh process opens what the killed one left and makes the
-			// same call.
-			run(t, directory, point.step+3, point.step+1, "")
+			// same call, later.
+			run(t, directory, point.step+3, point.step+1, "", guarantorKillResumeLater(point.authorizer))
 			resumed := results(t, directory)
 			want := reference(t, point.step, point.authorizer)
 			if !reflect.DeepEqual(resumed, want) {

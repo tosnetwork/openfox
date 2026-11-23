@@ -161,8 +161,10 @@ func unreachableTestSharedAuthority(t *testing.T) *SharedAuthorityClient {
 	if err = listener.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return &SharedAuthorityClient{Endpoint: "http://" + address + "/authority",
-		HTTPClient: &http.Client{Timeout: time.Second}}
+	return &SharedAuthorityClient{
+		Endpoint:   "http://" + address + "/authority",
+		HTTPClient: &http.Client{Timeout: time.Second},
+	}
 }
 
 func (fixture *actionPlanFixture) revision(t *testing.T) uint64 {
@@ -572,14 +574,13 @@ func TestGuarantorPreparedActionPlanIsAbandonedAtItsAuthorityFirst(t *testing.T)
 		stored.Action.ExactRequestDigest).State; state != commerce.ActionRejected {
 		t.Fatalf("the abandoned action is %s at the authority, want rejected", state)
 	}
-	if plans, err := fixture.journal.ActionPlans(); err != nil || len(plans) != 0 {
-		t.Fatalf("the abandoned plan is still listed: %d plans, err=%v", len(plans), err)
+	if plans, listErr := fixture.journal.ActionPlans(); listErr != nil || len(plans) != 0 {
+		t.Fatalf("the abandoned plan is still listed: %d plans, err=%v", len(plans), listErr)
 	}
 	if _, _, err = fixture.journal.AbandonPreparedActionPlan(kind, scope, "", fixture.authority, current,
 		first); err == nil || !strings.Contains(err.Error(), "no action plan") {
 		t.Fatalf("abandoning a head without a plan: got %v", err)
 	}
-
 }
 
 // TestGuarantorActionPlanAbandonmentRefusesATerminalAction: a plan whose
@@ -604,7 +605,6 @@ func TestGuarantorActionPlanAbandonmentRefusesATerminalAction(t *testing.T) {
 		!sameJSON(kept, terminal) {
 		t.Fatalf("a plan whose action is terminal is not kept: found=%v err=%v", found, keptErr)
 	}
-
 }
 
 // TestGuarantorActionPlanAbandonmentDiscardsAnUnadmittedPlan: a plan whose

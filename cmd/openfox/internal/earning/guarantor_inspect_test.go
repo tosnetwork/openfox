@@ -168,14 +168,19 @@ func TestGuarantorStatusListsEveryActionPlan(t *testing.T) {
 	if err != nil || !strings.Contains(string(empty), `"action_plans":[]`) {
 		t.Fatalf("a status without action plans: %s err=%v", empty, err)
 	}
-	plan := openfoxearning.GuarantorActionPlan{Kind: "coverage_cancellation",
-		ScopeID: "sha256:" + strings.Repeat("c", 64), SubjectID: "claim", PreparedAtUnix: 7}
-	plan.Action.ActionKind, plan.Action.StableActionID = "conditional.obligation.transition", "sha256:"+strings.Repeat("1", 64)
+	plan := openfoxearning.GuarantorActionPlan{
+		Kind:    "coverage_cancellation",
+		ScopeID: "sha256:" + strings.Repeat("c", 64), SubjectID: "claim", PreparedAtUnix: 7,
+	}
+	plan.Action.ActionKind = "conditional.obligation.transition"
+	plan.Action.StableActionID = "sha256:" + strings.Repeat("1", 64)
 	plan.Action.ExactRequestDigest, plan.Action.WriterGeneration = "sha256:"+strings.Repeat("2", 64), 3
 	statuses := guarantorActionPlanStatuses([]openfoxearning.GuarantorActionPlan{plan})
-	want := guarantorActionPlanStatus{Kind: plan.Kind, ScopeID: plan.ScopeID, SubjectID: "claim",
+	want := guarantorActionPlanStatus{
+		Kind: plan.Kind, ScopeID: plan.ScopeID, SubjectID: "claim",
 		ActionKind: plan.Action.ActionKind, StableActionID: plan.Action.StableActionID,
-		ExactRequestDigest: plan.Action.ExactRequestDigest, WriterGeneration: 3, PreparedAtUnix: 7}
+		ExactRequestDigest: plan.Action.ExactRequestDigest, WriterGeneration: 3, PreparedAtUnix: 7,
+	}
 	if len(statuses) != 1 || statuses[0] != want {
 		t.Fatalf("the status of an action plan is %#v, want %#v", statuses, want)
 	}

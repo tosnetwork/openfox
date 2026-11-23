@@ -2059,8 +2059,10 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		ctx := context.Background()
 		challengeAt := time.Unix(int64(decisionAdmission.Receipt.Body.ChallengeStartsAtUnix)+1, 0).UTC()
 		authority.now = func() time.Time { return challengeAt }
-		challengeInput := GuarantorTransitionClaimInput{AgreementDigest: agreementDigest,
-			DecisionAdmissionReceipt: decisionAdmission.Receipt, TransitionKind: "challenge_admission"}
+		challengeInput := GuarantorTransitionClaimInput{
+			AgreementDigest:          agreementDigest,
+			DecisionAdmissionReceipt: decisionAdmission.Receipt, TransitionKind: "challenge_admission",
+		}
 		// The challenge's request names the successor's due time, which follows
 		// from the time of the call that prepared it: a repetition under a newer
 		// writer at a later time resumes it as prepared.
@@ -2070,13 +2072,13 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 				return stopErr
 			})
 		authority.now = func() time.Time { return challengeAt.Add(time.Second) }
-		challenged, err := coordinator.TransitionClaimDecision(ctx, challengeInput, fence)
-		if err != nil || challenged.Receipt.Body.ResultingClaimState != "reviewing" ||
+		challenged, challengeErr := coordinator.TransitionClaimDecision(ctx, challengeInput, fence)
+		if challengeErr != nil || challenged.Receipt.Body.ResultingClaimState != "reviewing" ||
 			challenged.Receipt.Body.TransitionedAtUnix != uint64(challengeAt.Unix()) ||
 			challenged.Receipt.Body.SuccessorDecisionDueAtUnix !=
 				uint64(challengeAt.Unix())+terms.SuccessorDecisionWindowSeconds {
 			t.Fatalf("challenge the ordinary decision, resumed a second later: resolution=%#v err=%v",
-				challenged.Resolution, err)
+				challenged.Resolution, challengeErr)
 		}
 		authority.now = func() time.Time { return challengeAt }
 		reopened, err := journal.RevisionEpoch(agreementDigest, claimID)
@@ -2595,8 +2597,10 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 		commerce.ProfileRefV1{ProfileURI: commerce.EvidenceProfileAgentSignature, ProfileVersion: 1,
 			ProfileDigest: agreementProfile}, underlyingResolver, baseAgreementVerifier,
 		now.Add(35*time.Second), now.Add(95*time.Second))
-	cancellationAcceptInput := GuarantorAcceptCoverageInput{Offer: cancellationOffer, Request: cancellationAcceptance,
-		CoverageObligationID: "obligation:coverage", ReceivedAtUnix: uint64(now.Add(35 * time.Second).Unix())}
+	cancellationAcceptInput := GuarantorAcceptCoverageInput{
+		Offer: cancellationOffer, Request: cancellationAcceptance,
+		CoverageObligationID: "obligation:coverage", ReceivedAtUnix: uint64(now.Add(35 * time.Second).Unix()),
+	}
 	// The acceptance is first made by processes that die before and after its
 	// terminal transition; the later ones pass a later receipt time.
 	stopTestGuarantorCallAroundEachTerminalTransition(t, "accepting the cancellable coverage", &coordinator,
@@ -2659,7 +2663,7 @@ func runGuarantorProviderLifecycle(t *testing.T, scenario guarantorFallbackScena
 	// The cancellation is first made by processes that die before and after
 	// its terminal transition; the later ones pass a later admission time, as
 	// the event handler does with its own clock.
-	stopTestGuarantorCallAroundEachTerminalTransition(t, "cancelling the coverage", &coordinator, authority,
+	stopTestGuarantorCallAroundEachTerminalTransition(t, "ending the coverage by cancellation", &coordinator, authority,
 		restartWriter, 1, stopsPrepared, func(later time.Duration) error {
 			laterInput := cancelInput
 			laterInput.AdmittedAtUnix += uint64(later / time.Second)

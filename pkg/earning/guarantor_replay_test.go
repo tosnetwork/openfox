@@ -60,8 +60,10 @@ type reportedStateEconomicAuthority struct {
 
 func (authority *reportedStateEconomicAuthority) Resolve(stableActionID, exactRequestDigest string,
 ) commerce.ActionResolution {
-	return commerce.ActionResolution{StableActionID: stableActionID, ExactRequestDigest: exactRequestDigest,
-		State: authority.state, StateRevision: 1}
+	return commerce.ActionResolution{
+		StableActionID: stableActionID, ExactRequestDigest: exactRequestDigest,
+		State: authority.state, StateRevision: 1,
+	}
 }
 
 // testGuarantorActionPlans returns a copy of the action plans the journal
@@ -162,8 +164,9 @@ func stopTestGuarantorCallAroundEachTerminalTransition(t *testing.T, name string
 		requirePlans(step, commerce.ActionPrepared, prepared)
 		restart()
 		step = fmt.Sprintf("stop %d of %d, after the terminal transition, repeated ten minutes later", stop, stops)
-		if err := run(&failAfterTerminalEconomicAuthority{EconomicAuthority: base, failOnce: true},
-			first+muchLater); err == nil || !strings.Contains(err.Error(), "injected crash after terminal authority commit") {
+		stopAfter := &failAfterTerminalEconomicAuthority{EconomicAuthority: base, failOnce: true}
+		if err := run(stopAfter, first+muchLater); err == nil ||
+			!strings.Contains(err.Error(), "injected crash after terminal authority commit") {
 			t.Fatalf("%s, %s under a newer writer: got %v, want the injected stop", name, step, err)
 		}
 		requirePlans(step, commerce.ActionTerminal, prepared)

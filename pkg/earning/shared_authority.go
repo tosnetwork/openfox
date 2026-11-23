@@ -935,7 +935,9 @@ func (client *SharedAuthorityClient) Admit(action commerce.AuthorizedAction, fie
 func (client *SharedAuthorityClient) Resolve(id, digest string) commerce.ActionResolution {
 	out, err := client.ResolveChecked(id, digest)
 	if err != nil {
-		return commerce.ActionResolution{StableActionID: id, ExactRequestDigest: digest, State: commerce.ActionConflict, StateRevision: 1}
+		return commerce.ActionResolution{
+			StableActionID: id, ExactRequestDigest: digest, State: commerce.ActionConflict, StateRevision: 1,
+		}
 	}
 	return out
 }

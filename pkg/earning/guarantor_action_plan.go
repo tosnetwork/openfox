@@ -314,8 +314,8 @@ func (journal *GuarantorJournal) DiscardUnadmittedActionPlan(kind, scopeID, subj
 	}
 	resolution, err := resolveGuarantorAction(authority, plan.Action.StableActionID, plan.Action.ExactRequestDigest)
 	if err != nil {
-		return fmt.Errorf("Guarantor action plan is kept while its authority cannot say whether it holds the action: %w",
-			err)
+		return fmt.Errorf("Guarantor action plan is kept while its authority cannot say whether it holds the "+
+			"action: %w", err)
 	}
 	if resolution.State != commerce.ActionUnknown {
 		return errors.New("an admitted Guarantor action plan cannot be discarded")

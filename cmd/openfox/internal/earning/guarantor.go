@@ -306,7 +306,8 @@ func guarantorAbandonPlanCommand() *cobra.Command {
 	command.Flags().StringVar(&kind, "kind", "", "action plan kind, as status lists it")
 	command.Flags().StringVar(&scopeID, "scope", "", "action plan scope ID, as status lists it")
 	command.Flags().StringVar(&subjectID, "subject", "", "action plan subject ID, as status lists it, if any")
-	command.Flags().BoolVar(&apply, "apply", false, "reject the prepared action and discard the plan; default shows it only")
+	command.Flags().BoolVar(&apply, "apply", false,
+		"reject the prepared action and discard the plan; default shows it only")
 	_ = command.MarkFlagRequired("kind")
 	_ = command.MarkFlagRequired("scope")
 	return command
